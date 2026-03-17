@@ -1,0 +1,31 @@
+# Secrets - NEVER commit
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Data & logs
+logs/
+data/state/
+data/journal/
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Deployment state
+deploy/.last_deployment.json

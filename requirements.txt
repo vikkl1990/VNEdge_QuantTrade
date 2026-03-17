@@ -1,0 +1,36 @@
+# Core trading library
+ccxt>=4.0.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Async HTTP and web dashboard
+aiohttp>=3.9.0
+aiohttp-jinja2>=1.6
+jinja2>=3.1.0
+
+# Database
+aiosqlite>=0.19.0
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Terminal output
+colorama>=0.4.6
+
+# Charting / visualization
+matplotlib>=3.7.0
+
+# Data validation
+pydantic>=2.0.0
+
+# WebSocket support
+websockets>=12.0
+
+# Security / encryption
+cryptography>=41.0.0
+
+# High-performance event loop (Linux/macOS only)
+uvloop>=0.19.0;platform_system!="Windows"

@@ -1,0 +1,160 @@
+# =============================================================================
+# Crypto Trading Bot - Strategy & Runtime Configuration
+# =============================================================================
+
+bot:
+  name: "CryptoAlgoBot"
+  version: "1.0.0"
+  mode: "paper"  # signal_only | paper | live | backtest | forward_test
+  strict_mode: true  # Only alert on A+ and A grade signals
+
+symbols:
+  - "BTC/USDT"
+  - "ETH/USDT"
+
+exchange:
+  name: "delta"            # binance | bybit | okx | delta
+  region: "india"          # "india" for Delta India (api.india.delta.exchange)
+  market_type: "futures"   # spot | futures
+  testnet: false           # Delta India doesn't have a testnet
+  rate_limit: true
+  websocket: true
+  rest_fallback: true
+  reconnect_attempts: 10
+  reconnect_delay: 5
+
+timeframes:
+  primary: "5m"
+  higher: "15m"
+  trigger: "1m"
+
+strategy:
+  active: "multi_strategy"           # Runs both investment + scalp
+
+  indicators:
+    ema:
+      fast: 9
+      medium: 21
+      slow: 50
+      trend: 200
+    rsi:
+      period: 14
+      overbought: 70
+      oversold: 30
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    atr:
+      period: 14
+      multiplier: 1.5
+    supertrend:
+      period: 10
+      multiplier: 3.0
+    bollinger:
+      period: 20
+      std_dev: 2.0
+    vwap:
+      enabled: true
+    mfi:
+      period: 14
+      overbought: 80
+      oversold: 20
+    volume:
+      spike_multiplier: 2.0
+      lookback: 20
+
+  filters:
+    min_confidence: 70           # raised from 55 — reject weak C-grade signals
+    min_grade: "B"               # raised from "C" — only B (65+) or better
+    chop_filter: false           # Allow signals in all regimes for scalps
+    spread_max_pct: 0.15
+    cooldown_seconds: 180        # 3 min cooldown (was 2 — reduce whipsaw)
+    duplicate_prevention: true
+    max_signals_per_hour: 12     # Quality > quantity (was 20)
+
+risk:
+  risk_per_trade_pct: 1.0
+  max_position_size_usd: 10000
+  max_daily_loss_pct: 3.0
+  max_open_positions: 3
+  max_exposure_per_symbol_pct: 50.0
+  max_correlated_exposure_pct: 100.0
+  default_leverage: 5
+  max_leverage: 20
+
+  stop_loss:
+    type: "atr"  # fixed | atr | structure
+    fixed_pct: 1.5
+    atr_multiplier: 1.8            # was 1.5 — wider SL to survive BTC noise wicks
+
+  take_profit:
+    tp1_rr: 1.5              # lowered from 1.8 — hit more often (61% → ~70%)
+    tp2_rr: 2.5              # lowered from 3.0 — realistic target
+    tp3_rr: 4.0              # runner target (only 15% of position)
+    tp1_close_pct: 60        # was 50 — lock in 60% at TP1 (biggest chunk)
+    tp2_close_pct: 25        # was 30 — close 25% at TP2
+    tp3_close_pct: 15        # was 20 — tiny runner, not worth risking more
+
+  trailing:
+    enabled: true
+    activation_rr: 0.8            # was 1.0 — start trailing earlier to protect gains
+    trail_pct: 0.4                # was 0.5 — tighter trail locks in more profit
+    break_even_after_tp1: true
+
+  safety:
+    circuit_breaker_losses: 3
+    circuit_breaker_cooldown: 3600
+    volatility_kill_switch: true
+    volatility_kill_atr_multiplier: 3.0
+    max_api_failures: 5
+    api_failure_cooldown: 300
+    cooloff_after_sl: 180
+
+paper_trading:
+  initial_balance: 10000
+  maker_fee_rate: 0.0004        # Delta India maker: 0.04%
+  taker_fee_rate: 0.0006        # Delta India taker: 0.06%
+  fee_rate: 0.0006              # Default to taker (market orders)
+  settlement_fee_rate: 0.0006   # Delta settlement: 0.06%
+  slippage_pct: 0.05
+
+backtest:
+  start_date: "2025-01-01"
+  end_date: "2025-12-31"
+  fee_rate: 0.0004
+  slippage_pct: 0.05
+  initial_balance: 10000
+
+alerts:
+  telegram:
+    enabled: true
+    include_chart: false
+    alert_on_pre_signal: true
+    alert_on_confirmed: true
+    alert_on_tp_hit: true
+    alert_on_sl_hit: true
+    alert_on_exit: true
+    alert_on_system: true
+  console:
+    enabled: true
+    colored: true
+
+logging:
+  level: "INFO"
+  file_enabled: true
+  console_enabled: true
+  max_file_size_mb: 50
+  backup_count: 10
+  log_indicator_values: false
+  log_rejected_signals: true
+
+journal:
+  enabled: true
+  export_csv: true
+  export_json: true
+
+dashboard:
+  enabled: true
+  refresh_interval: 5
+  max_alerts_display: 50

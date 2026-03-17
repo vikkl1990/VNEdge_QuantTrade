@@ -1,0 +1,456 @@
+"""Async web dashboard server for the crypto trading bot.
+
+Uses aiohttp to serve a single-page dashboard with REST API endpoints
+for bot status, positions, signals, trade history, performance, and alerts.
+"""
+
+import asyncio
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+
+# IST timezone (UTC+5:30)
+IST = timezone(timedelta(hours=5, minutes=30))
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+from aiohttp import web
+
+from config import get_config
+
+
+class _SafeEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types and datetimes."""
+
+    def default(self, obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (datetime,)):
+            return obj.isoformat()
+        if hasattr(obj, 'value'):  # enums
+            return obj.value
+        return super().default(obj)
+
+
+def _safe_dumps(obj):
+    return json.dumps(obj, cls=_SafeEncoder)
+
+logger = logging.getLogger(__name__)
+
+_DASHBOARD_DIR = Path(__file__).resolve().parent
+_TEMPLATES_DIR = _DASHBOARD_DIR / "templates"
+_STATIC_DIR = _DASHBOARD_DIR / "static"
+
+
+class DashboardServer:
+    """Async web dashboard that exposes bot state via HTTP.
+
+    The bot pushes state updates into this server via ``set_state()`` and
+    individual update helpers. The dashboard serves a single-page HTML UI
+    that polls JSON API endpoints on a configurable interval.
+    """
+
+    # File-based signal persistence so signals survive restarts
+    _SIGNALS_FILE = Path(__file__).resolve().parent.parent / "storage" / "signals_history.json"
+    _MAX_PERSISTED = 200  # keep last 200 signals on disk
+
+    def __init__(self) -> None:
+        cfg = get_config()
+        dash_cfg = cfg.get("dashboard", {})
+        bot_cfg = cfg.get("bot", {})
+
+        self.bot_name: str = bot_cfg.get("name", "CryptoAlgoBot")
+        self.bot_version: str = bot_cfg.get("version", "1.0.0")
+        self.refresh_interval: int = dash_cfg.get("refresh_interval", 5)
+        self.max_alerts: int = dash_cfg.get("max_alerts_display", 50)
+
+        # ---- mutable state (written by the bot, read by API handlers) ----
+        self._lock = asyncio.Lock()
+        self._started_at: Optional[float] = None
+        self._paused: bool = False
+
+        self._bot_status: str = "initializing"
+        self._exchange_status: str = "disconnected"
+        self._active_strategy: str = cfg.get("strategy", {}).get("active", "unknown")
+        self._symbols: List[str] = cfg.get("symbols", [])
+        self._mode: str = bot_cfg.get("mode", "paper")
+
+        self._positions: List[Dict[str, Any]] = []
+        self._signals: List[Dict[str, Any]] = self._load_signals()
+        self._trades: List[Dict[str, Any]] = []
+        self._alerts: List[Dict[str, Any]] = []
+        self._prices: Dict[str, float] = {}
+        self._signal_tracker = None  # set externally by orchestrator
+        self._signal_learner = None  # set externally by orchestrator
+        self._trade_monitor = None   # set externally by orchestrator
+        self._strategy = None        # set externally by orchestrator
+
+        self._daily_pnl: float = 0.0
+        self._total_pnl: float = 0.0
+        self._win_rate: float = 0.0
+        self._trades_today: int = 0
+        self._max_drawdown: float = 0.0
+        self._wins: int = 0
+        self._losses: int = 0
+
+        self._exchange_latency_ms: float = 0.0
+        self._last_data_update: Optional[str] = None
+        self._memory_mb: float = 0.0
+
+        # Fee rates from paper trading config
+        paper_cfg = cfg.get("paper_trading", {})
+        self._fees: Dict[str, float] = {
+            "taker": paper_cfg.get("taker_fee_rate", 0.0006),
+            "maker": paper_cfg.get("maker_fee_rate", 0.0004),
+            "settlement": paper_cfg.get("settlement_fee_rate", 0.0006),
+        }
+
+        # aiohttp internals
+        self._app: Optional[web.Application] = None
+        self._runner: Optional[web.AppRunner] = None
+        self._site: Optional[web.TCPSite] = None
+
+    # ------------------------------------------------------------------
+    # State update interface (called by the bot)
+    # ------------------------------------------------------------------
+
+    async def set_state(self, **kwargs: Any) -> None:
+        """Bulk-update dashboard state.
+
+        Accepted keyword arguments:
+            bot_status, exchange_status, active_strategy, symbols, mode,
+            positions, signals, trades, alerts, prices,
+            daily_pnl, total_pnl, win_rate, trades_today, max_drawdown,
+            wins, losses, exchange_latency_ms, last_data_update, memory_mb
+        """
+        async with self._lock:
+            for key, value in kwargs.items():
+                attr = f"_{key}"
+                if hasattr(self, attr):
+                    setattr(self, attr, value)
+                else:
+                    logger.warning("DashboardServer.set_state: unknown key %r", key)
+
+    async def add_alert(self, level: str, message: str, source: str = "system") -> None:
+        """Append an alert entry, trimming to ``max_alerts``."""
+        entry = {
+            "timestamp": datetime.now(IST).isoformat(),
+            "level": level,
+            "message": message,
+            "source": source,
+        }
+        async with self._lock:
+            self._alerts.insert(0, entry)
+            self._alerts = self._alerts[: self.max_alerts]
+
+    # ------------------------------------------------------------------
+    # Signal persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_signals(self) -> List[Dict[str, Any]]:
+        """Load signal history from disk on startup."""
+        try:
+            if self._SIGNALS_FILE.exists():
+                data = json.loads(self._SIGNALS_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    logger.info("Loaded %d signals from history file", len(data))
+                    return data[:self._MAX_PERSISTED]
+        except Exception as exc:
+            logger.warning("Failed to load signal history: %s", exc)
+        return []
+
+    def _persist_signals(self) -> None:
+        """Save current signals to disk (call inside lock)."""
+        try:
+            self._SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self._SIGNALS_FILE.write_text(
+                json.dumps(self._signals[:self._MAX_PERSISTED], cls=_SafeEncoder, indent=1),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist signals: %s", exc)
+
+    async def add_signal(self, signal: Dict[str, Any]) -> None:
+        """Push a new signal to the front of the signals list and persist."""
+        async with self._lock:
+            self._signals.insert(0, signal)
+            self._signals = self._signals[:self._MAX_PERSISTED]
+            self._persist_signals()
+
+    async def add_trade(self, trade: Dict[str, Any]) -> None:
+        """Record a completed trade."""
+        async with self._lock:
+            self._trades.insert(0, trade)
+            self._trades = self._trades[:500]
+
+    async def update_positions(self, positions: List[Dict[str, Any]]) -> None:
+        """Replace the full positions list."""
+        async with self._lock:
+            self._positions = list(positions)
+
+    async def update_prices(self, prices: Dict[str, float]) -> None:
+        """Merge new price data."""
+        async with self._lock:
+            self._prices.update(prices)
+
+    async def update_performance(
+        self,
+        *,
+        daily_pnl: Optional[float] = None,
+        total_pnl: Optional[float] = None,
+        win_rate: Optional[float] = None,
+        trades_today: Optional[int] = None,
+        max_drawdown: Optional[float] = None,
+        wins: Optional[int] = None,
+        losses: Optional[int] = None,
+    ) -> None:
+        """Update performance metrics."""
+        async with self._lock:
+            if daily_pnl is not None:
+                self._daily_pnl = daily_pnl
+            if total_pnl is not None:
+                self._total_pnl = total_pnl
+            if win_rate is not None:
+                self._win_rate = win_rate
+            if trades_today is not None:
+                self._trades_today = trades_today
+            if max_drawdown is not None:
+                self._max_drawdown = max_drawdown
+            if wins is not None:
+                self._wins = wins
+            if losses is not None:
+                self._losses = losses
+
+    async def update_system_health(
+        self,
+        *,
+        exchange_latency_ms: Optional[float] = None,
+        last_data_update: Optional[str] = None,
+        memory_mb: Optional[float] = None,
+    ) -> None:
+        """Update system health metrics."""
+        async with self._lock:
+            if exchange_latency_ms is not None:
+                self._exchange_latency_ms = exchange_latency_ms
+            if last_data_update is not None:
+                self._last_data_update = last_data_update
+            if memory_mb is not None:
+                self._memory_mb = memory_mb
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self, host: str = "0.0.0.0", port: int = 8080) -> None:
+        """Create the aiohttp application, bind, and start serving."""
+        self._started_at = time.time()
+        self._bot_status = "running"
+
+        self._app = web.Application()
+        self._register_routes(self._app)
+
+        self._runner = web.AppRunner(self._app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, host, port)
+        await self._site.start()
+        logger.info("Dashboard server started at http://%s:%s", host, port)
+
+    async def stop(self) -> None:
+        """Gracefully shut down the web server."""
+        if self._site is not None:
+            await self._site.stop()
+        if self._runner is not None:
+            await self._runner.cleanup()
+        self._site = None
+        self._runner = None
+        self._app = None
+        logger.info("Dashboard server stopped")
+
+    # ------------------------------------------------------------------
+    # Route registration
+    # ------------------------------------------------------------------
+
+    def _register_routes(self, app: web.Application) -> None:
+        # Static files
+        if _STATIC_DIR.is_dir():
+            app.router.add_static("/static", _STATIC_DIR, show_index=False)
+
+        # Pages
+        app.router.add_get("/", self._handle_index)
+
+        # JSON API
+        app.router.add_get("/api/status", self._handle_status)
+        app.router.add_get("/api/positions", self._handle_positions)
+        app.router.add_get("/api/signals", self._handle_signals)
+        app.router.add_get("/api/trades", self._handle_trades)
+        app.router.add_get("/api/performance", self._handle_performance)
+        app.router.add_get("/api/alerts", self._handle_alerts)
+
+        # Signal tracker stats
+        app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
+        app.router.add_get("/api/tracker/active", self._handle_tracker_active)
+        app.router.add_get("/api/tracker/closed", self._handle_tracker_closed)
+        app.router.add_get("/api/ai/insights", self._handle_ai_insights)
+        app.router.add_get("/api/monitor/report", self._handle_monitor_report)
+        app.router.add_get("/api/signal-status", self._handle_signal_status)
+
+        # Control endpoints
+        app.router.add_post("/api/control/pause", self._handle_pause)
+        app.router.add_post("/api/control/resume", self._handle_resume)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _uptime_str(self) -> str:
+        if self._started_at is None:
+            return "0s"
+        elapsed = int(time.time() - self._started_at)
+        days, remainder = divmod(elapsed, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        parts: List[str] = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        parts.append(f"{seconds}s")
+        return " ".join(parts)
+
+    # ------------------------------------------------------------------
+    # Request handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_index(self, request: web.Request) -> web.Response:
+        index_path = _TEMPLATES_DIR / "index.html"
+        if not index_path.exists():
+            return web.Response(text="Dashboard template not found", status=500)
+        html = index_path.read_text(encoding="utf-8")
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_status(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = {
+                "bot_name": self.bot_name,
+                "bot_version": self.bot_version,
+                "bot_status": self._bot_status,
+                "paused": self._paused,
+                "exchange_status": self._exchange_status,
+                "active_strategy": self._active_strategy,
+                "symbols": list(self._symbols),
+                "mode": self._mode,
+                "uptime": self._uptime_str(),
+                "prices": dict(self._prices),
+                "refresh_interval": self.refresh_interval,
+                "exchange_latency_ms": self._exchange_latency_ms,
+                "last_data_update": self._last_data_update,
+                "memory_mb": self._memory_mb,
+                "server_time": datetime.now(IST).isoformat(),
+                "fees": self._fees,
+            }
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_positions(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = list(self._positions)
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_signals(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = list(self._signals)
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_trades(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = list(self._trades)
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_performance(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = {
+                "daily_pnl": self._daily_pnl,
+                "total_pnl": self._total_pnl,
+                "win_rate": self._win_rate,
+                "trades_today": self._trades_today,
+                "max_drawdown": self._max_drawdown,
+                "wins": self._wins,
+                "losses": self._losses,
+            }
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_alerts(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            data = list(self._alerts)
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_tracker_stats(self, request: web.Request) -> web.Response:
+        if self._signal_tracker:
+            data = self._signal_tracker.get_stats()
+        else:
+            data = {"error": "tracker not initialized"}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_tracker_active(self, request: web.Request) -> web.Response:
+        if self._signal_tracker:
+            data = self._signal_tracker.get_active_signals()
+        else:
+            data = []
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_tracker_closed(self, request: web.Request) -> web.Response:
+        if self._signal_tracker:
+            data = self._signal_tracker.get_closed_signals()
+        else:
+            data = []
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_ai_insights(self, request: web.Request) -> web.Response:
+        if self._signal_learner:
+            data = self._signal_learner.get_insights()
+        else:
+            data = {"learning_active": False}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_monitor_report(self, request: web.Request) -> web.Response:
+        if self._trade_monitor:
+            data = self._trade_monitor.get_monitor_report()
+        else:
+            data = {"active": False}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_signal_status(self, request: web.Request) -> web.Response:
+        """Return current scan status — why signals are/aren't generating."""
+        if self._strategy and hasattr(self._strategy, "get_scan_status"):
+            data = self._strategy.get_scan_status()
+        else:
+            data = {}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_pause(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            self._paused = True
+            self._bot_status = "paused"
+        logger.info("Trading paused via dashboard")
+        await self.add_alert("warning", "Trading paused via dashboard", source="dashboard")
+        return web.json_response({"status": "paused"})
+
+    async def _handle_resume(self, request: web.Request) -> web.Response:
+        async with self._lock:
+            self._paused = False
+            self._bot_status = "running"
+        logger.info("Trading resumed via dashboard")
+        await self.add_alert("info", "Trading resumed via dashboard", source="dashboard")
+        return web.json_response({"status": "running"})
+
+    @property
+    def is_paused(self) -> bool:
+        """Check if trading is currently paused (synchronous read)."""
+        return self._paused

@@ -1,0 +1,31 @@
+[Unit]
+Description=Crypto Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cryptobot
+Group=cryptobot
+WorkingDirectory=/opt/crypto-trading-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/crypto-trading-bot/venv/bin/python main.py
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cryptobot
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/crypto-trading-bot/data /opt/crypto-trading-bot/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

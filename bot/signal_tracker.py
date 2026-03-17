@@ -1,0 +1,892 @@
+"""
+Signal Tracker — monitors open signals for TP/SL closure and records P&L.
+
+Each signal is tracked from entry until either:
+  - Stop Loss is hit  → LOSS
+  - TP1 hit           → partial WIN (book TP1, trail rest)
+  - TP2 hit           → WIN
+  - TP3 hit           → FULL WIN
+  - Timeout (4 hours) → close at market price
+
+Persists all active + closed signals to disk for dashboard stats.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import tempfile
+import time
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
+_ACTIVE_FILE = _STORAGE_DIR / "active_signals.json"
+_CLOSED_FILE = _STORAGE_DIR / "closed_signals.json"
+_STATS_FILE = _STORAGE_DIR / "signal_stats.json"
+
+# Max age before auto-closing a signal (seconds)
+MAX_SIGNAL_AGE = 4 * 3600  # 4 hours
+
+
+@dataclass
+class TrackedSignal:
+    """A signal being monitored for TP/SL hits."""
+
+    trade_id: str
+    symbol: str
+    side: str  # "long" or "short"
+    entry_price: float
+    stop_loss: float
+    tp1: float = 0.0
+    tp2: float = 0.0
+    tp3: float = 0.0
+    confidence: int = 0
+    grade: str = ""
+    setup_type: str = ""
+    strategy_type: str = "scalp"  # "scalp" or "investment"
+    reason: str = ""
+
+    # Paper trading: position sizing (fixed fractional risk model)
+    paper_stake: float = 25.0  # base stake (used as fallback)
+    leverage: int = 1          # effective leverage (derived from risk model)
+    position_size_usd: float = 0.0  # actual position size in USD
+    risk_amount_usd: float = 0.0    # dollars risked on this trade (account × 0.75%)
+    pnl_usd: float = 0.0      # dollar P&L (net, after fees)
+
+    # Contract sizing (actual exchange contract specs)
+    contract_size: float = 0.0    # size of 1 contract in base currency (BTC=0.001, ETH=0.01)
+    contracts: int = 0            # number of contracts
+    quantity: float = 0.0         # total base currency qty (contracts * contract_size)
+
+    # Leverage audit
+    leverage_cap_source: str = ""  # why this leverage was chosen
+
+    # Fee tracking (gross/net split)
+    gross_pnl_pct: float = 0.0   # PnL before fees
+    gross_pnl_usd: float = 0.0   # Dollar PnL before fees
+    total_fees_pct: float = 0.0   # Total fees as % of position
+    total_fees_usd: float = 0.0   # Total fees in dollars
+
+    # ATR for trailing stop (passed from strategy)
+    signal_atr: float = 0.0           # ATR value at signal time (for ATR trail)
+
+    # ATR trailing stop state (active after TP2)
+    atr_trail_active: bool = False     # is ATR trailing stop engaged?
+    atr_trail_price: float = 0.0       # current ATR trail stop price
+
+    # Analytics fields (Patch 7)
+    stop_overshoot_pct: float = 0.0   # how far past SL we actually exited
+    tp1_distance_r: float = 0.0       # TP1 distance in R units
+    near_tp_triggered: bool = False    # did near-TP protection fire?
+    time_stop_triggered: bool = False  # did dead-trade time stop fire?
+    exit_reason_detailed: str = ""     # detailed exit reason tag
+
+    # Tracking state
+    status: str = "active"  # active, tp1_hit, tp2_hit, tp3_hit, stopped, expired
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    tp3_hit: bool = False
+    sl_hit: bool = False
+    exit_price: float = 0.0
+    exit_reason: str = ""
+    pnl_pct: float = 0.0
+    highest_price: float = 0.0
+    lowest_price: float = 0.0
+
+    # Timestamps
+    entry_time: str = ""
+    tp1_time: str = ""
+    tp2_time: str = ""
+    tp3_time: str = ""
+    exit_time: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TrackedSignal":
+        # Only pass known fields
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        ts = cls(**{k: v for k, v in d.items() if k in known})
+        # Backfill contract sizing for signals created before this feature
+        if ts.contracts == 0 and ts.entry_price > 0 and ts.position_size_usd > 0:
+            sym = ts.symbol.upper()
+            cs = 0.001 if "BTC" in sym else 0.01
+            raw = ts.position_size_usd / (ts.entry_price * cs)
+            ts.contract_size = cs
+            ts.contracts = max(1, int(raw))
+            ts.quantity = round(ts.contracts * cs, 6)
+        return ts
+
+    @classmethod
+    def from_signal(cls, sig: Dict[str, Any]) -> "TrackedSignal":
+        """Create a TrackedSignal from a signal dict.
+
+        Fixed Fractional Risk Model (Phase 2):
+        - Risk exactly 0.75% of account per trade
+        - Position size = risk_amount / SL_distance_pct
+        - Leverage is DERIVED (not input): lev = position_size / stake
+        - Max leverage capped by confidence grade for safety
+        """
+        tps = sig.get("take_profits", [])
+        meta = sig.get("metadata", {})
+        confidence = int(sig.get("confidence", 0))
+        entry = float(sig.get("entry_price", 0))
+        sl = float(sig.get("stop_loss", 0))
+
+        # Calculate SL distance as percentage
+        sl_dist_pct = abs(entry - sl) / entry * 100 if entry > 0 else 1.0
+        grade = str(sig.get("grade", "C"))
+
+        # ── FIXED FRACTIONAL RISK MODEL ──
+        # Risk 0.75% of account per trade (constant dollar risk)
+        # This automatically sizes positions based on SL distance
+        ACCOUNT_SIZE = 1000.0  # paper account base
+        RISK_PCT = 0.75        # risk 0.75% per trade
+        risk_amount = ACCOUNT_SIZE * RISK_PCT / 100  # $7.50 risk per trade
+
+        # Position size = risk / SL_distance
+        # If SL is 0.5% away, position = $7.50 / 0.005 = $1500
+        # If SL is 1.0% away, position = $7.50 / 0.01 = $750
+        if sl_dist_pct > 0:
+            position_usd = risk_amount / (sl_dist_pct / 100)
+        else:
+            position_usd = risk_amount * 100  # fallback
+
+        # ── MAX LEVERAGE CAPS by grade (safety guardrail) ──
+        # Even with risk model, cap leverage to prevent extreme exposure
+        if confidence >= 90:
+            max_lev = 8
+            lev_cap_source = "risk_model_A+"
+        elif confidence >= 80:
+            max_lev = 6
+            lev_cap_source = "risk_model_A"
+        elif confidence >= 65:
+            max_lev = 4
+            lev_cap_source = "risk_model_B"
+        else:
+            max_lev = 3
+            lev_cap_source = "risk_model_low"
+
+        # Base stake for leverage calculation
+        paper_stake = 25.0
+
+        # Derive effective leverage from position size
+        derived_lev = position_usd / paper_stake
+        lev = min(int(derived_lev), max_lev)
+        lev = max(1, lev)  # minimum 1x
+
+        if derived_lev > max_lev:
+            # Position was too large — cap it
+            position_usd = paper_stake * max_lev
+            risk_amount = position_usd * sl_dist_pct / 100
+            lev_cap_source = f"lev_capped_{max_lev}x"
+
+        # ── Graduated drawdown defense ──
+        dd_pct = sig.get("_dd_pct", 0.0)
+        if dd_pct >= 6.0:
+            risk_amount *= 0.5
+            position_usd *= 0.5
+            lev = max(1, lev // 2)
+            logger.info("DD defense L3: risk halved (DD=%.1f%%)", dd_pct)
+        if dd_pct >= 2.0:
+            prev_lev = lev
+            lev = min(lev, 3)
+            position_usd = min(position_usd, paper_stake * 3)
+            if lev < prev_lev:
+                lev_cap_source = f"dd_defense_{dd_pct:.1f}%"
+            logger.info("DD defense L1: leverage capped at 3x (DD=%.1f%%)", dd_pct)
+
+        logger.info(
+            "Risk Model: %s %s | conf=%d grade=%s | risk=$%.2f | sl_dist=%.3f%% | "
+            "pos=$%.0f | lev=%dx | cap=%s",
+            sig.get("symbol", ""), sig.get("side", ""), confidence, grade,
+            risk_amount, sl_dist_pct, position_usd, lev, lev_cap_source,
+        )
+
+        # Calculate actual contract sizing (Delta India contract specs)
+        symbol = sig.get("symbol", "")
+        if "BTC" in symbol.upper():
+            contract_sz = 0.001   # 1 contract = 0.001 BTC
+        elif "ETH" in symbol.upper():
+            contract_sz = 0.01    # 1 contract = 0.01 ETH
+        else:
+            contract_sz = 0.001   # default
+
+        # contracts = position_usd / (entry_price * contract_size)
+        if entry > 0 and contract_sz > 0:
+            raw_contracts = position_usd / (entry * contract_sz)
+            num_contracts = max(1, int(raw_contracts))  # min 1 contract, round down
+            quantity = num_contracts * contract_sz
+            # Recalculate actual position_usd based on rounded contracts
+            position_usd = round(quantity * entry, 2)
+        else:
+            num_contracts = 0
+            quantity = 0.0
+
+        # Extract ATR from signal metadata for trailing stop
+        signal_atr = float(meta.get("atr", 0))
+
+        return cls(
+            trade_id=sig.get("trade_id", ""),
+            symbol=sig.get("symbol", ""),
+            side=sig.get("side", "long"),
+            entry_price=entry,
+            stop_loss=sl,
+            tp1=float(tps[0]) if len(tps) > 0 else 0.0,
+            tp2=float(tps[1]) if len(tps) > 1 else 0.0,
+            tp3=float(tps[2]) if len(tps) > 2 else 0.0,
+            confidence=confidence,
+            grade=str(sig.get("grade", "")),
+            setup_type=meta.get("setup_type", ""),
+            strategy_type=meta.get("strategy_type", "scalp"),
+            reason=sig.get("reason", ""),
+            paper_stake=paper_stake,
+            leverage=lev,
+            position_size_usd=position_usd,
+            risk_amount_usd=round(risk_amount, 2),
+            signal_atr=signal_atr,
+            contract_size=contract_sz,
+            contracts=num_contracts,
+            quantity=round(quantity, 6),
+            leverage_cap_source=lev_cap_source,
+            entry_time=sig.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            highest_price=entry,
+            lowest_price=entry,
+        )
+
+
+class SignalTracker:
+    """Tracks open signals for TP/SL closure and maintains P&L + win rate stats."""
+
+    def __init__(self) -> None:
+        _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        self._active: Dict[str, TrackedSignal] = {}  # trade_id -> TrackedSignal
+        self._closed: List[Dict[str, Any]] = []
+        self._stats: Dict[str, Any] = {}
+        self._lock = asyncio.Lock()  # protects _active/_closed state mutations
+        self._exchange_balance: Optional[float] = None  # real exchange purse balance
+        self._load()
+
+    def set_exchange_balance(self, balance: float) -> None:
+        """Set the real exchange purse balance (fetched from Delta Exchange)."""
+        self._exchange_balance = balance
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def track_signal(self, signal_dict: Dict[str, Any]) -> None:
+        """Start tracking a new signal."""
+        ts = TrackedSignal.from_signal(signal_dict)
+        if not ts.entry_price or not ts.stop_loss:
+            logger.warning("Cannot track signal %s: missing entry/SL", ts.trade_id)
+            return
+        if ts.trade_id in self._active:
+            return  # already tracking
+
+        self._active[ts.trade_id] = ts
+        logger.info(
+            "Tracking signal: %s %s %s @ %.2f | SL=%.2f TP1=%.2f TP2=%.2f TP3=%.2f",
+            ts.trade_id[:8], ts.symbol, ts.side,
+            ts.entry_price, ts.stop_loss, ts.tp1, ts.tp2, ts.tp3,
+        )
+        self._save_active()
+
+    def update_prices(self, prices: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Check all active signals against current prices.
+
+        Returns list of closure events (for alerting).
+        """
+        events = []
+        to_close = []
+
+        for tid, ts in self._active.items():
+            price = prices.get(ts.symbol)
+            if price is None:
+                continue
+
+            # Update high/low watermarks
+            if price > ts.highest_price:
+                ts.highest_price = price
+            if price < ts.lowest_price:
+                ts.lowest_price = price
+
+            is_long = ts.side == "long"
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # -- Check Stop Loss --
+            sl_hit = (price <= ts.stop_loss) if is_long else (price >= ts.stop_loss)
+            if sl_hit and not ts.sl_hit:
+                ts.sl_hit = True
+                ts.exit_price = price
+                ts.exit_reason = "stop_loss"
+                ts.exit_time = now_iso
+                ts.pnl_pct = self._calc_pnl(ts, price)
+                # Calculate stop overshoot
+                overshoot = abs(price - ts.stop_loss)
+                ts.stop_overshoot_pct = round((overshoot / ts.entry_price) * 100, 4) if ts.entry_price > 0 else 0
+                ts.exit_reason_detailed = "stop_loss"
+                if ts.tp1_hit:
+                    ts.status = "partial_win"
+                    ts.exit_reason_detailed = "sl_after_tp1"
+                elif ts.near_tp_triggered:
+                    ts.exit_reason_detailed = "sl_after_near_tp"
+                else:
+                    ts.status = "stopped"
+                to_close.append(tid)
+                events.append({
+                    "type": "sl_hit",
+                    "signal": ts.to_dict(),
+                    "message": (
+                        f"SL HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                        f"SL={ts.stop_loss:.2f} overshoot={ts.stop_overshoot_pct:.4f}% | "
+                        f"PnL: {ts.pnl_pct:+.2f}%"
+                    ),
+                })
+                continue
+
+            # -- Check TP levels (in order) --
+            if not ts.tp1_hit and ts.tp1:
+                tp1_hit = (price >= ts.tp1) if is_long else (price <= ts.tp1)
+                if tp1_hit:
+                    ts.tp1_hit = True
+                    ts.tp1_time = now_iso
+                    ts.status = "tp1_hit"
+                    # Fee-aware break-even: move SL to entry + fee buffer
+                    # Round-trip fees = 0.18% of position, so need entry + 0.20% to truly break even
+                    fee_buffer_pct = 0.20 / 100  # slightly above fees to ensure real break-even
+                    fee_buffer = ts.entry_price * fee_buffer_pct
+                    if is_long:
+                        ts.stop_loss = ts.entry_price + fee_buffer  # break-even + fees
+                    else:
+                        ts.stop_loss = ts.entry_price - fee_buffer  # break-even + fees
+                    events.append({
+                        "type": "tp1_hit",
+                        "signal": ts.to_dict(),
+                        "message": f"TP1 HIT: {ts.symbol} {ts.side} @ {price:.2f} | SL moved to break-even+fees {ts.stop_loss:.2f}",
+                    })
+
+            if not ts.tp2_hit and ts.tp2 and ts.tp1_hit:
+                tp2_hit = (price >= ts.tp2) if is_long else (price <= ts.tp2)
+                if tp2_hit:
+                    ts.tp2_hit = True
+                    ts.tp2_time = now_iso
+                    ts.status = "tp2_hit"
+                    # ATR Trailing Stop: engage after TP2 hit
+                    # Trail at 1.5× ATR behind current price
+                    atr_trail_dist = ts.signal_atr * 1.5 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.5
+                    if is_long:
+                        ts.atr_trail_price = price - atr_trail_dist
+                    else:
+                        ts.atr_trail_price = price + atr_trail_dist
+                    ts.atr_trail_active = True
+                    # Ensure trail is at least at TP1 level (lock TP1 profit)
+                    if is_long:
+                        ts.atr_trail_price = max(ts.atr_trail_price, ts.tp1)
+                    else:
+                        ts.atr_trail_price = min(ts.atr_trail_price, ts.tp1)
+                    ts.stop_loss = ts.atr_trail_price
+                    events.append({
+                        "type": "tp2_hit",
+                        "signal": ts.to_dict(),
+                        "message": (
+                            f"TP2 HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                            f"ATR trail engaged @ {ts.atr_trail_price:.2f} "
+                            f"(1.5×ATR={atr_trail_dist:.2f})"
+                        ),
+                    })
+
+            if not ts.tp3_hit and ts.tp3 and ts.tp2_hit:
+                tp3_hit = (price >= ts.tp3) if is_long else (price <= ts.tp3)
+                if tp3_hit:
+                    ts.tp3_hit = True
+                    ts.tp3_time = now_iso
+                    ts.exit_price = price
+                    ts.exit_reason = "tp3_full"
+                    ts.exit_time = now_iso
+                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.exit_reason_detailed = "tp3_full_win"
+                    ts.status = "tp3_hit"
+                    to_close.append(tid)
+                    events.append({
+                        "type": "tp3_hit",
+                        "signal": ts.to_dict(),
+                        "message": f"TP3 FULL WIN: {ts.symbol} {ts.side} @ {price:.2f} | PnL: {ts.pnl_pct:+.2f}%",
+                    })
+
+            # -- ATR TRAILING STOP RATCHET (after TP2) --
+            # If ATR trail is active, ratchet it behind price on every tick
+            if ts.atr_trail_active and ts.tp2_hit and not ts.tp3_hit:
+                atr_trail_dist = ts.signal_atr * 1.5 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.5
+                if is_long:
+                    new_trail = price - atr_trail_dist
+                    # Only ratchet UP (tighter), never down
+                    if new_trail > ts.atr_trail_price:
+                        ts.atr_trail_price = new_trail
+                        ts.stop_loss = new_trail
+                else:
+                    new_trail = price + atr_trail_dist
+                    # Only ratchet DOWN (tighter), never up
+                    if new_trail < ts.atr_trail_price:
+                        ts.atr_trail_price = new_trail
+                        ts.stop_loss = new_trail
+
+            # -- PATCH 5: Near-TP reversal protection --
+            # If price reaches 85%+ of TP1 distance but hasn't hit TP1,
+            # tighten stop to protect the near-win
+            if not ts.tp1_hit and ts.tp1 and ts.status == "active":
+                tp1_dist = abs(ts.tp1 - ts.entry_price)
+                if is_long:
+                    current_fav = price - ts.entry_price
+                else:
+                    current_fav = ts.entry_price - price
+
+                if tp1_dist > 0 and current_fav >= tp1_dist * 0.85:
+                    # Price reached 85%+ of TP1 — activate near-TP protection
+                    if not ts.near_tp_triggered:
+                        ts.near_tp_triggered = True
+                        # Tighten stop to lock 50% of current favorable move
+                        half_move = current_fav * 0.50
+                        if is_long:
+                            new_sl = ts.entry_price + half_move
+                        else:
+                            new_sl = ts.entry_price - half_move
+                        # Only tighten, never widen
+                        should_update = (
+                            (is_long and new_sl > ts.stop_loss) or
+                            (not is_long and new_sl < ts.stop_loss)
+                        )
+                        if should_update:
+                            ts.stop_loss = new_sl
+                            logger.info(
+                                "NEAR-TP PROTECT: %s %s | reached %.1f%% of TP1 | "
+                                "SL tightened to %.2f (locks 50%% of move)",
+                                ts.symbol, ts.side,
+                                (current_fav / tp1_dist) * 100, ts.stop_loss,
+                            )
+
+                # If near-TP was triggered but price is now retreating,
+                # and momentum has failed (price < 50% of peak favorable excursion),
+                # close the trade to protect gains
+                if ts.near_tp_triggered and not ts.tp1_hit:
+                    peak_fav = (ts.highest_price - ts.entry_price) if is_long else (ts.entry_price - ts.lowest_price)
+                    if peak_fav > 0 and current_fav < peak_fav * 0.40:
+                        ts.exit_price = price
+                        ts.exit_reason = "near_tp_protect_exit"
+                        ts.exit_time = now_iso
+                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.exit_reason_detailed = "near_tp_protect_exit"
+                        ts.status = "partial_win" if ts.pnl_pct > 0 else "stopped"
+                        to_close.append(tid)
+                        events.append({
+                            "type": "near_tp_protect",
+                            "signal": ts.to_dict(),
+                            "message": (
+                                f"NEAR-TP PROTECT EXIT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                f"Peak fav: {peak_fav:.2f}, current: {current_fav:.2f} | "
+                                f"PnL: {ts.pnl_pct:+.2f}%"
+                            ),
+                        })
+                        continue
+
+            # -- PATCH 4: Dead-trade time stop --
+            # Exit stale trades that haven't reached +0.3R within time limit
+            if ts.status == "active" and not ts.tp1_hit:
+                try:
+                    entry_dt = datetime.fromisoformat(ts.entry_time)
+                    age_sec = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                    risk = abs(ts.entry_price - ts.stop_loss)
+
+                    # Calculate max favorable excursion in R
+                    if risk > 0:
+                        if is_long:
+                            max_fav_r = (ts.highest_price - ts.entry_price) / risk
+                        else:
+                            max_fav_r = (ts.entry_price - ts.lowest_price) / risk
+                    else:
+                        max_fav_r = 0
+
+                    # Time thresholds: 20min for 1m setups, 45min for 5m
+                    time_limit = 20 * 60  # 20 minutes default (1m setups)
+
+                    if age_sec >= time_limit and max_fav_r < 0.3:
+                        # Check if currently losing or flat (not gaining momentum)
+                        if is_long:
+                            current_r = (price - ts.entry_price) / risk if risk > 0 else 0
+                        else:
+                            current_r = (ts.entry_price - price) / risk if risk > 0 else 0
+
+                        if current_r < 0.3:
+                            ts.exit_price = price
+                            ts.exit_reason = "time_stop_dead_trade"
+                            ts.exit_time = now_iso
+                            ts.pnl_pct = self._calc_pnl(ts, price)
+                            ts.time_stop_triggered = True
+                            ts.exit_reason_detailed = "time_stop_dead_trade"
+                            ts.status = "expired"
+                            to_close.append(tid)
+                            logger.info(
+                                "TIME STOP: %s %s | age=%dm | max_fav=%.2fR | current=%.2fR | PnL: %+.2f%%",
+                                ts.symbol, ts.side, int(age_sec / 60),
+                                max_fav_r, current_r, ts.pnl_pct,
+                            )
+                            events.append({
+                                "type": "time_stop",
+                                "signal": ts.to_dict(),
+                                "message": (
+                                    f"TIME STOP: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                    f"Dead {int(age_sec/60)}min, max {max_fav_r:.2f}R | "
+                                    f"PnL: {ts.pnl_pct:+.2f}%"
+                                ),
+                            })
+                            continue
+                except (ValueError, TypeError):
+                    pass
+
+            # -- Check expiry (4 hours) — applies to ALL non-closed statuses --
+            try:
+                entry_dt = datetime.fromisoformat(ts.entry_time)
+                age = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                if age > MAX_SIGNAL_AGE and ts.status in ("active", "tp1_hit", "tp2_hit"):
+                    ts.exit_price = price
+                    ts.exit_reason = "expired"
+                    ts.exit_time = now_iso
+                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.exit_reason_detailed = "expired_4h"
+                    ts.status = "expired"
+                    to_close.append(tid)
+                    events.append({
+                        "type": "expired",
+                        "signal": ts.to_dict(),
+                        "message": f"EXPIRED: {ts.symbol} {ts.side} @ {price:.2f} | PnL: {ts.pnl_pct:+.2f}%",
+                    })
+            except (ValueError, TypeError):
+                pass
+
+        # Close completed signals
+        for tid in to_close:
+            ts = self._active.pop(tid)
+            self._closed.append(ts.to_dict())
+
+        # Persist if anything changed
+        if events or to_close:
+            self._save_active()
+            self._save_closed()
+            self._recalc_stats()
+            self._save_stats()
+
+        return events
+
+    def get_active_signals(self) -> List[Dict[str, Any]]:
+        """Return list of currently active signals."""
+        return [ts.to_dict() for ts in self._active.values()]
+
+    def get_closed_signals(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return recent closed signals."""
+        return self._closed[-limit:]
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return current performance statistics."""
+        if not self._stats:
+            self._recalc_stats()
+        return self._stats.copy()
+
+    @property
+    def active_count(self) -> int:
+        return len(self._active)
+
+    # ------------------------------------------------------------------
+    # P&L calculation
+    # ------------------------------------------------------------------
+
+    # Delta Exchange fee schedule
+    TAKER_FEE_PCT = 0.06    # 0.06% per side (taker)
+    MAKER_FEE_PCT = 0.04    # 0.04% per side (maker) — not used for market orders
+    SETTLEMENT_FEE_PCT = 0.06  # 0.06% settlement fee on close
+
+    @staticmethod
+    def _calc_pnl(ts: TrackedSignal, exit_price: float) -> float:
+        """Calculate P&L percentage for a signal (gross and net).
+
+        Position split (Phase 2): 40% TP1, 30% TP2, 30% trail
+        - TP1 (40%): Quick profit lock at 0.8R
+        - TP2 (30%): Solid reward at 2.0R
+        - TP3 (30%): ATR-trailed runner for big moves
+
+        Fees applied:
+        - Entry: taker fee (0.06%) on full position
+        - Exit: taker fee (0.06%) on full position
+        - Settlement: 0.06% on close
+        Total round-trip fees: ~0.18% of position value
+        """
+        if ts.entry_price == 0:
+            return 0.0
+
+        is_long = ts.side == "long"
+
+        # Calculate P&L for each portion
+        def pnl_at(price: float) -> float:
+            if is_long:
+                return ((price - ts.entry_price) / ts.entry_price) * 100
+            else:
+                return ((ts.entry_price - price) / ts.entry_price) * 100
+
+        # 40/30/30 split — balanced profit capture with runner
+        if ts.tp3_hit:
+            gross_pct = (0.40 * pnl_at(ts.tp1) +
+                         0.30 * pnl_at(ts.tp2) +
+                         0.30 * pnl_at(ts.tp3))
+        elif ts.tp2_hit:
+            gross_pct = (0.40 * pnl_at(ts.tp1) +
+                         0.30 * pnl_at(ts.tp2) +
+                         0.30 * pnl_at(exit_price))
+        elif ts.tp1_hit:
+            gross_pct = (0.40 * pnl_at(ts.tp1) +
+                         0.60 * pnl_at(exit_price))
+        else:
+            gross_pct = pnl_at(exit_price)
+
+        # Calculate fees as % of position
+        # Entry taker fee + Exit taker fee + Settlement fee
+        fee_pct = (
+            SignalTracker.TAKER_FEE_PCT      # entry
+            + SignalTracker.TAKER_FEE_PCT     # exit
+            + SignalTracker.SETTLEMENT_FEE_PCT  # settlement
+        )  # = 0.18% total round-trip
+
+        # Net PnL = Gross PnL - fees
+        net_pct = gross_pct - fee_pct
+
+        # Store gross values
+        ts.gross_pnl_pct = round(gross_pct, 4)
+        ts.gross_pnl_usd = round(ts.position_size_usd * gross_pct / 100, 2)
+
+        # Store fee values
+        ts.total_fees_pct = round(fee_pct, 4)
+        ts.total_fees_usd = round(ts.position_size_usd * fee_pct / 100, 2)
+
+        # Store net values (the "official" PnL)
+        ts.pnl_usd = round(ts.position_size_usd * net_pct / 100, 2)
+
+        return net_pct
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    def _recalc_stats(self) -> None:
+        """Recalculate performance stats from closed signals."""
+        if not self._closed:
+            self._stats = {
+                "total_signals": len(self._active),
+                "active": len(self._active),
+                "closed": 0,
+                "wins": 0,
+                "losses": 0,
+                "partial_wins": 0,
+                "win_rate": 0.0,
+                "avg_win_pnl": 0.0,
+                "avg_loss_pnl": 0.0,
+                "total_pnl": 0.0,
+                "profit_factor": 0.0,
+                "best_trade": 0.0,
+                "worst_trade": 0.0,
+                "tp1_rate": 0.0,
+                "tp2_rate": 0.0,
+                "tp3_rate": 0.0,
+                "by_setup": {},
+                "by_symbol": {},
+            }
+            return
+
+        wins = []
+        losses = []
+        partial_wins = []
+        tp1_count = 0
+        tp2_count = 0
+        tp3_count = 0
+        total = len(self._closed)
+
+        by_setup: Dict[str, Dict] = {}
+        by_symbol: Dict[str, Dict] = {}
+
+        for c in self._closed:
+            pnl = c.get("pnl_pct", 0)
+            status = c.get("status", "")
+            setup = c.get("setup_type", "unknown")
+            symbol = c.get("symbol", "unknown")
+
+            # Win/loss classification
+            if pnl > 0:
+                wins.append(pnl)
+            elif pnl < 0:
+                losses.append(pnl)
+
+            if status == "partial_win":
+                partial_wins.append(pnl)
+
+            if c.get("tp1_hit"):
+                tp1_count += 1
+            if c.get("tp2_hit"):
+                tp2_count += 1
+            if c.get("tp3_hit"):
+                tp3_count += 1
+
+            # Per-setup stats
+            if setup not in by_setup:
+                by_setup[setup] = {"total": 0, "wins": 0, "pnl": 0.0}
+            by_setup[setup]["total"] += 1
+            if pnl > 0:
+                by_setup[setup]["wins"] += 1
+            by_setup[setup]["pnl"] += pnl
+
+            # Per-symbol stats
+            if symbol not in by_symbol:
+                by_symbol[symbol] = {"total": 0, "wins": 0, "pnl": 0.0}
+            by_symbol[symbol]["total"] += 1
+            if pnl > 0:
+                by_symbol[symbol]["wins"] += 1
+            by_symbol[symbol]["pnl"] += pnl
+
+        # Calculate win rates per setup
+        for setup in by_setup.values():
+            setup["win_rate"] = round(
+                (setup["wins"] / setup["total"] * 100) if setup["total"] else 0, 1
+            )
+            setup["pnl"] = round(setup["pnl"], 2)
+
+        for sym in by_symbol.values():
+            sym["win_rate"] = round(
+                (sym["wins"] / sym["total"] * 100) if sym["total"] else 0, 1
+            )
+            sym["pnl"] = round(sym["pnl"], 2)
+
+        win_count = len(wins)
+        loss_count = len(losses)
+        total_wins_pnl = sum(wins)
+        total_losses_pnl = abs(sum(losses))
+
+        # Dollar P&L from paper trades (net after fees)
+        total_pnl_usd = sum(c.get("pnl_usd", 0) for c in self._closed)
+        total_gross_pnl_usd = sum(c.get("gross_pnl_usd", c.get("pnl_usd", 0)) for c in self._closed)
+        total_fees_usd = sum(c.get("total_fees_usd", 0) for c in self._closed)
+        # Use real exchange balance if available, otherwise fallback
+        if self._exchange_balance is not None:
+            paper_balance = self._exchange_balance
+        else:
+            paper_balance = total_pnl_usd  # just show cumulative P&L
+
+        # Active positions unrealized value
+        active_positions_usd = sum(ts.position_size_usd for ts in self._active.values())
+
+        self._stats = {
+            "total_signals": total + len(self._active),
+            "active": len(self._active),
+            "closed": total,
+            "wins": win_count,
+            "losses": loss_count,
+            "partial_wins": len(partial_wins),
+            "win_rate": round((win_count / total * 100) if total else 0, 1),
+            "avg_win_pnl": round((total_wins_pnl / win_count) if win_count else 0, 3),
+            "avg_loss_pnl": round((sum(losses) / loss_count) if loss_count else 0, 3),
+            "total_pnl": round(sum(w for w in wins) + sum(l for l in losses), 3),
+            "profit_factor": round(
+                (total_wins_pnl / total_losses_pnl) if total_losses_pnl else float("inf"), 2
+            ),
+            "best_trade": round(max(wins) if wins else 0, 3),
+            "worst_trade": round(min(losses) if losses else 0, 3),
+            "tp1_rate": round((tp1_count / total * 100) if total else 0, 1),
+            "tp2_rate": round((tp2_count / total * 100) if total else 0, 1),
+            "tp3_rate": round((tp3_count / total * 100) if total else 0, 1),
+            "by_setup": by_setup,
+            "by_symbol": by_symbol,
+            # Paper trading stats (net = after fees)
+            "paper_balance": round(paper_balance, 2),
+            "paper_pnl_usd": round(total_pnl_usd, 2),         # NET PnL (after fees)
+            "paper_gross_pnl_usd": round(total_gross_pnl_usd, 2),  # GROSS PnL (before fees)
+            "paper_total_fees_usd": round(total_fees_usd, 2),  # Total fees paid
+            "active_positions_usd": round(active_positions_usd, 2),
+            "paper_stake_per_trade": 25.0,
+            "fee_schedule": {
+                "taker_pct": self.TAKER_FEE_PCT,
+                "settlement_pct": self.SETTLEMENT_FEE_PCT,
+                "round_trip_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load(self) -> None:
+        """Load active and closed signals from disk."""
+        try:
+            if _ACTIVE_FILE.exists():
+                data = json.loads(_ACTIVE_FILE.read_text())
+                for d in data:
+                    ts = TrackedSignal.from_dict(d)
+                    self._active[ts.trade_id] = ts
+                logger.info("Loaded %d active tracked signals", len(self._active))
+        except Exception as exc:
+            logger.warning("Failed to load active signals: %s", exc)
+
+        try:
+            if _CLOSED_FILE.exists():
+                self._closed = json.loads(_CLOSED_FILE.read_text())
+                logger.info("Loaded %d closed tracked signals", len(self._closed))
+        except Exception as exc:
+            logger.warning("Failed to load closed signals: %s", exc)
+
+        try:
+            if _STATS_FILE.exists():
+                self._stats = json.loads(_STATS_FILE.read_text())
+        except Exception:
+            pass
+
+    @staticmethod
+    def _safe_write(path: Path, data: str) -> None:
+        """Write-then-rename for crash-safe file persistence."""
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+            try:
+                os.write(fd, data.encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_path, str(path))
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise
+
+    def _save_active(self) -> None:
+        try:
+            data = [ts.to_dict() for ts in self._active.values()]
+            self._safe_write(_ACTIVE_FILE, json.dumps(data, indent=1))
+        except Exception as exc:
+            logger.warning("Failed to save active signals: %s", exc)
+
+    def _save_closed(self) -> None:
+        try:
+            # Keep last 1000 closed signals
+            self._closed = self._closed[-1000:]
+            self._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1))
+        except Exception as exc:
+            logger.warning("Failed to save closed signals: %s", exc)
+
+    def _save_stats(self) -> None:
+        try:
+            self._safe_write(_STATS_FILE, json.dumps(self._stats, indent=1))
+        except Exception as exc:
+            logger.warning("Failed to save stats: %s", exc)

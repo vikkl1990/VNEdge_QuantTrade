@@ -45,6 +45,14 @@ class Decision:
     drawdown_pct: float = 0.0
     signals_this_hour: int = 0
 
+    # Trade plan (when action is TRADE)
+    best_side: str = ""           # LONG/SHORT
+    best_entry: float = 0.0
+    best_stop: float = 0.0
+    best_target: float = 0.0     # TP1
+    best_atr: float = 0.0
+    blocker: str = ""             # reason for WAIT
+
     # Reasoning
     reason: str = "Initializing..."
     reasons: List[str] = field(default_factory=list)
@@ -180,15 +188,30 @@ class DecisionEngine:
                 d.best_score = best.get("weighted_score", 0)
                 d.best_grade = best.get("grade", "")
                 d.best_tier = best.get("tier", "")
+
+                # Trade plan fields
+                d.best_side = best.get("side", "")
+                d.best_entry = best.get("entry_price", 0) or 0
+                d.best_stop = best.get("stop_loss", 0) or 0
+                d.best_atr = best.get("atr", 0) or 0
+                # Calculate TP1: entry +/- 1.5*ATR
+                if d.best_entry and d.best_atr:
+                    if d.best_side and d.best_side.upper() in ("BUY", "LONG"):
+                        d.best_target = d.best_entry + 1.5 * d.best_atr
+                    else:
+                        d.best_target = d.best_entry - 1.5 * d.best_atr
+
                 d.reasons.append(f"Best: {d.best_scanner} {d.best_tier} ({d.best_score:.0f})")
 
         # ── 5. Compute final ACTION ──
         if d.risk_state == "BLOCKED":
             d.action = "WAIT"
             d.reason = f"Risk blocked: {d.risk_reason}"
+            d.blocker = f"Risk blocked: {d.risk_reason}"
         elif d.edge_status == "OFF" and d.risk_state != "NORMAL":
             d.action = "WAIT"
             d.reason = "No edge + elevated risk"
+            d.blocker = "No edge + elevated risk"
         elif d.best_score >= self.ACTION_SCORE_THRESHOLD and d.best_tier in ("strong", "valid"):
             # We have a tradeable signal
             d.action = "TRADE"
@@ -196,15 +219,19 @@ class DecisionEngine:
         elif d.best_score > 0 and d.best_tier == "weak":
             d.action = "WAIT"
             d.reason = f"Weak signal: {d.best_scanner} ({d.best_score:.0f}) — needs stronger setup"
+            d.blocker = f"Weak signal: {d.best_scanner} ({d.best_score:.0f}) — needs stronger setup"
         elif d.market_state == "CHOP":
             d.action = "WAIT"
             d.reason = "Choppy market — waiting for trend"
+            d.blocker = "Choppy market — waiting for trend"
         elif d.edge_status in ("STRONG", "MEDIUM"):
             d.action = "WAIT"
             d.reason = f"Edge exists ({d.rolling_expectancy:+.2f}R) — waiting for setup"
+            d.blocker = f"Edge exists ({d.rolling_expectancy:+.2f}R) — waiting for setup"
         else:
             d.action = "WAIT"
             d.reason = "No valid setup conditions met"
+            d.blocker = "No valid setup conditions met"
 
         # ── 6. Funnel context ──
         if funnel:

@@ -2084,3 +2084,75 @@ footer {
 @media (max-width: 768px) {
     .infra-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Trade Plan Row ── */
+.cmd-trade-plan {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 8px;
+    padding: 10px 16px;
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 6px;
+    margin: 8px 16px;
+}
+.tp-cell { display: flex; flex-direction: column; align-items: center; }
+.tp-label { font-size: 0.65rem; color: #8892b0; text-transform: uppercase; letter-spacing: 0.5px; }
+.tp-value { font-size: 0.95rem; font-weight: 600; color: #ccd6f6; margin-top: 2px; }
+
+/* ── Blocker Row ── */
+.cmd-blocker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    margin: 8px 16px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    color: #f87171;
+    font-size: 0.85rem;
+}
+.blocker-icon { font-size: 1.1rem; }
+
+/* ── Exit Quality ── */
+.section-exit-quality { border-left: 3px solid #f59e0b; }
+.exit-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    padding: 12px 16px;
+}
+.exit-metric-card {
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+}
+.exit-metric-label { display: block; font-size: 0.7rem; color: #8892b0; text-transform: uppercase; letter-spacing: 0.5px; }
+.exit-metric-value { display: block; font-size: 1.3rem; font-weight: 700; color: #ccd6f6; margin: 4px 0; }
+.exit-metric-sub { display: block; font-size: 0.65rem; color: #64748b; }
+.exit-metric-compare { display: block; font-size: 0.9rem; font-weight: 600; color: #8892b0; margin-top: 2px; }
+.exit-tag { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+
+/* ── AI Control Row ── */
+.ai-control-row {
+    display: flex;
+    gap: 20px;
+    padding: 8px 16px;
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-radius: 6px;
+    margin: 0 16px 12px;
+    flex-wrap: wrap;
+}
+.ai-ctrl-item { display: flex; flex-direction: column; }
+.ai-ctrl-label { font-size: 0.65rem; color: #8892b0; text-transform: uppercase; }
+.ai-ctrl-value { font-size: 0.85rem; font-weight: 600; color: #ccd6f6; }
+.text-warn { color: #f59e0b !important; }
+
+/* ── Proximity Score in Scanner Pills ── */
+.prox-score { font-size: 0.7rem; opacity: 0.7; }
+.ss-setup-pill.prox-high { border-color: rgba(16, 185, 129, 0.4); background: rgba(16, 185, 129, 0.08); }
+.ss-setup-pill.prox-med { border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.08); }
+.ss-setup-pill.prox-low { }

@@ -1245,9 +1245,15 @@
                 if (scalp.setups_checked && scalp.setups_checked.length > 0) {
                     html += '<div class="ss-setups">';
                     for (const setup of scalp.setups_checked) {
-                        const cls = setup.triggered ? 'triggered' : 'not-triggered';
-                        const conf = setup.triggered ? ' (' + setup.confidence + ')' : '';
-                        html += '<span class="ss-setup-pill ' + cls + '" title="' + (setup.reason || '').replace(/"/g, '&quot;') + '">' + setup.name + conf + '</span>';
+                        if (setup.triggered) {
+                            html += '<span class="ss-setup-pill triggered" title="' + (setup.reason || '').replace(/"/g, '&quot;') + '">' + setup.name + ' (' + setup.confidence + ')</span>';
+                        } else {
+                            const prox = setup.proximity_score || 0;
+                            const proxClass = prox >= 60 ? 'prox-high' : prox >= 40 ? 'prox-med' : 'prox-low';
+                            html += '<span class="ss-setup-pill not-triggered ' + proxClass + '" title="' + (setup.reason || '').replace(/"/g, '&quot;') + '">' + setup.name;
+                            if (prox > 0) html += ' <span class="prox-score">' + prox + '/100</span>';
+                            html += '</span>';
+                        }
                     }
                     html += '</div>';
 
@@ -1560,7 +1566,7 @@
         if (badge) {
             badge.textContent = action;
             badge.className = "cmd-action-badge";
-            if (action === "TRADE" || action === "LONG") badge.classList.add("trade-long");
+            if (action === "TRADE") badge.classList.add("trade-long");
             else if (action === "SHORT") badge.classList.add("trade-short");
             else if (data.risk_state === "BLOCKED") badge.classList.add("blocked");
             else badge.classList.add("wait");
@@ -1568,23 +1574,19 @@
         const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
         el("cmd-reason", data.reason || "");
 
-        // Edge badge
+        // Edge/Risk/Market badges
         const edgeBadge = document.getElementById("cmd-edge");
         if (edgeBadge) {
             const es = (data.edge_status || "OFF").toLowerCase();
             edgeBadge.textContent = "EDGE: " + (data.edge_status || "--");
             edgeBadge.className = "cmd-badge cmd-edge " + es;
         }
-
-        // Risk badge
         const riskBadge = document.getElementById("cmd-risk");
         if (riskBadge) {
             const rs = (data.risk_state || "NORMAL").toLowerCase();
             riskBadge.textContent = "RISK: " + (data.risk_state || "--");
             riskBadge.className = "cmd-badge cmd-risk " + rs;
         }
-
-        // Market badge
         const mktBadge = document.getElementById("cmd-market");
         if (mktBadge) {
             const ms = (data.market_state || "UNKNOWN").toLowerCase().replace("_", "-");
@@ -1592,10 +1594,43 @@
             mktBadge.className = "cmd-badge cmd-market " + ms;
         }
 
-        // Grid cells
-        const setup = data.best_scanner ? (data.best_symbol ? data.best_symbol.split("/")[0] + " " : "") + data.best_scanner : "--";
-        el("cmd-best-setup", setup);
-        el("cmd-best-score", data.best_score ? data.best_score.toFixed(0) : "--");
+        // Trade Plan vs Blocker
+        const planDiv = document.getElementById("cmd-trade-plan");
+        const blockerDiv = document.getElementById("cmd-blocker");
+        if (action === "TRADE" && data.best_entry > 0) {
+            if (planDiv) {
+                planDiv.style.display = "grid";
+                el("tp-symbol", data.best_symbol || "--");
+                const sideEl = document.getElementById("tp-side");
+                if (sideEl) {
+                    sideEl.textContent = data.best_side || "--";
+                    sideEl.className = "tp-value " + ((data.best_side || "").toLowerCase() === "sell" ? "text-sell" : "text-buy");
+                }
+                el("tp-entry", data.best_entry ? formatPrice(data.best_entry) : "--");
+                el("tp-stop", data.best_stop ? formatPrice(data.best_stop) : "--");
+                el("tp-target", data.best_target ? formatPrice(data.best_target) : "--");
+                // Calculate R:R
+                if (data.best_entry && data.best_stop && data.best_target) {
+                    const risk = Math.abs(data.best_entry - data.best_stop);
+                    const reward = Math.abs(data.best_target - data.best_entry);
+                    const rr = risk > 0 ? (reward / risk).toFixed(1) : "--";
+                    el("tp-rr", rr + ":1");
+                }
+                el("tp-scanner", data.best_scanner || "--");
+                el("tp-score", data.best_score ? data.best_score.toFixed(0) : "--");
+            }
+            if (blockerDiv) blockerDiv.style.display = "none";
+        } else {
+            if (planDiv) planDiv.style.display = "none";
+            if (blockerDiv && data.blocker) {
+                blockerDiv.style.display = "flex";
+                el("blocker-text", data.blocker);
+            } else if (blockerDiv) {
+                blockerDiv.style.display = "none";
+            }
+        }
+
+        // Context grid
         el("cmd-regime", (data.regime || "--").replace("_", " "));
         el("cmd-expectancy", data.rolling_expectancy != null ? data.rolling_expectancy.toFixed(3) + "R" : "--");
         el("cmd-session", (data.session || "--").replace("_", " "));
@@ -1607,6 +1642,68 @@
             reasonsDiv.innerHTML = data.reasons.map(r =>
                 '<span class="cmd-reason-pill">' + r + '</span>'
             ).join("");
+        }
+    }
+
+    function updateExitQuality(data) {
+        if (!data) return;
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+
+        const r = data.r_metrics || data;
+        el("eq-avg-mae", r.avg_mae_r != null ? Number(r.avg_mae_r).toFixed(3) + "R" : "--");
+        el("eq-avg-mfe", r.avg_mfe_r != null ? Number(r.avg_mfe_r).toFixed(3) + "R" : "--");
+        el("eq-avg-loss-compare", r.avg_loss_r != null ? Number(r.avg_loss_r).toFixed(3) + "R" : "--");
+        el("eq-avg-win-compare", r.avg_win_r != null ? Number(r.avg_win_r).toFixed(3) + "R" : "--");
+
+        // MFE capture = avg_win / avg_mfe (how much of max favorable we capture)
+        if (r.avg_win_r && r.avg_mfe_r && r.avg_mfe_r > 0) {
+            const capture = (r.avg_win_r / r.avg_mfe_r * 100).toFixed(0);
+            el("eq-mfe-capture", capture + "%");
+            const captureEl = document.getElementById("eq-mfe-capture");
+            if (captureEl) captureEl.style.color = capture >= 60 ? "var(--accent-buy)" : capture >= 40 ? "var(--accent-warn)" : "var(--accent-sell)";
+        }
+
+        // Exit counts
+        el("eq-early-exits", (data.hard_loss_caps || 0) + (data.momentum_exits || 0));
+        el("eq-sl-hits", data.sl_hits || 0);
+        el("eq-top-leak", data.top_leak || "N/A");
+
+        // Tag
+        const tag = document.getElementById("exit-quality-tag");
+        if (tag && r.total) {
+            tag.textContent = r.total + " TRADES";
+            tag.className = "section-tag exit-tag";
+        }
+    }
+
+    function updateAIControlFromScannerHealth(data) {
+        if (!data || !data.length) return;
+        const boosted = data.filter(s => s.weight > 1.0);
+        const suppressed = data.filter(s => s.status === "suppressed");
+        const shadow = data.filter(s => s.status === "shadow");
+
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+
+        // Mode
+        const modeEl = document.getElementById("ai-ctrl-mode");
+        if (modeEl) {
+            if (suppressed.length > 0 || shadow.length > 0) {
+                modeEl.textContent = "ADAPTIVE";
+                modeEl.style.color = "var(--accent-buy)";
+            } else {
+                modeEl.textContent = "LEARNING";
+                modeEl.style.color = "var(--accent-info)";
+            }
+        }
+
+        el("ai-ctrl-boosted", boosted.length > 0 ? boosted.map(s => s.scanner).join(", ") : "none");
+        el("ai-ctrl-suppressed", suppressed.length > 0 ? suppressed.map(s => s.scanner).join(", ") : "none");
+        el("ai-ctrl-shadow", shadow.length > 0 ? shadow.map(s => s.scanner).join(", ") : "none");
+
+        // Last adjustment - find most recently updated
+        const withReasons = data.filter(s => s.reason && s.reason !== "");
+        if (withReasons.length > 0) {
+            el("ai-ctrl-last-adj", withReasons[0].reason);
         }
     }
 
@@ -1742,10 +1839,11 @@
         // Scanner Health, Opportunity Funnel & Regime (fetch every 30s)
         if (!window._lastScannerHealthFetch || Date.now() - window._lastScannerHealthFetch > 30000) {
             window._lastScannerHealthFetch = Date.now();
-            api("/api/scanner-health").then(updateScannerHealth).catch(() => {});
+            api("/api/scanner-health").then(d => { updateScannerHealth(d); updateAIControlFromScannerHealth(d); }).catch(() => {});
             api("/api/opportunity-funnel").then(updateOpportunityFunnel).catch(() => {});
             api("/api/regime").then(updateRegime).catch(() => {});
             api("/api/decision").then(updateCommandCenter).catch(() => {});
+            api("/api/exit-quality").then(updateExitQuality).catch(() => {});
         }
 
         // VM Infrastructure (fetch every 30s, not every 5s)

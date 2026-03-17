@@ -55,31 +55,28 @@
                 <span class="cmd-badge cmd-market" id="cmd-market">MKT: --</span>
             </div>
         </div>
+        <!-- Trade Plan Row (visible when TRADE) -->
+        <div class="cmd-trade-plan" id="cmd-trade-plan" style="display:none">
+            <div class="tp-cell"><span class="tp-label">Symbol</span><span class="tp-value" id="tp-symbol">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Side</span><span class="tp-value" id="tp-side">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Entry</span><span class="tp-value mono" id="tp-entry">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Stop</span><span class="tp-value mono text-sell" id="tp-stop">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Target</span><span class="tp-value mono text-buy" id="tp-target">--</span></div>
+            <div class="tp-cell"><span class="tp-label">R:R</span><span class="tp-value mono" id="tp-rr">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Scanner</span><span class="tp-value" id="tp-scanner">--</span></div>
+            <div class="tp-cell"><span class="tp-label">Score</span><span class="tp-value mono" id="tp-score">--</span></div>
+        </div>
+        <!-- Blocker Row (visible when WAIT) -->
+        <div class="cmd-blocker" id="cmd-blocker" style="display:none">
+            <span class="blocker-icon">&#9888;</span>
+            <span class="blocker-text" id="blocker-text">--</span>
+        </div>
+        <!-- Context Grid -->
         <div class="cmd-grid">
-            <div class="cmd-cell">
-                <span class="cmd-label">Best Setup</span>
-                <span class="cmd-value" id="cmd-best-setup">--</span>
-            </div>
-            <div class="cmd-cell">
-                <span class="cmd-label">Score</span>
-                <span class="cmd-value mono" id="cmd-best-score">--</span>
-            </div>
-            <div class="cmd-cell">
-                <span class="cmd-label">Regime</span>
-                <span class="cmd-value" id="cmd-regime">--</span>
-            </div>
-            <div class="cmd-cell">
-                <span class="cmd-label">Expectancy</span>
-                <span class="cmd-value mono" id="cmd-expectancy">--</span>
-            </div>
-            <div class="cmd-cell">
-                <span class="cmd-label">Session</span>
-                <span class="cmd-value" id="cmd-session">--</span>
-            </div>
-            <div class="cmd-cell">
-                <span class="cmd-label">Drawdown</span>
-                <span class="cmd-value mono" id="cmd-drawdown">--</span>
-            </div>
+            <div class="cmd-cell"><span class="cmd-label">Regime</span><span class="cmd-value" id="cmd-regime">--</span></div>
+            <div class="cmd-cell"><span class="cmd-label">Expectancy</span><span class="cmd-value mono" id="cmd-expectancy">--</span></div>
+            <div class="cmd-cell"><span class="cmd-label">Session</span><span class="cmd-value" id="cmd-session">--</span></div>
+            <div class="cmd-cell"><span class="cmd-label">Drawdown</span><span class="cmd-value mono" id="cmd-drawdown">--</span></div>
         </div>
         <div class="cmd-reasons" id="cmd-reasons"></div>
     </section>
@@ -204,218 +201,6 @@
         </div>
     </section>
 
-    <!-- Open Positions -->
-    <section class="card span-2" id="card-positions">
-        <h2>Open Positions</h2>
-        <div class="table-wrap">
-            <table id="positions-table">
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>Size</th>
-                        <th>PnL</th>
-                        <th>PnL %</th>
-                        <th>SL</th>
-                        <th>TP</th>
-                    </tr>
-                </thead>
-                <tbody id="positions-body">
-                    <tr><td colspan="9" class="muted">No open positions</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- P&L Equity Curve -->
-    <section class="card span-2" id="card-equity">
-        <div class="section-header-row">
-            <h2>&#128200; P&L Equity Curve</h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="eq-balance">$1,000.00</span>
-                <span class="stat-pill" id="eq-pnl-total">+$0.00</span>
-            </div>
-        </div>
-        <div class="equity-chart-wrap">
-            <canvas id="equity-canvas" width="800" height="200"></canvas>
-        </div>
-    </section>
-
-    <!-- Performance (from Signal Tracker) -->
-    <section class="card" id="card-performance">
-        <h2>Signal Performance</h2>
-        <div class="kv-grid">
-            <span class="label">Win Rate</span>        <span class="value mono" id="pf-winrate" style="font-size:1.3rem;font-weight:bold">--</span>
-            <span class="label">Exchange Wallet</span> <span class="value mono" id="pf-exchange-wallet" style="font-size:1.2rem;font-weight:bold;color:#ffc107">--</span>
-            <span class="label">Paper Balance</span>   <span class="value mono" id="pf-balance" style="font-size:1.1rem;font-weight:bold;color:#ffc107">$1,000.00</span>
-            <span class="label">Paper P&L</span>       <span class="value mono" id="pf-pnl-usd">$0.00</span>
-            <span class="label">Total PnL %</span>     <span class="value mono" id="pf-total-pnl">0.000%</span>
-            <span class="label">Signals Closed</span>  <span class="value" id="pf-trades">0</span>
-            <span class="label">Wins / Losses</span>   <span class="value" id="pf-wl">0 / 0</span>
-            <span class="label">Profit Factor</span>   <span class="value mono" id="pf-profit-factor">--</span>
-            <span class="label">Active Tracking</span> <span class="value" id="pf-active" style="color:#ffc107">0</span>
-            <span class="label">Stake/Trade</span>     <span class="value">$25-50</span>
-            <span class="label">TP1 / TP2 / TP3</span> <span class="value" id="pf-tp-rates">-- / -- / --</span>
-            <span class="label">Best Trade</span>      <span class="value mono text-buy" id="pf-best">--</span>
-            <span class="label">Worst Trade</span>     <span class="value mono text-sell" id="pf-worst">--</span>
-            <span class="label">Sharpe Ratio</span>    <span class="value mono" id="pf-sharpe">--</span>
-            <span class="label">Sortino Ratio</span>   <span class="value mono" id="pf-sortino">--</span>
-        </div>
-    </section>
-
-    <section class="card" id="card-health">
-        <h2>System Health</h2>
-        <div class="kv-grid">
-            <span class="label">Exchange</span>       <span class="value" id="sh-exchange">--</span>
-            <span class="label">Latency</span>        <span class="value mono" id="sh-latency">-- ms</span>
-            <span class="label">Scalp Engine</span>   <span class="value text-buy" id="sh-scalp">Active</span>
-            <span class="label">Invest Engine</span>  <span class="value text-buy" id="sh-invest">Active</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- AI LEARNING ENGINE                                             -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-ai" id="card-ai-learning">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#129504;</span> AI Learning Engine <span class="section-tag ai-tag" id="ai-status-tag">LEARNING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="ai-evaluated">0 evaluated</span>
-                <span class="stat-pill" id="ai-adjustments">0 adjustments</span>
-            </div>
-        </div>
-
-        <div class="ai-grid">
-            <!-- Left: Setup Rankings -->
-            <div class="ai-panel">
-                <h3 class="ai-panel-title">Setup Performance Rankings</h3>
-                <div class="table-wrap">
-                    <table id="ai-setup-table">
-                        <thead>
-                            <tr>
-                                <th>Setup</th>
-                                <th>Win Rate</th>
-                                <th>Avg PnL</th>
-                                <th>Trades</th>
-                                <th>AI Mult</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="ai-setup-body">
-                            <tr><td colspan="6" class="muted">Collecting data...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Right: Conditions & Blocked -->
-            <div class="ai-panel">
-                <h3 class="ai-panel-title">Best Conditions</h3>
-                <div id="ai-best-conditions" class="ai-condition-list">
-                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
-                </div>
-
-                <h3 class="ai-panel-title" style="margin-top:14px">Worst Conditions</h3>
-                <div id="ai-worst-conditions" class="ai-condition-list">
-                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
-                </div>
-
-                <h3 class="ai-panel-title" style="margin-top:14px">Blocked Patterns</h3>
-                <div id="ai-blocked-list" class="ai-blocked-list">
-                    <span class="muted" style="font-size:0.8rem">No blocked patterns</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="ai-footer-row">
-            <span class="ai-footer-label">Last Retrain:</span>
-            <span class="ai-footer-value" id="ai-last-retrain">--</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- P&L MONITOR AGENT                                              -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-monitor" id="card-monitor">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🔍</span> P&L Monitor Agent <span class="section-tag monitor-tag" id="monitor-status-tag">MONITORING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="monitor-total">0 analyzed</span>
-                <span class="stat-pill" id="monitor-streak">streak: 0</span>
-            </div>
-        </div>
-
-        <div class="monitor-grid">
-            <!-- Left: Metrics + Loss Causes -->
-            <div class="monitor-panel">
-                <div class="monitor-metrics">
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Rolling 20 WR</span>
-                        <span class="monitor-metric-value" id="mon-rolling-wr">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Drawdown</span>
-                        <span class="monitor-metric-value" id="mon-drawdown">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Paper Balance</span>
-                        <span class="monitor-metric-value" id="mon-balance">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Max DD</span>
-                        <span class="monitor-metric-value" id="mon-max-dd">--</span>
-                    </div>
-                </div>
-
-                <h3 class="monitor-panel-title">Loss Causes Breakdown</h3>
-                <div id="mon-loss-causes" class="monitor-causes-list">
-                    <span class="muted">Collecting data...</span>
-                </div>
-
-                <h3 class="monitor-panel-title" style="margin-top:12px">Side Performance</h3>
-                <div id="mon-side-perf" class="monitor-side-bars">
-                    <span class="muted">--</span>
-                </div>
-            </div>
-
-            <!-- Right: Recommendations + Recent Losses -->
-            <div class="monitor-panel">
-                <h3 class="monitor-panel-title">⚡ Recommendations</h3>
-                <div id="mon-recommendations" class="monitor-recs-list">
-                    <span class="muted">No recommendations yet</span>
-                </div>
-
-                <h3 class="monitor-panel-title" style="margin-top:12px">Recent Losses</h3>
-                <div class="table-wrap" style="max-height:250px;overflow-y:auto">
-                    <table id="mon-losses-table" class="monitor-loss-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Setup</th>
-                                <th>PnL</th>
-                                <th>$ PnL</th>
-                                <th>Cause</th>
-                                <th>Sev</th>
-                            </tr>
-                        </thead>
-                        <tbody id="mon-losses-body">
-                            <tr><td colspan="7" class="muted">No losses yet</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Hourly Heatmap -->
-        <h3 class="monitor-panel-title" style="margin-top:12px;padding:0 16px">Hourly P&L Heatmap (UTC)</h3>
-        <div id="mon-hourly-heatmap" class="monitor-heatmap">
-            <span class="muted">Loading...</span>
-        </div>
-    </section>
-
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- ACTIVE TRACKED SIGNALS (monitoring for TP/SL)                  -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -455,6 +240,89 @@
                     <tr><td colspan="14" class="muted">No signals being tracked yet</td></tr>
                 </tbody>
             </table>
+        </div>
+    </section>
+
+    <!-- Open Positions -->
+    <section class="card span-2" id="card-positions">
+        <h2>Open Positions</h2>
+        <div class="table-wrap">
+            <table id="positions-table">
+                <thead>
+                    <tr>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Entry</th>
+                        <th>Current</th>
+                        <th>Size</th>
+                        <th>PnL</th>
+                        <th>PnL %</th>
+                        <th>SL</th>
+                        <th>TP</th>
+                    </tr>
+                </thead>
+                <tbody id="positions-body">
+                    <tr><td colspan="9" class="muted">No open positions</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- EXIT QUALITY ANALYSIS                                          -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-exit-quality" id="card-exit-quality">
+        <div class="section-header-row">
+            <h2><span class="section-icon">&#128683;</span> Exit Quality Analysis</h2>
+            <span class="section-tag exit-tag" id="exit-quality-tag">TRACKING</span>
+        </div>
+        <div class="exit-grid">
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">Avg MAE</span>
+                <span class="exit-metric-value" id="eq-avg-mae">--</span>
+                <span class="exit-metric-sub">vs Avg Loss</span>
+                <span class="exit-metric-compare" id="eq-avg-loss-compare">--</span>
+            </div>
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">Avg MFE</span>
+                <span class="exit-metric-value" id="eq-avg-mfe">--</span>
+                <span class="exit-metric-sub">vs Avg Win</span>
+                <span class="exit-metric-compare" id="eq-avg-win-compare">--</span>
+            </div>
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">MFE Capture</span>
+                <span class="exit-metric-value" id="eq-mfe-capture">--</span>
+                <span class="exit-metric-sub">% of max potential taken</span>
+            </div>
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">Early Exits</span>
+                <span class="exit-metric-value" id="eq-early-exits">0</span>
+                <span class="exit-metric-sub">hard caps + momentum</span>
+            </div>
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">SL Hits</span>
+                <span class="exit-metric-value" id="eq-sl-hits">0</span>
+                <span class="exit-metric-sub">stop loss exits</span>
+            </div>
+            <div class="exit-metric-card">
+                <span class="exit-metric-label">Top Leak</span>
+                <span class="exit-metric-value" id="eq-top-leak">--</span>
+                <span class="exit-metric-sub">biggest edge leak reason</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- P&L Equity Curve -->
+    <section class="card span-2" id="card-equity">
+        <div class="section-header-row">
+            <h2>&#128200; P&L Equity Curve</h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="eq-balance">$1,000.00</span>
+                <span class="stat-pill" id="eq-pnl-total">+$0.00</span>
+            </div>
+        </div>
+        <div class="equity-chart-wrap">
+            <canvas id="equity-canvas" width="800" height="200"></canvas>
         </div>
     </section>
 
@@ -629,6 +497,187 @@
                     <span class="muted">None right now</span>
                 </div>
             </div>
+        </div>
+    </section>
+
+    <!-- Performance (from Signal Tracker) -->
+    <section class="card" id="card-performance">
+        <h2>Signal Performance</h2>
+        <div class="kv-grid">
+            <span class="label">Win Rate</span>        <span class="value mono" id="pf-winrate" style="font-size:1.3rem;font-weight:bold">--</span>
+            <span class="label">Exchange Wallet</span> <span class="value mono" id="pf-exchange-wallet" style="font-size:1.2rem;font-weight:bold;color:#ffc107">--</span>
+            <span class="label">Paper Balance</span>   <span class="value mono" id="pf-balance" style="font-size:1.1rem;font-weight:bold;color:#ffc107">$1,000.00</span>
+            <span class="label">Paper P&L</span>       <span class="value mono" id="pf-pnl-usd">$0.00</span>
+            <span class="label">Total PnL %</span>     <span class="value mono" id="pf-total-pnl">0.000%</span>
+            <span class="label">Signals Closed</span>  <span class="value" id="pf-trades">0</span>
+            <span class="label">Wins / Losses</span>   <span class="value" id="pf-wl">0 / 0</span>
+            <span class="label">Profit Factor</span>   <span class="value mono" id="pf-profit-factor">--</span>
+            <span class="label">Active Tracking</span> <span class="value" id="pf-active" style="color:#ffc107">0</span>
+            <span class="label">Stake/Trade</span>     <span class="value">$25-50</span>
+            <span class="label">TP1 / TP2 / TP3</span> <span class="value" id="pf-tp-rates">-- / -- / --</span>
+            <span class="label">Best Trade</span>      <span class="value mono text-buy" id="pf-best">--</span>
+            <span class="label">Worst Trade</span>     <span class="value mono text-sell" id="pf-worst">--</span>
+            <span class="label">Sharpe Ratio</span>    <span class="value mono" id="pf-sharpe">--</span>
+            <span class="label">Sortino Ratio</span>   <span class="value mono" id="pf-sortino">--</span>
+        </div>
+    </section>
+
+    <section class="card" id="card-health">
+        <h2>System Health</h2>
+        <div class="kv-grid">
+            <span class="label">Exchange</span>       <span class="value" id="sh-exchange">--</span>
+            <span class="label">Latency</span>        <span class="value mono" id="sh-latency">-- ms</span>
+            <span class="label">Scalp Engine</span>   <span class="value text-buy" id="sh-scalp">Active</span>
+            <span class="label">Invest Engine</span>  <span class="value text-buy" id="sh-invest">Active</span>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- AI LEARNING ENGINE                                             -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-ai" id="card-ai-learning">
+        <div class="section-header-row">
+            <h2><span class="section-icon">&#129504;</span> AI Learning Engine <span class="section-tag ai-tag" id="ai-status-tag">LEARNING</span></h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="ai-evaluated">0 evaluated</span>
+                <span class="stat-pill" id="ai-adjustments">0 adjustments</span>
+            </div>
+        </div>
+
+        <div class="ai-control-row" id="ai-control-row">
+            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Mode</span><span class="ai-ctrl-value" id="ai-ctrl-mode">--</span></div>
+            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Boosted</span><span class="ai-ctrl-value text-buy" id="ai-ctrl-boosted">--</span></div>
+            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Suppressed</span><span class="ai-ctrl-value text-sell" id="ai-ctrl-suppressed">--</span></div>
+            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Shadow</span><span class="ai-ctrl-value text-warn" id="ai-ctrl-shadow">--</span></div>
+            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Last Adjustment</span><span class="ai-ctrl-value" id="ai-ctrl-last-adj">--</span></div>
+        </div>
+
+        <div class="ai-grid">
+            <!-- Left: Setup Rankings -->
+            <div class="ai-panel">
+                <h3 class="ai-panel-title">Setup Performance Rankings</h3>
+                <div class="table-wrap">
+                    <table id="ai-setup-table">
+                        <thead>
+                            <tr>
+                                <th>Setup</th>
+                                <th>Win Rate</th>
+                                <th>Avg PnL</th>
+                                <th>Trades</th>
+                                <th>AI Mult</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ai-setup-body">
+                            <tr><td colspan="6" class="muted">Collecting data...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Right: Conditions & Blocked -->
+            <div class="ai-panel">
+                <h3 class="ai-panel-title">Best Conditions</h3>
+                <div id="ai-best-conditions" class="ai-condition-list">
+                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
+                </div>
+
+                <h3 class="ai-panel-title" style="margin-top:14px">Worst Conditions</h3>
+                <div id="ai-worst-conditions" class="ai-condition-list">
+                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
+                </div>
+
+                <h3 class="ai-panel-title" style="margin-top:14px">Blocked Patterns</h3>
+                <div id="ai-blocked-list" class="ai-blocked-list">
+                    <span class="muted" style="font-size:0.8rem">No blocked patterns</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="ai-footer-row">
+            <span class="ai-footer-label">Last Retrain:</span>
+            <span class="ai-footer-value" id="ai-last-retrain">--</span>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- P&L MONITOR AGENT                                              -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-monitor" id="card-monitor">
+        <div class="section-header-row">
+            <h2><span class="section-icon">🔍</span> P&L Monitor Agent <span class="section-tag monitor-tag" id="monitor-status-tag">MONITORING</span></h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="monitor-total">0 analyzed</span>
+                <span class="stat-pill" id="monitor-streak">streak: 0</span>
+            </div>
+        </div>
+
+        <div class="monitor-grid">
+            <!-- Left: Metrics + Loss Causes -->
+            <div class="monitor-panel">
+                <div class="monitor-metrics">
+                    <div class="monitor-metric-card">
+                        <span class="monitor-metric-label">Rolling 20 WR</span>
+                        <span class="monitor-metric-value" id="mon-rolling-wr">--</span>
+                    </div>
+                    <div class="monitor-metric-card">
+                        <span class="monitor-metric-label">Drawdown</span>
+                        <span class="monitor-metric-value" id="mon-drawdown">--</span>
+                    </div>
+                    <div class="monitor-metric-card">
+                        <span class="monitor-metric-label">Paper Balance</span>
+                        <span class="monitor-metric-value" id="mon-balance">--</span>
+                    </div>
+                    <div class="monitor-metric-card">
+                        <span class="monitor-metric-label">Max DD</span>
+                        <span class="monitor-metric-value" id="mon-max-dd">--</span>
+                    </div>
+                </div>
+
+                <h3 class="monitor-panel-title">Loss Causes Breakdown</h3>
+                <div id="mon-loss-causes" class="monitor-causes-list">
+                    <span class="muted">Collecting data...</span>
+                </div>
+
+                <h3 class="monitor-panel-title" style="margin-top:12px">Side Performance</h3>
+                <div id="mon-side-perf" class="monitor-side-bars">
+                    <span class="muted">--</span>
+                </div>
+            </div>
+
+            <!-- Right: Recommendations + Recent Losses -->
+            <div class="monitor-panel">
+                <h3 class="monitor-panel-title">⚡ Recommendations</h3>
+                <div id="mon-recommendations" class="monitor-recs-list">
+                    <span class="muted">No recommendations yet</span>
+                </div>
+
+                <h3 class="monitor-panel-title" style="margin-top:12px">Recent Losses</h3>
+                <div class="table-wrap" style="max-height:250px;overflow-y:auto">
+                    <table id="mon-losses-table" class="monitor-loss-table">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>Setup</th>
+                                <th>PnL</th>
+                                <th>$ PnL</th>
+                                <th>Cause</th>
+                                <th>Sev</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mon-losses-body">
+                            <tr><td colspan="7" class="muted">No losses yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hourly Heatmap -->
+        <h3 class="monitor-panel-title" style="margin-top:12px;padding:0 16px">Hourly P&L Heatmap (UTC)</h3>
+        <div id="mon-hourly-heatmap" class="monitor-heatmap">
+            <span class="muted">Loading...</span>
         </div>
     </section>
 

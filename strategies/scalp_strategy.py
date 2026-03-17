@@ -606,6 +606,10 @@ class ScalpStrategy(BaseStrategy):
                         "tier": tier,
                         "scanner_status": scanner_status,
                         "scanner_weight": scanner_weight,
+                        "entry_price": result.entry_price,
+                        "stop_loss": result.stop_loss,
+                        "side": result.side.value if result.side else None,
+                        "atr": result.atr,
                     })
                 else:
                     # Scanner didn't trigger — record as near-miss or rejected

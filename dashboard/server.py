@@ -315,6 +315,7 @@ class DashboardServer:
         app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
         app.router.add_get("/api/regime", self._handle_regime)
         app.router.add_get("/api/decision", self._handle_decision)
+        app.router.add_get("/api/exit-quality", self._handle_exit_quality)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -645,6 +646,35 @@ class DashboardServer:
             "global": r_global,
             "by_scanner": scanner_metrics,
         }, dumps=_safe_dumps)
+
+    async def _handle_exit_quality(self, request: web.Request) -> web.Response:
+        """Return exit quality metrics for dashboard."""
+        data = {}
+        if self._signal_tracker:
+            stats = self._signal_tracker.get_stats()
+            r = stats.get("r_metrics", {})
+            data["avg_mae_r"] = r.get("avg_mae_r", 0)
+            data["avg_mfe_r"] = r.get("avg_mfe_r", 0)
+            data["avg_win_r"] = r.get("avg_win_r", 0)
+            data["avg_loss_r"] = r.get("avg_loss_r", 0)
+            data["total"] = r.get("total", 0)
+
+            closed = self._signal_tracker.get_closed_signals(limit=500)
+            data["hard_loss_caps"] = sum(1 for c in closed if c.get("exit_reason_detailed") == "hard_loss_cap")
+            data["momentum_exits"] = sum(1 for c in closed if c.get("exit_reason_detailed") == "momentum_collapse_after_mfe")
+            data["sl_hits"] = sum(1 for c in closed if c.get("exit_reason") == "stop_loss")
+
+            # Top leak reason
+            leak_counts = {}
+            for c in closed:
+                reason = c.get("exit_reason_detailed", c.get("exit_reason", "unknown"))
+                if reason:
+                    leak_counts[reason] = leak_counts.get(reason, 0) + 1
+            if leak_counts:
+                data["top_leak"] = max(leak_counts, key=leak_counts.get)
+            else:
+                data["top_leak"] = "N/A"
+        return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

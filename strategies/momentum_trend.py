@@ -288,13 +288,102 @@ class MomentumTrendStrategy(BaseStrategy):
                 "indicators": indicators, "regime": regime_ctx.regime.value,
             }
         else:
+            # Build diagnostic explaining why no setups triggered
+            diag = self._build_investment_diagnostics(df, regime_ctx, regime_min_confidence, regime_min_confirms)
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": "No long/short setup conditions met",
                 "indicators": indicators, "regime": regime_ctx.regime.value,
+                "diagnostics": diag,
             }
 
         return signals
+
+    # ------------------------------------------------------------------
+    # Investment diagnostics (for dashboard "why no signal")
+    # ------------------------------------------------------------------
+
+    def _build_investment_diagnostics(
+        self, df: pd.DataFrame, regime: RegimeContext,
+        min_conf: int, min_confirms: int,
+    ) -> dict:
+        """Return human-readable diagnostics for why no investment signal fired."""
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        ema_f = last.get(f"ema_{self.ema_fast}", 0)
+        ema_m = last.get(f"ema_{self.ema_medium}", 0)
+        ema_s = last.get(f"ema_{self.ema_slow}", 0)
+        ema_t = last.get(f"ema_{self.ema_trend}", 0)
+        rsi = last.get("rsi", 50)
+        macd_hist = last.get("macd_hist", 0)
+        rel_vol = last.get("relative_volume", 1.0)
+        close = last["close"]
+        st_dir = last.get("supertrend_dir", 0)
+
+        long_blocks = []
+        short_blocks = []
+
+        # LONG checks
+        if close <= ema_m:
+            long_blocks.append(f"Price({close:.0f}) below EMA{self.ema_medium}({ema_m:.0f})")
+        else:
+            if not (ema_f > ema_m > ema_s):
+                long_blocks.append(f"EMA stack not bullish: {self.ema_fast}={ema_f:.0f}, {self.ema_medium}={ema_m:.0f}, {self.ema_slow}={ema_s:.0f}")
+            if rsi >= self.rsi_ob:
+                long_blocks.append(f"RSI({rsi:.0f}) overbought (>={self.rsi_ob})")
+            elif rsi <= self.rsi_os:
+                long_blocks.append(f"RSI({rsi:.0f}) oversold (<={self.rsi_os})")
+            if macd_hist <= 0:
+                long_blocks.append(f"MACD histogram negative ({macd_hist:.4f})")
+            if rel_vol < 0.8:
+                long_blocks.append(f"Low volume ({rel_vol:.1f}x)")
+
+            # Count confirmations that WOULD be met
+            confs_met = 0
+            if ema_f > ema_m > ema_s:
+                confs_met += 1
+            if ema_t > 0 and close > ema_t:
+                confs_met += 1
+            if st_dir == 1:
+                confs_met += 1
+            if macd_hist > prev.get("macd_hist", 0):
+                confs_met += 1
+            if 40 < rsi < 65:
+                confs_met += 1
+            if not long_blocks:
+                long_blocks.append(f"Confirmations: {confs_met}/{min_confirms} needed")
+
+        # SHORT checks
+        if close >= ema_m:
+            short_blocks.append(f"Price({close:.0f}) above EMA{self.ema_medium}({ema_m:.0f})")
+        else:
+            if not (ema_f < ema_m < ema_s):
+                short_blocks.append(f"EMA stack not bearish: {self.ema_fast}={ema_f:.0f}, {self.ema_medium}={ema_m:.0f}, {self.ema_slow}={ema_s:.0f}")
+            if rsi >= self.rsi_ob:
+                short_blocks.append(f"RSI({rsi:.0f}) overbought (good for short)")
+            elif rsi <= self.rsi_os:
+                short_blocks.append(f"RSI({rsi:.0f}) not oversold enough")
+            if macd_hist >= 0:
+                short_blocks.append(f"MACD histogram positive ({macd_hist:.4f})")
+
+        regime_note = ""
+        if regime.regime == MarketRegime.SIDEWAYS:
+            regime_note = f"SIDEWAYS regime: bar raised to {min_conf} conf / {min_confirms} confirms"
+        elif regime.regime == MarketRegime.HIGH_VOLATILITY:
+            regime_note = f"HIGH_VOLATILITY regime: bar raised to {min_conf} conf / {min_confirms} confirms"
+        elif regime.regime in (MarketRegime.TRENDING_UP, MarketRegime.BREAKOUT):
+            regime_note = f"{regime.regime.value}: favorable for longs"
+        elif regime.regime in (MarketRegime.TRENDING_DOWN,):
+            regime_note = f"{regime.regime.value}: favorable for shorts"
+
+        return {
+            "long_blockers": long_blocks,
+            "short_blockers": short_blocks,
+            "regime_note": regime_note,
+            "min_confidence": min_conf,
+            "min_confirms": min_confirms,
+        }
 
     # ------------------------------------------------------------------
     # Long setup detection

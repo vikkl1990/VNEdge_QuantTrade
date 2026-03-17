@@ -1638,6 +1638,90 @@ footer {
     opacity: 0.5;
 }
 
+/* Scanner reason details */
+.ss-scanner-reasons {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+    border-left: 3px solid #f59e0b;
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+.ss-reasons-title {
+    color: #f59e0b;
+    font-weight: 600;
+    margin-bottom: 4px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.ss-reason-row {
+    padding: 2px 0;
+    color: var(--text-muted);
+}
+.ss-reason-scanner {
+    color: #94a3b8;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.ss-reason-detail {
+    color: #cbd5e1;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    font-size: 0.7rem;
+}
+/* Regime badge */
+.ss-regime-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    margin-left: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.ss-regime-badge.regime-high-volatility {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.ss-regime-badge.regime-sideways {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.ss-regime-badge.regime-trending-up {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.ss-regime-badge.regime-trending-down {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.ss-regime-badge.regime-breakout {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.ss-regime-badge.regime-low-liquidity {
+    background: rgba(107, 114, 128, 0.15);
+    color: #9ca3af;
+    border: 1px solid rgba(107, 114, 128, 0.3);
+}
+.ss-regime-badge.regime-mean-reversion {
+    background: rgba(168, 85, 247, 0.15);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.3);
+}
+/* RSI color coding */
+.ind-val.rsi-ob { color: #ef4444 !important; font-weight: 700; }
+.ind-val.rsi-os { color: #22c55e !important; font-weight: 700; }
+.ind-val.rsi-high { color: #f59e0b !important; }
+.ind-val.rsi-low { color: #06b6d4 !important; }
+
 /* ═══════════════════════════════════════════════════════════════════════
    VM Infrastructure Card
    ═══════════════════════════════════════════════════════════════════════ */

@@ -285,32 +285,191 @@ class ScalpStrategy(BaseStrategy):
             "_scan_trend_continuation": "Trend Continuation",
             "_scan_rsi_divergence": "RSI Divergence",
             "_scan_rsi_extreme": "RSI Extreme",
+            "_scan_momentum_ride": "Momentum Ride",
+            "_scan_bb_band_walk": "BB Band Walk",
+            "_scan_post_impulse": "Post-Impulse",
             "_scan_supertrend_flip": "Supertrend Flip",
             "_scan_bb_squeeze": "BB Squeeze",
             "_scan_momentum_surge": "Momentum Surge",
         }
         setups_checked = []
 
+        # Pre-compute diagnostic reasons for why each scanner won't fire
+        last_row_diag = df.iloc[-1]
+        prev_row_diag = df.iloc[-2] if len(df) >= 2 else last_row_diag
+        _rsi = indicators.get("rsi", 0)
+        _ema8 = indicators.get("ema_8", 0)
+        _ema21 = indicators.get("ema_21", 0)
+        _close = indicators.get("close", 0)
+        _open = float(last_row_diag.get("open", 0))
+        _rel_vol = indicators.get("rel_vol", 0)
+        _st_dir = indicators.get("supertrend_dir", 0)
+        _rsi_prev = round(float(prev_row_diag.get("rsi", 0)), 1)
+        _ema8_prev = float(prev_row_diag.get("ema_8", 0))
+        _ema21_prev = float(prev_row_diag.get("ema_21", 0))
+        _bw = round(float(last_row_diag.get("bb_bandwidth", 0)), 4) if not np.isnan(last_row_diag.get("bb_bandwidth", 0)) else 0
+        _bw_prev = round(float(prev_row_diag.get("bb_bandwidth", 0)), 4) if not np.isnan(prev_row_diag.get("bb_bandwidth", 0)) else 0
+        _pct_b = round(float(last_row_diag.get("bb_pct_b", 0.5)), 2)
+
+        scanner_diagnostics = {}
+
+        # EMA Momentum: needs EMA8/21 cross
+        ema_crossed = (_ema8_prev <= _ema21_prev and _ema8 > _ema21)
+        if ema_crossed:
+            scanner_diagnostics["EMA Momentum"] = "Bullish cross detected — checking confirmations"
+        else:
+            if _ema8 > _ema21:
+                scanner_diagnostics["EMA Momentum"] = f"No cross: EMA8({_ema8:.0f}) already above EMA21({_ema21:.0f}), need fresh cross"
+            elif _ema8 < _ema21:
+                scanner_diagnostics["EMA Momentum"] = f"No cross: EMA8({_ema8:.0f}) below EMA21({_ema21:.0f}), bearish crosses disabled"
+            else:
+                scanner_diagnostics["EMA Momentum"] = "EMAs converged, no cross yet"
+
+        # Trend Continuation: needs pullback to EMA zone
+        if _ema8 > _ema21:
+            _pb = _close <= _ema8 * 1.001 and _close > _ema21
+            _rsi_rec = 40 < _rsi < 58 and _rsi > _rsi_prev
+            _bull_candle = _close > _open
+            missing = []
+            if not _pb:
+                if _close > _ema8 * 1.001:
+                    missing.append(f"price({_close:.0f}) above EMA8({_ema8:.0f}), no pullback")
+                else:
+                    missing.append(f"price({_close:.0f}) below EMA21({_ema21:.0f})")
+            if not _rsi_rec:
+                if _rsi >= 58:
+                    missing.append(f"RSI({_rsi}) too high (need 40-58)")
+                elif _rsi <= 40:
+                    missing.append(f"RSI({_rsi}) too low (need 40-58)")
+                elif _rsi <= _rsi_prev:
+                    missing.append(f"RSI declining ({_rsi_prev}→{_rsi}), need rising")
+            if not _bull_candle:
+                missing.append("bearish candle (need bullish)")
+            scanner_diagnostics["Trend Continuation"] = " | ".join(missing) if missing else "Conditions met — checking score"
+        elif _ema8 < _ema21:
+            _pb = _close >= _ema8 * 0.999 and _close < _ema21
+            _rsi_rec = 42 < _rsi < 60 and _rsi < _rsi_prev
+            _bear_candle = _close < _open
+            missing = []
+            if not _pb:
+                if _close < _ema8 * 0.999:
+                    missing.append(f"price({_close:.0f}) below EMA8({_ema8:.0f}), no pullback")
+                else:
+                    missing.append(f"price({_close:.0f}) above EMA21({_ema21:.0f})")
+            if not _rsi_rec:
+                if _rsi >= 60:
+                    missing.append(f"RSI({_rsi}) too high for short (need 42-60)")
+                elif _rsi <= 42:
+                    missing.append(f"RSI({_rsi}) too low for short (need 42-60)")
+                elif _rsi >= _rsi_prev:
+                    missing.append(f"RSI rising ({_rsi_prev}→{_rsi}), need declining")
+            if not _bear_candle:
+                missing.append("bullish candle (need bearish)")
+            scanner_diagnostics["Trend Continuation"] = " | ".join(missing) if missing else "Conditions met — checking score"
+        else:
+            scanner_diagnostics["Trend Continuation"] = "EMAs flat, no trend"
+
+        # RSI Divergence: needs extreme RSI + price divergence
+        if 30 <= _rsi <= 60:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) in neutral zone (need <40 for bullish div or >60 for bearish div)"
+        elif _rsi < 30:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) oversold — looking for price lower-low with RSI higher-low"
+        elif _rsi > 60:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) elevated — looking for price higher-high with RSI lower-high (need >60 + divergence)"
+        else:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) — checking divergence patterns"
+
+        # RSI Extreme: needs RSI < 35 turning up OR RSI > 65 turning down
+        if _rsi < 35:
+            if _rsi > _rsi_prev:
+                scanner_diagnostics["RSI Extreme"] = f"RSI({_rsi}) oversold & turning up ({_rsi_prev}→{_rsi}) — checking candle confirmation"
+            else:
+                scanner_diagnostics["RSI Extreme"] = f"RSI({_rsi}) oversold but still falling ({_rsi_prev}→{_rsi}), need turn-up"
+        elif _rsi > 65:
+            if _rsi < _rsi_prev:
+                scanner_diagnostics["RSI Extreme"] = f"RSI({_rsi}) overbought & turning down ({_rsi_prev}→{_rsi}) — checking candle confirmation"
+            else:
+                scanner_diagnostics["RSI Extreme"] = f"RSI({_rsi}) overbought but still rising ({_rsi_prev}→{_rsi}), need turn-down"
+        else:
+            scanner_diagnostics["RSI Extreme"] = f"RSI({_rsi}) in normal range (need <35 or >65)"
+
+        # BB Squeeze: needs recent squeeze + expansion
+        if _bw_prev > 0:
+            squeeze_info = f"BW prev={_bw_prev:.4f}, now={_bw:.4f}"
+            expanding = _bw > _bw_prev * 1.05
+            if not expanding:
+                scanner_diagnostics["BB Squeeze"] = f"No squeeze breakout: bandwidth not expanding ({squeeze_info})"
+            else:
+                if _pct_b > 0.75:
+                    scanner_diagnostics["BB Squeeze"] = f"Squeeze expanding upward (%B={_pct_b}) — checking volume"
+                elif _pct_b < 0.25:
+                    scanner_diagnostics["BB Squeeze"] = f"Squeeze expanding downward (%B={_pct_b}) — checking volume"
+                else:
+                    scanner_diagnostics["BB Squeeze"] = f"Squeeze expanding but %B({_pct_b}) in middle — no direction"
+        else:
+            scanner_diagnostics["BB Squeeze"] = "Insufficient BB data"
+
+        # Momentum Ride: needs full EMA stack + RSI 58-82 rising + MACD accel + vol > 1.5x
+        _macd_hist = float(last_row_diag.get("macd_hist", 0))
+        _macd_hist_prev = float(prev_row_diag.get("macd_hist", 0))
+        _ema50 = indicators.get("ema_50", 0)
+        full_stack = _ema8 > _ema21 > _ema50
+        missing_ride = []
+        if not full_stack:
+            missing_ride.append(f"EMA stack not aligned ({_ema8:.0f}/{_ema21:.0f}/{_ema50:.0f})")
+        if _rsi <= 58 or _rsi >= 82:
+            missing_ride.append(f"RSI({_rsi}) outside 58-82 range")
+        elif _rsi <= _rsi_prev:
+            missing_ride.append(f"RSI declining ({_rsi_prev}→{_rsi})")
+        if _macd_hist <= 0:
+            missing_ride.append(f"MACD histogram negative ({_macd_hist:.2f})")
+        elif _macd_hist <= _macd_hist_prev:
+            missing_ride.append(f"MACD not accelerating ({_macd_hist_prev:.2f}→{_macd_hist:.2f})")
+        if _rel_vol <= 1.5:
+            missing_ride.append(f"Volume too low ({_rel_vol:.1f}x, need >1.5x)")
+        if _close <= _ema8:
+            missing_ride.append(f"Price({_close:.0f}) below EMA8({_ema8:.0f})")
+        scanner_diagnostics["Momentum Ride"] = " | ".join(missing_ride) if missing_ride else "Conditions met — checking stretch/impulse filter"
+
+        # BB Band Walk: needs price above BB_upper for 2+ candles + volume
+        _bb_upper = indicators.get("bb_upper", 0)
+        _bb_lower = indicators.get("bb_lower", 0)
+        if _bb_upper > 0:
+            if _close > _bb_upper:
+                scanner_diagnostics["BB Band Walk"] = f"Price({_close:.0f}) above BB_upper({_bb_upper:.0f}) — checking 2-candle confirmation + volume"
+            else:
+                pct_from_bb = (_bb_upper - _close) / _close * 100 if _close > 0 else 0
+                scanner_diagnostics["BB Band Walk"] = f"Price({_close:.0f}) below BB_upper({_bb_upper:.0f}), {pct_from_bb:.2f}% away"
+        else:
+            scanner_diagnostics["BB Band Walk"] = "Insufficient BB data"
+
+        # Post-Impulse: needs recent impulse candle + current small candle + pullback
+        scanner_diagnostics["Post-Impulse"] = f"Scanning last 3-8 candles for impulse (body > 0.8x ATR) + current small candle + shallow pullback"
+
         for scanner in [
             self._scan_ema_momentum,
             self._scan_trend_continuation,
             self._scan_rsi_divergence,
-            self._scan_rsi_extreme,            # NEW: catches oversold/overbought extremes
+            self._scan_rsi_extreme,
+            self._scan_momentum_ride,          # NEW: catches running trends with momentum
+            self._scan_bb_band_walk,           # NEW: catches BB upper/lower band walks
+            self._scan_post_impulse,           # NEW: re-entry after impulse settles
             # self._scan_supertrend_flip,  # DISABLED: 33% WR, -$1.10 — kills edge
             self._scan_bb_squeeze,
             # self._scan_momentum_surge,  # DISABLED: 38% WR, -$5.99, last 8 trades all losses
         ]:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
+            diag = scanner_diagnostics.get(label, "")
             try:
                 result = scanner(symbol, df, htf_bias, confirm_bias)
                 if result is not None:
                     setups.append(result)
                     setups_checked.append({"name": label, "triggered": True, "confidence": result.confidence})
                 else:
-                    setups_checked.append({"name": label, "triggered": False})
+                    setups_checked.append({"name": label, "triggered": False, "reason": diag})
             except Exception as exc:
                 logger.debug("Setup scanner %s failed: %s", scanner.__name__, exc)
-                setups_checked.append({"name": label, "triggered": False, "error": str(exc)})
+                setups_checked.append({"name": label, "triggered": False, "error": str(exc), "reason": diag})
 
         if not setups:
             self.last_scan_status[symbol] = {
@@ -1437,7 +1596,419 @@ class ScalpStrategy(BaseStrategy):
         )
 
     # ==================================================================
-    # SETUP 7: Momentum Surge
+    # SETUP 7: Momentum Ride (Trend Already In Motion)
+    # ==================================================================
+
+    def _scan_momentum_ride(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Catch strong established trends with all indicators aligned.
+
+        Unlike EMA Momentum (needs cross) or Trend Continuation (needs pullback),
+        this fires when the trend is ALREADY running with confirmed momentum.
+
+        LONG:  EMA8>21>50, RSI 58-82 rising, MACD accelerating, volume > 1.5x
+        SHORT: EMA8<21<50, RSI 18-42 falling, MACD declining, volume > 1.5x
+
+        LONG-ONLY initially (SHORT disabled — EMA momentum SHORT was 33% WR).
+        """
+        if len(df) < 10:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        atr = last["atr"]
+        close = last["close"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        ema8 = last["ema_8"]
+        ema21 = last["ema_21"]
+        ema50 = last["ema_50"]
+        rsi = last["rsi"]
+        rsi_prev = prev["rsi"]
+        macd_hist = last.get("macd_hist", 0)
+        macd_hist_prev = prev.get("macd_hist", 0)
+        rel_vol = last.get("rel_vol", 1.0)
+        st_dir = last.get("supertrend_dir", 0)
+
+        if np.isnan(rsi) or np.isnan(ema8):
+            return None
+
+        confs = []
+        score = 0
+        side = None
+
+        # --- LONG: Full trend alignment + momentum ---
+        if (ema8 > ema21 > ema50                      # Full EMA stack
+            and 58 < rsi < 82                           # Strong but not blow-off
+            and rsi > rsi_prev                          # RSI still rising
+            and macd_hist > 0                           # MACD positive
+            and macd_hist > macd_hist_prev              # MACD accelerating
+            and rel_vol > 1.5                           # Strong volume
+            and close > ema8):                          # Price riding above fast EMA
+
+            # Check price not too stretched from EMA8 (< 0.4% for BTC, scaled)
+            dist_from_ema8_pct = abs(close - ema8) / close * 100 if close > 0 else 999
+            if dist_from_ema8_pct > 0.4:
+                return None  # Too stretched, would be chasing
+
+            # Don't enter on impulse candles
+            body = abs(close - last["open"])
+            if body > atr * 1.0:
+                return None  # Impulse candle, wait for pause
+
+            side = OrderSide.LONG
+
+            # Score
+            confs.append("Full EMA stack bullish (8>21>50)")
+            score += 25
+
+            confs.append(f"RSI {rsi:.0f} rising ({rsi_prev:.0f}→{rsi:.0f})")
+            score += 15
+
+            confs.append(f"MACD accelerating ({macd_hist_prev:.2f}→{macd_hist:.2f})")
+            score += 15
+
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 15
+            if rel_vol > 2.5:
+                score += 5  # Extra for very strong volume
+
+            if htf_bias == 1:
+                confs.append("HTF aligned bullish")
+                score += 15
+
+            if confirm_bias == 1:
+                confs.append("5m aligned")
+                score += 10
+
+            if st_dir == 1:
+                confs.append("Supertrend bullish")
+                score += 5
+
+        # SHORT disabled for now (data shows EMA momentum SHORT = 33% WR)
+
+        if side is None:
+            return None
+
+        confidence = min(score, 100)
+        sl = close - atr * self.sl_atr_mult if side == OrderSide.LONG else close + atr * self.sl_atr_mult
+
+        return _SetupResult(
+            name="momentum_ride",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP 8: BB Band Walk (Bollinger Band Breakout Continuation)
+    # ==================================================================
+
+    def _scan_bb_band_walk(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price breaking and sustaining above/below Bollinger Band.
+
+        "Walking the band" — when price rides the upper/lower BB with volume,
+        this is a classic institutional momentum pattern.
+
+        LONG:  Close > BB_upper for 2+ candles, volume > 1.3x, EMA aligned
+        SHORT: Close < BB_lower for 2+ candles, volume > 1.3x, EMA aligned
+        """
+        if len(df) < 25:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        atr = last["atr"]
+        close = last["close"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        bb_upper = last.get("bb_upper", 0)
+        bb_lower = last.get("bb_lower", 0)
+        bb_mid = last.get("bb_middle", (bb_upper + bb_lower) / 2 if bb_upper and bb_lower else 0)
+        pct_b = last.get("bb_pct_b", 0.5)
+        bw_now = last.get("bb_bandwidth", 0)
+        rel_vol = last.get("rel_vol", 1.0)
+        rsi = last["rsi"]
+        ema8 = last["ema_8"]
+        ema21 = last["ema_21"]
+        macd_hist = last.get("macd_hist", 0)
+
+        if np.isnan(bb_upper) or np.isnan(rsi) or bb_upper <= 0:
+            return None
+
+        prev_close = prev["close"]
+        prev_bb_upper = prev.get("bb_upper", 0)
+        prev_bb_lower = prev.get("bb_lower", 0)
+
+        confs = []
+        score = 0
+        side = None
+
+        # --- LONG: Price above upper BB for 2+ candles ---
+        near_prev_upper = prev_close >= prev_bb_upper * 0.999 if prev_bb_upper > 0 else False
+        if (close > bb_upper                           # Currently above upper band
+            and near_prev_upper                        # Previous candle also near/above
+            and pct_b > 1.0                            # Numerically above band
+            and rel_vol > 1.3                          # Volume confirms breakout
+            and 55 < rsi < 85                          # Bullish but not extreme blow-off
+            and ema8 > ema21):                         # Trend confirms
+
+            side = OrderSide.LONG
+            confs.append("BB band walk — price above upper band")
+            score += 25
+
+            confs.append("2+ candles at/above upper BB")
+            score += 15
+
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 15
+            if rel_vol > 2.0:
+                score += 5
+
+            if ema8 > ema21:
+                confs.append("EMA8 > EMA21")
+                score += 10
+
+            if macd_hist > 0:
+                confs.append("MACD positive")
+                score += 10
+
+            if htf_bias == 1:
+                confs.append("HTF aligned")
+                score += 10
+
+            # Strong body candle (not just wick spike)
+            body = abs(close - last["open"])
+            full_range = last["high"] - last["low"]
+            if full_range > 0 and body / full_range > 0.5 and close > last["open"]:
+                confs.append("Strong bullish body")
+                score += 5
+
+        # --- SHORT: Price below lower BB for 2+ candles ---
+        near_prev_lower = prev_close <= prev_bb_lower * 1.001 if prev_bb_lower > 0 else False
+        if side is None and (close < bb_lower
+            and near_prev_lower
+            and pct_b < 0.0
+            and rel_vol > 1.3
+            and 15 < rsi < 45
+            and ema8 < ema21):
+
+            side = OrderSide.SHORT
+            confs.append("BB band walk — price below lower band")
+            score += 25
+
+            confs.append("2+ candles at/below lower BB")
+            score += 15
+
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 15
+            if rel_vol > 2.0:
+                score += 5
+
+            if macd_hist < 0:
+                confs.append("MACD negative")
+                score += 10
+
+            if htf_bias == -1:
+                confs.append("HTF aligned")
+                score += 10
+
+            body = abs(close - last["open"])
+            full_range = last["high"] - last["low"]
+            if full_range > 0 and body / full_range > 0.5 and close < last["open"]:
+                confs.append("Strong bearish body")
+                score += 5
+
+        if side is None:
+            return None
+
+        # Stop loss at BB middle band (natural invalidation)
+        if side == OrderSide.LONG:
+            sl_bb_mid = bb_mid - atr * 0.1  # Small buffer below midline
+            sl_atr = close - atr * self.sl_atr_mult
+            sl = max(sl_bb_mid, sl_atr)  # Use the tighter of the two
+        else:
+            sl_bb_mid = bb_mid + atr * 0.1
+            sl_atr = close + atr * self.sl_atr_mult
+            sl = min(sl_bb_mid, sl_atr)
+
+        confidence = min(score, 100)
+        return _SetupResult(
+            name="bb_band_walk",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP 9: Post-Impulse Re-Entry (Micro-Pullback After Strong Move)
+    # ==================================================================
+
+    def _scan_post_impulse(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Catch the 1-3 candle pause after a strong impulse leg.
+
+        After a big directional move, price typically pauses briefly before
+        continuing. The impulse filter correctly blocks the initial chase;
+        this scanner catches the re-entry after the impulse settles.
+
+        LONG:  Recent bullish impulse, current candle small, price still above EMA8
+        SHORT: Recent bearish impulse, current candle small, price still below EMA8
+
+        LONG-ONLY initially (SHORT disabled based on historical data).
+        """
+        if len(df) < 10:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        atr = last["atr"]
+        close = last["close"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        ema8 = last["ema_8"]
+        ema21 = last["ema_21"]
+        rsi = last["rsi"]
+        rsi_prev = prev["rsi"]
+        macd_hist = last.get("macd_hist", 0)
+        rel_vol = last.get("rel_vol", 1.0)
+
+        if np.isnan(rsi) or np.isnan(ema8):
+            return None
+
+        # --- Look back 3-8 candles for a recent impulse candle ---
+        recent_impulse = None
+        impulse_high = 0
+        impulse_idx = -1
+
+        for i in range(3, min(9, len(df))):
+            bar = df.iloc[-i]
+            bar_body = abs(bar["close"] - bar["open"])
+            bar_atr = bar.get("atr", atr)
+            bar_vol = bar.get("rel_vol", 1.0)
+
+            # Impulse = large body (> 0.8x ATR) with above-average volume
+            if bar_body > bar_atr * 0.8 and bar_vol > 1.3:
+                if bar["close"] > bar["open"]:  # Bullish impulse
+                    if recent_impulse is None or bar_body > recent_impulse:
+                        recent_impulse = bar_body
+                        impulse_high = bar["high"]
+                        impulse_idx = i
+
+        if recent_impulse is None:
+            return None  # No recent impulse found
+
+        # --- Current candle must be small (impulse has paused) ---
+        current_body = abs(close - last["open"])
+        if current_body > atr * 0.5:
+            return None  # Still impulsing, not paused
+
+        # --- Price has pulled back but shallowly ---
+        recent_high = max(df["high"].iloc[-impulse_idx:].values)
+        pullback_depth = recent_high - close
+        if pullback_depth > atr * 1.0:
+            return None  # Too deep — not a micro-pullback
+        if pullback_depth < 0:
+            return None  # No pullback at all, price still making highs
+
+        # --- Price still above EMA8 (trend intact) ---
+        if close <= ema8:
+            return None
+
+        # --- RSI still healthy (not crashed) ---
+        if rsi < 50 or rsi > 82:
+            return None
+
+        # --- MACD still positive ---
+        if macd_hist <= 0:
+            return None
+
+        # --- EMA alignment ---
+        if ema8 <= ema21:
+            return None
+
+        # --- Volume on pullback declining (healthy, not distribution) ---
+        impulse_vol = df.iloc[-impulse_idx].get("rel_vol", 1.0)
+        pullback_vol_declining = rel_vol < impulse_vol * 0.8
+
+        # All conditions met — build the signal
+        side = OrderSide.LONG
+        confs = []
+        score = 0
+
+        confs.append(f"Post-impulse pause ({impulse_idx} bars ago)")
+        score += 20
+
+        confs.append(f"Small candle (body {current_body/atr:.1f}x ATR)")
+        score += 15
+
+        confs.append(f"Shallow pullback ({pullback_depth/atr:.1f}x ATR from high)")
+        score += 15
+
+        confs.append("Price above EMA8")
+        score += 10
+
+        if rsi > rsi_prev or (rsi_prev - rsi) < 3:
+            confs.append(f"RSI stabilizing ({rsi:.0f})")
+            score += 10
+
+        if pullback_vol_declining:
+            confs.append("Volume declining on pullback")
+            score += 10
+
+        if macd_hist > 0:
+            confs.append("MACD positive")
+            score += 10
+
+        if htf_bias == 1:
+            confs.append("HTF aligned")
+            score += 10
+
+        if confirm_bias == 1:
+            confs.append("5m aligned")
+            score += 5
+
+        confidence = min(score, 100)
+
+        # Stop loss below the impulse candle's low (structural)
+        impulse_low = df.iloc[-impulse_idx]["low"]
+        sl_structural = impulse_low - atr * 0.1
+        sl_atr = close - atr * self.sl_atr_mult
+        sl = max(sl_structural, sl_atr)  # Use tighter of the two
+
+        # Cap SL at 0.5% of price (risk discipline)
+        max_sl_dist = close * 0.005
+        if (close - sl) > max_sl_dist:
+            sl = close - max_sl_dist
+
+        return _SetupResult(
+            name="post_impulse",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP 10: Momentum Surge (DISABLED — 38% WR)
     # ==================================================================
 
     def _scan_momentum_surge(

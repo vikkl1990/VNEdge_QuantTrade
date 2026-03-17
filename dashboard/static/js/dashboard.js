@@ -1221,7 +1221,7 @@
                 const diff = Math.floor((Date.now() - new Date(latestTime).getTime()) / 1000);
                 if (diff < 60) timeAgo = diff + 's ago';
                 else if (diff < 3600) timeAgo = Math.floor(diff/60) + 'm ago';
-                else timeAgo = Math.floor(diff/3600) + 'h ago';
+                else timeAgo = Math.floor(diff/3600) + 'h ' + (Math.floor(diff/60)%60) + 'm ago';
             }
 
             html += '<div class="signal-status-card ' + cardClass + '">';
@@ -1232,7 +1232,7 @@
 
             html += '<div class="ss-strategies">';
 
-            // Scalp strategy status
+            // ── SCALP strategy status ──
             if (scalp.reason) {
                 const reasonClass = scalp.signal ? 'signal-yes' : 'signal-no';
                 html += '<div class="ss-strat">';
@@ -1241,20 +1241,34 @@
                 html += '<span class="ss-reason ' + reasonClass + '">' + scalp.reason + '</span>';
                 html += '</div>';
 
-                // Setup pills
+                // Setup pills WITH per-scanner reasons
                 if (scalp.setups_checked && scalp.setups_checked.length > 0) {
                     html += '<div class="ss-setups">';
                     for (const setup of scalp.setups_checked) {
                         const cls = setup.triggered ? 'triggered' : 'not-triggered';
                         const conf = setup.triggered ? ' (' + setup.confidence + ')' : '';
-                        html += '<span class="ss-setup-pill ' + cls + '">' + setup.name + conf + '</span>';
+                        html += '<span class="ss-setup-pill ' + cls + '" title="' + (setup.reason || '').replace(/"/g, '&quot;') + '">' + setup.name + conf + '</span>';
                     }
                     html += '</div>';
+
+                    // Show detailed per-scanner reasons (expandable)
+                    const failedScanners = scalp.setups_checked.filter(s => !s.triggered && s.reason);
+                    if (failedScanners.length > 0 && !scalp.signal) {
+                        html += '<div class="ss-scanner-reasons">';
+                        html += '<div class="ss-reasons-title">Why no signal:</div>';
+                        for (const s of failedScanners) {
+                            html += '<div class="ss-reason-row">';
+                            html += '<span class="ss-reason-scanner">' + s.name + ':</span> ';
+                            html += '<span class="ss-reason-detail">' + s.reason + '</span>';
+                            html += '</div>';
+                        }
+                        html += '</div>';
+                    }
                 }
                 html += '</div>';
             }
 
-            // Investment strategy status
+            // ── INVESTMENT strategy status ──
             if (invest.reason) {
                 const reasonClass = invest.signal ? 'signal-yes' : 'signal-no';
                 html += '<div class="ss-strat">';
@@ -1263,14 +1277,31 @@
                 html += '<span class="ss-reason ' + reasonClass + '">' + invest.reason + '</span>';
                 html += '</div>';
                 if (invest.regime) {
-                    html += '<span class="ss-reason" style="font-size:0.7rem;padding-left:4px;">Regime: ' + invest.regime + '</span>';
+                    html += '<span class="ss-regime-badge regime-' + invest.regime.replace(/_/g, '-') + '">' + invest.regime + '</span>';
+                }
+
+                // Show investment diagnostics (why no signal)
+                const diag = invest.diagnostics;
+                if (diag && !invest.signal) {
+                    html += '<div class="ss-scanner-reasons">';
+                    html += '<div class="ss-reasons-title">Why no signal:</div>';
+                    if (diag.regime_note) {
+                        html += '<div class="ss-reason-row"><span class="ss-reason-scanner">Regime:</span> <span class="ss-reason-detail">' + diag.regime_note + '</span></div>';
+                    }
+                    if (diag.long_blockers && diag.long_blockers.length > 0) {
+                        html += '<div class="ss-reason-row"><span class="ss-reason-scanner">LONG blocked:</span> <span class="ss-reason-detail">' + diag.long_blockers.join(' | ') + '</span></div>';
+                    }
+                    if (diag.short_blockers && diag.short_blockers.length > 0) {
+                        html += '<div class="ss-reason-row"><span class="ss-reason-scanner">SHORT blocked:</span> <span class="ss-reason-detail">' + diag.short_blockers.join(' | ') + '</span></div>';
+                    }
+                    html += '</div>';
                 }
                 html += '</div>';
             }
 
             html += '</div>';
 
-            // Indicator values (use scalp or invest, whichever has data)
+            // Indicator values (show both scalp and invest indicators)
             const ind = (scalp.indicators && Object.keys(scalp.indicators).length > 0) ? scalp.indicators :
                         (invest.indicators && Object.keys(invest.indicators).length > 0) ? invest.indicators : null;
             if (ind) {
@@ -1287,7 +1318,16 @@
                         if (key === 'supertrend_dir') val = val === 1 ? 'Bull' : (val === -1 ? 'Bear' : 'Flat');
                         if (typeof val === 'number' && key !== 'close') val = val.toFixed ? val.toFixed(key === 'macd' ? 4 : key === 'rel_vol' ? 1 : 1) : val;
                         const label = keyMap[key] || key;
-                        html += '<span class="ss-indicator"><span class="ind-label">' + label + ' </span><span class="ind-val">' + val + '</span></span>';
+                        // Color-code RSI
+                        let valClass = '';
+                        if (key === 'rsi') {
+                            const rsiN = Number(ind[key]);
+                            if (rsiN > 70) valClass = ' rsi-ob';
+                            else if (rsiN < 30) valClass = ' rsi-os';
+                            else if (rsiN > 60) valClass = ' rsi-high';
+                            else if (rsiN < 40) valClass = ' rsi-low';
+                        }
+                        html += '<span class="ss-indicator"><span class="ind-label">' + label + ' </span><span class="ind-val' + valClass + '">' + val + '</span></span>';
                     }
                 }
                 html += '</div>';
@@ -1297,6 +1337,66 @@
         }
 
         container.innerHTML = html;
+    }
+
+    function updateSignalDrought(signals, closedSignals) {
+        const lastSignalEl = document.getElementById("last-signal-time");
+        const droughtEl = document.getElementById("signal-drought");
+        if (!lastSignalEl || !droughtEl) return;
+
+        // Find the most recent signal time from active signals or closed signals
+        let lastTime = null;
+
+        // Check active signals
+        if (signals && signals.length > 0) {
+            for (const s of signals) {
+                const meta = s.meta || s;
+                const t = meta.timestamp || meta.time || meta.created_at;
+                if (t) {
+                    const d = new Date(t);
+                    if (!lastTime || d > lastTime) lastTime = d;
+                }
+            }
+        }
+
+        // Check recently closed signals
+        if (closedSignals && closedSignals.length > 0) {
+            for (const s of closedSignals) {
+                const t = s.entry_time || s.created_at;
+                if (t) {
+                    const d = new Date(t);
+                    if (!lastTime || d > lastTime) lastTime = d;
+                }
+            }
+        }
+
+        if (lastTime) {
+            const diffMs = Date.now() - lastTime.getTime();
+            const diffMin = Math.floor(diffMs / 60000);
+            const diffHrs = Math.floor(diffMin / 60);
+
+            let timeStr;
+            if (diffMin < 60) timeStr = diffMin + "m ago";
+            else if (diffHrs < 24) timeStr = diffHrs + "h " + (diffMin % 60) + "m ago";
+            else timeStr = Math.floor(diffHrs / 24) + "d " + (diffHrs % 24) + "h ago";
+
+            lastSignalEl.textContent = "Last signal: " + timeStr;
+
+            // Show drought warning if no signal for > 2 hours
+            if (diffMin > 120) {
+                droughtEl.style.display = "inline-flex";
+                droughtEl.textContent = "\u26A0 Signal drought: " + timeStr;
+                if (diffMin > 360) droughtEl.style.color = "#ef4444"; // red > 6h
+                else droughtEl.style.color = "#f59e0b"; // amber 2-6h
+            } else {
+                droughtEl.style.display = "none";
+            }
+        } else {
+            lastSignalEl.textContent = "Last signal: none yet";
+            droughtEl.style.display = "inline-flex";
+            droughtEl.textContent = "\u26A0 No signals generated yet";
+            droughtEl.style.color = "#f59e0b";
+        }
     }
 
     async function refreshAll() {
@@ -1396,6 +1496,9 @@
         updateAIInsights(aiInsights);
         updateMonitorReport(monitorReport);
         updateSignalStatus(signalStatus);
+
+        // Signal drought indicator
+        updateSignalDrought(signals, trackerClosed);
 
         // VM Infrastructure (fetch every 30s, not every 5s)
         if (!window._lastInfraFetch || Date.now() - window._lastInfraFetch > 30000) {

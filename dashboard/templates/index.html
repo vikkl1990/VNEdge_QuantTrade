@@ -70,7 +70,13 @@
 
     <!-- Signal Status — Why no signals? -->
     <section class="card span-2" id="card-signal-status">
-        <h2>&#128225; Signal Scanner Status</h2>
+        <div class="section-header-row">
+            <h2><span class="section-icon">&#128225;</span> Signal Scanner Status</h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="last-signal-time" style="color:#f59e0b">Last signal: --</span>
+                <span class="stat-pill" id="signal-drought" style="display:none;color:#ef4444">&#9888; No signals</span>
+            </div>
+        </div>
         <div id="signal-status-grid" class="signal-status-grid">
             <p class="muted">Waiting for scan data...</p>
         </div>

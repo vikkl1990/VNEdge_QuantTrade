@@ -783,15 +783,21 @@ class ScalpStrategy(BaseStrategy):
             return []
 
         # ── FEE-AWARE TRADE FILTER (hard block — no edge below fee threshold) ──
+        # Uses target-based expected move (1.5× ATR) since actual targets
+        # are typically 1.5-2× ATR, not raw ATR.
+        # Requires expected move > 1.2× round-trip fees (entry+exit+settlement).
+        # High-confidence setups (90+) get relaxed threshold (1.0×).
         _fee_atr = getattr(self, '_confirm_atr', 0) or best.atr
         if _fee_atr > 0 and best.entry_price > 0:
-            expected_move_pct = (_fee_atr / best.entry_price) * 100
-            round_trip_fee_pct = 0.18
-            if expected_move_pct < round_trip_fee_pct * 2:
+            expected_move_pct = (_fee_atr * 1.5 / best.entry_price) * 100
+            round_trip_fee_pct = 0.18  # taker 0.06% × 2 + settlement 0.06%
+            fee_mult = 1.0 if best.confidence >= 90 else 1.2
+            fee_threshold = round_trip_fee_pct * fee_mult
+            if expected_move_pct < fee_threshold:
                 self._funnel["blocked_cost"] += 1
                 self.last_scan_status[symbol] = {
                     "time": now_iso, "signal": False,
-                    "reason": f"FEE FILTER: expected move {expected_move_pct:.3f}% < 2× fees ({round_trip_fee_pct*2:.3f}%)",
+                    "reason": f"FEE FILTER: expected move {expected_move_pct:.3f}% < {fee_mult:.1f}× fees ({fee_threshold:.3f}%)",
                     "indicators": indicators,
                     "setups_checked": setups_checked,
                     "funnel": dict(self._funnel),

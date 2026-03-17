@@ -63,12 +63,36 @@ from data.indicators import (
     detect_choch,
 )
 from strategies.base import BaseStrategy, Signal
+from strategies.scanner_weights import ScannerWeightManager, STATUS_ACTIVE, STATUS_REDUCED
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Setup result container
+# Signal tiers (graduated output instead of binary pass/fail)
+# ---------------------------------------------------------------------------
+TIER_STRONG = "strong"         # Score >= 80: high confidence, take full size
+TIER_VALID = "valid"           # Score >= 65: normal signal
+TIER_WEAK = "weak"             # Score >= 50: reduced size, log as opportunity
+TIER_NEAR_MISS = "near_miss"   # Score >= 35: setup forming, dashboard only
+TIER_REJECTED = "rejected"     # Score < 35: not viable
+
+
+def _tier_from_score(score: float) -> str:
+    """Map weighted score to signal tier."""
+    if score >= 80:
+        return TIER_STRONG
+    if score >= 65:
+        return TIER_VALID
+    if score >= 50:
+        return TIER_WEAK
+    if score >= 35:
+        return TIER_NEAR_MISS
+    return TIER_REJECTED
+
+
+# ---------------------------------------------------------------------------
+# Setup result containers
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -81,6 +105,41 @@ class _SetupResult:
     entry_price: float = 0.0
     stop_loss: float = 0.0
     atr: float = 0.0
+
+
+@dataclass
+class ScanResult:
+    """Graduated result from a scanner — always produced, never None."""
+    scanner_name: str
+    side: Optional[OrderSide]
+    raw_score: int                    # 0-100 before weighting
+    weighted_score: float             # after scanner weight applied
+    tier: str                         # strong/valid/weak/near_miss/rejected
+    confirmations: List[str] = field(default_factory=list)
+    penalties: List[str] = field(default_factory=list)
+    hard_blocked: bool = False
+    block_reason: str = ""
+    entry_price: float = 0.0
+    stop_loss: float = 0.0
+    atr: float = 0.0
+    scanner_weight: float = 1.0
+    scanner_status: str = "active"
+    setup_result: Optional[_SetupResult] = field(default=None, repr=False)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scanner": self.scanner_name,
+            "side": self.side.value if self.side else None,
+            "raw_score": self.raw_score,
+            "weighted_score": round(self.weighted_score, 1),
+            "tier": self.tier,
+            "confirmations": self.confirmations,
+            "penalties": self.penalties,
+            "hard_blocked": self.hard_blocked,
+            "block_reason": self.block_reason,
+            "scanner_weight": self.scanner_weight,
+            "scanner_status": self.scanner_status,
+        }
 
 
 class ScalpStrategy(BaseStrategy):
@@ -141,6 +200,17 @@ class ScalpStrategy(BaseStrategy):
         # --- State ---
         self._last_signal_time: Dict[str, float] = {}
         self._signal_count_hr: List[float] = []
+
+        # --- Scanner weight manager (adaptive from R-performance) ---
+        self._weight_manager = ScannerWeightManager()
+
+        # --- Opportunity funnel counters (for dashboard) ---
+        self._funnel: Dict[str, int] = {
+            "scanned": 0, "strong": 0, "valid": 0, "weak": 0,
+            "near_miss": 0, "rejected": 0,
+            "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0,
+        }
+        self._funnel_reset_time: float = time.time()
 
         # --- Scan status (for dashboard "why no signal" display) ---
         self.last_scan_status: Dict[str, Dict[str, Any]] = {}
@@ -446,89 +516,164 @@ class ScalpStrategy(BaseStrategy):
         # Post-Impulse: needs recent impulse candle + current small candle + pullback
         scanner_diagnostics["Post-Impulse"] = f"Scanning last 3-8 candles for impulse (body > 0.8x ATR) + current small candle + shallow pullback"
 
-        for scanner in [
+        # ── Reset funnel counters every hour ──
+        if now - self._funnel_reset_time > 3600:
+            self._funnel = {k: 0 for k in self._funnel}
+            self._funnel_reset_time = now
+
+        # ── Run ALL scanners (including shadow/suppressed for data) ──
+        all_scanners = [
             self._scan_ema_momentum,
             self._scan_trend_continuation,
             self._scan_rsi_divergence,
             self._scan_rsi_extreme,
-            self._scan_momentum_ride,          # NEW: catches running trends with momentum
-            self._scan_bb_band_walk,           # NEW: catches BB upper/lower band walks
-            self._scan_post_impulse,           # NEW: re-entry after impulse settles
-            # self._scan_supertrend_flip,  # DISABLED: 33% WR, -$1.10 — kills edge
+            self._scan_momentum_ride,
+            self._scan_bb_band_walk,
+            self._scan_post_impulse,
+            self._scan_supertrend_flip,
             self._scan_bb_squeeze,
-            # self._scan_momentum_surge,  # DISABLED: 38% WR, -$5.99, last 8 trades all losses
-        ]:
+            self._scan_momentum_surge,
+        ]
+
+        scan_results: List[ScanResult] = []
+
+        for scanner in all_scanners:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
+            setup_name = scanner.__name__.replace("_scan_", "")
             diag = scanner_diagnostics.get(label, "")
+            scanner_weight = self._weight_manager.get_weight(setup_name)
+            scanner_status = self._weight_manager.get_status(setup_name)
+
+            self._funnel["scanned"] += 1
+
             try:
                 result = scanner(symbol, df, htf_bias, confirm_bias)
+
                 if result is not None:
-                    setups.append(result)
-                    setups_checked.append({"name": label, "triggered": True, "confidence": result.confidence})
+                    # Scanner triggered — compute weighted score
+                    raw_score = result.confidence
+                    # Apply scanner performance weight to confidence
+                    adjusted_conf = self._weight_manager.get_confidence_adjustment(setup_name, raw_score)
+                    weighted = adjusted_conf * scanner_weight
+                    tier = _tier_from_score(weighted)
+                    confs = list(result.confirmations)
+                    penalties = []
+
+                    # ── Soft penalty: ema_momentum SHORT (33% WR historically) ──
+                    if setup_name == "ema_momentum" and result.side == OrderSide.SHORT:
+                        weighted *= 0.5
+                        penalties.append("ema_momentum SHORT: -50% (33% WR historically)")
+                        tier = _tier_from_score(weighted)
+
+                    sr = ScanResult(
+                        scanner_name=setup_name,
+                        side=result.side,
+                        raw_score=raw_score,
+                        weighted_score=round(weighted, 1),
+                        tier=tier,
+                        confirmations=confs,
+                        penalties=penalties,
+                        entry_price=result.entry_price,
+                        stop_loss=result.stop_loss,
+                        atr=result.atr,
+                        scanner_weight=scanner_weight,
+                        scanner_status=scanner_status,
+                        setup_result=result,
+                    )
+                    scan_results.append(sr)
+                    setups_checked.append({
+                        "name": label, "triggered": True,
+                        "confidence": raw_score,
+                        "weighted_score": round(weighted, 1),
+                        "tier": tier,
+                        "scanner_status": scanner_status,
+                        "scanner_weight": scanner_weight,
+                    })
                 else:
-                    setups_checked.append({"name": label, "triggered": False, "reason": diag})
+                    # Scanner didn't trigger — record as near-miss or rejected
+                    # Estimate a "proximity score" from diagnostics
+                    proximity = self._estimate_proximity_score(diag)
+                    weighted = proximity * scanner_weight
+                    tier = _tier_from_score(weighted)
+
+                    sr = ScanResult(
+                        scanner_name=setup_name,
+                        side=None,
+                        raw_score=proximity,
+                        weighted_score=round(weighted, 1),
+                        tier=tier,
+                        penalties=[diag] if diag else [],
+                        scanner_weight=scanner_weight,
+                        scanner_status=scanner_status,
+                    )
+                    scan_results.append(sr)
+                    setups_checked.append({
+                        "name": label, "triggered": False,
+                        "reason": diag,
+                        "proximity_score": proximity,
+                        "tier": tier,
+                        "scanner_status": scanner_status,
+                        "scanner_weight": scanner_weight,
+                    })
+
             except Exception as exc:
                 logger.debug("Setup scanner %s failed: %s", scanner.__name__, exc)
-                setups_checked.append({"name": label, "triggered": False, "error": str(exc), "reason": diag})
+                setups_checked.append({
+                    "name": label, "triggered": False,
+                    "error": str(exc), "reason": diag,
+                    "scanner_status": scanner_status,
+                })
 
-        if not setups:
+        # ── Update funnel counters ──
+        for sr in scan_results:
+            if sr.tier in self._funnel:
+                self._funnel[sr.tier] += 1
+
+        # ── Select best tradeable result ──
+        tradeable = [
+            sr for sr in scan_results
+            if sr.setup_result is not None
+            and sr.tier in (TIER_STRONG, TIER_VALID, TIER_WEAK)
+            and self._weight_manager.is_tradeable(sr.scanner_name)
+        ]
+
+        # Sort near-misses for dashboard visibility
+        near_misses = [
+            sr for sr in scan_results
+            if sr.tier == TIER_NEAR_MISS and sr.setup_result is not None
+        ]
+
+        if not tradeable:
+            # Report best near-miss for dashboard insight
+            best_near = max(near_misses, key=lambda s: s.weighted_score) if near_misses else None
+            reason = "No setup conditions met"
+            if best_near:
+                reason = f"Near miss: {best_near.scanner_name} scored {best_near.weighted_score:.0f} (need 50+)"
+
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
-                "reason": "No setup conditions met",
+                "reason": reason,
                 "indicators": indicators,
                 "setups_checked": setups_checked,
+                "near_misses": [sr.to_dict() for sr in near_misses[:3]],
+                "funnel": dict(self._funnel),
             }
             return []
 
-        # Pick the BEST setup (highest confidence)
-        best = max(setups, key=lambda s: s.confidence)
-
-        # ── Data-driven filters (from 100-trade review) ──
-
-        # FILTER 1: Block ema_momentum SHORT — 33% WR, -$3.08 P&L
-        # LONG ema_momentum is the best setup (77% WR, +$26.47)
-        # SHORT ema_momentum is terrible — let rsi_divergence handle shorts
-        if best.setup_name == "ema_momentum" and best.side == OrderSide.SHORT:
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"ema_momentum SHORT blocked (33% WR)",
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-            }
-            # Try next best setup if available
-            remaining = [s for s in setups if not (s.setup_name == "ema_momentum" and s.side == OrderSide.SHORT)]
-            if remaining:
-                best = max(remaining, key=lambda s: s.confidence)
-            else:
-                return []
-
-        # FILTER 2: Minimum confidence floor — 70-79 bucket has 43% WR
-        # Only take signals with confidence ≥ 65 before AI adjustment
-        if best.confidence < 65:
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"Confidence {best.confidence} below min threshold (65)",
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-            }
-            return []
+        # Pick best by weighted score
+        best_sr = max(tradeable, key=lambda s: s.weighted_score)
+        best = best_sr.setup_result
 
         # ── Fibonacci confidence modifier ──
-        # Boost confidence when price is near a key Fib retracement level
-        # (50%, 61.8% are strongest for entries in the direction of the trend)
         if fib_data.get("at_fib", False):
             fib_trend = fib_data.get("trend", "unknown")
             nearest = fib_data.get("nearest_level", "")
             dist_pct = fib_data.get("fib_distance_pct", 999)
-
-            # Only boost if Fib trend aligns with trade direction
             trend_aligned = (
                 (fib_trend == "up" and best.side == OrderSide.LONG) or
                 (fib_trend == "down" and best.side == OrderSide.SHORT)
             )
-
             if trend_aligned and dist_pct < 0.15:
-                # Golden zone (50-61.8%) gets max boost
                 if nearest in ("0.500", "0.618"):
                     best.confidence = min(best.confidence + 12, 100)
                     best.confirmations.append(f"Fib {nearest} level (golden zone)")
@@ -539,162 +684,188 @@ class ScalpStrategy(BaseStrategy):
                     best.confidence = min(best.confidence + 5, 100)
                     best.confirmations.append(f"Near Fib {nearest}")
 
-        # ── CHOCH (Change of Character) filter ──
-        # Reject signals that go AGAINST a fresh structure break
-        # e.g. don't go LONG if bearish CHOCH just happened
+        # ── CHOCH filter (hard block — structural break is risk-critical) ──
         if choch_data.get("choch_detected", False):
             choch_dir = choch_data.get("direction")
             choch_strength = choch_data.get("strength", 0)
             choch_bars = choch_data.get("bars_ago", 999)
-
-            # Only filter on recent, strong CHOCHs (within 10 bars, strength > 60)
             if choch_bars <= 10 and choch_strength >= 60:
-                # Signal conflicts with CHOCH direction
                 conflicts = (
                     (choch_dir == "bearish" and best.side == OrderSide.LONG) or
                     (choch_dir == "bullish" and best.side == OrderSide.SHORT)
                 )
                 if conflicts:
-                    logger.info(
-                        "%s: Signal REJECTED by CHOCH filter — %s CHOCH (str=%d, %d bars ago) vs %s",
-                        symbol, choch_dir, choch_strength, choch_bars, best.side.value,
-                    )
+                    self._funnel["blocked_htf"] += 1
                     self.last_scan_status[symbol] = {
                         "time": now_iso, "signal": False,
                         "reason": f"CHOCH filter: {choch_dir} structure break blocks {best.side.value} ({best.name})",
                         "indicators": indicators,
                         "setups_checked": setups_checked,
+                        "funnel": dict(self._funnel),
                     }
                     return []
-
-                # Signal ALIGNS with CHOCH → confidence boost
+                # CHOCH aligns → boost
                 if (choch_dir == "bullish" and best.side == OrderSide.LONG) or \
                    (choch_dir == "bearish" and best.side == OrderSide.SHORT):
                     best.confidence = min(best.confidence + 10, 100)
                     best.confirmations.append(f"CHOCH {choch_dir} (str={choch_strength})")
 
-        # Apply minimum confidence (session-aware threshold)
+        # ── Session-aware confidence threshold ──
+        # Weak signals (tier=weak) get a lower threshold — they're still valid
         session_min = getattr(self, '_session_min_confidence', self.min_confidence)
         effective_min = max(self.min_confidence, session_min)
-        if best.confidence < effective_min:
+        # Lower the floor for strong-weighted scanners
+        if best_sr.scanner_weight >= 1.2:
+            effective_min = max(effective_min - 5, 55)
+        if best.confidence < effective_min and best_sr.tier != TIER_WEAK:
             session_name = getattr(self, '_current_session', 'unknown')
-            logger.debug(
-                "%s: Best setup '%s' confidence %d < %d — skipped (session: %s)",
-                symbol, best.name, best.confidence, effective_min, session_name,
-            )
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"Best setup '{best.name}' confidence {best.confidence} < {effective_min} threshold (session: {session_name})",
                 "indicators": indicators,
                 "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
             }
             return []
 
-        # ── FEE-AWARE TRADE FILTER ──
-        # Reject trades where expected move < 2× round-trip fees (0.18%)
-        # A trade must have enough room to cover fees and still be profitable
-        # Use ATR-based expected move vs fee cost
+        # ── FEE-AWARE TRADE FILTER (hard block — no edge below fee threshold) ──
         _fee_atr = getattr(self, '_confirm_atr', 0) or best.atr
         if _fee_atr > 0 and best.entry_price > 0:
-            expected_move_pct = (_fee_atr / best.entry_price) * 100  # 1 ATR as expected move
-            round_trip_fee_pct = 0.18  # taker entry + taker exit + settlement
+            expected_move_pct = (_fee_atr / best.entry_price) * 100
+            round_trip_fee_pct = 0.18
             if expected_move_pct < round_trip_fee_pct * 2:
-                logger.info(
-                    "%s: FEE FILTER rejected — expected move %.3f%% < 2× fees (%.3f%%)",
-                    symbol, expected_move_pct, round_trip_fee_pct * 2,
-                )
+                self._funnel["blocked_cost"] += 1
                 self.last_scan_status[symbol] = {
                     "time": now_iso, "signal": False,
                     "reason": f"FEE FILTER: expected move {expected_move_pct:.3f}% < 2× fees ({round_trip_fee_pct*2:.3f}%)",
                     "indicators": indicators,
                     "setups_checked": setups_checked,
+                    "funnel": dict(self._funnel),
                 }
                 return []
 
-        # ── IMPULSE-CHASE FILTER ──
-        # Block entries after extended moves where the best reward is already gone
+        # ── IMPULSE-CHASE FILTER (converted to soft penalty for most cases) ──
         last_row = df.iloc[-1]
         _impulse_atr = getattr(self, '_confirm_atr', 0) or best.atr
+        impulse_penalty = 0
         if _impulse_atr > 0 and best.entry_price > 0:
-            # 1. Entry candle body too large (> 1.0× ATR = chasing)
+            # 1. Large candle body → penalty (not hard block unless extreme)
             candle_body = abs(float(last_row.get("close", 0)) - float(last_row.get("open", 0)))
-            if candle_body > _impulse_atr * 1.0:
-                logger.info(
-                    "%s: IMPULSE FILTER rejected — candle body %.2f > 1.0× ATR (%.2f)",
-                    symbol, candle_body, _impulse_atr,
-                )
+            if candle_body > _impulse_atr * 1.5:
+                # Extreme chasing — hard block
                 self.last_scan_status[symbol] = {
                     "time": now_iso, "signal": False,
-                    "reason": f"IMPULSE FILTER: candle body {candle_body:.2f} > 1.0× ATR ({_impulse_atr:.2f}) — chasing",
+                    "reason": f"IMPULSE: extreme candle body {candle_body:.2f} > 1.5× ATR — hard block",
                     "indicators": indicators,
                     "setups_checked": setups_checked,
+                    "funnel": dict(self._funnel),
                 }
                 return []
+            elif candle_body > _impulse_atr * 1.0:
+                impulse_penalty += 10
+                best_sr.penalties.append(f"Large candle body ({candle_body:.1f} > 1.0×ATR)")
 
-            # 2. Price too far from EMA8 (stretched beyond 0.5× ATR)
-            ema8 = float(last_row.get("ema_8", 0))
-            close = float(last_row.get("close", 0))
-            if ema8 > 0:
-                dist_from_ema8 = abs(close - ema8)
-                if dist_from_ema8 > _impulse_atr * 0.5:
-                    # More lenient for trend_continuation (deliberate pullback setups)
-                    if best.setup_name != "trend_continuation":
-                        logger.info(
-                            "%s: IMPULSE FILTER rejected — price %.2f too far from EMA8 %.2f (dist=%.2f > 0.5×ATR)",
-                            symbol, close, ema8, dist_from_ema8,
-                        )
-                        self.last_scan_status[symbol] = {
-                            "time": now_iso, "signal": False,
-                            "reason": f"IMPULSE FILTER: price stretched {dist_from_ema8:.2f} from EMA8 (> 0.5× ATR)",
-                            "indicators": indicators,
-                            "setups_checked": setups_checked,
-                        }
-                        return []
+            # 2. Price stretched from EMA8 → penalty (not hard block)
+            ema8_val = float(last_row.get("ema_8", 0))
+            close_val = float(last_row.get("close", 0))
+            if ema8_val > 0:
+                dist_from_ema8 = abs(close_val - ema8_val)
+                if dist_from_ema8 > _impulse_atr * 0.8:
+                    impulse_penalty += 15
+                    best_sr.penalties.append(f"Stretched from EMA8 ({dist_from_ema8:.1f} > 0.8×ATR)")
+                elif dist_from_ema8 > _impulse_atr * 0.5:
+                    impulse_penalty += 8
+                    best_sr.penalties.append(f"Extended from EMA8 ({dist_from_ema8:.1f} > 0.5×ATR)")
 
-            # 3. Three consecutive large expansion candles in same direction
+            # 3. Three consecutive expansion candles → penalty
             if len(df) >= 4:
                 bodies = []
                 for i in range(-3, 0):
                     row = df.iloc[i]
                     body = float(row.get("close", 0)) - float(row.get("open", 0))
                     bodies.append(body)
-                # All 3 candles in same direction and all bodies > 0.6× ATR
                 same_dir = all(b > 0 for b in bodies) or all(b < 0 for b in bodies)
                 all_large = all(abs(b) > _impulse_atr * 0.6 for b in bodies)
                 if same_dir and all_large:
-                    logger.info(
-                        "%s: IMPULSE FILTER rejected — 3 consecutive large candles (chasing momentum)",
-                        symbol,
-                    )
-                    self.last_scan_status[symbol] = {
-                        "time": now_iso, "signal": False,
-                        "reason": "IMPULSE FILTER: 3 consecutive expansion candles — late entry risk",
-                        "indicators": indicators,
-                        "setups_checked": setups_checked,
-                    }
-                    return []
+                    impulse_penalty += 20
+                    best_sr.penalties.append("3 consecutive expansion candles")
 
-        # Build Signal
+        # Apply impulse penalty to confidence
+        if impulse_penalty > 0:
+            best.confidence = max(best.confidence - impulse_penalty, 0)
+            # Re-check: if penalty drops below minimum, reject
+            if best.confidence < 50:
+                self.last_scan_status[symbol] = {
+                    "time": now_iso, "signal": False,
+                    "reason": f"IMPULSE penalty dropped confidence to {best.confidence} (penalty: {impulse_penalty}pts)",
+                    "indicators": indicators,
+                    "setups_checked": setups_checked,
+                    "funnel": dict(self._funnel),
+                }
+                return []
+
+        # ── Build Signal ──
         signal = self._build_signal(symbol, best, htf_bias, fib_data=fib_data, choch_data=choch_data)
+
+        # Tag signal with tier and scanner weight info
+        if signal.metadata is None:
+            signal.metadata = {}
+        signal.metadata["signal_tier"] = best_sr.tier
+        signal.metadata["scanner_weight"] = best_sr.scanner_weight
+        signal.metadata["scanner_status"] = best_sr.scanner_status
+        signal.metadata["weighted_score"] = best_sr.weighted_score
+        signal.metadata["impulse_penalty"] = impulse_penalty
+        signal.metadata["penalties"] = best_sr.penalties
+
         self._last_signal_time[symbol] = now
         self._signal_count_hr.append(now)
 
         self.last_scan_status[symbol] = {
             "time": now_iso, "signal": True,
-            "reason": f"Signal generated: {best.name} {best.side.value.upper()}",
+            "reason": f"Signal: {best.name} {best.side.value.upper()} [{best_sr.tier}] w={best_sr.scanner_weight:.1f}x",
             "indicators": indicators,
             "setups_checked": setups_checked,
             "setup_name": best.name,
             "confidence": best.confidence,
+            "tier": best_sr.tier,
+            "weighted_score": best_sr.weighted_score,
+            "scanner_weight": best_sr.scanner_weight,
+            "funnel": dict(self._funnel),
         }
 
         logger.info(
-            "SCALP %s: %s %s | conf=%d grade=%s | %s",
-            best.name, best.side.value.upper(), symbol,
-            signal.confidence, signal.grade.value,
+            "SCALP %s [%s]: %s %s | conf=%d w=%.1fx grade=%s | %s",
+            best.name, best_sr.tier.upper(), best.side.value.upper(), symbol,
+            signal.confidence, best_sr.scanner_weight, signal.grade.value,
             ", ".join(best.confirmations),
         )
         return [signal]
+
+    def _estimate_proximity_score(self, diag: str) -> int:
+        """Estimate how close a non-triggering scanner was to firing.
+
+        Returns 0-49 score based on diagnostic text analysis.
+        Used to identify near-misses for dashboard visibility.
+        """
+        if not diag:
+            return 10
+        # Count how many conditions are described as "checking" or "met"
+        score = 15  # base: scanner ran
+        diag_lower = diag.lower()
+        if "conditions met" in diag_lower or "checking" in diag_lower:
+            score += 20  # Most conditions passed
+        if "detected" in diag_lower:
+            score += 10
+        # Penalty indicators
+        pipe_count = diag.count("|")
+        if pipe_count == 0:
+            score += 10  # Only one issue
+        elif pipe_count == 1:
+            score += 5   # Two issues
+        # Specific near-miss patterns
+        if "away" in diag_lower and any(c.isdigit() for c in diag):
+            score += 5  # Quantified distance — close
+        return min(score, 49)  # Never reach 50 (that's weak signal territory)
 
     # ------------------------------------------------------------------
     # Indicator computation (lightweight for 1m data)

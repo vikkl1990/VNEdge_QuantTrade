@@ -310,6 +310,8 @@ class DashboardServer:
         app.router.add_get("/api/signal-status", self._handle_signal_status)
         app.router.add_get("/api/infra", self._handle_infra)
         app.router.add_get("/api/r-metrics", self._handle_r_metrics)
+        app.router.add_get("/api/scanner-health", self._handle_scanner_health)
+        app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -547,6 +549,29 @@ class DashboardServer:
         else:
             data["upgrade"] = {"status": "not_started"}
 
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_scanner_health(self, request: web.Request) -> web.Response:
+        """Return scanner health states from weight manager."""
+        if self._strategy and hasattr(self._strategy, '_scalp'):
+            scalp = self._strategy._scalp
+            if hasattr(scalp, '_weight_manager'):
+                data = scalp._weight_manager.get_dashboard_summary()
+                return web.json_response(data, dumps=_safe_dumps)
+        return web.json_response([], dumps=_safe_dumps)
+
+    async def _handle_opportunity_funnel(self, request: web.Request) -> web.Response:
+        """Return opportunity funnel counters + near-misses."""
+        data = {"funnel": {}, "near_misses": {}}
+        if self._strategy and hasattr(self._strategy, '_scalp'):
+            scalp = self._strategy._scalp
+            if hasattr(scalp, '_funnel'):
+                data["funnel"] = dict(scalp._funnel)
+            # Get near misses from latest scan status
+            for symbol, status in scalp.last_scan_status.items():
+                nm = status.get("near_misses", [])
+                if nm:
+                    data["near_misses"][symbol] = nm
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_r_metrics(self, request: web.Request) -> web.Response:

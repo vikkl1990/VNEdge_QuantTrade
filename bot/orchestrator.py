@@ -527,6 +527,14 @@ class BotOrchestrator:
                     wins=stats.get("wins", 0),
                     losses=stats.get("losses", 0),
                 )
+
+                # Update scanner weights from R-performance data
+                try:
+                    by_setup = stats.get("by_setup", {})
+                    if by_setup and hasattr(self._strategy, '_scalp'):
+                        self._strategy._scalp._weight_manager.update_weights(by_setup)
+                except Exception:
+                    pass
             except Exception as exc:
                 self._log.debug("Signal tracker update failed: %s", exc)
 

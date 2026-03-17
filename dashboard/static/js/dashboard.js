@@ -1482,6 +1482,77 @@
         }).join("");
     }
 
+    // ── Scanner Health Rendering ──────────────────────────────────────
+    function updateScannerHealth(data) {
+        if (!data || !Array.isArray(data)) return;
+        const tbody = document.querySelector("#sh-body");
+        if (!tbody) return;
+
+        if (data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="muted">No scanner data yet</td></tr>';
+            return;
+        }
+
+        let activeCount = 0;
+        tbody.innerHTML = data.map(s => {
+            if (s.status === "active" || s.status === "reduced") activeCount++;
+            const statusCls = "sh-status sh-status-" + s.status;
+            const expColor = s.expectancy_r > 0.3 ? "var(--accent-buy)" :
+                            s.expectancy_r > 0 ? "#22d3ee" :
+                            s.expectancy_r > -0.1 ? "var(--accent-warn)" : "var(--accent-sell)";
+            return `<tr>
+                <td style="color:var(--text-primary)">${s.scanner}</td>
+                <td><span class="${statusCls}">${s.status}</span></td>
+                <td style="font-family:monospace">${s.weight.toFixed(1)}x</td>
+                <td style="font-family:monospace;color:${expColor}">${Number(s.expectancy_r).toFixed(3)}R</td>
+                <td>${Number(s.win_rate).toFixed(0)}%</td>
+                <td>${s.trades}</td>
+                <td style="font-family:monospace">${Number(s.total_r).toFixed(1)}R</td>
+                <td style="font-size:0.7rem;color:var(--text-muted)">${s.reason || ""}</td>
+            </tr>`;
+        }).join("");
+
+        const pill = document.querySelector("#sh-active-count");
+        if (pill) pill.textContent = activeCount + " active";
+    }
+
+    function updateOpportunityFunnel(data) {
+        if (!data) return;
+        const funnel = data.funnel || {};
+        const fields = ["scanned", "strong", "valid", "weak", "near_miss", "rejected", "blocked_regime", "blocked_cost", "blocked_htf"];
+        fields.forEach(f => {
+            const el = document.querySelector("#fn-" + f);
+            if (el) el.textContent = funnel[f] || 0;
+        });
+
+        const signalsPill = document.querySelector("#sh-funnel-signals");
+        if (signalsPill) {
+            const s = (funnel.strong || 0) + (funnel.valid || 0);
+            signalsPill.textContent = s + " signals/hr";
+            signalsPill.style.color = s > 0 ? "var(--accent-buy)" : "var(--accent-warn)";
+        }
+
+        // Near misses
+        const nmList = document.querySelector("#near-misses-list");
+        if (!nmList) return;
+        const nearMisses = data.near_misses || {};
+        const allNm = [];
+        Object.entries(nearMisses).forEach(([sym, nms]) => {
+            nms.forEach(nm => allNm.push({symbol: sym, ...nm}));
+        });
+        if (allNm.length === 0) {
+            nmList.innerHTML = '<span class="muted">None right now</span>';
+        } else {
+            nmList.innerHTML = allNm.slice(0, 5).map(nm =>
+                `<div class="nm-item">
+                    <span class="nm-scanner">${nm.scanner || "?"}</span>
+                    ${nm.side ? nm.side.toUpperCase() : "?"} &middot;
+                    Score: <span class="nm-score">${Number(nm.weighted_score || 0).toFixed(0)}</span>/50
+                </div>`
+            ).join("");
+        }
+    }
+
     async function refreshAll() {
         const [status, positions, signals, performance, alerts, trackerStats, trackerActive, trackerClosed, aiInsights, monitorReport, signalStatus] = await Promise.all([
             api("/api/status"),
@@ -1587,6 +1658,13 @@
         if (!window._lastRMetricsFetch || Date.now() - window._lastRMetricsFetch > 30000) {
             window._lastRMetricsFetch = Date.now();
             api("/api/r-metrics").then(updateRMetrics).catch(() => {});
+        }
+
+        // Scanner Health & Opportunity Funnel (fetch every 30s)
+        if (!window._lastScannerHealthFetch || Date.now() - window._lastScannerHealthFetch > 30000) {
+            window._lastScannerHealthFetch = Date.now();
+            api("/api/scanner-health").then(updateScannerHealth).catch(() => {});
+            api("/api/opportunity-funnel").then(updateOpportunityFunnel).catch(() => {});
         }
 
         // VM Infrastructure (fetch every 30s, not every 5s)

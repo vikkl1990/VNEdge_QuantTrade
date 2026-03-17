@@ -379,7 +379,7 @@ class SignalTracker:
                             f"PnL: {ts.pnl_pct:+.2f}%"
                         ),
                     })
-                    log.warning(
+                    logger.warning(
                         "Hard loss cap triggered: %s %s @ %.2f (%.2fR adverse) | PnL: %.2f%%",
                         ts.symbol, ts.side, price, current_adverse_r, ts.pnl_pct,
                     )
@@ -412,7 +412,7 @@ class SignalTracker:
                                 f"PnL: {ts.pnl_pct:+.2f}%"
                             ),
                         })
-                        log.warning(
+                        logger.warning(
                             "Momentum collapse: %s %s @ %.2f (MFE %.2fR -> %.2fR) | PnL: %.2f%%",
                             ts.symbol, ts.side, price, ts.mfe_r, current_r, ts.pnl_pct,
                         )

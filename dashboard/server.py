@@ -99,6 +99,7 @@ class DashboardServer:
         self._signal_learner = None  # set externally by orchestrator
         self._trade_monitor = None   # set externally by orchestrator
         self._strategy = None        # set externally by orchestrator
+        self._decision_engine = None # set externally by orchestrator
 
         self._daily_pnl: float = 0.0
         self._total_pnl: float = 0.0
@@ -312,6 +313,8 @@ class DashboardServer:
         app.router.add_get("/api/r-metrics", self._handle_r_metrics)
         app.router.add_get("/api/scanner-health", self._handle_scanner_health)
         app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
+        app.router.add_get("/api/regime", self._handle_regime)
+        app.router.add_get("/api/decision", self._handle_decision)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -572,6 +575,38 @@ class DashboardServer:
                 nm = status.get("near_misses", [])
                 if nm:
                     data["near_misses"][symbol] = nm
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_decision(self, request: web.Request) -> web.Response:
+        """Return current decision engine directive."""
+        if self._decision_engine:
+            data = self._decision_engine.get_dashboard_data()
+        else:
+            data = {"action": "WAIT", "reason": "Decision engine not initialized"}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_regime(self, request: web.Request) -> web.Response:
+        """Return current market regime and position sizing info."""
+        data = {"regime": "unknown", "action": {}, "early_exit_stats": {}}
+        if self._strategy and hasattr(self._strategy, '_scalp'):
+            scalp = self._strategy._scalp
+            if hasattr(scalp, '_last_regime_info'):
+                data = scalp._last_regime_info
+            # Early exit stats from tracker
+            if self._signal_tracker:
+                closed = self._signal_tracker.get_closed_signals(limit=500)
+                hard_caps = sum(1 for c in closed if c.get("exit_reason_detailed") == "hard_loss_cap")
+                momentum_exits = sum(1 for c in closed if c.get("exit_reason_detailed") == "momentum_collapse")
+                data["early_exit_stats"] = {
+                    "hard_loss_caps": hard_caps,
+                    "momentum_exits": momentum_exits,
+                }
+            # Shadow recoveries
+            if hasattr(scalp, '_weight_manager'):
+                states = scalp._weight_manager.get_all_states()
+                recoveries = sum(1 for s in states.values()
+                               if isinstance(s, dict) and s.get("recovery_stage") == "probation")
+                data.setdefault("early_exit_stats", {})["shadow_recoveries"] = recoveries
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_r_metrics(self, request: web.Request) -> web.Response:

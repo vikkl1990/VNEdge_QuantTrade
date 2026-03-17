@@ -64,6 +64,7 @@ from data.indicators import (
 )
 from strategies.base import BaseStrategy, Signal
 from strategies.scanner_weights import ScannerWeightManager, STATUS_ACTIVE, STATUS_REDUCED
+from strategies.regime_filter import RegimeFilter, calc_confidence_size_multiplier
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,10 @@ class ScalpStrategy(BaseStrategy):
 
         # --- Scanner weight manager (adaptive from R-performance) ---
         self._weight_manager = ScannerWeightManager()
+
+        # --- Regime filter (market regime detection + position sizing) ---
+        self._regime_filter = RegimeFilter()
+        self._last_regime_info: Dict[str, Any] = {}
 
         # --- Opportunity funnel counters (for dashboard) ---
         self._funnel: Dict[str, int] = {
@@ -347,6 +352,19 @@ class ScalpStrategy(BaseStrategy):
             }
         except Exception:
             pass
+
+        # --- Detect market regime ---
+        regime = self._regime_filter.detect_regime(indicators)
+        self._last_regime_info = {
+            "regime": regime,
+            "action": {},
+            "indicators_snapshot": {
+                "ema_8": indicators.get("ema_8", 0),
+                "ema_21": indicators.get("ema_21", 0),
+                "ema_50": indicators.get("ema_50", 0),
+                "bb_bandwidth": float(last_row.get("bb_bandwidth", 0)) if not np.isnan(last_row.get("bb_bandwidth", 0)) else 0,
+            },
+        }
 
         # --- Run all setup scans ---
         setups: List[_SetupResult] = []
@@ -625,9 +643,19 @@ class ScalpStrategy(BaseStrategy):
                 })
 
         # ── Update funnel counters ──
+        # Only count triggered scanners (setup_result not None) for strong/valid/weak
+        # Non-triggered go to near_miss or rejected based on proximity
         for sr in scan_results:
-            if sr.tier in self._funnel:
-                self._funnel[sr.tier] += 1
+            if sr.setup_result is not None:
+                # Actually triggered — count in real tier
+                if sr.tier in self._funnel:
+                    self._funnel[sr.tier] += 1
+            else:
+                # Didn't trigger — only near_miss or rejected
+                if sr.tier == TIER_NEAR_MISS:
+                    self._funnel["near_miss"] += 1
+                else:
+                    self._funnel["rejected"] += 1
 
         # ── Select best tradeable result ──
         tradeable = [
@@ -709,6 +737,32 @@ class ScalpStrategy(BaseStrategy):
                    (choch_dir == "bearish" and best.side == OrderSide.SHORT):
                     best.confidence = min(best.confidence + 10, 100)
                     best.confirmations.append(f"CHOCH {choch_dir} (str={choch_strength})")
+
+        # ── Regime-aware filtering ──
+        regime_action = self._regime_filter.get_action(
+            regime, best.side.value, best_sr.tier, best_sr.scanner_name
+        )
+        self._last_regime_info["action"] = {
+            "allow_trade": regime_action.allow_trade,
+            "size_multiplier": regime_action.size_multiplier,
+            "sl_multiplier": regime_action.sl_multiplier,
+            "min_confidence": regime_action.min_confidence,
+            "reason": regime_action.reason,
+        }
+
+        if not regime_action.allow_trade:
+            self._funnel["blocked_regime"] += 1
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"REGIME FILTER: {regime_action.reason} ({regime})",
+                "indicators": indicators,
+                "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []
+
+        # Apply regime-based confidence size multiplier to metadata
+        confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
 
         # ── Session-aware confidence threshold ──
         # Weak signals (tier=weak) get a lower threshold — they're still valid
@@ -816,6 +870,10 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["weighted_score"] = best_sr.weighted_score
         signal.metadata["impulse_penalty"] = impulse_penalty
         signal.metadata["penalties"] = best_sr.penalties
+        signal.metadata["regime"] = regime
+        signal.metadata["regime_size_mult"] = regime_action.size_multiplier
+        signal.metadata["regime_sl_mult"] = regime_action.sl_multiplier
+        signal.metadata["confidence_size_mult"] = confidence_size_mult
 
         self._last_signal_time[symbol] = now
         self._signal_count_hr.append(now)

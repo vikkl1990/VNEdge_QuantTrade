@@ -40,6 +40,50 @@
 <!-- ─── Dashboard Grid ─────────────────────────────────────────────── -->
 <main class="grid">
 
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- COMMAND CENTER (DECISION ENGINE)                               -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-command" id="card-command">
+        <div class="cmd-header">
+            <div class="cmd-action-wrap">
+                <span class="cmd-action-badge" id="cmd-action">WAIT</span>
+                <span class="cmd-reason" id="cmd-reason">Initializing...</span>
+            </div>
+            <div class="cmd-badges">
+                <span class="cmd-badge cmd-edge" id="cmd-edge">EDGE: --</span>
+                <span class="cmd-badge cmd-risk" id="cmd-risk">RISK: --</span>
+                <span class="cmd-badge cmd-market" id="cmd-market">MKT: --</span>
+            </div>
+        </div>
+        <div class="cmd-grid">
+            <div class="cmd-cell">
+                <span class="cmd-label">Best Setup</span>
+                <span class="cmd-value" id="cmd-best-setup">--</span>
+            </div>
+            <div class="cmd-cell">
+                <span class="cmd-label">Score</span>
+                <span class="cmd-value mono" id="cmd-best-score">--</span>
+            </div>
+            <div class="cmd-cell">
+                <span class="cmd-label">Regime</span>
+                <span class="cmd-value" id="cmd-regime">--</span>
+            </div>
+            <div class="cmd-cell">
+                <span class="cmd-label">Expectancy</span>
+                <span class="cmd-value mono" id="cmd-expectancy">--</span>
+            </div>
+            <div class="cmd-cell">
+                <span class="cmd-label">Session</span>
+                <span class="cmd-value" id="cmd-session">--</span>
+            </div>
+            <div class="cmd-cell">
+                <span class="cmd-label">Drawdown</span>
+                <span class="cmd-value mono" id="cmd-drawdown">--</span>
+            </div>
+        </div>
+        <div class="cmd-reasons" id="cmd-reasons"></div>
+    </section>
+
     <!-- Bot Status -->
     <section class="card" id="card-status">
         <h2>Bot Status</h2>
@@ -585,6 +629,30 @@
                     <span class="muted">None right now</span>
                 </div>
             </div>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- REGIME & POSITION SIZING                                      -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card section-regime" id="card-regime">
+        <div class="section-header-row">
+            <h2><span class="section-icon">🌊</span> Market Regime</h2>
+            <span class="section-tag regime-tag" id="regime-tag">DETECTING</span>
+        </div>
+        <div class="kv-grid">
+            <span class="label">Regime</span>        <span class="value mono" id="rg-regime">--</span>
+            <span class="label">Action</span>        <span class="value mono" id="rg-action">--</span>
+            <span class="label">Size Mult</span>     <span class="value mono" id="rg-size-mult">--</span>
+            <span class="label">SL Mult</span>       <span class="value mono" id="rg-sl-mult">--</span>
+            <span class="label">Min Conf</span>      <span class="value mono" id="rg-min-conf">--</span>
+            <span class="label">Reason</span>        <span class="value mono" id="rg-reason">--</span>
+        </div>
+        <h3 class="sh-panel-title" style="margin-top:12px">Early Exit Stats</h3>
+        <div class="kv-grid">
+            <span class="label">Hard Loss Caps</span>    <span class="value mono" id="rg-hard-caps">0</span>
+            <span class="label">Momentum Exits</span>    <span class="value mono" id="rg-momentum-exits">0</span>
+            <span class="label">Shadow Recoveries</span> <span class="value mono" id="rg-shadow-recoveries">0</span>
         </div>
     </section>
 

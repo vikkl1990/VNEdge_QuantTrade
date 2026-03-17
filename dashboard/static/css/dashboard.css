@@ -1850,6 +1850,156 @@ footer {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   Command Center (Decision Engine)
+   ═══════════════════════════════════════════════════════════════════════ */
+.section-command {
+    border-top: 3px solid var(--accent-buy);
+    background: linear-gradient(135deg, #16213e 0%, #1a2744 100%);
+}
+.cmd-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 8px 0 12px;
+}
+.cmd-action-wrap {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.cmd-action-badge {
+    font-size: 1.6rem;
+    font-weight: 900;
+    letter-spacing: 2px;
+    padding: 6px 24px;
+    border-radius: 8px;
+    background: rgba(255,171,0,0.15);
+    color: var(--accent-warn);
+    border: 2px solid rgba(255,171,0,0.4);
+    text-transform: uppercase;
+}
+.cmd-action-badge.trade-long {
+    background: rgba(0,230,118,0.18);
+    color: var(--accent-buy);
+    border-color: rgba(0,230,118,0.5);
+}
+.cmd-action-badge.trade-short {
+    background: rgba(255,23,68,0.18);
+    color: var(--accent-sell);
+    border-color: rgba(255,23,68,0.5);
+}
+.cmd-action-badge.wait {
+    background: rgba(255,171,0,0.12);
+    color: var(--accent-warn);
+    border-color: rgba(255,171,0,0.3);
+}
+.cmd-action-badge.blocked {
+    background: rgba(255,23,68,0.15);
+    color: var(--accent-sell);
+    border-color: rgba(255,23,68,0.4);
+}
+.cmd-reason {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    max-width: 500px;
+}
+.cmd-badges {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.cmd-badge {
+    padding: 3px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    border: 1px solid var(--border);
+    background: rgba(0,0,0,0.2);
+    color: var(--text-secondary);
+}
+.cmd-edge.strong { background: rgba(0,230,118,0.15); color: #00e676; border-color: rgba(0,230,118,0.3); }
+.cmd-edge.medium { background: rgba(41,121,255,0.15); color: #2979ff; border-color: rgba(41,121,255,0.3); }
+.cmd-edge.weak   { background: rgba(255,171,0,0.12); color: #ffab00; border-color: rgba(255,171,0,0.3); }
+.cmd-edge.off    { background: rgba(255,23,68,0.12); color: #ff6b6b; border-color: rgba(255,23,68,0.3); }
+.cmd-risk.normal  { background: rgba(0,230,118,0.1); color: #66bb6a; }
+.cmd-risk.reduced { background: rgba(255,171,0,0.12); color: #ffab00; }
+.cmd-risk.blocked { background: rgba(255,23,68,0.12); color: #ff1744; }
+.cmd-market.trend-strong { color: #00e676; }
+.cmd-market.trend-weak   { color: #66bb6a; }
+.cmd-market.sideways     { color: #ffab00; }
+.cmd-market.chop         { color: #ff6b6b; }
+.cmd-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    padding: 8px 0;
+}
+.cmd-cell {
+    text-align: center;
+    background: rgba(0,0,0,0.15);
+    border-radius: var(--radius-sm);
+    padding: 8px 6px;
+}
+.cmd-label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+.cmd-value {
+    display: block;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.cmd-reasons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+}
+.cmd-reason-pill {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(0,0,0,0.2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+
+@media (max-width: 768px) {
+    .cmd-grid { grid-template-columns: repeat(3, 1fr); }
+    .cmd-header { flex-direction: column; align-items: flex-start; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Regime & Position Sizing
+   ═══════════════════════════════════════════════════════════════════════ */
+.section-regime { border-top: 2px solid #06b6d4; }
+.regime-tag {
+    background: rgba(6, 182, 212, 0.18);
+    color: #67e8f9;
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+.regime-tag.trending-up { background: rgba(0,230,118,0.18); color: #00e676; border-color: rgba(0,230,118,0.35); }
+.regime-tag.trending-down { background: rgba(255,23,68,0.18); color: #ff1744; border-color: rgba(255,23,68,0.35); }
+.regime-tag.ranging { background: rgba(255,171,0,0.18); color: #ffab00; border-color: rgba(255,171,0,0.35); }
+.regime-tag.volatile { background: rgba(255,23,68,0.18); color: #ff6b6b; border-color: rgba(255,23,68,0.35); }
+.regime-tag.quiet { background: rgba(100,100,140,0.18); color: #8892a4; border-color: rgba(100,100,140,0.35); }
+
+/* ═══════════════════════════════════════════════════════════════════════
    VM Infrastructure Card
    ═══════════════════════════════════════════════════════════════════════ */
 .section-infra { border-top: 2px solid #7c3aed; }

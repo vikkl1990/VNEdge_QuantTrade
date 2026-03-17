@@ -15,6 +15,7 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from bot.decision_engine import DecisionEngine
 from bot.signal_learner import SignalLearner
 from bot.signal_tracker import SignalTracker
 from bot.trade_monitor import TradeMonitorAgent
@@ -110,6 +111,9 @@ class BotOrchestrator:
         # Trade monitor agent for P&L analysis and loss categorization
         self._trade_monitor = TradeMonitorAgent()
 
+        # Decision engine for TRADE/WAIT directive
+        self._decision_engine = DecisionEngine()
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -188,6 +192,7 @@ class BotOrchestrator:
             self._dashboard._signal_learner = self._signal_learner
             self._dashboard._trade_monitor = self._trade_monitor
             self._dashboard._strategy = self._strategy
+            self._dashboard._decision_engine = self._decision_engine
             dash_cfg = self._config.get("dashboard", {})
             dash_host = dash_cfg.get("host", "0.0.0.0") if isinstance(dash_cfg, dict) else "0.0.0.0"
             dash_port = dash_cfg.get("port", 8080) if isinstance(dash_cfg, dict) else 8080
@@ -532,11 +537,72 @@ class BotOrchestrator:
                 try:
                     by_setup = stats.get("by_setup", {})
                     if by_setup and hasattr(self._strategy, '_scalp'):
-                        self._strategy._scalp._weight_manager.update_weights(by_setup)
+                        wm = self._strategy._scalp._weight_manager
+                        wm.update_weights(by_setup)
+                        # Check shadow recovery for suppressed scanners
+                        try:
+                            recoveries = wm.check_shadow_recovery()
+                            if recoveries:
+                                self._log.info("Shadow recoveries: %s", recoveries)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
             except Exception as exc:
                 self._log.debug("Signal tracker update failed: %s", exc)
+
+        # -- Update Decision Engine --
+        try:
+            # Gather inputs for decision engine
+            regime_info = {}
+            scan_results = []
+            scanner_health = []
+            funnel = {}
+            session = ""
+            signals_hr = 0
+
+            if hasattr(self._strategy, '_scalp'):
+                scalp = self._strategy._scalp
+                regime_info = getattr(scalp, '_last_regime_info', {})
+                funnel = getattr(scalp, '_funnel', {})
+                session = getattr(scalp, '_current_session', '')
+                signals_hr = len(getattr(scalp, '_signal_count_hr', []))
+                # Get scan results from last_scan_status
+                for sym, status in scalp.last_scan_status.items():
+                    for s in status.get("setups_checked", []):
+                        s["symbol"] = sym
+                        scan_results.append(s)
+                if hasattr(scalp, '_weight_manager'):
+                    scanner_health = scalp._weight_manager.get_dashboard_summary()
+
+            r_metrics = {}
+            if self._signal_tracker:
+                stats = self._signal_tracker.get_stats()
+                r_metrics = stats.get("r_metrics", {})
+
+            risk_guard = {}
+            try:
+                should_pause, reason = self._trade_monitor.should_pause_trading()
+                risk_guard = {
+                    "should_pause": should_pause,
+                    "reason": reason,
+                    "drawdown": self._trade_monitor._metrics.get("current_drawdown", 0),
+                }
+            except Exception:
+                pass
+
+            self._decision_engine.update(
+                scan_results=scan_results,
+                regime_info=regime_info,
+                r_metrics=r_metrics,
+                risk_guard=risk_guard,
+                scanner_health=scanner_health,
+                session=session,
+                signals_this_hour=signals_hr,
+                funnel=funnel,
+            )
+        except Exception as exc:
+            self._log.debug("Decision engine update failed: %s", exc)
 
         # System health with real memory tracking
         from datetime import timedelta

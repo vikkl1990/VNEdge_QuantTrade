@@ -1553,6 +1553,85 @@
         }
     }
 
+    function updateCommandCenter(data) {
+        if (!data) return;
+        const action = data.action || "WAIT";
+        const badge = document.getElementById("cmd-action");
+        if (badge) {
+            badge.textContent = action;
+            badge.className = "cmd-action-badge";
+            if (action === "TRADE" || action === "LONG") badge.classList.add("trade-long");
+            else if (action === "SHORT") badge.classList.add("trade-short");
+            else if (data.risk_state === "BLOCKED") badge.classList.add("blocked");
+            else badge.classList.add("wait");
+        }
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        el("cmd-reason", data.reason || "");
+
+        // Edge badge
+        const edgeBadge = document.getElementById("cmd-edge");
+        if (edgeBadge) {
+            const es = (data.edge_status || "OFF").toLowerCase();
+            edgeBadge.textContent = "EDGE: " + (data.edge_status || "--");
+            edgeBadge.className = "cmd-badge cmd-edge " + es;
+        }
+
+        // Risk badge
+        const riskBadge = document.getElementById("cmd-risk");
+        if (riskBadge) {
+            const rs = (data.risk_state || "NORMAL").toLowerCase();
+            riskBadge.textContent = "RISK: " + (data.risk_state || "--");
+            riskBadge.className = "cmd-badge cmd-risk " + rs;
+        }
+
+        // Market badge
+        const mktBadge = document.getElementById("cmd-market");
+        if (mktBadge) {
+            const ms = (data.market_state || "UNKNOWN").toLowerCase().replace("_", "-");
+            mktBadge.textContent = "MKT: " + (data.market_state || "--").replace("_", " ");
+            mktBadge.className = "cmd-badge cmd-market " + ms;
+        }
+
+        // Grid cells
+        const setup = data.best_scanner ? (data.best_symbol ? data.best_symbol.split("/")[0] + " " : "") + data.best_scanner : "--";
+        el("cmd-best-setup", setup);
+        el("cmd-best-score", data.best_score ? data.best_score.toFixed(0) : "--");
+        el("cmd-regime", (data.regime || "--").replace("_", " "));
+        el("cmd-expectancy", data.rolling_expectancy != null ? data.rolling_expectancy.toFixed(3) + "R" : "--");
+        el("cmd-session", (data.session || "--").replace("_", " "));
+        el("cmd-drawdown", data.drawdown_pct != null ? data.drawdown_pct.toFixed(1) + "%" : "--");
+
+        // Reasons pills
+        const reasonsDiv = document.getElementById("cmd-reasons");
+        if (reasonsDiv && data.reasons) {
+            reasonsDiv.innerHTML = data.reasons.map(r =>
+                '<span class="cmd-reason-pill">' + r + '</span>'
+            ).join("");
+        }
+    }
+
+    function updateRegime(data) {
+        if (!data) return;
+        const tag = document.getElementById("regime-tag");
+        const regime = data.regime || "unknown";
+        if (tag) {
+            tag.textContent = regime.toUpperCase().replace("_", " ");
+            tag.className = "section-tag regime-tag " + regime.replace("_", "-");
+        }
+        const action = data.action || {};
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        el("rg-regime", regime.replace("_", " "));
+        el("rg-action", action.allow_trade === false ? "BLOCKED" : "ALLOWED");
+        el("rg-size-mult", (action.size_multiplier || 1.0).toFixed(1) + "x");
+        el("rg-sl-mult", (action.sl_multiplier || 1.0).toFixed(1) + "x");
+        el("rg-min-conf", action.min_confidence || "--");
+        el("rg-reason", action.reason || "--");
+        const es = data.early_exit_stats || {};
+        el("rg-hard-caps", es.hard_loss_caps || 0);
+        el("rg-momentum-exits", es.momentum_exits || 0);
+        el("rg-shadow-recoveries", es.shadow_recoveries || 0);
+    }
+
     async function refreshAll() {
         const [status, positions, signals, performance, alerts, trackerStats, trackerActive, trackerClosed, aiInsights, monitorReport, signalStatus] = await Promise.all([
             api("/api/status"),
@@ -1660,11 +1739,13 @@
             api("/api/r-metrics").then(updateRMetrics).catch(() => {});
         }
 
-        // Scanner Health & Opportunity Funnel (fetch every 30s)
+        // Scanner Health, Opportunity Funnel & Regime (fetch every 30s)
         if (!window._lastScannerHealthFetch || Date.now() - window._lastScannerHealthFetch > 30000) {
             window._lastScannerHealthFetch = Date.now();
             api("/api/scanner-health").then(updateScannerHealth).catch(() => {});
             api("/api/opportunity-funnel").then(updateOpportunityFunnel).catch(() => {});
+            api("/api/regime").then(updateRegime).catch(() => {});
+            api("/api/decision").then(updateCommandCenter).catch(() => {});
         }
 
         // VM Infrastructure (fetch every 30s, not every 5s)

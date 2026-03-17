@@ -198,6 +198,18 @@ class TrackedSignal:
             risk_amount = position_usd * sl_dist_pct / 100
             lev_cap_source = f"lev_capped_{max_lev}x"
 
+        # ── Regime-based position sizing ──
+        regime_size_mult = float(meta.get("regime_size_mult", 1.0))
+        confidence_size_mult = float(meta.get("confidence_size_mult", 1.0))
+        combined_size_mult = regime_size_mult * confidence_size_mult
+        if combined_size_mult != 1.0:
+            position_usd *= combined_size_mult
+            risk_amount *= combined_size_mult
+            logger.info(
+                "Regime sizing: regime=%.1fx conf=%.1fx combined=%.2fx → pos=$%.0f",
+                regime_size_mult, confidence_size_mult, combined_size_mult, position_usd,
+            )
+
         # ── Graduated drawdown defense ──
         dd_pct = sig.get("_dd_pct", 0.0)
         if dd_pct >= 6.0:
@@ -342,6 +354,69 @@ class SignalTracker:
                 ts.mfe_r = round(max(ts.mfe_r, fav), 4)
                 ts.mae_r = round(max(ts.mae_r, adv), 4)
             now_iso = datetime.now(timezone.utc).isoformat()
+
+            # -- Early Invalidation Exit: Hard Loss Cap (-2R) --
+            # Force close if adverse excursion exceeds 2R (gap/slippage beyond SL)
+            if ts.initial_risk > 0:
+                if is_long:
+                    current_adverse_r = (ts.entry_price - price) / ts.initial_risk
+                else:
+                    current_adverse_r = (price - ts.entry_price) / ts.initial_risk
+                if current_adverse_r >= 2.0:
+                    ts.exit_price = price
+                    ts.exit_reason = "hard_loss_cap"
+                    ts.exit_time = now_iso
+                    ts.exit_reason_detailed = "hard_loss_cap_2r"
+                    ts.status = "stopped"
+                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    to_close.append(tid)
+                    events.append({
+                        "type": "hard_loss_cap",
+                        "signal": ts.to_dict(),
+                        "message": (
+                            f"HARD LOSS CAP: {ts.symbol} {ts.side} @ {price:.2f} | "
+                            f"Adverse excursion {current_adverse_r:.2f}R exceeds 2R limit | "
+                            f"PnL: {ts.pnl_pct:+.2f}%"
+                        ),
+                    })
+                    log.warning(
+                        "Hard loss cap triggered: %s %s @ %.2f (%.2fR adverse) | PnL: %.2f%%",
+                        ts.symbol, ts.side, price, current_adverse_r, ts.pnl_pct,
+                    )
+                    continue
+
+            # -- Early Invalidation Exit: Momentum Collapse --
+            # If trade showed promise (MFE > 0.3R) but retreated to -0.5R after 5min
+            if ts.initial_risk > 0 and ts.mfe_r >= 0.3:
+                entry_time = datetime.fromisoformat(ts.entry_time)
+                elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
+                if elapsed >= 300:  # at least 5 minutes open
+                    if is_long:
+                        current_r = (price - ts.entry_price) / ts.initial_risk
+                    else:
+                        current_r = (ts.entry_price - price) / ts.initial_risk
+                    if current_r <= -0.5:
+                        ts.exit_price = price
+                        ts.exit_reason = "momentum_collapse"
+                        ts.exit_time = now_iso
+                        ts.exit_reason_detailed = "momentum_collapse_after_mfe"
+                        ts.status = "stopped"
+                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        to_close.append(tid)
+                        events.append({
+                            "type": "momentum_collapse",
+                            "signal": ts.to_dict(),
+                            "message": (
+                                f"MOMENTUM COLLAPSE: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                f"MFE was {ts.mfe_r:.2f}R, now {current_r:.2f}R | "
+                                f"PnL: {ts.pnl_pct:+.2f}%"
+                            ),
+                        })
+                        log.warning(
+                            "Momentum collapse: %s %s @ %.2f (MFE %.2fR -> %.2fR) | PnL: %.2f%%",
+                            ts.symbol, ts.side, price, ts.mfe_r, current_r, ts.pnl_pct,
+                        )
+                        continue
 
             # -- Check Stop Loss --
             sl_hit = (price <= ts.stop_loss) if is_long else (price >= ts.stop_loss)

@@ -47,9 +47,15 @@ class ScannerState:
     avg_mfe_r: float = 0.0
     last_updated: str = ""
     reason: str = ""                # Why this status was assigned
+    shadow_r_values: list = field(default_factory=list)  # R-multiples of shadow trades
+    rolling_expectancy: float = 0.0   # last-20-trade expectancy
+    recovery_stage: str = ""          # "", "monitoring", "probation"
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Ensure shadow_r_values is serialised as a plain list
+        d["shadow_r_values"] = list(d.get("shadow_r_values", []))
+        return d
 
 
 class ScannerWeightManager:
@@ -73,6 +79,13 @@ class ScannerWeightManager:
     SUPPRESSED_WEIGHT = 0.0          # Weight when suppressed
     BOOSTED_WEIGHT = 1.2             # Weight when boosted
     STRONG_BOOST_WEIGHT = 1.4        # Weight when strongly boosted
+
+    # Rolling / Shadow recovery parameters
+    ROLLING_WINDOW = 20
+    SHADOW_MIN_TRADES = 10
+    SHADOW_RECOVERY_EXPECTANCY = 0.1   # minimum to start recovery
+    SHADOW_FULL_RECOVERY_TRADES = 20
+    SHADOW_FULL_RECOVERY_EXPECTANCY = 0.3
 
     # Manual overrides: scanners forced into specific states
     FORCED_STATES: Dict[str, str] = {
@@ -206,6 +219,88 @@ class ScannerWeightManager:
             return max(base_confidence - 10, 0)
         return base_confidence
 
+    # ------------------------------------------------------------------
+    # Shadow mode recovery & rolling metrics
+    # ------------------------------------------------------------------
+
+    def record_shadow_trade(self, scanner_name: str, r_value: float) -> None:
+        """Record a shadow trade result for a suppressed/shadow scanner."""
+        state = self._states.get(scanner_name)
+        if state is None:
+            state = ScannerState(name=scanner_name)
+            self._states[scanner_name] = state
+        state.shadow_r_values.append(round(r_value, 4))
+        # Keep last 50
+        state.shadow_r_values = state.shadow_r_values[-50:]
+        self._save()
+
+    def check_shadow_recovery(self) -> Dict[str, str]:
+        """Check if any suppressed scanners should be promoted based on shadow performance.
+        Returns dict of scanner_name -> action taken.
+        """
+        actions: Dict[str, str] = {}
+        for name, state in self._states.items():
+            if state.status not in (STATUS_SUPPRESSED, STATUS_SHADOW):
+                continue
+            if name in self.FORCED_STATES:
+                # Check if forced state should be lifted
+                shadow = state.shadow_r_values
+                if len(shadow) >= self.SHADOW_FULL_RECOVERY_TRADES:
+                    avg = sum(shadow[-self.SHADOW_FULL_RECOVERY_TRADES:]) / self.SHADOW_FULL_RECOVERY_TRADES
+                    if avg >= self.SHADOW_FULL_RECOVERY_EXPECTANCY:
+                        state.status = STATUS_REDUCED
+                        state.weight = self.REDUCED_WEIGHT
+                        state.reason = f"Shadow recovery: {avg:+.3f}R over {self.SHADOW_FULL_RECOVERY_TRADES} shadow trades"
+                        state.recovery_stage = "probation"
+                        actions[name] = f"SHADOW→REDUCED (shadow exp={avg:+.3f}R)"
+                        logger.info("Scanner %s promoted from shadow to reduced: %s", name, state.reason)
+                continue
+
+            shadow = state.shadow_r_values
+            if len(shadow) < self.SHADOW_MIN_TRADES:
+                continue
+
+            recent = shadow[-self.ROLLING_WINDOW:]
+            avg_r = sum(recent) / len(recent)
+
+            if state.status == STATUS_SUPPRESSED:
+                if len(shadow) >= self.SHADOW_MIN_TRADES and avg_r >= self.SHADOW_RECOVERY_EXPECTANCY:
+                    state.status = STATUS_REDUCED
+                    state.weight = self.REDUCED_WEIGHT
+                    state.reason = f"Recovery: shadow exp {avg_r:+.3f}R over {len(recent)} trades"
+                    state.recovery_stage = "probation"
+                    actions[name] = f"SUPPRESSED→REDUCED (shadow exp={avg_r:+.3f}R)"
+                    logger.info("Scanner %s promoted: %s", name, state.reason)
+
+            elif state.status == STATUS_REDUCED and state.recovery_stage == "probation":
+                if len(shadow) >= self.SHADOW_FULL_RECOVERY_TRADES and avg_r >= self.SHADOW_FULL_RECOVERY_EXPECTANCY:
+                    state.status = STATUS_ACTIVE
+                    state.weight = 1.0
+                    state.reason = f"Full recovery: exp {avg_r:+.3f}R over {len(recent)} trades"
+                    state.recovery_stage = ""
+                    actions[name] = f"REDUCED→ACTIVE (exp={avg_r:+.3f}R)"
+                    logger.info("Scanner %s fully recovered: %s", name, state.reason)
+
+        if actions:
+            self._save()
+        return actions
+
+    def compute_rolling_metrics(self, by_setup: Dict[str, Dict]) -> None:
+        """Compute rolling expectancy for each scanner from recent trades."""
+        for scanner_name, metrics in by_setup.items():
+            state = self._states.get(scanner_name)
+            if state is None:
+                continue
+            r_vals = metrics.get("r_values_raw", [])
+            if len(r_vals) >= self.ROLLING_WINDOW:
+                recent = r_vals[-self.ROLLING_WINDOW:]
+                wins = [r for r in recent if r > 0]
+                losses = [r for r in recent if r < 0]
+                wr = len(wins) / len(recent)
+                avg_win = sum(wins) / len(wins) if wins else 0
+                avg_loss = sum(losses) / len(losses) if losses else 0
+                state.rolling_expectancy = round(wr * avg_win + (1 - wr) * avg_loss, 4)
+
     def get_all_states(self) -> Dict[str, Dict[str, Any]]:
         """Return all scanner states for dashboard display."""
         return {name: state.to_dict() for name, state in self._states.items()}
@@ -224,6 +319,9 @@ class ScannerWeightManager:
                 "total_r": state.total_r,
                 "edge_ratio": state.edge_ratio,
                 "reason": state.reason,
+                "rolling_expectancy": state.rolling_expectancy,
+                "recovery_stage": state.recovery_stage,
+                "shadow_trades": len(state.shadow_r_values),
             })
         # Sort: active first, then by expectancy
         status_order = {STATUS_ACTIVE: 0, STATUS_REDUCED: 1, STATUS_SUPPRESSED: 2, STATUS_SHADOW: 3}

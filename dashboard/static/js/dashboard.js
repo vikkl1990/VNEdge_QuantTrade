@@ -1396,6 +1396,12 @@
         updateAIInsights(aiInsights);
         updateMonitorReport(monitorReport);
         updateSignalStatus(signalStatus);
+
+        // VM Infrastructure (fetch every 30s, not every 5s)
+        if (!window._lastInfraFetch || Date.now() - window._lastInfraFetch > 30000) {
+            window._lastInfraFetch = Date.now();
+            api("/api/infra").then(updateInfra).catch(() => {});
+        }
     }
 
     function startRefresh() {
@@ -1436,6 +1442,115 @@
         if (s.includes("BTC")) return "symbol-btc";
         if (s.includes("ETH")) return "symbol-eth";
         return "";
+    }
+
+    // ── VM Infrastructure ────────────────────────────────────────────
+
+    function updateInfra(data) {
+        if (!data) return;
+
+        const el = (id) => document.getElementById(id);
+
+        // Current VM info
+        if (data.shape) el("vm-shape").textContent = data.shape;
+        if (data.ocpus) el("vm-ocpus").textContent = data.ocpus;
+
+        if (data.memory) {
+            const m = data.memory;
+            el("vm-memory-total").textContent = m.total_mb + " MB";
+            el("vm-memory-used").textContent = m.used_mb + " MB";
+            el("vm-memory-free").textContent = m.free_mb + " MB";
+            el("vm-swap-used").textContent = m.swap_used_mb + " / " + m.swap_total_mb + " MB";
+
+            // Memory bar
+            const bar = el("vm-memory-bar");
+            const pctEl = el("vm-memory-pct");
+            if (bar && pctEl) {
+                bar.style.width = m.percent + "%";
+                pctEl.textContent = m.percent.toFixed(0) + "%";
+                bar.className = "vm-memory-bar-inner" +
+                    (m.percent > 85 ? " critical" : m.percent > 70 ? " warn" : "");
+                pctEl.style.color = m.percent > 85 ? "var(--accent-sell)" : m.percent > 70 ? "var(--accent-warn)" : "var(--accent-buy)";
+            }
+
+            // Health indicator
+            const healthMsg = el("vm-health-msg");
+            if (healthMsg) {
+                if (m.percent > 85) {
+                    healthMsg.textContent = "CRITICAL: Memory usage " + m.percent.toFixed(0) + "% — VM may crash. Upgrade recommended!";
+                    healthMsg.className = "vm-health-indicator critical";
+                } else if (m.percent > 70) {
+                    healthMsg.textContent = "WARNING: Memory usage " + m.percent.toFixed(0) + "% — running low";
+                    healthMsg.className = "vm-health-indicator warning";
+                } else {
+                    healthMsg.textContent = "Healthy: Memory usage " + m.percent.toFixed(0) + "% — stable";
+                    healthMsg.className = "vm-health-indicator healthy";
+                }
+            }
+        }
+
+        if (data.cpu) {
+            el("vm-cpu-load").textContent = data.cpu.load_1m + " / " + data.cpu.load_5m + " / " + data.cpu.load_15m;
+        }
+
+        if (data.disk) {
+            el("vm-disk-used").textContent = data.disk.used_gb + " / " + data.disk.total_gb + " GB (" + data.disk.percent + "%)";
+        }
+
+        if (data.public_ip) el("vm-public-ip").textContent = data.public_ip;
+        if (data.os_uptime) {
+            el("vm-os-uptime").textContent = data.os_uptime;
+            el("vm-uptime-pill").textContent = "uptime: " + data.os_uptime;
+        }
+
+        // Shape pill
+        if (data.shape) {
+            el("vm-shape-pill").textContent = data.arch === "aarch64" ? "ARM A1.Flex" : "AMD E2.Micro";
+        }
+
+        // Status tag
+        const tag = el("vm-status-tag");
+        if (tag) {
+            if (data.memory && data.memory.percent > 85) {
+                tag.textContent = "CRITICAL";
+                tag.style.background = "rgba(255,23,68,0.18)";
+                tag.style.color = "#ff1744";
+                tag.style.borderColor = "rgba(255,23,68,0.35)";
+            } else if (data.memory && data.memory.percent > 70) {
+                tag.textContent = "WARNING";
+                tag.style.background = "rgba(255,171,0,0.18)";
+                tag.style.color = "#ffab00";
+                tag.style.borderColor = "rgba(255,171,0,0.35)";
+            } else {
+                tag.textContent = "HEALTHY";
+                tag.style.background = "rgba(0,230,118,0.18)";
+                tag.style.color = "#00e676";
+                tag.style.borderColor = "rgba(0,230,118,0.35)";
+            }
+        }
+
+        // Upgrade status
+        if (data.upgrade) {
+            const u = data.upgrade;
+            el("vm-upgrade-status").textContent = u.status || "not_started";
+            el("vm-upgrade-attempts").textContent = u.attempts != null ? u.attempts + " / " + (u.max_attempts || "--") : "--";
+            el("vm-upgrade-last").textContent = u.last_attempt ? new Date(u.last_attempt).toLocaleString() : "--";
+            el("vm-upgrade-started").textContent = u.started_at ? new Date(u.started_at).toLocaleString() : "--";
+
+            if (u.target_ocpus && u.target_memory_gb) {
+                el("vm-target-shape").textContent = "A1.Flex (" + u.target_ocpus + " OCPU / " + u.target_memory_gb + "GB)";
+            }
+
+            // Update health message with upgrade info
+            const healthMsg = el("vm-health-msg");
+            if (healthMsg && u.status === "retrying") {
+                healthMsg.textContent = "UPGRADING: Attempt " + u.attempts + "/" + (u.max_attempts || "?") + " — waiting for A1.Flex capacity";
+                healthMsg.className = "vm-health-indicator upgrading";
+            } else if (healthMsg && u.status === "complete") {
+                healthMsg.textContent = "UPGRADED: Now running on A1.Flex with " + (u.target_memory_gb || 4) + "GB RAM";
+                healthMsg.className = "vm-health-indicator healthy";
+            }
+        }
     }
 
     document.addEventListener("click", function (e) {

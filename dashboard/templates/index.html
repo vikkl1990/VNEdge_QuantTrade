@@ -452,6 +452,56 @@
         </div>
     </section>
 
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- VM INFRASTRUCTURE STATUS                                      -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-infra" id="card-infra">
+        <div class="section-header-row">
+            <h2><span class="section-icon">🖥️</span> VM Infrastructure <span class="section-tag infra-tag" id="vm-status-tag">CHECKING</span></h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="vm-shape-pill">--</span>
+                <span class="stat-pill" id="vm-uptime-pill">uptime: --</span>
+            </div>
+        </div>
+        <div class="infra-grid">
+            <div class="infra-panel">
+                <h3 class="infra-panel-title">Current VM</h3>
+                <div class="kv-grid">
+                    <span class="label">Shape</span>         <span class="value mono" id="vm-shape">--</span>
+                    <span class="label">OCPUs</span>         <span class="value mono" id="vm-ocpus">--</span>
+                    <span class="label">Memory</span>        <span class="value mono" id="vm-memory-total">--</span>
+                    <span class="label">Memory Used</span>   <span class="value mono" id="vm-memory-used">--</span>
+                    <span class="label">Memory Free</span>   <span class="value mono" id="vm-memory-free">--</span>
+                    <span class="label">Swap Used</span>     <span class="value mono" id="vm-swap-used">--</span>
+                    <span class="label">CPU Load</span>      <span class="value mono" id="vm-cpu-load">--</span>
+                    <span class="label">Disk Used</span>     <span class="value mono" id="vm-disk-used">--</span>
+                    <span class="label">Public IP</span>     <span class="value mono" id="vm-public-ip">--</span>
+                    <span class="label">OS Uptime</span>     <span class="value mono" id="vm-os-uptime">--</span>
+                </div>
+            </div>
+            <div class="infra-panel">
+                <h3 class="infra-panel-title">VM Upgrade Status</h3>
+                <div class="kv-grid">
+                    <span class="label">Target Shape</span>  <span class="value mono" id="vm-target-shape">A1.Flex (2 OCPU / 4GB)</span>
+                    <span class="label">Upgrade Status</span><span class="value mono" id="vm-upgrade-status">--</span>
+                    <span class="label">Attempts</span>      <span class="value mono" id="vm-upgrade-attempts">--</span>
+                    <span class="label">Last Attempt</span>  <span class="value mono" id="vm-upgrade-last">--</span>
+                    <span class="label">Started</span>       <span class="value mono" id="vm-upgrade-started">--</span>
+                </div>
+                <div class="vm-memory-bar-wrap" style="margin-top:12px">
+                    <div class="vm-memory-bar-label">Memory Usage</div>
+                    <div class="vm-memory-bar-outer">
+                        <div class="vm-memory-bar-inner" id="vm-memory-bar" style="width:0%"></div>
+                    </div>
+                    <div class="vm-memory-bar-pct" id="vm-memory-pct">0%</div>
+                </div>
+                <div class="vm-health-indicator" id="vm-health-msg" style="margin-top:8px;padding:6px 10px;border-radius:4px;font-size:0.8rem">
+                    Checking...
+                </div>
+            </div>
+        </div>
+    </section>
+
     <!-- Recent Alerts -->
     <section class="card span-2" id="card-alerts">
         <h2>Recent Alerts</h2>

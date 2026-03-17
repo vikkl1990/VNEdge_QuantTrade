@@ -7,6 +7,9 @@ for bot status, positions, signals, trade history, performance, and alerts.
 import asyncio
 import json
 import logging
+import os
+import platform
+import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -299,6 +302,7 @@ class DashboardServer:
         app.router.add_get("/api/ai/insights", self._handle_ai_insights)
         app.router.add_get("/api/monitor/report", self._handle_monitor_report)
         app.router.add_get("/api/signal-status", self._handle_signal_status)
+        app.router.add_get("/api/infra", self._handle_infra)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -432,6 +436,110 @@ class DashboardServer:
             data = self._strategy.get_scan_status()
         else:
             data = {}
+        return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_infra(self, request: web.Request) -> web.Response:
+        """Return VM infrastructure status including memory, CPU, disk, and upgrade status."""
+        import psutil  # noqa: F811
+
+        data: Dict[str, Any] = {}
+
+        try:
+            # Memory info
+            mem = psutil.virtual_memory()
+            swap = psutil.swap_memory()
+            data["memory"] = {
+                "total_mb": round(mem.total / 1024 / 1024),
+                "used_mb": round(mem.used / 1024 / 1024),
+                "free_mb": round(mem.available / 1024 / 1024),
+                "percent": mem.percent,
+                "swap_used_mb": round(swap.used / 1024 / 1024),
+                "swap_total_mb": round(swap.total / 1024 / 1024),
+            }
+
+            # CPU info
+            load_1, load_5, load_15 = os.getloadavg()
+            data["cpu"] = {
+                "count": psutil.cpu_count(),
+                "load_1m": round(load_1, 2),
+                "load_5m": round(load_5, 2),
+                "load_15m": round(load_15, 2),
+                "percent": psutil.cpu_percent(interval=0),
+            }
+
+            # Disk info
+            disk = shutil.disk_usage("/")
+            data["disk"] = {
+                "total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
+                "used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
+                "free_gb": round(disk.free / 1024 / 1024 / 1024, 1),
+                "percent": round((disk.used / disk.total) * 100, 1),
+            }
+
+            # OS uptime
+            boot_time = psutil.boot_time()
+            uptime_sec = int(time.time() - boot_time)
+            days, rem = divmod(uptime_sec, 86400)
+            hours, rem = divmod(rem, 3600)
+            mins, secs = divmod(rem, 60)
+            parts = []
+            if days:
+                parts.append(f"{days}d")
+            if hours:
+                parts.append(f"{hours}h")
+            parts.append(f"{mins}m")
+            data["os_uptime"] = " ".join(parts)
+
+            # Shape detection
+            cpu_count = psutil.cpu_count()
+            mem_gb = round(mem.total / 1024 / 1024 / 1024, 1)
+            arch = platform.machine()
+
+            if arch == "aarch64":
+                shape = f"VM.Standard.A1.Flex ({cpu_count} OCPU / {mem_gb}GB)"
+            elif mem_gb <= 1.1:
+                shape = f"VM.Standard.E2.1.Micro ({cpu_count} OCPU / {mem_gb}GB)"
+            else:
+                shape = f"VM.Standard.E2.1 ({cpu_count} OCPU / {mem_gb}GB)"
+
+            data["shape"] = shape
+            data["arch"] = arch
+            data["ocpus"] = cpu_count
+
+            # Public IP (best effort)
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["curl", "-s", "--max-time", "2", "http://169.254.169.254/opc/v1/vnics/"],
+                    capture_output=True, text=True, timeout=3
+                )
+                if result.returncode == 0:
+                    vnics = json.loads(result.stdout)
+                    if vnics and isinstance(vnics, list):
+                        data["public_ip"] = vnics[0].get("publicIp", "N/A")
+                    else:
+                        data["public_ip"] = "N/A"
+                else:
+                    data["public_ip"] = "N/A"
+            except Exception:
+                data["public_ip"] = "N/A"
+
+        except ImportError:
+            data["error"] = "psutil not installed"
+        except Exception as e:
+            data["error"] = str(e)
+
+        # VM upgrade status (read from status file if exists)
+        upgrade_status_file = Path.home() / "vm_upgrade_status.json"
+        if upgrade_status_file.exists():
+            try:
+                upgrade_data = json.loads(upgrade_status_file.read_text())
+                data["upgrade"] = upgrade_data
+            except Exception:
+                data["upgrade"] = {"status": "unknown"}
+        else:
+            data["upgrade"] = {"status": "not_started"}
+
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:

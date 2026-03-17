@@ -1637,3 +1637,89 @@ footer {
 .ss-setup-pill.not-triggered {
     opacity: 0.5;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   VM Infrastructure Card
+   ═══════════════════════════════════════════════════════════════════════ */
+.section-infra { border-top: 2px solid #7c3aed; }
+.infra-tag {
+    background: rgba(124, 58, 237, 0.18);
+    color: #a78bfa;
+    border: 1px solid rgba(124, 58, 237, 0.35);
+}
+.infra-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 0 8px;
+}
+.infra-panel {
+    background: rgba(0,0,0,0.15);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+}
+.infra-panel-title {
+    font-size: 0.85rem;
+    color: var(--accent-purple);
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+.vm-memory-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.vm-memory-bar-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.vm-memory-bar-outer {
+    flex: 1;
+    height: 14px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 7px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.vm-memory-bar-inner {
+    height: 100%;
+    border-radius: 7px;
+    transition: width 0.5s ease, background 0.5s ease;
+    background: var(--accent-buy);
+}
+.vm-memory-bar-inner.warn { background: var(--accent-warn); }
+.vm-memory-bar-inner.critical { background: var(--accent-sell); }
+.vm-memory-bar-pct {
+    font-size: 0.75rem;
+    font-weight: 600;
+    min-width: 32px;
+    text-align: right;
+}
+.vm-health-indicator {
+    font-weight: 500;
+}
+.vm-health-indicator.healthy {
+    background: rgba(0, 230, 118, 0.1);
+    border: 1px solid rgba(0, 230, 118, 0.3);
+    color: var(--accent-buy);
+}
+.vm-health-indicator.warning {
+    background: rgba(255, 171, 0, 0.1);
+    border: 1px solid rgba(255, 171, 0, 0.3);
+    color: var(--accent-warn);
+}
+.vm-health-indicator.critical {
+    background: rgba(255, 23, 68, 0.1);
+    border: 1px solid rgba(255, 23, 68, 0.3);
+    color: var(--accent-sell);
+}
+.vm-health-indicator.upgrading {
+    background: rgba(124, 58, 237, 0.1);
+    border: 1px solid rgba(124, 58, 237, 0.3);
+    color: var(--accent-purple);
+}
+
+@media (max-width: 768px) {
+    .infra-grid { grid-template-columns: 1fr; }
+}

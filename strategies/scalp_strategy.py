@@ -284,6 +284,7 @@ class ScalpStrategy(BaseStrategy):
             "_scan_ema_momentum": "EMA Momentum",
             "_scan_trend_continuation": "Trend Continuation",
             "_scan_rsi_divergence": "RSI Divergence",
+            "_scan_rsi_extreme": "RSI Extreme",
             "_scan_supertrend_flip": "Supertrend Flip",
             "_scan_bb_squeeze": "BB Squeeze",
             "_scan_momentum_surge": "Momentum Surge",
@@ -294,6 +295,7 @@ class ScalpStrategy(BaseStrategy):
             self._scan_ema_momentum,
             self._scan_trend_continuation,
             self._scan_rsi_divergence,
+            self._scan_rsi_extreme,            # NEW: catches oversold/overbought extremes
             # self._scan_supertrend_flip,  # DISABLED: 33% WR, -$1.10 — kills edge
             self._scan_bb_squeeze,
             # self._scan_momentum_surge,  # DISABLED: 38% WR, -$5.99, last 8 trades all losses
@@ -1297,7 +1299,145 @@ class ScalpStrategy(BaseStrategy):
         )
 
     # ==================================================================
-    # SETUP 6: Momentum Surge
+    # SETUP 6: RSI Extreme Reversal (Oversold/Overbought Bounce)
+    # ==================================================================
+
+    def _scan_rsi_extreme(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Catch reversals from extreme oversold/overbought conditions.
+
+        LONG:  RSI < 30 (oversold) + bullish reversal candle + RSI turning up
+        SHORT: RSI > 70 (overbought) + bearish reversal candle + RSI turning down
+
+        This fills the gap when all other scanners fail during extreme moves.
+        """
+        if len(df) < 5:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        prev2 = df.iloc[-3]
+        atr = last["atr"]
+        close = last["close"]
+        open_ = last["open"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        rsi = last["rsi"]
+        rsi_prev = prev["rsi"]
+        rsi_prev2 = prev2["rsi"]
+
+        if np.isnan(rsi) or np.isnan(rsi_prev):
+            return None
+
+        confs = []
+        score = 0
+        side = None
+
+        # --- OVERSOLD BOUNCE (LONG) ---
+        # RSI was deeply oversold and is now turning up
+        if rsi < 35 and rsi > rsi_prev and rsi_prev < 35:
+            bullish_candle = close > open_
+            # Price showing rejection (lower wick > body)
+            body = abs(close - open_)
+            lower_wick = min(close, open_) - last["low"]
+            has_rejection = lower_wick > body * 0.5 if body > 0 else lower_wick > atr * 0.3
+
+            if bullish_candle or has_rejection:
+                side = OrderSide.LONG
+                confs.append(f"RSI oversold bounce ({rsi:.0f})")
+                score += 30
+
+                if rsi < 25:
+                    confs.append("Extreme oversold")
+                    score += 10
+
+                if bullish_candle:
+                    confs.append("Bullish candle")
+                    score += 10
+
+                if has_rejection:
+                    confs.append("Lower wick rejection")
+                    score += 10
+
+        # --- OVERBOUGHT REVERSAL (SHORT) ---
+        elif rsi > 65 and rsi < rsi_prev and rsi_prev > 65:
+            bearish_candle = close < open_
+            body = abs(close - open_)
+            upper_wick = last["high"] - max(close, open_)
+            has_rejection = upper_wick > body * 0.5 if body > 0 else upper_wick > atr * 0.3
+
+            if bearish_candle or has_rejection:
+                side = OrderSide.SHORT
+                confs.append(f"RSI overbought reversal ({rsi:.0f})")
+                score += 30
+
+                if rsi > 75:
+                    confs.append("Extreme overbought")
+                    score += 10
+
+                if bearish_candle:
+                    confs.append("Bearish candle")
+                    score += 10
+
+                if has_rejection:
+                    confs.append("Upper wick rejection")
+                    score += 10
+
+        if side is None:
+            return None
+
+        # Volume confirmation
+        rel_vol = last.get("rel_vol", 1.0)
+        if not np.isnan(rel_vol) and rel_vol > 1.2:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 15
+        elif not np.isnan(rel_vol) and rel_vol > 0.8:
+            score += 5
+
+        # Supertrend alignment (bonus, not required)
+        st_dir = last.get("supertrend_dir", 0)
+        if (side == OrderSide.LONG and st_dir == 1) or (side == OrderSide.SHORT and st_dir == -1):
+            confs.append("Supertrend agrees")
+            score += 10
+
+        # BB %B at extreme (confirms oversold/overbought at BB boundary)
+        pct_b = last.get("bb_pct_b", 0.5)
+        if not np.isnan(pct_b):
+            if side == OrderSide.LONG and pct_b < 0.1:
+                confs.append("At lower Bollinger Band")
+                score += 10
+            elif side == OrderSide.SHORT and pct_b > 0.9:
+                confs.append("At upper Bollinger Band")
+                score += 10
+
+        # HTF alignment (bonus)
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 10
+
+        # 5m confirmation
+        if confirm_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("5m aligned")
+            score += 5
+
+        confidence = min(score, 100)
+        sl = close - atr * self.sl_atr_mult if side == OrderSide.LONG else close + atr * self.sl_atr_mult
+
+        return _SetupResult(
+            name="rsi_extreme",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP 7: Momentum Surge
     # ==================================================================
 
     def _scan_momentum_surge(

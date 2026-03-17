@@ -213,16 +213,27 @@ class MomentumTrendStrategy(BaseStrategy):
         except Exception:
             pass
 
-        # --- Step 3: Check chop filter ---
-        if self.chop_filter and regime_ctx.regime == MarketRegime.SIDEWAYS:
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": "Market regime SIDEWAYS — chop filter active",
-                "indicators": indicators, "regime": regime_ctx.regime.value,
-            }
-            return []
+        # --- Step 3: Regime-based confidence adjustment ---
+        # Instead of blocking entirely, raise the bar for risky regimes
+        regime_min_confidence = self.min_confidence  # default 70
+        regime_min_confirms = 4
 
-        if regime_ctx.regime.is_risky:
+        if self.chop_filter and regime_ctx.regime == MarketRegime.SIDEWAYS:
+            # Sideways: allow signals but require more confirmations
+            regime_min_confidence = 80
+            regime_min_confirms = 6
+            logger.debug("%s: SIDEWAYS regime — raising bar (conf≥%d, confirms≥%d)",
+                         symbol, regime_min_confidence, regime_min_confirms)
+
+        if regime_ctx.regime == MarketRegime.HIGH_VOLATILITY:
+            # High vol: allow signals but require strong confluence
+            regime_min_confidence = 75
+            regime_min_confirms = 5
+            logger.debug("%s: HIGH_VOLATILITY regime — raising bar (conf≥%d, confirms≥%d)",
+                         symbol, regime_min_confidence, regime_min_confirms)
+
+        if regime_ctx.regime == MarketRegime.LOW_LIQUIDITY:
+            # Low liquidity: still block — too dangerous
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"Risky regime: {regime_ctx.regime.value}",
@@ -258,11 +269,15 @@ class MomentumTrendStrategy(BaseStrategy):
         # --- Step 6: Look for setups ---
         signals: List[Signal] = []
 
-        long_signal = self._check_long_setup(symbol, df, htf_df, regime_ctx)
+        long_signal = self._check_long_setup(symbol, df, htf_df, regime_ctx,
+                                              min_confirms=regime_min_confirms,
+                                              min_conf=regime_min_confidence)
         if long_signal:
             signals.append(long_signal)
 
-        short_signal = self._check_short_setup(symbol, df, htf_df, regime_ctx)
+        short_signal = self._check_short_setup(symbol, df, htf_df, regime_ctx,
+                                               min_confirms=regime_min_confirms,
+                                               min_conf=regime_min_confidence)
         if short_signal:
             signals.append(short_signal)
 
@@ -291,6 +306,8 @@ class MomentumTrendStrategy(BaseStrategy):
         df: pd.DataFrame,
         htf_df: Optional[pd.DataFrame],
         regime: RegimeContext,
+        min_confirms: int = 4,
+        min_conf: int = 70,
     ) -> Optional[Signal]:
         """Check for a long (buy) setup."""
         last = df.iloc[-1]
@@ -392,8 +409,7 @@ class MomentumTrendStrategy(BaseStrategy):
             strong_confirmations += 1
             confirmations.append("HTF trend up")
 
-        # Need minimum confirmations (raised from 4 to 5 — filter marginal setups)
-        min_confirms = 4  # lowered from 5 — too restrictive for Delta India volume
+        # Need minimum confirmations (regime-adjusted)
         if strong_confirmations < min_confirms:
             return None
 
@@ -456,10 +472,11 @@ class MomentumTrendStrategy(BaseStrategy):
             )
             return None
 
-        if confidence < self.min_confidence:
+        effective_min_conf = max(self.min_confidence, min_conf)
+        if confidence < effective_min_conf:
             logger.debug(
                 "%s: LONG signal rejected - confidence %d below %d",
-                symbol, confidence, self.min_confidence,
+                symbol, confidence, effective_min_conf,
             )
             return None
 
@@ -520,6 +537,8 @@ class MomentumTrendStrategy(BaseStrategy):
         df: pd.DataFrame,
         htf_df: Optional[pd.DataFrame],
         regime: RegimeContext,
+        min_confirms: int = 4,
+        min_conf: int = 70,
     ) -> Optional[Signal]:
         """Check for a short (sell) setup - mirror of long logic."""
         last = df.iloc[-1]
@@ -610,7 +629,7 @@ class MomentumTrendStrategy(BaseStrategy):
             strong_confirmations += 1
             confirmations.append("HTF trend down")
 
-        min_confirms = 4  # lowered from 5 — too restrictive for Delta India volume  # was 4 — higher bar for SHORT signals too
+        # Need minimum confirmations (regime-adjusted)
         if strong_confirmations < min_confirms:
             return None
 
@@ -668,7 +687,8 @@ class MomentumTrendStrategy(BaseStrategy):
             )
             return None
 
-        if confidence < self.min_confidence:
+        effective_min_conf = max(self.min_confidence, min_conf)
+        if confidence < effective_min_conf:
             return None
 
         risk_reward = (entry_price - tp2) / risk_amount if risk_amount > 0 else 0

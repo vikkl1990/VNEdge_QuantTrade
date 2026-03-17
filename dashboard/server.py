@@ -13,6 +13,12 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
 # IST timezone (UTC+5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
 from pathlib import Path
@@ -440,9 +446,11 @@ class DashboardServer:
 
     async def _handle_infra(self, request: web.Request) -> web.Response:
         """Return VM infrastructure status including memory, CPU, disk, and upgrade status."""
-        import psutil  # noqa: F811
-
         data: Dict[str, Any] = {}
+
+        if not HAS_PSUTIL:
+            data["error"] = "psutil not installed"
+            return web.json_response(data, dumps=_safe_dumps)
 
         try:
             # Memory info
@@ -524,8 +532,6 @@ class DashboardServer:
             except Exception:
                 data["public_ip"] = "N/A"
 
-        except ImportError:
-            data["error"] = "psutil not installed"
         except Exception as e:
             data["error"] = str(e)
 

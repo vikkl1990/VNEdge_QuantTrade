@@ -63,8 +63,11 @@ update_status() {
 STATUSEOF
 }
 
+LAUNCH_RESULT_ID=""  # global: set by try_launch on success
+
 try_launch() {
     local ad="$1"
+    LAUNCH_RESULT_ID=""
     log "Attempting launch in $ad ($OCPUS OCPU / ${MEMORY_GB}GB RAM)..."
 
     local result
@@ -80,7 +83,11 @@ try_launch() {
         --metadata "{\"ssh_authorized_keys\": \"$SSH_KEY\"}" \
         --output json 2>&1) || true
 
-    if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['id'])" 2>/dev/null; then
+    local instance_id
+    instance_id=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['id'])" 2>/dev/null) || true
+
+    if [ -n "$instance_id" ] && [[ "$instance_id" == ocid1.instance* ]]; then
+        LAUNCH_RESULT_ID="$instance_id"
         return 0
     fi
 
@@ -162,17 +169,25 @@ setup_new_instance() {
     log "  ✅ SSH connected"
 
     # Install Python and dependencies
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -i "$SSH_KEY_FILE" opc@"$new_ip" bash <<'SETUP'
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i "$SSH_KEY_FILE" opc@"$new_ip" bash <<'SETUP'
 set -e
-echo "Installing Python 3.11 and dependencies..."
-sudo dnf install -y python3.11 python3.11-pip git 2>/dev/null || sudo yum install -y python3.11 python3.11-pip git 2>/dev/null
+echo "Installing Python and dependencies..."
+# Oracle Linux 9 (ARM)
+sudo dnf install -y python3 python3-pip git 2>/dev/null || \
+sudo yum install -y python3 python3-pip git 2>/dev/null || true
+
+# Install miniconda for better package management
+if [ ! -d "$HOME/miniconda3" ]; then
+    echo "Installing Miniconda..."
+    curl -sL "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh" -o /tmp/miniconda.sh
+    bash /tmp/miniconda.sh -b -p $HOME/miniconda3
+    rm /tmp/miniconda.sh
+    echo 'export PATH="$HOME/miniconda3/bin:$PATH"' >> ~/.bashrc
+    export PATH="$HOME/miniconda3/bin:$PATH"
+fi
 
 # Create project directory
 mkdir -p /home/opc/crypto-trading-bot
-
-# Set up Python alias
-echo 'alias python=python3.11' >> ~/.bashrc
-echo 'alias pip=pip3.11' >> ~/.bashrc
 
 echo "Base setup complete"
 SETUP
@@ -205,10 +220,16 @@ SETUP
         log "  ⚠️ Could not copy .env from old instance — copy manually!"
     fi
 
-    # Install pip requirements
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 -i "$SSH_KEY_FILE" opc@"$new_ip" bash <<'PIPREQ'
+    # Install pip requirements + create venv
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=120 -i "$SSH_KEY_FILE" opc@"$new_ip" bash <<'PIPREQ'
+export PATH="$HOME/miniconda3/bin:$PATH"
 cd /home/opc/crypto-trading-bot
-python3.11 -m pip install --user -r requirements.txt 2>/dev/null || pip3.11 install --user -r requirements.txt
+
+# Create virtualenv
+python3 -m venv /home/opc/botenv 2>/dev/null || $HOME/miniconda3/bin/python3 -m venv /home/opc/botenv
+source /home/opc/botenv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 echo "Pip packages installed"
 PIPREQ
 
@@ -263,9 +284,10 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
 
     # Try each AD
     for ad in "${ADS[@]}"; do
-        NEW_INSTANCE_ID=$(try_launch "$ad" 2>/dev/null || echo "")
+        try_launch "$ad" || true
+        NEW_INSTANCE_ID="$LAUNCH_RESULT_ID"
 
-        if [ -n "$NEW_INSTANCE_ID" ] && [ "$NEW_INSTANCE_ID" != "" ]; then
+        if [ -n "$NEW_INSTANCE_ID" ]; then
             log "🎉 Instance created! ID: $NEW_INSTANCE_ID"
             update_status "provisioned" "Instance created in $ad" "$NEW_INSTANCE_ID"
 

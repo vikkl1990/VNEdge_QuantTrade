@@ -1723,6 +1723,68 @@ footer {
 .ind-val.rsi-low { color: #06b6d4 !important; }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   R-Performance Engine Card
+   ═══════════════════════════════════════════════════════════════════════ */
+.section-r-metrics { border-top: 2px solid #06b6d4; }
+.r-tag {
+    background: rgba(6, 182, 212, 0.18);
+    color: #22d3ee;
+    border: 1px solid rgba(6, 182, 212, 0.35);
+}
+.r-global-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+}
+.r-metric-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+    transition: border-color 0.2s;
+}
+.r-metric-card:hover {
+    border-color: #06b6d4;
+}
+.r-metric-label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+}
+.r-metric-value {
+    display: block;
+    font-size: 1.3rem;
+    font-weight: 700;
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    color: var(--text-primary);
+}
+.r-metric-value.r-positive { color: var(--accent-buy); }
+.r-metric-value.r-negative { color: var(--accent-sell); }
+.r-metric-value.r-neutral  { color: var(--accent-warn); }
+
+#r-scanner-table th {
+    font-size: 0.7rem;
+    white-space: nowrap;
+}
+#r-scanner-table td {
+    font-family: "JetBrains Mono", "Fira Code", monospace;
+    font-size: 0.78rem;
+}
+.r-scanner-excellent { color: var(--accent-buy); }
+.r-scanner-good      { color: #22d3ee; }
+.r-scanner-warning   { color: var(--accent-warn); }
+.r-scanner-bad       { color: var(--accent-sell); }
+
+@media (max-width: 768px) {
+    .r-global-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
    VM Infrastructure Card
    ═══════════════════════════════════════════════════════════════════════ */
 .section-infra { border-top: 2px solid #7c3aed; }

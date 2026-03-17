@@ -459,6 +459,80 @@
     </section>
 
     <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- R-MULTIPLE PERFORMANCE ENGINE                                  -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <section class="card span-2 section-r-metrics" id="card-r-metrics">
+        <div class="section-header-row">
+            <h2><span class="section-icon">🧠</span> R-Performance Engine <span class="section-tag r-tag" id="r-status-tag">TRACKING</span></h2>
+            <div class="section-stats">
+                <span class="stat-pill" id="r-expectancy-pill">Exp: --</span>
+                <span class="stat-pill" id="r-edge-pill">Edge: --</span>
+            </div>
+        </div>
+
+        <!-- Global R-Metrics Summary -->
+        <div class="r-global-grid">
+            <div class="r-metric-card">
+                <span class="r-metric-label">Avg R</span>
+                <span class="r-metric-value" id="r-avg">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Total R</span>
+                <span class="r-metric-value" id="r-total">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Expectancy</span>
+                <span class="r-metric-value" id="r-expectancy">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Avg Win R</span>
+                <span class="r-metric-value" id="r-avg-win">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Avg Loss R</span>
+                <span class="r-metric-value" id="r-avg-loss">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Edge Ratio</span>
+                <span class="r-metric-value" id="r-edge-ratio">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Avg MAE</span>
+                <span class="r-metric-value" id="r-avg-mae">--</span>
+            </div>
+            <div class="r-metric-card">
+                <span class="r-metric-label">Avg MFE</span>
+                <span class="r-metric-value" id="r-avg-mfe">--</span>
+            </div>
+        </div>
+
+        <!-- Per-Scanner R-Metrics Table -->
+        <div class="table-wrap">
+            <table class="data-table" id="r-scanner-table">
+                <thead>
+                    <tr>
+                        <th>Scanner</th>
+                        <th>Trades</th>
+                        <th>WR%</th>
+                        <th>Avg R</th>
+                        <th>Expectancy</th>
+                        <th>Total R</th>
+                        <th>Avg Win R</th>
+                        <th>Avg Loss R</th>
+                        <th>Best R</th>
+                        <th>Worst R</th>
+                        <th>MAE</th>
+                        <th>MFE</th>
+                    </tr>
+                </thead>
+                <tbody id="r-scanner-body">
+                    <tr><td colspan="12" class="muted">Loading R-metrics...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
     <!-- VM INFRASTRUCTURE STATUS                                      -->
     <!-- ═══════════════════════════════════════════════════════════════ -->
     <section class="card span-2 section-infra" id="card-infra">

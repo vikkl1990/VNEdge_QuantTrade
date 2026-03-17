@@ -1399,6 +1399,89 @@
         }
     }
 
+    // ── R-Metrics Rendering ──────────────────────────────────────────
+    function updateRMetrics(data) {
+        if (!data || data.error) return;
+
+        const g = data.global || {};
+
+        // Helper: color R values
+        function rColor(val) {
+            if (val > 0.5) return "r-positive";
+            if (val > 0) return "r-neutral";
+            if (val < 0) return "r-negative";
+            return "";
+        }
+
+        function setR(id, val, decimals) {
+            const el = document.querySelector(id);
+            if (!el) return;
+            const n = Number(val || 0);
+            el.textContent = n.toFixed(decimals || 2) + "R";
+            el.className = "r-metric-value " + rColor(n);
+        }
+
+        setR("#r-avg", g.avg_r, 3);
+        setR("#r-total", g.total_r, 2);
+        setR("#r-expectancy", g.expectancy_r, 3);
+        setR("#r-avg-win", g.avg_win_r, 3);
+        setR("#r-avg-loss", g.avg_loss_r, 3);
+        setR("#r-avg-mae", g.avg_mae_r, 3);
+        setR("#r-avg-mfe", g.avg_mfe_r, 3);
+
+        // Edge ratio (not in R units)
+        const edgeEl = document.querySelector("#r-edge-ratio");
+        if (edgeEl) {
+            const e = Number(g.edge_ratio || 0);
+            edgeEl.textContent = e.toFixed(2);
+            edgeEl.className = "r-metric-value " + (e > 1.5 ? "r-positive" : e > 1 ? "r-neutral" : "r-negative");
+        }
+
+        // Header pills
+        const expPill = document.querySelector("#r-expectancy-pill");
+        if (expPill) {
+            const exp = Number(g.expectancy_r || 0);
+            expPill.textContent = "Exp: " + exp.toFixed(3) + "R";
+            expPill.style.color = exp > 0 ? "var(--accent-buy)" : "var(--accent-sell)";
+        }
+        const edgePill = document.querySelector("#r-edge-pill");
+        if (edgePill) {
+            const edge = Number(g.edge_ratio || 0);
+            edgePill.textContent = "Edge: " + edge.toFixed(2);
+            edgePill.style.color = edge > 1 ? "var(--accent-buy)" : "var(--accent-sell)";
+        }
+
+        // Per-scanner table
+        const tbody = document.querySelector("#r-scanner-body");
+        if (!tbody) return;
+        const scanners = data.by_scanner || [];
+        if (scanners.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="12" class="muted">No R-data yet (need closed trades)</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = scanners.map(s => {
+            const exp = Number(s.expectancy_r || 0);
+            const healthClass = exp > 0.3 ? "r-scanner-excellent" :
+                                exp > 0 ? "r-scanner-good" :
+                                exp > -0.3 ? "r-scanner-warning" : "r-scanner-bad";
+            return `<tr class="${healthClass}">
+                <td style="color:var(--text-primary)">${s.scanner || "unknown"}</td>
+                <td>${s.trades}</td>
+                <td>${Number(s.win_rate).toFixed(1)}%</td>
+                <td>${Number(s.avg_r).toFixed(3)}</td>
+                <td style="font-weight:700">${exp.toFixed(3)}</td>
+                <td>${Number(s.total_r).toFixed(2)}</td>
+                <td>${Number(s.avg_win_r).toFixed(3)}</td>
+                <td>${Number(s.avg_loss_r).toFixed(3)}</td>
+                <td>${Number(s.best_r).toFixed(2)}</td>
+                <td>${Number(s.worst_r).toFixed(2)}</td>
+                <td>${Number(s.avg_mae_r).toFixed(3)}</td>
+                <td>${Number(s.avg_mfe_r).toFixed(3)}</td>
+            </tr>`;
+        }).join("");
+    }
+
     async function refreshAll() {
         const [status, positions, signals, performance, alerts, trackerStats, trackerActive, trackerClosed, aiInsights, monitorReport, signalStatus] = await Promise.all([
             api("/api/status"),
@@ -1499,6 +1582,12 @@
 
         // Signal drought indicator
         updateSignalDrought(signals, trackerClosed);
+
+        // R-Metrics (fetch every 30s, not every 5s)
+        if (!window._lastRMetricsFetch || Date.now() - window._lastRMetricsFetch > 30000) {
+            window._lastRMetricsFetch = Date.now();
+            api("/api/r-metrics").then(updateRMetrics).catch(() => {});
+        }
 
         // VM Infrastructure (fetch every 30s, not every 5s)
         if (!window._lastInfraFetch || Date.now() - window._lastInfraFetch > 30000) {

@@ -88,6 +88,12 @@ class TrackedSignal:
     time_stop_triggered: bool = False  # did dead-trade time stop fire?
     exit_reason_detailed: str = ""     # detailed exit reason tag
 
+    # R-multiple metrics
+    initial_risk: float = 0.0         # |entry - stop_loss| at entry (the "1R")
+    exit_r: float = 0.0              # final P&L in R-multiples
+    mae_r: float = 0.0              # Max Adverse Excursion in R (worst drawdown)
+    mfe_r: float = 0.0              # Max Favorable Excursion in R (best unrealized)
+
     # Tracking state
     status: str = "active"  # active, tp1_hit, tp2_hit, tp3_hit, stopped, expired
     tp1_hit: bool = False
@@ -123,6 +129,9 @@ class TrackedSignal:
             ts.contract_size = cs
             ts.contracts = max(1, int(raw))
             ts.quantity = round(ts.contracts * cs, 6)
+        # Backfill initial_risk for signals created before R-tracking
+        if ts.initial_risk == 0 and ts.entry_price > 0 and ts.stop_loss > 0:
+            ts.initial_risk = abs(ts.entry_price - ts.stop_loss)
         return ts
 
     @classmethod
@@ -257,6 +266,7 @@ class TrackedSignal:
             contracts=num_contracts,
             quantity=round(quantity, 6),
             leverage_cap_source=lev_cap_source,
+            initial_risk=abs(entry - sl) if entry > 0 and sl > 0 else 0.0,
             entry_time=sig.get("timestamp", datetime.now(timezone.utc).isoformat()),
             highest_price=entry,
             lowest_price=entry,
@@ -320,6 +330,17 @@ class SignalTracker:
                 ts.lowest_price = price
 
             is_long = ts.side == "long"
+
+            # Update MAE/MFE in R-multiples (live tracking)
+            if ts.initial_risk > 0:
+                if is_long:
+                    fav = (ts.highest_price - ts.entry_price) / ts.initial_risk
+                    adv = (ts.entry_price - ts.lowest_price) / ts.initial_risk
+                else:
+                    fav = (ts.entry_price - ts.lowest_price) / ts.initial_risk
+                    adv = (ts.highest_price - ts.entry_price) / ts.initial_risk
+                ts.mfe_r = round(max(ts.mfe_r, fav), 4)
+                ts.mae_r = round(max(ts.mae_r, adv), 4)
             now_iso = datetime.now(timezone.utc).isoformat()
 
             # -- Check Stop Loss --
@@ -676,6 +697,35 @@ class SignalTracker:
         # Store net values (the "official" PnL)
         ts.pnl_usd = round(ts.position_size_usd * net_pct / 100, 2)
 
+        # Calculate exit R-multiple: net P&L expressed in risk units
+        if ts.initial_risk > 0:
+            if is_long:
+                raw_r = (exit_price - ts.entry_price) / ts.initial_risk
+            else:
+                raw_r = (ts.entry_price - exit_price) / ts.initial_risk
+            # For partial exits (TP split), use weighted R
+            if ts.tp3_hit:
+                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
+                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
+                         0.30 * ((ts.tp2 - ts.entry_price) / ts.initial_risk if is_long
+                         else (ts.entry_price - ts.tp2) / ts.initial_risk) +
+                         0.30 * raw_r)
+            elif ts.tp2_hit:
+                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
+                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
+                         0.30 * ((ts.tp2 - ts.entry_price) / ts.initial_risk if is_long
+                         else (ts.entry_price - ts.tp2) / ts.initial_risk) +
+                         0.30 * raw_r)
+            elif ts.tp1_hit:
+                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
+                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
+                         0.60 * raw_r)
+            else:
+                r_val = raw_r
+            ts.exit_r = round(r_val, 4)
+        else:
+            ts.exit_r = 0.0
+
         return net_pct
 
     # ------------------------------------------------------------------
@@ -718,11 +768,37 @@ class SignalTracker:
         by_setup: Dict[str, Dict] = {}
         by_symbol: Dict[str, Dict] = {}
 
+        # R-metric accumulators
+        all_r_values: List[float] = []
+        all_mae: List[float] = []
+        all_mfe: List[float] = []
+
         for c in self._closed:
             pnl = c.get("pnl_pct", 0)
             status = c.get("status", "")
             setup = c.get("setup_type", "unknown")
             symbol = c.get("symbol", "unknown")
+            exit_r = c.get("exit_r", 0.0)
+            mae_r = c.get("mae_r", 0.0)
+            mfe_r = c.get("mfe_r", 0.0)
+
+            # Backfill R for old trades that don't have it
+            if exit_r == 0 and c.get("initial_risk", 0) == 0:
+                entry = c.get("entry_price", 0)
+                sl = c.get("stop_loss", 0)
+                ep = c.get("exit_price", 0)
+                if entry > 0 and sl > 0 and ep > 0:
+                    ir = abs(entry - sl)
+                    if ir > 0:
+                        if c.get("side", "long") == "long":
+                            exit_r = (ep - entry) / ir
+                        else:
+                            exit_r = (entry - ep) / ir
+                        exit_r = round(exit_r, 4)
+
+            all_r_values.append(exit_r)
+            all_mae.append(mae_r)
+            all_mfe.append(mfe_r)
 
             # Win/loss classification
             if pnl > 0:
@@ -740,13 +816,19 @@ class SignalTracker:
             if c.get("tp3_hit"):
                 tp3_count += 1
 
-            # Per-setup stats
+            # Per-setup stats (with R-metrics)
             if setup not in by_setup:
-                by_setup[setup] = {"total": 0, "wins": 0, "pnl": 0.0}
+                by_setup[setup] = {
+                    "total": 0, "wins": 0, "pnl": 0.0,
+                    "r_values": [], "mae_values": [], "mfe_values": [],
+                }
             by_setup[setup]["total"] += 1
             if pnl > 0:
                 by_setup[setup]["wins"] += 1
             by_setup[setup]["pnl"] += pnl
+            by_setup[setup]["r_values"].append(exit_r)
+            by_setup[setup]["mae_values"].append(mae_r)
+            by_setup[setup]["mfe_values"].append(mfe_r)
 
             # Per-symbol stats
             if symbol not in by_symbol:
@@ -756,12 +838,36 @@ class SignalTracker:
                 by_symbol[symbol]["wins"] += 1
             by_symbol[symbol]["pnl"] += pnl
 
-        # Calculate win rates per setup
-        for setup in by_setup.values():
-            setup["win_rate"] = round(
-                (setup["wins"] / setup["total"] * 100) if setup["total"] else 0, 1
+        # Calculate win rates + R-metrics per setup
+        for setup_data in by_setup.values():
+            n = setup_data["total"]
+            setup_data["win_rate"] = round(
+                (setup_data["wins"] / n * 100) if n else 0, 1
             )
-            setup["pnl"] = round(setup["pnl"], 2)
+            setup_data["pnl"] = round(setup_data["pnl"], 2)
+
+            # R-metrics for this scanner
+            r_vals = setup_data.pop("r_values")
+            mae_vals = setup_data.pop("mae_values")
+            mfe_vals = setup_data.pop("mfe_values")
+
+            setup_data["avg_r"] = round(sum(r_vals) / len(r_vals), 4) if r_vals else 0.0
+            setup_data["total_r"] = round(sum(r_vals), 4)
+            win_r = [r for r in r_vals if r > 0]
+            loss_r = [r for r in r_vals if r < 0]
+            setup_data["avg_win_r"] = round(sum(win_r) / len(win_r), 4) if win_r else 0.0
+            setup_data["avg_loss_r"] = round(sum(loss_r) / len(loss_r), 4) if loss_r else 0.0
+            setup_data["best_r"] = round(max(r_vals), 4) if r_vals else 0.0
+            setup_data["worst_r"] = round(min(r_vals), 4) if r_vals else 0.0
+            setup_data["avg_mae_r"] = round(sum(mae_vals) / len(mae_vals), 4) if mae_vals else 0.0
+            setup_data["avg_mfe_r"] = round(sum(mfe_vals) / len(mfe_vals), 4) if mfe_vals else 0.0
+
+            # Expectancy = (WR × avg_win_R) - (LR × avg_loss_R)
+            wr_frac = setup_data["wins"] / n if n else 0
+            lr_frac = 1 - wr_frac
+            setup_data["expectancy_r"] = round(
+                wr_frac * setup_data["avg_win_r"] + lr_frac * setup_data["avg_loss_r"], 4
+            )
 
         for sym in by_symbol.values():
             sym["win_rate"] = round(
@@ -820,6 +926,61 @@ class SignalTracker:
                 "settlement_pct": self.SETTLEMENT_FEE_PCT,
                 "round_trip_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
             },
+            # R-Multiple metrics (global)
+            "r_metrics": self._calc_global_r_metrics(all_r_values, all_mae, all_mfe, win_count, total),
+        }
+
+    @staticmethod
+    def _calc_global_r_metrics(
+        r_values: List[float], mae_values: List[float],
+        mfe_values: List[float], win_count: int, total: int,
+    ) -> Dict[str, Any]:
+        """Calculate global R-multiple performance metrics."""
+        if not r_values:
+            return {
+                "avg_r": 0.0, "total_r": 0.0, "expectancy_r": 0.0,
+                "avg_win_r": 0.0, "avg_loss_r": 0.0,
+                "best_r": 0.0, "worst_r": 0.0,
+                "avg_mae_r": 0.0, "avg_mfe_r": 0.0,
+                "edge_ratio": 0.0, "r_std": 0.0,
+            }
+
+        win_r = [r for r in r_values if r > 0]
+        loss_r = [r for r in r_values if r < 0]
+        avg_r = sum(r_values) / len(r_values)
+        avg_win = sum(win_r) / len(win_r) if win_r else 0.0
+        avg_loss = sum(loss_r) / len(loss_r) if loss_r else 0.0
+
+        # Expectancy = (WR × avg_win_R) + (LR × avg_loss_R)
+        wr_frac = win_count / total if total else 0
+        lr_frac = 1 - wr_frac
+        expectancy = wr_frac * avg_win + lr_frac * avg_loss
+
+        # Edge ratio = avg MFE / avg MAE (>1 means winners run further than losers dip)
+        avg_mae = sum(mae_values) / len(mae_values) if mae_values else 0.0
+        avg_mfe = sum(mfe_values) / len(mfe_values) if mfe_values else 0.0
+        edge_ratio = avg_mfe / avg_mae if avg_mae > 0 else 0.0
+
+        # R standard deviation (consistency measure)
+        if len(r_values) > 1:
+            mean_r = sum(r_values) / len(r_values)
+            variance = sum((r - mean_r) ** 2 for r in r_values) / (len(r_values) - 1)
+            r_std = variance ** 0.5
+        else:
+            r_std = 0.0
+
+        return {
+            "avg_r": round(avg_r, 4),
+            "total_r": round(sum(r_values), 4),
+            "expectancy_r": round(expectancy, 4),
+            "avg_win_r": round(avg_win, 4),
+            "avg_loss_r": round(avg_loss, 4),
+            "best_r": round(max(r_values), 4),
+            "worst_r": round(min(r_values), 4),
+            "avg_mae_r": round(avg_mae, 4),
+            "avg_mfe_r": round(avg_mfe, 4),
+            "edge_ratio": round(edge_ratio, 4),
+            "r_std": round(r_std, 4),
         }
 
     # ------------------------------------------------------------------

@@ -309,6 +309,7 @@ class DashboardServer:
         app.router.add_get("/api/monitor/report", self._handle_monitor_report)
         app.router.add_get("/api/signal-status", self._handle_signal_status)
         app.router.add_get("/api/infra", self._handle_infra)
+        app.router.add_get("/api/r-metrics", self._handle_r_metrics)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -547,6 +548,43 @@ class DashboardServer:
             data["upgrade"] = {"status": "not_started"}
 
         return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_r_metrics(self, request: web.Request) -> web.Response:
+        """Return R-multiple performance metrics per scanner and global."""
+        if not self._signal_tracker:
+            return web.json_response({"error": "tracker not initialized"}, dumps=_safe_dumps)
+
+        stats = self._signal_tracker.get_stats()
+        r_global = stats.get("r_metrics", {})
+        by_setup = stats.get("by_setup", {})
+
+        # Build per-scanner R-metrics table
+        scanner_metrics = []
+        for setup_name, data in by_setup.items():
+            scanner_metrics.append({
+                "scanner": setup_name,
+                "trades": data.get("total", 0),
+                "wins": data.get("wins", 0),
+                "win_rate": data.get("win_rate", 0),
+                "avg_r": data.get("avg_r", 0),
+                "total_r": data.get("total_r", 0),
+                "expectancy_r": data.get("expectancy_r", 0),
+                "avg_win_r": data.get("avg_win_r", 0),
+                "avg_loss_r": data.get("avg_loss_r", 0),
+                "best_r": data.get("best_r", 0),
+                "worst_r": data.get("worst_r", 0),
+                "avg_mae_r": data.get("avg_mae_r", 0),
+                "avg_mfe_r": data.get("avg_mfe_r", 0),
+                "pnl_pct": data.get("pnl", 0),
+            })
+
+        # Sort by expectancy (best scanners first)
+        scanner_metrics.sort(key=lambda x: x["expectancy_r"], reverse=True)
+
+        return web.json_response({
+            "global": r_global,
+            "by_scanner": scanner_metrics,
+        }, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

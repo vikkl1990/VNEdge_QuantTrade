@@ -296,26 +296,8 @@ class ScalpStrategy(BaseStrategy):
         confirm_df = candles_dict.get(self.confirm_tf)
         htf_df = candles_dict.get(self.htf)
 
-        # Rate limit
+        # Track signal count (no blocking — just tracking for dashboard)
         self._signal_count_hr = [t for t in self._signal_count_hr if now - t < 3600]
-        if len(self._signal_count_hr) >= self.max_signals_hr:
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"Rate limited ({len(self._signal_count_hr)}/{self.max_signals_hr} signals this hour)",
-                "indicators": {}, "setups_checked": [],
-            }
-            return []
-
-        # Cooldown per symbol
-        last_sig = self._last_signal_time.get(symbol, 0)
-        if now - last_sig < self.cooldown_sec:
-            remaining = int(self.cooldown_sec - (now - last_sig))
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"Cooldown active ({remaining}s remaining)",
-                "indicators": {}, "setups_checked": [],
-            }
-            return []
 
         # ── SESSION-AWARE GATING ──
         # Data from 112 trades: Asia Late 37% WR, Asia Early 50%, Europe 63%, US 57%
@@ -645,24 +627,10 @@ class ScalpStrategy(BaseStrategy):
         # ── REGIME-FIRST FILTERING ──
         # Only run scanners allowed in the current regime.
         # This prevents counter-trend signals from ever being generated.
-        allowed_scanners = []
-        for scanner_func in all_scanners:
-            setup_name = scanner_func.__name__.replace("_scan_", "")
-            if is_scanner_allowed_in_regime(setup_name, regime):
-                allowed_scanners.append(scanner_func)
-            else:
-                self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
-                label = scanner_names.get(scanner_func.__name__, scanner_func.__name__)
-                setups_checked.append({
-                    "name": label, "triggered": False,
-                    "reason": f"REGIME BLOCKED: {setup_name} not allowed in {regime}",
-                    "scanner_status": self._weight_manager.get_status(setup_name),
-                    "scanner_weight": self._weight_manager.get_weight(setup_name),
-                })
-
+        # All scanners run — no regime blocking. Regime applied as confidence penalty later.
         scan_results: List[ScanResult] = []
 
-        for scanner in allowed_scanners:
+        for scanner in all_scanners:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
             setup_name = scanner.__name__.replace("_scan_", "")
             diag = scanner_diagnostics.get(label, "")
@@ -840,198 +808,34 @@ class ScalpStrategy(BaseStrategy):
                     best.confidence = min(best.confidence + 5, 100)
                     best.confirmations.append(f"Near Fib {nearest}")
 
-        # ── CHOCH filter (hard block — structural break is risk-critical) ──
+        # ── ALL SOFT PENALTIES — NO HARD BLOCKS ──
+        # Every signal fires. Confidence score determines quality.
+
+        # CHOCH: boost if aligned, penalize if conflicts (no block)
         if choch_data.get("choch_detected", False):
             choch_dir = choch_data.get("direction")
             choch_strength = choch_data.get("strength", 0)
-            choch_bars = choch_data.get("bars_ago", 999)
-            if choch_bars <= 10 and choch_strength >= 60:
-                conflicts = (
-                    (choch_dir == "bearish" and best.side == OrderSide.LONG) or
-                    (choch_dir == "bullish" and best.side == OrderSide.SHORT)
-                )
-                if conflicts:
-                    self._funnel["blocked_htf"] += 1
-                    self.last_scan_status[symbol] = {
-                        "time": now_iso, "signal": False,
-                        "reason": f"CHOCH filter: {choch_dir} structure break blocks {best.side.value} ({best.name})",
-                        "indicators": indicators,
-                        "setups_checked": setups_checked,
-                        "funnel": dict(self._funnel),
-                    }
-                    return []
-                # CHOCH aligns → boost
-                if (choch_dir == "bullish" and best.side == OrderSide.LONG) or \
-                   (choch_dir == "bearish" and best.side == OrderSide.SHORT):
-                    best.confidence = min(best.confidence + 10, 100)
-                    best.confirmations.append(f"CHOCH {choch_dir} (str={choch_strength})")
+            if (choch_dir == "bullish" and best.side == OrderSide.LONG) or \
+               (choch_dir == "bearish" and best.side == OrderSide.SHORT):
+                best.confidence = min(best.confidence + 10, 100)
+                best.confirmations.append(f"CHOCH {choch_dir} (str={choch_strength})")
+            elif choch_strength >= 60:
+                best.confidence = max(best.confidence - 10, 0)
+                best.confirmations.append(f"CHOCH conflict penalty -10")
 
-        # ── Regime-aware filtering ──
-        regime_action = self._regime_filter.get_action(
-            regime, best.side.value, best_sr.tier, best_sr.scanner_name
-        )
-        self._last_regime_info["action"] = {
-            "allow_trade": regime_action.allow_trade,
-            "size_multiplier": regime_action.size_multiplier,
-            "sl_multiplier": regime_action.sl_multiplier,
-            "min_confidence": regime_action.min_confidence,
-            "reason": regime_action.reason,
-        }
-
-        if not regime_action.allow_trade:
-            self._funnel["blocked_regime"] += 1
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"REGIME FILTER: {regime_action.reason} ({regime})",
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-                "funnel": dict(self._funnel),
-            }
-            return []
-
-        # ── Regime-based scanner confidence boost ──
+        # Regime: boost/penalize (no block)
         regime_boost = get_regime_scanner_boost(best_sr.scanner_name, regime)
         if regime_boost > 0:
             best.confidence = min(best.confidence + regime_boost, 100)
             best.confirmations.append(f"Regime boost +{regime_boost} ({regime})")
 
-        # ── EV GATE (expected value filter) ──
-        # Only trade when empirical expected value is positive.
-        # Uses per-scanner win rate + avg_win_R + avg_loss_R from trade history.
+        # EV: compute and add to metadata (no block)
         setup_name_ev = best_sr.scanner_name
-        ev_result = self._ev_engine.compute_ev(
-            setup_name_ev,
-            self._cached_by_setup,
-            regime=regime,
-        )
+        ev_result = self._ev_engine.compute_ev(setup_name_ev, self._cached_by_setup, regime=regime)
         self._last_ev_results[setup_name_ev] = ev_result.to_dict()
-
-        if ev_result.verdict == "REJECT":
-            self._funnel["blocked_ev"] = self._funnel.get("blocked_ev", 0) + 1
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"EV REJECT: {ev_result.reason}",
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-                "funnel": dict(self._funnel),
-            }
-            # Log feature even though rejected (for ML training — negative examples)
-            self._feature_logger.log_signal(
-                symbol=symbol, scanner=setup_name_ev,
-                side=best.side.value if best.side else "",
-                tier=best_sr.tier, score=best.confidence,
-                weighted_score=best_sr.weighted_score,
-                entry_price=best.entry_price, stop_loss=best.stop_loss,
-                atr=best.atr, indicators=indicators, regime=regime,
-                scanner_weight=best_sr.scanner_weight,
-                scanner_expectancy=ev_result.ev, ev=ev_result.ev,
-            )
-            return []
-
-        # EV size adjustment (REDUCED verdict → smaller position)
         ev_size_mult = ev_result.size_multiplier
 
-        # Apply regime-based confidence size multiplier to metadata
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
-
-        # ── Session-aware confidence threshold ──
-        # Weak signals (tier=weak) get a lower threshold — they're still valid
-        session_min = getattr(self, '_session_min_confidence', self.min_confidence)
-        effective_min = max(self.min_confidence, session_min)
-        # Lower the floor for strong-weighted scanners
-        if best_sr.scanner_weight >= 1.2:
-            effective_min = max(effective_min - 5, 55)
-        if best.confidence < effective_min and best_sr.tier != TIER_WEAK:
-            session_name = getattr(self, '_current_session', 'unknown')
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"Best setup '{best.name}' confidence {best.confidence} < {effective_min} threshold (session: {session_name})",
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-                "funnel": dict(self._funnel),
-            }
-            return []
-
-        # ── FEE-AWARE TRADE FILTER (hard block — no edge below fee threshold) ──
-        # Uses target-based expected move (2× ATR) since targets are 1.5-2× ATR.
-        # Round-trip fee = entry taker + exit taker = 0.12% (settlement is periodic, not per-trade).
-        # High-confidence (90+): 0.8× threshold (proven setups get extra leeway).
-        _fee_atr = getattr(self, '_confirm_atr', 0) or best.atr
-        if _fee_atr > 0 and best.entry_price > 0:
-            expected_move_pct = (_fee_atr * 2.0 / best.entry_price) * 100
-            round_trip_fee_pct = 0.12  # taker 0.06% × 2 sides
-            fee_mult = 0.8 if best.confidence >= 90 else 1.0
-            fee_threshold = round_trip_fee_pct * fee_mult
-            if expected_move_pct < fee_threshold:
-                self._funnel["blocked_cost"] += 1
-                self.last_scan_status[symbol] = {
-                    "time": now_iso, "signal": False,
-                    "reason": f"FEE FILTER: expected move {expected_move_pct:.3f}% < {fee_mult:.1f}× fees ({fee_threshold:.3f}%)",
-                    "indicators": indicators,
-                    "setups_checked": setups_checked,
-                    "funnel": dict(self._funnel),
-                }
-                return []
-
-        # ── IMPULSE-CHASE FILTER (converted to soft penalty for most cases) ──
-        last_row = df.iloc[-1]
-        _impulse_atr = getattr(self, '_confirm_atr', 0) or best.atr
-        impulse_penalty = 0
-        if _impulse_atr > 0 and best.entry_price > 0:
-            # 1. Large candle body → penalty (not hard block unless extreme)
-            candle_body = abs(float(last_row.get("close", 0)) - float(last_row.get("open", 0)))
-            if candle_body > _impulse_atr * 1.5:
-                # Extreme chasing — hard block
-                self.last_scan_status[symbol] = {
-                    "time": now_iso, "signal": False,
-                    "reason": f"IMPULSE: extreme candle body {candle_body:.2f} > 1.5× ATR — hard block",
-                    "indicators": indicators,
-                    "setups_checked": setups_checked,
-                    "funnel": dict(self._funnel),
-                }
-                return []
-            elif candle_body > _impulse_atr * 1.0:
-                impulse_penalty += 10
-                best_sr.penalties.append(f"Large candle body ({candle_body:.1f} > 1.0×ATR)")
-
-            # 2. Price stretched from EMA8 → penalty (not hard block)
-            ema8_val = float(last_row.get("ema_8", 0))
-            close_val = float(last_row.get("close", 0))
-            if ema8_val > 0:
-                dist_from_ema8 = abs(close_val - ema8_val)
-                if dist_from_ema8 > _impulse_atr * 0.8:
-                    impulse_penalty += 15
-                    best_sr.penalties.append(f"Stretched from EMA8 ({dist_from_ema8:.1f} > 0.8×ATR)")
-                elif dist_from_ema8 > _impulse_atr * 0.5:
-                    impulse_penalty += 8
-                    best_sr.penalties.append(f"Extended from EMA8 ({dist_from_ema8:.1f} > 0.5×ATR)")
-
-            # 3. Three consecutive expansion candles → penalty
-            if len(df) >= 4:
-                bodies = []
-                for i in range(-3, 0):
-                    row = df.iloc[i]
-                    body = float(row.get("close", 0)) - float(row.get("open", 0))
-                    bodies.append(body)
-                same_dir = all(b > 0 for b in bodies) or all(b < 0 for b in bodies)
-                all_large = all(abs(b) > _impulse_atr * 0.6 for b in bodies)
-                if same_dir and all_large:
-                    impulse_penalty += 20
-                    best_sr.penalties.append("3 consecutive expansion candles")
-
-        # Apply impulse penalty to confidence
-        if impulse_penalty > 0:
-            best.confidence = max(best.confidence - impulse_penalty, 0)
-            # Re-check: if penalty drops below minimum, reject
-            if best.confidence < 50:
-                self.last_scan_status[symbol] = {
-                    "time": now_iso, "signal": False,
-                    "reason": f"IMPULSE penalty dropped confidence to {best.confidence} (penalty: {impulse_penalty}pts)",
-                    "indicators": indicators,
-                    "setups_checked": setups_checked,
-                    "funnel": dict(self._funnel),
-                }
-                return []
 
         # ── Build Signal ──
         signal = self._build_signal(
@@ -1047,11 +851,11 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["scanner_weight"] = best_sr.scanner_weight
         signal.metadata["scanner_status"] = best_sr.scanner_status
         signal.metadata["weighted_score"] = best_sr.weighted_score
-        signal.metadata["impulse_penalty"] = impulse_penalty
+        signal.metadata["impulse_penalty"] = 0  # no impulse blocking
         signal.metadata["penalties"] = best_sr.penalties
         signal.metadata["regime"] = regime
-        signal.metadata["regime_size_mult"] = regime_action.size_multiplier
-        signal.metadata["regime_sl_mult"] = regime_action.sl_multiplier
+        signal.metadata["regime_size_mult"] = 1.0  # no regime blocking
+        signal.metadata["regime_sl_mult"] = 1.0
         signal.metadata["confidence_size_mult"] = confidence_size_mult
         signal.metadata["ev"] = round(ev_result.ev, 4)
         signal.metadata["ev_verdict"] = ev_result.verdict
@@ -1131,7 +935,10 @@ class ScalpStrategy(BaseStrategy):
         """Compute a lean set of indicators for scalp analysis."""
         # Skip if already pre-computed (backtest optimization)
         if "ema_8" in df.columns and "rsi" in df.columns and "atr" in df.columns:
-            return df
+            # Verify the last row has valid indicator values
+            last = df.iloc[-1]
+            if not (pd.isna(last.get("ema_8", float("nan"))) or pd.isna(last.get("rsi", float("nan")))):
+                return df
         result = df.copy()
 
         # EMAs

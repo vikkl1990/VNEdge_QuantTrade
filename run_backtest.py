@@ -153,8 +153,9 @@ class ScalpBacktester:
         self.config = config
         self.trigger_tf = trigger_tf  # primary analysis timeframe
         self.strategy = ScalpStrategy(config)
-        # Set the strategy's primary TF to match
+        # Override ALL timeframes to match the trigger TF chain
         self.strategy.primary_tf = trigger_tf
+        # confirm/htf will be set dynamically in run() based on trigger
         self.positions: Dict[str, SimPosition] = {}
         self.closed_trades: List[Dict[str, Any]] = []
         self.equity_curve: List[Tuple[datetime, float]] = []
@@ -321,9 +322,7 @@ class ScalpBacktester:
                 if bar_idx < 200:  # skip first 200 bars for indicator warmup
                     continue
 
-                # Block weekends (Sat=5, Sun=6) — data: 11% WR, -$339 over 3 months
-                if current_ts.weekday() >= 5:
-                    continue
+                # No weekend blocking — all signals fire
 
                 # Build multi-TF candles dict — use pre-computed slices
                 candles_dict: Dict[str, pd.DataFrame] = {}

@@ -122,8 +122,8 @@ class SimPosition:
             gross = self.tp1_pnl_locked + self.tp2_pnl_locked + remaining_pnl
         else:
             gross = self.pnl_at(self.exit_price)
-        # Deduct fees (0.18% round trip)
-        return gross - 0.18
+        # Deduct fees — MAKER (limit orders): 0.04% round-trip
+        return gross - 0.04
 
     def calc_final_r(self) -> float:
         """Calculate final R-multiple using 35/35/30 split."""
@@ -321,6 +321,10 @@ class ScalpBacktester:
                 if bar_idx < 200:  # skip first 200 bars for indicator warmup
                     continue
 
+                # Block weekends (Sat=5, Sun=6) — data: 11% WR, -$339 over 3 months
+                if current_ts.weekday() >= 5:
+                    continue
+
                 # Build multi-TF candles dict — use pre-computed slices
                 candles_dict: Dict[str, pd.DataFrame] = {}
                 for tf, df in sym_data.items():
@@ -453,18 +457,13 @@ class ScalpBacktester:
             self._close_position(pos, price, ts, "hard_loss_cap")
             return
 
-        # --- MFE Profit Protection ---
-        if pos.mfe_r >= 1.0 and current_r <= 0.4:
+        # --- MFE Profit Protection (only strong protection, no momentum collapse) ---
+        # Data: profit_protect_1R is near breakeven (+50.7% WR), keep it
+        # Data: momentum_collapse has 0% WR, -$135 — REMOVED
+        # Data: profit_protect_07R has 0% WR, -$47 — REMOVED
+        if pos.mfe_r >= 1.0 and current_r <= 0.3:
             self._close_position(pos, price, ts, "profit_protect_1R")
             return
-        if pos.mfe_r >= 0.7 and current_r <= 0.15:
-            self._close_position(pos, price, ts, "profit_protect_07R")
-            return
-        if pos.mfe_r >= 0.3 and current_r <= -0.5:
-            elapsed = (ts - pos.entry_time).total_seconds()
-            if elapsed >= 300:
-                self._close_position(pos, price, ts, "momentum_collapse")
-                return
 
         # --- Stop loss ---
         sl_hit = (low <= pos.stop_loss) if pos.is_long else (high >= pos.stop_loss)
@@ -543,46 +542,9 @@ class ScalpBacktester:
                     pos.trail_price = new_trail
                     pos.stop_loss = new_trail
 
-        # --- ADAPTIVE time stop (matches live signal_tracker logic) ---
+        # --- NO TIME STOP — data shows trades lasting 1-4h have 61% WR ---
+        # Only keep 4-hour hard expiry as safety net
         elapsed = (ts - pos.entry_time).total_seconds()
-        if not pos.tp1_hit:
-            current_r = pos.r_at(price)
-
-            # Base time adapts to setup type
-            if pos.setup_type == 'bb_squeeze':
-                base_time = 45 * 60
-            elif pos.setup_type == 'rsi_divergence':
-                base_time = 40 * 60
-            elif pos.setup_type == 'trend_continuation':
-                base_time = 25 * 60
-            else:
-                base_time = 20 * 60
-
-            # Confidence adjustment
-            if pos.confidence >= 85:
-                base_time = int(base_time * 1.5)
-            elif pos.confidence >= 75:
-                base_time = int(base_time * 1.25)
-            elif pos.confidence < 60:
-                base_time = int(base_time * 0.75)
-
-            # Progress adjustment
-            if pos.mfe_r >= 0.3:
-                base_time = int(base_time * 1.5)
-            if pos.mfe_r >= 0.2 and current_r < 0:
-                base_time = int(base_time * 0.7)
-
-            mfe_threshold = 0.15 + (base_time / 3600)
-            current_threshold = mfe_threshold * 0.8
-
-            if elapsed >= base_time and pos.mfe_r < mfe_threshold and current_r < current_threshold:
-                self._close_position(pos, price, ts, "time_stop")
-                return
-            if elapsed >= 90 * 60 and pos.mfe_r < 0.5 and current_r < 0.3:
-                self._close_position(pos, price, ts, "time_stop")
-                return
-
-        # --- 4-hour expiry ---
         if elapsed >= 14400:
             self._close_position(pos, price, ts, "expired")
 
@@ -632,7 +594,7 @@ class ScalpBacktester:
         stake = 25.0
         dollar_pnl = stake * pnl_pct / 100
         self.balance += dollar_pnl
-        self.total_fees += stake * 0.18 / 100  # 0.18% round trip fees
+        self.total_fees += stake * 0.04 / 100  # 0.04% maker round trip fees
 
     def _unrealized_pnl(self, pos: SimPosition, data: Dict, ts: datetime) -> float:
         sym_data = data.get(pos.symbol, {})

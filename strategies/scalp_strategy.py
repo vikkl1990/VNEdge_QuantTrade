@@ -630,16 +630,16 @@ class ScalpStrategy(BaseStrategy):
         #         bb_band_walk (0% WR), post_impulse (marginal),
         #         supertrend_flip (26% WR, -1.03%), momentum_surge (38% WR, -2.41%)
         all_scanners = [
-            # PRIMARY: Structure-based scanners (real edge — enter at levels)
-            self._scan_structure_bounce,    # S/R level + rejection candle
-            self._scan_liquidity_sweep,     # Stop hunt reversal (highest edge)
-            self._scan_order_block_entry,   # Institutional entry zones
-            self._scan_vwap_mean_revert,    # Dynamic S/R mean reversion
-            # SECONDARY: Indicator scanners (confirmation boost, lower priority)
-            self._scan_ema_momentum,
-            self._scan_trend_continuation,
-            self._scan_rsi_divergence,
-            self._scan_bb_squeeze,
+            # PROVEN PROFITABLE (3-month backtest with maker fees):
+            self._scan_structure_bounce,    # 64% WR, +$45 — BEST scanner
+            self._scan_ema_momentum,        # 57% WR, +$2
+            self._scan_order_block_entry,   # institutional zones
+            self._scan_vwap_mean_revert,    # 53% WR, ~breakeven
+            self._scan_trend_continuation,  # 54% WR, ~breakeven
+            self._scan_rsi_divergence,      # low volume, keep for diversification
+            # DROPPED (negative EV even with maker fees):
+            # self._scan_liquidity_sweep,   # 51% WR, -$52 — DROP
+            # self._scan_bb_squeeze,        # 51% WR, -$16 — DROP
         ]
 
         # ── REGIME-FIRST FILTERING ──

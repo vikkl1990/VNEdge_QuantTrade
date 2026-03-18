@@ -64,7 +64,12 @@ from data.indicators import (
 )
 from strategies.base import BaseStrategy, Signal
 from strategies.scanner_weights import ScannerWeightManager, STATUS_ACTIVE, STATUS_REDUCED
-from strategies.regime_filter import RegimeFilter, calc_confidence_size_multiplier
+from strategies.regime_filter import (
+    RegimeFilter, calc_confidence_size_multiplier,
+    is_scanner_allowed_in_regime, get_regime_scanner_boost,
+)
+from bot.ev_engine import EVEngine
+from bot.feature_logger import FeatureLogger
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +214,20 @@ class ScalpStrategy(BaseStrategy):
         self._regime_filter = RegimeFilter()
         self._last_regime_info: Dict[str, Any] = {}
 
+        # --- EV Engine (expected value gating) ---
+        self._ev_engine = EVEngine()
+        self._last_ev_results: Dict[str, Any] = {}
+
+        # --- Feature Logger (ML training data) ---
+        self._feature_logger = FeatureLogger()
+        self._cached_by_setup: Dict[str, Dict] = {}  # cached from signal tracker
+
         # --- Opportunity funnel counters (for dashboard) ---
         self._funnel: Dict[str, int] = {
             "scanned": 0, "strong": 0, "valid": 0, "weak": 0,
             "near_miss": 0, "rejected": 0,
             "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0,
+            "blocked_ev": 0,
         }
         self._funnel_reset_time: float = time.time()
 
@@ -765,6 +779,48 @@ class ScalpStrategy(BaseStrategy):
             }
             return []
 
+        # ── Regime-based scanner confidence boost ──
+        regime_boost = get_regime_scanner_boost(best_sr.scanner_name, regime)
+        if regime_boost > 0:
+            best.confidence = min(best.confidence + regime_boost, 100)
+            best.confirmations.append(f"Regime boost +{regime_boost} ({regime})")
+
+        # ── EV GATE (expected value filter) ──
+        # Only trade when empirical expected value is positive.
+        # Uses per-scanner win rate + avg_win_R + avg_loss_R from trade history.
+        setup_name_ev = best_sr.scanner_name
+        ev_result = self._ev_engine.compute_ev(
+            setup_name_ev,
+            self._cached_by_setup,
+            regime=regime,
+        )
+        self._last_ev_results[setup_name_ev] = ev_result.to_dict()
+
+        if ev_result.verdict == "REJECT":
+            self._funnel["blocked_ev"] = self._funnel.get("blocked_ev", 0) + 1
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"EV REJECT: {ev_result.reason}",
+                "indicators": indicators,
+                "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            # Log feature even though rejected (for ML training — negative examples)
+            self._feature_logger.log_signal(
+                symbol=symbol, scanner=setup_name_ev,
+                side=best.side.value if best.side else "",
+                tier=best_sr.tier, score=best.confidence,
+                weighted_score=best_sr.weighted_score,
+                entry_price=best.entry_price, stop_loss=best.stop_loss,
+                atr=best.atr, indicators=indicators, regime=regime,
+                scanner_weight=best_sr.scanner_weight,
+                scanner_expectancy=ev_result.ev, ev=ev_result.ev,
+            )
+            return []
+
+        # EV size adjustment (REDUCED verdict → smaller position)
+        ev_size_mult = ev_result.size_multiplier
+
         # Apply regime-based confidence size multiplier to metadata
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
 
@@ -883,6 +939,23 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["regime_size_mult"] = regime_action.size_multiplier
         signal.metadata["regime_sl_mult"] = regime_action.sl_multiplier
         signal.metadata["confidence_size_mult"] = confidence_size_mult
+        signal.metadata["ev"] = round(ev_result.ev, 4)
+        signal.metadata["ev_verdict"] = ev_result.verdict
+        signal.metadata["ev_size_mult"] = ev_size_mult
+        signal.metadata["p_win"] = round(ev_result.p_win, 4)
+
+        # ── Log feature vector for ML training ──
+        self._feature_logger.log_signal(
+            symbol=symbol, scanner=best_sr.scanner_name,
+            side=best.side.value if best.side else "",
+            tier=best_sr.tier, score=best.confidence,
+            weighted_score=best_sr.weighted_score,
+            entry_price=best.entry_price, stop_loss=best.stop_loss,
+            atr=best.atr, indicators=indicators, regime=regime,
+            scanner_weight=best_sr.scanner_weight,
+            scanner_expectancy=ev_result.ev, ev=ev_result.ev,
+            trade_id=signal.metadata.get("trade_id", ""),
+        )
 
         self._last_signal_time[symbol] = now
         self._signal_count_hr.append(now)

@@ -1630,11 +1630,27 @@
             }
         }
 
+        // EV badge
+        const evBadge = document.getElementById("cmd-ev");
+        if (evBadge) {
+            const ev = data.best_ev || 0;
+            const pWin = data.best_p_win || 0;
+            const evVerdict = data.ev_verdict || "";
+            evBadge.textContent = "EV: " + (ev !== 0 ? (ev > 0 ? "+" : "") + ev.toFixed(3) + "R" : "--");
+            evBadge.className = "cmd-badge cmd-ev";
+            if (ev > 0.1) evBadge.classList.add("positive");
+            else if (ev > 0) evBadge.classList.add("marginal");
+            else if (ev < 0) evBadge.classList.add("negative");
+        }
+
         // Context grid
         el("cmd-regime", (data.regime || "--").replace("_", " "));
         el("cmd-expectancy", data.rolling_expectancy != null ? data.rolling_expectancy.toFixed(3) + "R" : "--");
         el("cmd-session", (data.session || "--").replace("_", " "));
         el("cmd-drawdown", data.drawdown_pct != null ? data.drawdown_pct.toFixed(1) + "%" : "--");
+        el("cmd-ev-detail", data.best_ev != null && data.best_ev !== 0
+            ? "EV=" + (data.best_ev > 0 ? "+" : "") + data.best_ev.toFixed(3) + "R | P(win)=" + ((data.best_p_win || 0) * 100).toFixed(0) + "%"
+            : "--");
 
         // Reasons pills
         const reasonsDiv = document.getElementById("cmd-reasons");

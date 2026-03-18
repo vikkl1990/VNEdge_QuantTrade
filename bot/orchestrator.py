@@ -591,6 +591,17 @@ class BotOrchestrator:
             except Exception:
                 pass
 
+            # Get EV data from strategy's EV engine
+            ev_data = {}
+            if hasattr(self._strategy, '_scalp'):
+                scalp = self._strategy._scalp
+                if hasattr(scalp, '_ev_engine'):
+                    ev_data = scalp._ev_engine.get_dashboard_summary()
+                # Feed by_setup stats to strategy for EV computation
+                if hasattr(scalp, '_cached_by_setup'):
+                    stats = self._signal_tracker.get_stats() if self._signal_tracker else {}
+                    scalp._cached_by_setup = stats.get("by_setup", {})
+
             self._decision_engine.update(
                 scan_results=scan_results,
                 regime_info=regime_info,
@@ -600,6 +611,7 @@ class BotOrchestrator:
                 session=session,
                 signals_this_hour=signals_hr,
                 funnel=funnel,
+                ev_data=ev_data,
             )
         except Exception as exc:
             self._log.debug("Decision engine update failed: %s", exc)

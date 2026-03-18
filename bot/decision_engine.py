@@ -53,6 +53,11 @@ class Decision:
     best_atr: float = 0.0
     blocker: str = ""             # reason for WAIT
 
+    # EV (expected value) metrics
+    best_ev: float = 0.0          # EV of best scanner in R-multiples
+    best_p_win: float = 0.0       # empirical win probability
+    ev_verdict: str = ""           # TRADE / REDUCED / REJECT / INSUFFICIENT_DATA
+
     # Reasoning
     reason: str = "Initializing..."
     reasons: List[str] = field(default_factory=list)
@@ -104,6 +109,7 @@ class DecisionEngine:
         session: str = "",
         signals_this_hour: int = 0,
         funnel: Optional[Dict[str, int]] = None,
+        ev_data: Optional[Dict[str, Any]] = None,
     ) -> Decision:
         """Recompute the decision from all available inputs."""
         from datetime import datetime, timezone, timedelta
@@ -202,6 +208,21 @@ class DecisionEngine:
                         d.best_target = d.best_entry - 1.5 * d.best_atr
 
                 d.reasons.append(f"Best: {d.best_scanner} {d.best_tier} ({d.best_score:.0f})")
+
+        # ── 4b. EV Data ──
+        if ev_data:
+            best_ev_scanner = ev_data.get("best_scanner", "")
+            d.best_ev = ev_data.get("best_ev", 0.0)
+            # If we have a specific EV for the best scanner
+            scanners_ev = ev_data.get("scanners", {})
+            if d.best_scanner:
+                scanner_ev = scanners_ev.get(d.best_scanner, {})
+                if scanner_ev:
+                    d.best_ev = scanner_ev.get("ev", d.best_ev)
+                    d.best_p_win = scanner_ev.get("p_win", 0.0)
+                    d.ev_verdict = scanner_ev.get("verdict", "")
+                    if d.best_ev != 0:
+                        d.reasons.append(f"EV={d.best_ev:+.3f}R P(win)={d.best_p_win:.0%} [{d.ev_verdict}]")
 
         # ── 5. Compute final ACTION ──
         if d.risk_state == "BLOCKED":

@@ -1931,9 +1931,12 @@ footer {
 .cmd-market.trend-weak   { color: #66bb6a; }
 .cmd-market.sideways     { color: #ffab00; }
 .cmd-market.chop         { color: #ff6b6b; }
+.cmd-ev.positive  { background: rgba(0,230,118,0.15); color: #00e676; border-color: rgba(0,230,118,0.3); }
+.cmd-ev.marginal  { background: rgba(255,171,0,0.12); color: #ffab00; border-color: rgba(255,171,0,0.3); }
+.cmd-ev.negative  { background: rgba(255,23,68,0.12); color: #ff1744; border-color: rgba(255,23,68,0.3); }
 .cmd-grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     padding: 8px 0;
 }

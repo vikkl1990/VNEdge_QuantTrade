@@ -126,14 +126,14 @@ class SimPosition:
         return gross - 0.18
 
     def calc_final_r(self) -> float:
-        """Calculate final R-multiple using 60/25/15 split."""
+        """Calculate final R-multiple using 35/35/30 split."""
         raw_r = self.r_at(self.exit_price)
         if self.tp3_hit:
-            return 0.60 * self.r_at(self.tp1) + 0.25 * self.r_at(self.tp2) + 0.15 * raw_r
+            return 0.35 * self.r_at(self.tp1) + 0.35 * self.r_at(self.tp2) + 0.30 * raw_r
         elif self.tp2_hit:
-            return 0.60 * self.r_at(self.tp1) + 0.25 * self.r_at(self.tp2) + 0.15 * raw_r
+            return 0.35 * self.r_at(self.tp1) + 0.35 * self.r_at(self.tp2) + 0.30 * raw_r
         elif self.tp1_hit:
-            return 0.60 * self.r_at(self.tp1) + 0.40 * raw_r
+            return 0.35 * self.r_at(self.tp1) + 0.65 * raw_r
         return raw_r
 
 
@@ -149,9 +149,12 @@ class ScalpBacktester:
     COOLDOWN_SEC = 180         # 3 min between signals per symbol
     MAX_OPEN = 2               # max simultaneous positions
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], trigger_tf: str = "1m"):
         self.config = config
+        self.trigger_tf = trigger_tf  # primary analysis timeframe
         self.strategy = ScalpStrategy(config)
+        # Set the strategy's primary TF to match
+        self.strategy.primary_tf = trigger_tf
         self.positions: Dict[str, SimPosition] = {}
         self.closed_trades: List[Dict[str, Any]] = []
         self.equity_curve: List[Tuple[datetime, float]] = []
@@ -159,6 +162,26 @@ class ScalpBacktester:
         self.initial_balance = 10_000.0
         self.last_signal_time: Dict[str, datetime] = {}
         self.total_fees = 0.0
+
+    @staticmethod
+    def resample_ohlcv(df_1m: pd.DataFrame, target_tf: str) -> pd.DataFrame:
+        """Resample 1m candles into higher timeframes."""
+        tf_map = {"1m": "1min", "3m": "3min", "5m": "5min", "10m": "10min", "15m": "15min", "30m": "30min"}
+        rule = tf_map.get(target_tf)
+        if rule is None or target_tf == "1m":
+            return df_1m
+
+        resampled = df_1m.resample(rule).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }).dropna(subset=["open"])
+
+        # Copy over any pre-computed indicator columns (they'll need recomputing)
+        # but keep timestamp as the higher TF bar close
+        return resampled
 
     async def run(
         self,
@@ -178,14 +201,16 @@ class ScalpBacktester:
         dt_start = datetime.fromisoformat(start_date)
         dt_end = datetime.fromisoformat(end_date)
 
+        trigger = self.trigger_tf
         logger.info("=" * 60)
         logger.info("BACKTEST STARTING")
         logger.info("  Period: %s to %s", start_date, end_date)
         logger.info("  Symbols: %s", symbols)
+        logger.info("  Trigger TF: %s", trigger)
         logger.info("  Balance: $%.2f", balance)
         logger.info("=" * 60)
 
-        # Fetch candle data for all TFs
+        # Fetch 1m data (base) + 5m + 15m for confirmation
         candle_data: Dict[str, Dict[str, pd.DataFrame]] = {}
         for symbol in symbols:
             candle_data[symbol] = {}
@@ -197,11 +222,38 @@ class ScalpBacktester:
                 else:
                     logger.warning("  No %s data for %s", tf, symbol)
 
-        # Get primary TF timeline (1m)
+            # Resample 1m into trigger TF if not 1m/5m/15m (e.g. 3m, 10m)
+            if trigger not in candle_data[symbol] and "1m" in candle_data[symbol]:
+                resampled = self.resample_ohlcv(candle_data[symbol]["1m"], trigger)
+                if not resampled.empty:
+                    candle_data[symbol][trigger] = resampled
+                    logger.info("  Resampled 1m → %d %s candles for %s", len(resampled), trigger, symbol)
+
+        # Determine confirmation TFs relative to trigger
+        # trigger = primary, next higher = confirm, next = HTF
+        tf_order = ["1m", "3m", "5m", "10m", "15m", "30m"]
+        trigger_idx = tf_order.index(trigger) if trigger in tf_order else 0
+        confirm_tf = tf_order[min(trigger_idx + 1, len(tf_order) - 1)] if trigger_idx < len(tf_order) - 1 else "15m"
+        htf_tf = tf_order[min(trigger_idx + 2, len(tf_order) - 1)] if trigger_idx < len(tf_order) - 2 else "15m"
+        # Make sure we have the confirm/HTF data (resample if needed)
+        for symbol in symbols:
+            for needed_tf in [confirm_tf, htf_tf]:
+                if needed_tf not in candle_data[symbol] and "1m" in candle_data[symbol]:
+                    resampled = self.resample_ohlcv(candle_data[symbol]["1m"], needed_tf)
+                    if not resampled.empty:
+                        candle_data[symbol][needed_tf] = resampled
+
+        # Update strategy TF config
+        self.strategy.primary_tf = trigger
+        self.strategy.confirm_tf = confirm_tf
+        self.strategy.htf = htf_tf
+        logger.info("  TF chain: trigger=%s → confirm=%s → HTF=%s", trigger, confirm_tf, htf_tf)
+
+        # Get primary TF timeline
         all_timestamps = set()
         for sym_data in candle_data.values():
-            if "1m" in sym_data:
-                all_timestamps.update(sym_data["1m"].index.tolist())
+            if trigger in sym_data:
+                all_timestamps.update(sym_data[trigger].index.tolist())
         all_timestamps = sorted(all_timestamps)
 
         if not all_timestamps:
@@ -211,6 +263,33 @@ class ScalpBacktester:
         total_bars = len(all_timestamps)
         log_interval = max(1, total_bars // 20)
         signals_generated = 0
+
+        # ── PRE-COMPUTE INDICATORS (massive speedup) ──
+        # Compute all indicators once on the full dataset,
+        # then slice the pre-computed dataframe per bar.
+        logger.info("Pre-computing indicators for all symbols...")
+        precomputed: Dict[str, Dict[str, pd.DataFrame]] = {}
+        for symbol in symbols:
+            precomputed[symbol] = {}
+            sym_data = candle_data.get(symbol, {})
+            for tf, df in sym_data.items():
+                try:
+                    pc_df = self.strategy._compute_indicators(df.copy())
+                    precomputed[symbol][tf] = pc_df
+                    logger.info("  Pre-computed %s %s indicators (%d bars)", symbol, tf, len(pc_df))
+                except Exception as exc:
+                    logger.debug("Pre-compute failed for %s %s: %s", symbol, tf, exc)
+                    precomputed[symbol][tf] = df
+
+        # Pre-compute ATR on the confirmation TF
+        for symbol in symbols:
+            if confirm_tf in precomputed[symbol]:
+                try:
+                    from data.indicators import calc_atr
+                    atr_series = calc_atr(precomputed[symbol][confirm_tf], 14)
+                    precomputed[symbol][confirm_tf]["_precomputed_atr"] = atr_series
+                except Exception:
+                    pass
 
         logger.info("Processing %d bars...", total_bars)
 
@@ -225,12 +304,12 @@ class ScalpBacktester:
                 )
 
             for symbol in symbols:
-                sym_data = candle_data.get(symbol, {})
-                df_1m = sym_data.get("1m")
-                if df_1m is None or current_ts not in df_1m.index:
+                sym_data = precomputed.get(symbol, {})
+                df_trigger = sym_data.get(trigger)
+                if df_trigger is None or current_ts not in df_trigger.index:
                     continue
 
-                bar = df_1m.loc[current_ts]
+                bar = df_trigger.loc[current_ts]
                 price = float(bar["close"])
                 high = float(bar["high"])
                 low = float(bar["low"])
@@ -242,14 +321,14 @@ class ScalpBacktester:
                 if bar_idx < 200:  # skip first 200 bars for indicator warmup
                     continue
 
-                # Build multi-TF candles dict for strategy
+                # Build multi-TF candles dict — use pre-computed slices
                 candles_dict: Dict[str, pd.DataFrame] = {}
                 for tf, df in sym_data.items():
                     slice_df = df.loc[:current_ts]
                     if len(slice_df) >= 50:
                         candles_dict[tf] = slice_df
 
-                if "1m" not in candles_dict:
+                if trigger not in candles_dict:
                     continue
 
                 # Cooldown check
@@ -267,11 +346,13 @@ class ScalpBacktester:
                 if symbol in self.positions and not self.positions[symbol].closed:
                     continue
 
-                # Run strategy
+                # Run strategy — skip _compute_indicators since pre-computed
+                self.strategy._last_signal_time.clear()
+                self.strategy._signal_count_hr.clear()
                 try:
                     result = self.strategy.analyze(symbol, candles_dict)
                     if result and len(result) > 0:
-                        signal = result[0]  # take first signal
+                        signal = result[0]
                         self._process_entry(signal, symbol, price, current_ts)
                         signals_generated += 1
                 except Exception as exc:
@@ -407,8 +488,8 @@ class ScalpBacktester:
             if tp1_hit:
                 pos.tp1_hit = True
                 tp1_pnl = pos.pnl_at(pos.tp1)
-                pos.tp1_pnl_locked = round(0.60 * tp1_pnl, 4)
-                pos.position_remaining = 0.40
+                pos.tp1_pnl_locked = round(0.35 * tp1_pnl, 4)
+                pos.position_remaining = 0.65
 
                 # Start trailing at 1.0× ATR
                 trail_dist = pos.atr * 1.0 if pos.atr > 0 else abs(pos.tp1 - pos.entry_price) * 0.5
@@ -426,8 +507,8 @@ class ScalpBacktester:
             if tp2_hit:
                 pos.tp2_hit = True
                 tp2_pnl = pos.pnl_at(pos.tp2)
-                pos.tp2_pnl_locked = round(0.25 * tp2_pnl, 4)
-                pos.position_remaining = 0.15
+                pos.tp2_pnl_locked = round(0.35 * tp2_pnl, 4)
+                pos.position_remaining = 0.30
 
                 # Tighten trail to 0.8× ATR
                 trail_dist = pos.atr * 0.8 if pos.atr > 0 else abs(pos.tp2 - pos.tp1) * 0.3
@@ -462,11 +543,44 @@ class ScalpBacktester:
                     pos.trail_price = new_trail
                     pos.stop_loss = new_trail
 
-        # --- Dead trade time stop (20min, MFE < 0.3R) ---
+        # --- ADAPTIVE time stop (matches live signal_tracker logic) ---
         elapsed = (ts - pos.entry_time).total_seconds()
-        if elapsed >= 1200 and pos.mfe_r < 0.3 and not pos.tp1_hit:
-            self._close_position(pos, price, ts, "time_stop")
-            return
+        if not pos.tp1_hit:
+            current_r = pos.r_at(price)
+
+            # Base time adapts to setup type
+            if pos.setup_type == 'bb_squeeze':
+                base_time = 45 * 60
+            elif pos.setup_type == 'rsi_divergence':
+                base_time = 40 * 60
+            elif pos.setup_type == 'trend_continuation':
+                base_time = 25 * 60
+            else:
+                base_time = 20 * 60
+
+            # Confidence adjustment
+            if pos.confidence >= 85:
+                base_time = int(base_time * 1.5)
+            elif pos.confidence >= 75:
+                base_time = int(base_time * 1.25)
+            elif pos.confidence < 60:
+                base_time = int(base_time * 0.75)
+
+            # Progress adjustment
+            if pos.mfe_r >= 0.3:
+                base_time = int(base_time * 1.5)
+            if pos.mfe_r >= 0.2 and current_r < 0:
+                base_time = int(base_time * 0.7)
+
+            mfe_threshold = 0.15 + (base_time / 3600)
+            current_threshold = mfe_threshold * 0.8
+
+            if elapsed >= base_time and pos.mfe_r < mfe_threshold and current_r < current_threshold:
+                self._close_position(pos, price, ts, "time_stop")
+                return
+            if elapsed >= 90 * 60 and pos.mfe_r < 0.5 and current_r < 0.3:
+                self._close_position(pos, price, ts, "time_stop")
+                return
 
         # --- 4-hour expiry ---
         if elapsed >= 14400:
@@ -617,6 +731,14 @@ class ScalpBacktester:
                 mask = (df.index >= pd.Timestamp(start, tz="UTC")) & (df.index <= pd.Timestamp(end, tz="UTC"))
                 result_df = df.loc[mask]
                 logger.info("  Fetched %d %s candles for %s", len(result_df), timeframe, symbol)
+
+                # Cache to CSV for fast re-runs
+                cache_dir = project_root / "data" / "candles"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_path = cache_dir / f"{safe_sym}_{timeframe}.csv"
+                result_df.to_csv(cache_path)
+                logger.info("  Cached to %s for fast re-runs", cache_path.name)
+
                 return result_df
         except Exception as exc:
             logger.warning("Exchange fetch failed for %s %s: %s", symbol, timeframe, exc)
@@ -714,12 +836,25 @@ def print_extended_report(result: BacktestResult):
 # CLI
 # ─────────────────────────────────────────────────────────────────────
 
+async def run_single_tf(config, symbols, start, end, balance, trigger_tf="1m", verbose=False):
+    """Run a single backtest with given trigger TF. Returns (result, trigger_tf)."""
+    bt = ScalpBacktester(config, trigger_tf=trigger_tf)
+    bt.strategy.max_signals_hr = 999
+    bt.strategy.cooldown_sec = 0
+    bt.strategy._session_gate_enabled = False
+    bt.COOLDOWN_SEC = 0
+    result = await bt.run(symbols, start, end, balance)
+    return result, trigger_tf
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Backtest the crypto trading strategy")
     parser.add_argument("--start", default=None, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", default=None, help="End date (YYYY-MM-DD)")
     parser.add_argument("--symbols", nargs="+", default=["BTC/USDT", "ETH/USDT"])
     parser.add_argument("--balance", type=float, default=10000.0)
+    parser.add_argument("--trigger-tf", default="1m", help="Primary trigger timeframe (1m, 3m, 5m, 10m, 15m)")
+    parser.add_argument("--compare", action="store_true", help="Compare ALL timeframes (1m, 3m, 5m, 10m, 15m)")
     parser.add_argument("--export", action="store_true", help="Export CSV + charts")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -731,24 +866,84 @@ async def main():
         datefmt="%H:%M:%S",
     )
 
-    # Default to last 30 days
+    # Default to last 7 days
     if args.end is None:
         args.end = datetime.utcnow().strftime("%Y-%m-%d")
     if args.start is None:
         end_dt = datetime.fromisoformat(args.end)
-        args.start = (end_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+        args.start = (end_dt - timedelta(days=7)).strftime("%Y-%m-%d")
 
     config = get_config()
-    bt = ScalpBacktester(config)
 
-    # Override strategy settings for backtesting:
-    # Disable live-only gates that use wall-clock time instead of backtest time
-    bt.strategy.max_signals_hr = 999       # rate limiter uses time.time(), not bar time
-    bt.strategy.cooldown_sec = 60          # reduce cooldown for faster backtesting
-    bt.strategy._session_gate_enabled = False  # session gate uses real IST, not bar time
-    bt.COOLDOWN_SEC = 60                    # engine-level cooldown too
+    if args.compare:
+        # ── MULTI-TF COMPARISON MODE ──
+        timeframes = ["1m", "3m", "5m", "10m", "15m"]
+        results = []
 
-    result = await bt.run(args.symbols, args.start, args.end, args.balance)
+        for tf in timeframes:
+            logger.info("\n" + "=" * 60)
+            logger.info("TESTING TIMEFRAME: %s", tf)
+            logger.info("=" * 60)
+            result, used_tf = await run_single_tf(
+                config, args.symbols, args.start, args.end, args.balance, trigger_tf=tf
+            )
+            results.append((tf, result))
+
+        # Print comparison table
+        print("\n" + "=" * 100)
+        print("  MULTI-TIMEFRAME COMPARISON")
+        print("=" * 100)
+        print(f"  Period: {args.start} to {args.end} | Symbols: {', '.join(args.symbols)}")
+        print("-" * 100)
+        print(f"  {'TF':>4s} | {'Trades':>6s} | {'WR':>5s} | {'Return':>10s} | {'PF':>5s} | {'MaxDD':>8s} | {'TP1%':>5s} | {'TP2%':>5s} | {'Avg Dur':>10s} | {'TimeStop%':>9s} | {'Fees':>8s}")
+        print("-" * 100)
+
+        for tf, result in results:
+            trades = result.total_trades
+            if trades == 0:
+                print(f"  {tf:>4s} | {0:>6d} | {'N/A':>5s} | {'$0.00':>10s} | {'N/A':>5s} | {'$0.00':>8s} | {'N/A':>5s} | {'N/A':>5s} | {'N/A':>10s} | {'N/A':>9s} | {'$0.00':>8s}")
+                continue
+
+            wr = result.win_rate * 100 if hasattr(result, 'win_rate') else 0
+            ret = result.total_return if hasattr(result, 'total_return') else 0
+            pf = result.profit_factor if hasattr(result, 'profit_factor') else 0
+            dd = result.max_drawdown if hasattr(result, 'max_drawdown') else 0
+            fees = result.total_fees_paid if hasattr(result, 'total_fees_paid') else 0
+
+            # Extract from trades list
+            tp1_hits = sum(1 for t in result.trades if t.get("tp1_hit"))
+            tp2_hits = sum(1 for t in result.trades if t.get("tp2_hit"))
+            tp1_pct = tp1_hits / trades * 100 if trades > 0 else 0
+            tp2_pct = tp2_hits / trades * 100 if trades > 0 else 0
+
+            time_stops = sum(1 for t in result.trades if t.get("exit_reason") == "time_stop")
+            ts_pct = time_stops / trades * 100 if trades > 0 else 0
+
+            durations = [t.get("duration_sec", 0) for t in result.trades if t.get("duration_sec")]
+            avg_dur = sum(durations) / len(durations) if durations else 0
+            dur_str = f"{int(avg_dur//3600)}h {int((avg_dur%3600)//60)}m"
+
+            ret_str = f"${ret:+.2f}"
+            pf_str = f"{pf:.2f}" if pf > 0 else "0.00"
+
+            print(f"  {tf:>4s} | {trades:>6d} | {wr:>4.1f}% | {ret_str:>10s} | {pf_str:>5s} | ${dd:>7.2f} | {tp1_pct:>4.0f}% | {tp2_pct:>4.0f}% | {dur_str:>10s} | {ts_pct:>8.0f}% | ${fees:>7.2f}")
+
+        print("=" * 100)
+        # Highlight best
+        profitable = [(tf, r) for tf, r in results if r.total_trades > 0 and hasattr(r, 'total_return') and r.total_return > 0]
+        if profitable:
+            best = max(profitable, key=lambda x: x[1].total_return)
+            print(f"\n  BEST: {best[0]} → ${best[1].total_return:+.2f} return")
+        else:
+            least_loss = min([(tf, r) for tf, r in results if r.total_trades > 0], key=lambda x: abs(x[1].total_return), default=None)
+            if least_loss:
+                print(f"\n  LEAST LOSS: {least_loss[0]} → ${least_loss[1].total_return:+.2f}")
+        return
+
+    # ── SINGLE TF MODE ──
+    result, _ = await run_single_tf(
+        config, args.symbols, args.start, args.end, args.balance, trigger_tf=args.trigger_tf
+    )
 
     # Print report
     print(result.summary())

@@ -516,8 +516,8 @@ class SignalTracker:
                         tp1_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
                     else:
                         tp1_pnl = ((ts.entry_price - price) / ts.entry_price) * 100
-                    ts.tp1_pnl_locked = round(0.60 * tp1_pnl, 4)
-                    ts.position_remaining_pct = 0.40
+                    ts.tp1_pnl_locked = round(0.35 * tp1_pnl, 4)  # 35% at TP1
+                    ts.position_remaining_pct = 0.65
 
                     # Start trailing at 1.0× ATR (earlier than waiting for TP2)
                     atr_trail_dist = ts.signal_atr * 1.0 if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
@@ -557,8 +557,8 @@ class SignalTracker:
                         tp2_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
                     else:
                         tp2_pnl = ((ts.entry_price - price) / ts.entry_price) * 100
-                    ts.tp2_pnl_locked = round(0.25 * tp2_pnl, 4)
-                    ts.position_remaining_pct = 0.15  # only runner left
+                    ts.tp2_pnl_locked = round(0.35 * tp2_pnl, 4)  # 35% at TP2
+                    ts.position_remaining_pct = 0.30  # 30% runner left
 
                     # Tighten ATR trail to 0.8× ATR (runner protection)
                     atr_trail_dist = ts.signal_atr * 0.8 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
@@ -695,17 +695,53 @@ class SignalTracker:
                     else:
                         max_fav_r = 0
 
-                    # Time thresholds: 20min for 1m setups, 45min for 5m
-                    time_limit = 20 * 60  # 20 minutes default (1m setups)
+                    # ADAPTIVE TIME STOP — adapts to setup, confidence, volatility, and trade progress
+                    if is_long:
+                        current_r = (price - ts.entry_price) / risk if risk > 0 else 0
+                    else:
+                        current_r = (ts.entry_price - price) / risk if risk > 0 else 0
 
-                    if age_sec >= time_limit and max_fav_r < 0.3:
-                        # Check if currently losing or flat (not gaining momentum)
-                        if is_long:
-                            current_r = (price - ts.entry_price) / risk if risk > 0 else 0
-                        else:
-                            current_r = (ts.entry_price - price) / risk if risk > 0 else 0
+                    # Base time limit adapts to setup type
+                    setup = getattr(ts, 'setup_type', '')
+                    conf = getattr(ts, 'confidence', 0)
 
-                        if current_r < 0.3:
+                    if setup == 'bb_squeeze':
+                        base_time = 45 * 60    # squeeze breakouts need more time
+                    elif setup == 'rsi_divergence':
+                        base_time = 40 * 60    # divergences take time to play out
+                    elif setup == 'trend_continuation':
+                        base_time = 25 * 60    # trends should move quickly
+                    else:
+                        base_time = 20 * 60    # default (ema_momentum etc)
+
+                    # High confidence → give more time (quality setups deserve patience)
+                    if conf >= 85:
+                        base_time = int(base_time * 1.5)  # 50% more time
+                    elif conf >= 75:
+                        base_time = int(base_time * 1.25)  # 25% more time
+                    elif conf < 60:
+                        base_time = int(base_time * 0.75)  # cut time for low-conf
+
+                    # If trade is making progress (MFE > 0.3R), extend time
+                    if max_fav_r >= 0.3:
+                        base_time = int(base_time * 1.5)  # trade showed life, give it room
+
+                    # If trade went positive but is now retreating, tighter time
+                    if max_fav_r >= 0.2 and current_r < 0:
+                        base_time = int(base_time * 0.7)  # was working, now failing
+
+                    # Adaptive thresholds: higher MFE threshold for longer times
+                    mfe_threshold = 0.15 + (base_time / (60 * 60))  # scales with time
+                    current_threshold = mfe_threshold * 0.8
+
+                    dead_trade = False
+                    if age_sec >= base_time and max_fav_r < mfe_threshold and current_r < current_threshold:
+                        dead_trade = True
+                    # Hard backstop: never hold longer than 90 minutes with no progress
+                    elif age_sec >= 90 * 60 and max_fav_r < 0.5 and current_r < 0.3:
+                        dead_trade = True
+
+                    if dead_trade:
                             ts.exit_price = price
                             ts.exit_reason = "time_stop_dead_trade"
                             ts.exit_time = now_iso
@@ -797,7 +833,7 @@ class SignalTracker:
     def _calc_pnl(ts: TrackedSignal, exit_price: float) -> float:
         """Calculate P&L percentage for a signal (gross and net).
 
-        Position split: 60% TP1, 25% TP2, 15% runner
+        Position split: 35% TP1, 35% TP2, 30% runner
         - TP1 (60%): Primary profit lock at 1.5R
         - TP2 (25%): Extended target at 2.0R+
         - TP3 (15%): ATR-trailed runner for big moves
@@ -823,22 +859,22 @@ class SignalTracker:
             else:
                 return ((ts.entry_price - price) / ts.entry_price) * 100
 
-        # Use actual locked PnL from partial closes (60/25/15 split)
+        # Use actual locked PnL from partial closes (35/35/30 split)
         if ts.tp1_pnl_locked != 0 or ts.tp2_pnl_locked != 0:
             # Real partial closes happened — use locked values + remaining at exit
             remaining_pnl = ts.position_remaining_pct * pnl_at(exit_price)
             gross_pct = ts.tp1_pnl_locked + ts.tp2_pnl_locked + remaining_pnl
         elif ts.tp3_hit:
-            gross_pct = (0.60 * pnl_at(ts.tp1) +
-                         0.25 * pnl_at(ts.tp2) +
-                         0.15 * pnl_at(ts.tp3))
+            gross_pct = (0.35 * pnl_at(ts.tp1) +
+                         0.35 * pnl_at(ts.tp2) +
+                         0.30 * pnl_at(ts.tp3))
         elif ts.tp2_hit:
-            gross_pct = (0.60 * pnl_at(ts.tp1) +
-                         0.25 * pnl_at(ts.tp2) +
-                         0.15 * pnl_at(exit_price))
+            gross_pct = (0.35 * pnl_at(ts.tp1) +
+                         0.35 * pnl_at(ts.tp2) +
+                         0.30 * pnl_at(exit_price))
         elif ts.tp1_hit:
-            gross_pct = (0.60 * pnl_at(ts.tp1) +
-                         0.40 * pnl_at(exit_price))
+            gross_pct = (0.35 * pnl_at(ts.tp1) +
+                         0.65 * pnl_at(exit_price))
         else:
             gross_pct = pnl_at(exit_price)
 
@@ -876,13 +912,13 @@ class SignalTracker:
                     return (price - ts.entry_price) / ts.initial_risk
                 return (ts.entry_price - price) / ts.initial_risk
 
-            # For partial exits (60/25/15 split), use weighted R
+            # For partial exits (35/35/30 split), use weighted R
             if ts.tp3_hit:
-                r_val = 0.60 * r_at(ts.tp1) + 0.25 * r_at(ts.tp2) + 0.15 * raw_r
+                r_val = 0.35 * r_at(ts.tp1) + 0.35 * r_at(ts.tp2) + 0.30 * raw_r
             elif ts.tp2_hit:
-                r_val = 0.60 * r_at(ts.tp1) + 0.25 * r_at(ts.tp2) + 0.15 * raw_r
+                r_val = 0.35 * r_at(ts.tp1) + 0.35 * r_at(ts.tp2) + 0.30 * raw_r
             elif ts.tp1_hit:
-                r_val = 0.60 * r_at(ts.tp1) + 0.40 * raw_r
+                r_val = 0.35 * r_at(ts.tp1) + 0.65 * raw_r
             else:
                 r_val = raw_r
             ts.exit_r = round(r_val, 4)

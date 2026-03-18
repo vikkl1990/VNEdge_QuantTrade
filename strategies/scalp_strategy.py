@@ -70,6 +70,7 @@ from strategies.regime_filter import (
 )
 from bot.ev_engine import EVEngine
 from bot.feature_logger import FeatureLogger
+from data.structure import build_structure_map, StructureMap
 
 logger = logging.getLogger(__name__)
 
@@ -166,8 +167,8 @@ class ScalpStrategy(BaseStrategy):
         tf_cfg = config.get("timeframes", {})
 
         # --- Timeframes ---
-        self.primary_tf: str = tf_cfg.get("trigger", "1m")    # Use 1m for scalps
-        self.confirm_tf: str = tf_cfg.get("primary", "5m")     # 5m for confirmation
+        self.primary_tf: str = tf_cfg.get("trigger", "5m")    # 5m trigger — better S/N than 1m
+        self.confirm_tf: str = tf_cfg.get("primary", "15m")    # 15m for confirmation
         self.htf: str = tf_cfg.get("higher", "15m")            # 15m for bias
 
         # --- Fast EMA set for scalping ---
@@ -184,18 +185,40 @@ class ScalpStrategy(BaseStrategy):
         self.st_mult: float = ind_cfg.get("supertrend", {}).get("multiplier", 3.0)
 
         # --- Scalp-specific thresholds ---
-        self.min_confidence: int = max(filt_cfg.get("min_confidence", 75), 75)  # raised — only high-quality signals
-        self.cooldown_sec: int = 180         # 3 min between signals (reduce whipsaw)
-        self.max_signals_hr: int = 4         # quality over quantity (was 8)
-        self.sl_atr_mult: float = 2.5          # SL = 2.5× 5m-ATR (BTC 5m wicks 0.3%+)
-        self.tp1_rr: float = 1.5             # TP1 at 1.5R — meaningful first target (60% closed here)
-        self.tp2_rr: float = 2.5             # TP2 at 2.5R — extended target (25% closed here)
-        self.tp3_rr: float = 4.0             # TP3 at 4.0R — runner (15% remaining)
+        self.min_confidence: int = max(filt_cfg.get("min_confidence", 65), 65)  # lowered — confidence scoring filters naturally
+        self.cooldown_sec: int = 0           # NO cooldown — let confidence scoring do the work
+        self.max_signals_hr: int = 999       # NO hourly cap — every signal evaluated
+        self.sl_atr_mult: float = 2.0        # SL = 2.0× 5m-ATR (tightened from 2.5)
 
-        # --- Minimum SL/TP distances (% of price) ---
-        self.min_sl_pct: float = 0.40        # BTC 5m wicks 0.3%+, need ≥0.40% floor
-        self.min_tp1_pct: float = 0.50       # raised for 1.5R TP1 — needs meaningful distance
-        self.min_rr_ratio: float = 1.2       # minimum R:R gate — reject if R:R < 1.2
+        # --- TP ratios — optimized for high-leverage scalping with maker fees ---
+        # SL 0.4% + TP1 1.5R = 0.6% move needed → BE WR 44% with maker fees
+        self.tp1_rr: float = 1.5             # TP1 at 1.5R (35% exit) — BE WR 44%
+        self.tp2_rr: float = 2.5             # TP2 at 2.5R (35% exit)
+        self.tp3_rr: float = 4.0             # TP3 at 4.0R (30% trail)
+
+        # --- SL/TP constraints ---
+        self.min_sl_pct: float = 0.30        # 0.3% min SL — keeps fees < 13% of risk
+        self.max_sl_pct: float = 0.60        # 0.6% max SL — tight for scalps
+        self.min_tp1_pct: float = 0.40       # TP1 ≥ 0.4% (10× maker fees)
+        self.min_rr_ratio: float = 1.2       # min 1.2R — ensures positive EV
+
+        # --- Liquidation safety (critical at high leverage) ---
+        self.liq_sl_max_pct: float = 0.30    # SL ≤ 30% of liquidation buffer
+        self.liq_reject_pct: float = 0.50    # Reject if SL ≥ 50% of liq buffer
+        self.liq_min_buffer_pct: float = 1.5 # Min 1.5% liq buffer (allows up to 50x)
+
+        # --- Confidence-scaled leverage ---
+        # Higher confidence = more leverage (user OK with up to 50x)
+        self.leverage_map = {
+            95: 50,   # A++ signals at structure → max leverage
+            90: 40,   # A+ signals
+            85: 30,   # A signals
+            80: 25,   # Strong
+            75: 20,   # Valid
+            70: 15,   # Decent
+            65: 10,   # Minimum
+            0:   5,   # Low confidence fallback
+        }
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -204,6 +227,9 @@ class ScalpStrategy(BaseStrategy):
         # --- State ---
         self._last_signal_time: Dict[str, float] = {}
         self._signal_count_hr: List[float] = []
+        # FIX 3: Per-scanner cooldown (prevent same scanner firing repeatedly)
+        self._scanner_cooldowns: Dict[str, float] = {}  # key: "scanner_symbol" → last fire time
+        self._scanner_cooldown_sec: int = 900  # 15 minutes between same scanner+symbol
 
         # --- Scanner weight manager (adaptive from R-performance) ---
         self._weight_manager = ScannerWeightManager()
@@ -218,6 +244,14 @@ class ScalpStrategy(BaseStrategy):
 
         # --- Feature Logger (ML training data) ---
         self._feature_logger = FeatureLogger()
+
+        # --- Structure map (computed per bar) ---
+        self._structure_map: Optional[StructureMap] = None
+
+        # --- Self-optimization: adapt SL/TP from last 50 trades ---
+        self._last_optimize_time: float = 0
+        self._optimize_interval: int = 300  # re-check every 5 min
+        self._sl_adjust: float = 1.0  # multiplier on SL (1.0 = default)
         self._cached_by_setup: Dict[str, Dict] = {}  # cached from signal tracker
 
         # --- Opportunity funnel counters (for dashboard) ---
@@ -292,26 +326,27 @@ class ScalpStrategy(BaseStrategy):
             self._session_min_confidence = self.min_confidence
         ist_now = datetime.now(_IST)
         ist_hour = ist_now.hour + ist_now.minute / 60.0
+        # Session context — soft confidence adjustment (no blocking)
+        self._session_penalty: int = 0
         if getattr(self, '_session_gate_enabled', True) and 2.5 <= ist_hour < 9.0:
-            # Asia Late (02:30-09:00 IST) — 37% WR, worst session
-            # BLOCK all trading — this session destroys edge
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": f"SESSION GATE: Asia Late (02:30-09:00 IST) blocked — 37% WR historically",
-                "indicators": {}, "setups_checked": [],
-            }
-            return []
-
-        # Session context for confidence adjustment later
-        if 9.0 <= ist_hour < 13.5:
-            self._current_session = "asia_early"   # 50% WR — raise min confidence
-            self._session_min_confidence = 75       # only high-confidence trades
+            self._current_session = "asia_late"    # 37% WR — penalty, NOT blocked
+            self._session_min_confidence = 65
+            self._session_penalty = -15            # reduces confidence score
+        elif 9.0 <= ist_hour < 13.5:
+            self._current_session = "asia_early"   # 50% WR
+            self._session_min_confidence = 65
+            self._session_penalty = -5
         elif 13.5 <= ist_hour < 20.5:
-            self._current_session = "europe"        # 63% WR — best session
-            self._session_min_confidence = 65       # normal threshold
+            self._current_session = "europe"        # 63% WR — best session, boost
+            self._session_min_confidence = 65
+            self._session_penalty = +5
         else:
             self._current_session = "us"            # 57% WR — decent
-            self._session_min_confidence = 70       # slightly raised
+            self._session_min_confidence = 65
+            self._session_penalty = 0
+
+        # --- Self-optimize from recent trades ---
+        self._self_optimize()
 
         # --- Compute indicators on primary TF ---
         df = self._compute_indicators(primary_df)
@@ -319,10 +354,32 @@ class ScalpStrategy(BaseStrategy):
         # --- Compute 5m ATR for SL calculation (1m ATR is too noisy/tight) ---
         # 5m ATR captures real volatility; 1m ATR gets noise-stopped constantly
         self._confirm_atr: float = 0.0
+        confirm_atr_series = None
         if confirm_df is not None and len(confirm_df) >= 20:
             try:
-                confirm_atr_series = calc_atr(confirm_df, self.atr_period)
+                # Use pre-computed ATR if available (backtest optimization)
+                if "_precomputed_atr" in confirm_df.columns:
+                    confirm_atr_series = confirm_df["_precomputed_atr"]
+                elif "atr" in confirm_df.columns:
+                    confirm_atr_series = confirm_df["atr"]
+                else:
+                    confirm_atr_series = calc_atr(confirm_df, self.atr_period)
                 self._confirm_atr = float(confirm_atr_series.iloc[-1])
+            except Exception:
+                pass
+
+        # ── ATR VOLATILITY TRACKING (soft penalty, NOT a block) ──
+        # Low volatility reduces confidence instead of blocking signals.
+        self._atr_penalty: int = 0
+        if confirm_df is not None and len(confirm_df) >= 30 and self._confirm_atr > 0 and confirm_atr_series is not None:
+            try:
+                atr_sma = float(confirm_atr_series.rolling(20).mean().iloc[-1])
+                if atr_sma > 0 and self._confirm_atr < atr_sma * 0.7:
+                    self._atr_penalty = -15  # soft penalty instead of hard block
+                elif atr_sma > 0 and self._confirm_atr < atr_sma * 0.85:
+                    self._atr_penalty = -8   # moderate penalty
+                elif atr_sma > 0 and self._confirm_atr > atr_sma * 1.2:
+                    self._atr_penalty = +5   # volatility expanding = confidence boost
             except Exception:
                 pass
 
@@ -343,6 +400,15 @@ class ScalpStrategy(BaseStrategy):
             choch_data = detect_choch(choch_source, lookback=30)
         except Exception:
             choch_data = {"choch_detected": False, "direction": None}
+
+        # --- Build structure map (S/R, order blocks, liquidity, VWAP) ---
+        struct_source = confirm_df if confirm_df is not None and len(confirm_df) >= 50 else primary_df
+        try:
+            _struct_close = float(struct_source.iloc[-1]["close"])
+            _struct_atr = self._confirm_atr if self._confirm_atr > 0 else float(df.iloc[-1].get("atr", 0))
+            self._structure_map = build_structure_map(struct_source, _struct_close, _struct_atr)
+        except Exception:
+            self._structure_map = None
 
         # --- Extract current indicator values for status ---
         last_row = df.iloc[-1]
@@ -395,6 +461,10 @@ class ScalpStrategy(BaseStrategy):
             "_scan_supertrend_flip": "Supertrend Flip",
             "_scan_bb_squeeze": "BB Squeeze",
             "_scan_momentum_surge": "Momentum Surge",
+            "_scan_structure_bounce": "Structure Bounce",
+            "_scan_liquidity_sweep": "Liquidity Sweep",
+            "_scan_order_block_entry": "Order Block",
+            "_scan_vwap_mean_revert": "VWAP Mean Revert",
         }
         setups_checked = []
 
@@ -560,10 +630,16 @@ class ScalpStrategy(BaseStrategy):
         #         bb_band_walk (0% WR), post_impulse (marginal),
         #         supertrend_flip (26% WR, -1.03%), momentum_surge (38% WR, -2.41%)
         all_scanners = [
-            self._scan_ema_momentum,       # 64% WR, +2.77% PnL — best performer
-            self._scan_trend_continuation, # 80% WR, +0.54% PnL — highest WR
-            self._scan_rsi_divergence,     # 60% WR, +0.85% PnL — solid reversal
-            self._scan_bb_squeeze,         # 50% WR — good in squeeze regimes
+            # PRIMARY: Structure-based scanners (real edge — enter at levels)
+            self._scan_structure_bounce,    # S/R level + rejection candle
+            self._scan_liquidity_sweep,     # Stop hunt reversal (highest edge)
+            self._scan_order_block_entry,   # Institutional entry zones
+            self._scan_vwap_mean_revert,    # Dynamic S/R mean reversion
+            # SECONDARY: Indicator scanners (confirmation boost, lower priority)
+            self._scan_ema_momentum,
+            self._scan_trend_continuation,
+            self._scan_rsi_divergence,
+            self._scan_bb_squeeze,
         ]
 
         # ── REGIME-FIRST FILTERING ──
@@ -693,6 +769,7 @@ class ScalpStrategy(BaseStrategy):
                     self._funnel["rejected"] += 1
 
         # ── Select best tradeable result ──
+        # All tiers evaluated — confidence scoring naturally filters
         tradeable = [
             sr for sr in scan_results
             if sr.setup_result is not None
@@ -726,6 +803,22 @@ class ScalpStrategy(BaseStrategy):
         # Pick best by weighted score
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
+
+        # ── Apply session + ATR soft penalties to confidence ──
+        session_penalty = getattr(self, '_session_penalty', 0)
+        atr_penalty = getattr(self, '_atr_penalty', 0)
+        if session_penalty != 0:
+            best.confidence = max(best.confidence + session_penalty, 0)
+            if session_penalty < 0:
+                best.confirmations.append(f"Session penalty {session_penalty}")
+            else:
+                best.confirmations.append(f"Session boost +{session_penalty}")
+        if atr_penalty != 0:
+            best.confidence = max(best.confidence + atr_penalty, 0)
+            if atr_penalty < 0:
+                best.confirmations.append(f"Low volatility penalty {atr_penalty}")
+            else:
+                best.confirmations.append(f"High volatility boost +{atr_penalty}")
 
         # ── Fibonacci confidence modifier ──
         if fib_data.get("at_fib", False):
@@ -941,7 +1034,11 @@ class ScalpStrategy(BaseStrategy):
                 return []
 
         # ── Build Signal ──
-        signal = self._build_signal(symbol, best, htf_bias, fib_data=fib_data, choch_data=choch_data)
+        signal = self._build_signal(
+            symbol, best, htf_bias,
+            fib_data=fib_data, choch_data=choch_data,
+            primary_df=primary_df, regime=regime,
+        )
 
         # Tag signal with tier and scanner weight info
         if signal.metadata is None:
@@ -976,6 +1073,8 @@ class ScalpStrategy(BaseStrategy):
 
         self._last_signal_time[symbol] = now
         self._signal_count_hr.append(now)
+        # FIX 3: Record per-scanner cooldown
+        self._scanner_cooldowns[f"{best_sr.scanner_name}_{symbol}"] = now
 
         self.last_scan_status[symbol] = {
             "time": now_iso, "signal": True,
@@ -1030,6 +1129,9 @@ class ScalpStrategy(BaseStrategy):
 
     def _compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute a lean set of indicators for scalp analysis."""
+        # Skip if already pre-computed (backtest optimization)
+        if "ema_8" in df.columns and "rsi" in df.columns and "atr" in df.columns:
+            return df
         result = df.copy()
 
         # EMAs
@@ -1338,9 +1440,8 @@ class ScalpStrategy(BaseStrategy):
             ema_gap_pct = (ema8 - ema21) / ema21 * 100 if ema21 > 0 else 0
 
             # Require a REAL pullback: price must have dipped toward EMA zone
-            # Not just RSI 40-65 which is true almost always in an uptrend
-            price_pulled_back = close <= ema8 * 1.001 and close > ema21  # price near/below EMA8 but above EMA21
-            rsi_recovering = 40 < rsi < 58 and rsi > rsi_prev  # RSI turning up from pullback
+            price_pulled_back = close <= ema8 * 1.001 and close > ema21
+            rsi_recovering = 40 < rsi < 58 and rsi > rsi_prev
             bullish_candle = close > open_
 
             if price_pulled_back and rsi_recovering and bullish_candle:
@@ -1352,12 +1453,12 @@ class ScalpStrategy(BaseStrategy):
                 confs.append("Bullish candle")
                 score += 10
 
-                # EMA alignment strength — require meaningful gap
-                if ema_gap_pct > 0.03:
+                # EMA gap — scored, not blocked
+                if ema_gap_pct > 0.08:
                     confs.append(f"EMA8>21 by {ema_gap_pct:.3f}%")
                     score += 10
-                elif ema_gap_pct < 0.01:
-                    score -= 5  # Weak trend, penalize
+                elif ema_gap_pct < 0.03:
+                    score -= 10  # weak trend penalty
 
                 # Price in the ideal pullback zone (between EMA8 and EMA21)
                 if close < ema8 and close > ema21:
@@ -1390,11 +1491,11 @@ class ScalpStrategy(BaseStrategy):
                 confs.append("Bearish candle")
                 score += 10
 
-                if ema_gap_pct > 0.03:
+                if ema_gap_pct > 0.08:
                     confs.append(f"EMA21>8 by {ema_gap_pct:.3f}%")
                     score += 10
-                elif ema_gap_pct < 0.01:
-                    score -= 5
+                elif ema_gap_pct < 0.03:
+                    score -= 10  # weak trend penalty
 
                 if close < ema8:
                     confs.append("Price < EMA8")
@@ -1414,6 +1515,15 @@ class ScalpStrategy(BaseStrategy):
         if side is None:
             return None
 
+        # Volume: boost or penalize (no hard block)
+        rel_vol = last.get("rel_vol", 1.0)
+        if np.isnan(rel_vol):
+            rel_vol = 1.0
+        if rel_vol < 0.8:
+            score -= 10  # low volume penalty
+        elif rel_vol < 1.0:
+            score -= 5   # below average penalty
+
         # HTF alignment bonus
         if htf_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("HTF aligned")
@@ -1424,9 +1534,8 @@ class ScalpStrategy(BaseStrategy):
             confs.append("5m aligned")
             score += 10
 
-        # Volume (any volume is fine, bonus for above average)
-        rel_vol = last.get("rel_vol", 1.0)
-        if not np.isnan(rel_vol) and rel_vol > 1.0:
+        # Volume bonus (already confirmed >= 1.0 above)
+        if rel_vol > 1.5:
             confs.append(f"Volume {rel_vol:.1f}x")
             score += 5
 
@@ -1777,6 +1886,399 @@ class ScalpStrategy(BaseStrategy):
 
         return _SetupResult(
             name="bb_squeeze",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # STRUCTURE SCANNER 1: S/R Bounce
+    # ==================================================================
+
+    def _scan_structure_bounce(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price touches a known S/R level + rejection candle."""
+        sm = self._structure_map
+        if sm is None:
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high = float(last["high"])
+        low = float(last["low"])
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        body = abs(close - open_)
+        full_range = high - low
+        if full_range <= 0:
+            return None
+
+        side = None
+        confs = []
+        score = 0
+        target_level = None
+
+        # Check if price is near a support level (LONG setup)
+        if sm.nearest_support:
+            lvl = sm.nearest_support
+            dist_pct = (close - lvl.price) / close * 100
+            if 0 <= dist_pct < 0.3:  # within 0.3% of support
+                # Rejection candle: long lower wick, close in upper portion
+                lower_wick = min(open_, close) - low
+                if lower_wick > body * 1.5 and close > (low + full_range * 0.6):
+                    side = OrderSide.LONG
+                    target_level = lvl
+                    confs.append(f"S/R support bounce ({lvl.level_type})")
+                    score += 30
+                    confs.append(f"Rejection wick ({lower_wick/atr:.1f}x ATR)")
+                    score += 15 if lower_wick > atr * 0.5 else 10
+
+        # Check if price is near a resistance level (SHORT setup)
+        if side is None and sm.nearest_resistance:
+            lvl = sm.nearest_resistance
+            dist_pct = (lvl.price - close) / close * 100
+            if 0 <= dist_pct < 0.3:
+                upper_wick = high - max(open_, close)
+                if upper_wick > body * 1.5 and close < (low + full_range * 0.4):
+                    side = OrderSide.SHORT
+                    target_level = lvl
+                    confs.append(f"S/R resistance rejection ({lvl.level_type})")
+                    score += 30
+                    confs.append(f"Rejection wick ({upper_wick/atr:.1f}x ATR)")
+                    score += 15 if upper_wick > atr * 0.5 else 10
+
+        if side is None or target_level is None:
+            return None
+
+        # Level strength bonus
+        score += min(target_level.strength // 5, 15)
+        if target_level.touch_count >= 3:
+            confs.append(f"{target_level.touch_count} touches")
+            score += 10
+
+        # Volume at level
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.2:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+
+        # Confluence: multiple structure types at same level
+        nearby = [l for l in sm.levels if abs(l.price - target_level.price) / close < 0.003 and l != target_level]
+        if nearby:
+            confs.append(f"Multi-structure confluence ({len(nearby)+1} levels)")
+            score += 10
+
+        confidence = min(score, 100)
+
+        # SL below/above the structure zone + buffer
+        if side == OrderSide.LONG:
+            sl = target_level.zone_low - close * 0.001
+        else:
+            sl = target_level.zone_high + close * 0.001
+
+        return _SetupResult(
+            name="structure_bounce",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=target_level.price,  # limit entry at the level
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # STRUCTURE SCANNER 2: Liquidity Sweep
+    # ==================================================================
+
+    def _scan_liquidity_sweep(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price sweeps below swing low (hunts stops) then reverses."""
+        if len(df) < 20:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        low = float(last["low"])
+        high = float(last["high"])
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        # Find recent swing lows/highs in last 50 bars
+        from data.structure import find_swings
+        swing_highs, swing_lows = find_swings(df, lookback=50)
+
+        side = None
+        confs = []
+        score = 0
+        sweep_level = 0.0
+
+        # LONG: Price wicked below a swing low but closed above it (stop hunt → reversal)
+        for idx, swing_price in reversed(swing_lows[-5:]):  # check last 5 swing lows
+            if idx >= len(df) - 2:
+                continue  # skip current/prev bar
+            if low < swing_price and close > swing_price:
+                # Sweep detected: wick went below, close came back above
+                side = OrderSide.LONG
+                sweep_level = swing_price
+                confs.append(f"Liquidity sweep below swing low ${swing_price:.0f}")
+                score += 35
+                # Quality of sweep
+                sweep_depth = (swing_price - low) / atr
+                if sweep_depth > 0.3:
+                    score += 10
+                    confs.append(f"Deep sweep ({sweep_depth:.1f}x ATR)")
+                break
+
+        # SHORT: Price wicked above a swing high but closed below it
+        if side is None:
+            for idx, swing_price in reversed(swing_highs[-5:]):
+                if idx >= len(df) - 2:
+                    continue
+                if high > swing_price and close < swing_price:
+                    side = OrderSide.SHORT
+                    sweep_level = swing_price
+                    confs.append(f"Liquidity sweep above swing high ${swing_price:.0f}")
+                    score += 35
+                    sweep_depth = (high - swing_price) / atr
+                    if sweep_depth > 0.3:
+                        score += 10
+                        confs.append(f"Deep sweep ({sweep_depth:.1f}x ATR)")
+                    break
+
+        if side is None:
+            return None
+
+        # Volume spike on sweep (market makers active)
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.5:
+            confs.append(f"Volume spike {rel_vol:.1f}x")
+            score += 15
+        elif not np.isnan(rel_vol) and rel_vol > 1.0:
+            score += 5
+
+        # RSI divergence at sweep (extra confirmation)
+        rsi = float(last.get("rsi", 50))
+        if side == OrderSide.LONG and rsi < 40:
+            confs.append(f"RSI oversold at sweep ({rsi:.0f})")
+            score += 10
+        elif side == OrderSide.SHORT and rsi > 60:
+            confs.append(f"RSI overbought at sweep ({rsi:.0f})")
+            score += 10
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+
+        confidence = min(score, 100)
+
+        # SL below the sweep wick + buffer
+        if side == OrderSide.LONG:
+            sl = low - close * 0.001  # below the sweep wick
+        else:
+            sl = high + close * 0.001
+
+        return _SetupResult(
+            name="liquidity_sweep",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # STRUCTURE SCANNER 3: Order Block Entry
+    # ==================================================================
+
+    def _scan_order_block_entry(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price returns to an unmitigated order block zone."""
+        sm = self._structure_map
+        if sm is None:
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        side = None
+        confs = []
+        score = 0
+        target_ob = None
+
+        # Find OB levels near current price
+        ob_levels = [l for l in sm.levels if l.level_type == "order_block"]
+
+        for ob in ob_levels:
+            dist_pct = abs(close - ob.price) / close * 100
+            if dist_pct > 0.5:
+                continue  # too far
+
+            if ob.side == "support" and ob.zone_low <= close <= ob.zone_high:
+                # Price is inside bullish OB zone
+                if close > open_:  # bullish candle confirmation
+                    side = OrderSide.LONG
+                    target_ob = ob
+                    confs.append(f"Bullish order block entry (impulse={ob.extra.get('impulse_size', 0):.1f}x ATR)")
+                    score += 30
+                    break
+
+            elif ob.side == "resistance" and ob.zone_low <= close <= ob.zone_high:
+                if close < open_:  # bearish candle confirmation
+                    side = OrderSide.SHORT
+                    target_ob = ob
+                    confs.append(f"Bearish order block entry (impulse={ob.extra.get('impulse_size', 0):.1f}x ATR)")
+                    score += 30
+                    break
+
+        if side is None or target_ob is None:
+            return None
+
+        # OB strength
+        score += min(target_ob.strength // 4, 20)
+
+        # Volume
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.0:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+
+        # 5m confirmation
+        if confirm_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("5m aligned")
+            score += 10
+
+        confidence = min(score, 100)
+
+        if side == OrderSide.LONG:
+            sl = target_ob.zone_low - close * 0.001
+        else:
+            sl = target_ob.zone_high + close * 0.001
+
+        return _SetupResult(
+            name="order_block_entry",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=target_ob.price,  # limit at OB midpoint
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # STRUCTURE SCANNER 4: VWAP Mean Revert
+    # ==================================================================
+
+    def _scan_vwap_mean_revert(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price at VWAP band extreme + reversal candle."""
+        sm = self._structure_map
+        if sm is None or sm.vwap <= 0:
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high = float(last["high"])
+        low = float(last["low"])
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        body = abs(close - open_)
+        full_range = high - low
+        if full_range <= 0:
+            return None
+
+        side = None
+        confs = []
+        score = 0
+
+        # LONG: Price at/below VWAP lower band + bullish reversal
+        if close <= sm.vwap_lower_1 and sm.vwap_lower_1 > 0:
+            lower_wick = min(open_, close) - low
+            if close > open_ and lower_wick > body * 0.5:
+                side = OrderSide.LONG
+                confs.append(f"VWAP lower band touch (VWAP=${sm.vwap:.0f})")
+                score += 30
+
+                if close <= sm.vwap_lower_2 and sm.vwap_lower_2 > 0:
+                    confs.append("Below 2nd std dev — extreme")
+                    score += 10
+
+        # SHORT: Price at/above VWAP upper band + bearish reversal
+        if side is None and close >= sm.vwap_upper_1 and sm.vwap_upper_1 > 0:
+            upper_wick = high - max(open_, close)
+            if close < open_ and upper_wick > body * 0.5:
+                side = OrderSide.SHORT
+                confs.append(f"VWAP upper band touch (VWAP=${sm.vwap:.0f})")
+                score += 30
+
+                if close >= sm.vwap_upper_2 and sm.vwap_upper_2 > 0:
+                    confs.append("Above 2nd std dev — extreme")
+                    score += 10
+
+        if side is None:
+            return None
+
+        # Volume
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.0:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+
+        # RSI
+        rsi = float(last.get("rsi", 50))
+        if side == OrderSide.LONG and rsi < 35:
+            confs.append(f"RSI oversold ({rsi:.0f})")
+            score += 10
+        elif side == OrderSide.SHORT and rsi > 65:
+            confs.append(f"RSI overbought ({rsi:.0f})")
+            score += 10
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+
+        confidence = min(score, 100)
+
+        # SL beyond VWAP 2nd std dev band
+        if side == OrderSide.LONG:
+            sl = sm.vwap_lower_2 - close * 0.001 if sm.vwap_lower_2 > 0 else close - atr * 2
+        else:
+            sl = sm.vwap_upper_2 + close * 0.001 if sm.vwap_upper_2 > 0 else close + atr * 2
+
+        return _SetupResult(
+            name="vwap_mean_revert",
             side=side,
             confidence=confidence,
             confirmations=confs,
@@ -2470,80 +2972,128 @@ class ScalpStrategy(BaseStrategy):
     def _build_signal(
         self, symbol: str, setup: _SetupResult, htf_bias: int,
         *, fib_data: dict = None, choch_data: dict = None,
+        primary_df: pd.DataFrame = None, regime: str = "",
     ) -> Signal:
-        """Convert a SetupResult into a Signal dataclass.
+        """Convert a SetupResult into a Signal with pro risk framework.
 
-        Dynamic TP/SL based on:
-        - Confidence level: higher confidence → more aggressive TPs
-        - Setup type: trend_continuation gets wider TPs, scalps get tighter
-        - HTF alignment: aligned with higher TF → extend TPs
-        - Volatility (ATR): adjusts stop distance
+        Risk framework priorities:
+        1. LIQUIDATION SAFETY — SL must be well inside liquidation buffer
+        2. STRUCTURE + VOLATILITY SL — max(swing SL, ATR SL), clamped 0.4-1.2%
+        3. TP LEVELS — TP1≥1:1, TP2≥1.5:1, TP3≥2:1, all > 2× fees
+        4. REGIME ADAPTATION — wider TPs in trends, tighter in ranges
         """
         entry = setup.entry_price
 
-        # ── Recalculate SL using 5m ATR (not 1m) for wider, more stable stops ──
-        # The individual setup scanners use 1m ATR which is too tight (noise stops).
-        # 5m ATR gives a realistic volatility measure that survives normal wicks.
-        if self._confirm_atr > 0:
-            atr_for_sl = self._confirm_atr  # 5m ATR
-        else:
-            atr_for_sl = setup.atr  # fallback to 1m ATR
+        # ══════════════════════════════════════════════════════
+        # STEP 1: COMPUTE VOLATILITY-BASED SL
+        # ══════════════════════════════════════════════════════
+        atr_for_sl = self._confirm_atr if self._confirm_atr > 0 else setup.atr
+        sl_mult = self.sl_atr_mult * getattr(self, '_sl_adjust', 1.0)  # self-optimize adjustment
+        vol_sl_dist = atr_for_sl * sl_mult
+
+        # ══════════════════════════════════════════════════════
+        # STEP 2: COMPUTE STRUCTURE-BASED SL (swing high/low)
+        # ══════════════════════════════════════════════════════
+        struct_sl_dist = vol_sl_dist  # default = same as volatility
+        if primary_df is not None and len(primary_df) >= 20:
+            try:
+                recent = primary_df.iloc[-20:]
+                if setup.side == OrderSide.LONG:
+                    # SL below recent swing low
+                    swing_low = float(recent["low"].min())
+                    struct_sl_dist = max(entry - swing_low, 0) + entry * 0.001  # +0.1% buffer
+                else:
+                    # SL above recent swing high
+                    swing_high = float(recent["high"].max())
+                    struct_sl_dist = max(swing_high - entry, 0) + entry * 0.001  # +0.1% buffer
+            except Exception:
+                pass
+
+        # ══════════════════════════════════════════════════════
+        # STEP 3: FINAL SL = max(structure, volatility), clamped 0.4-1.2%
+        # ══════════════════════════════════════════════════════
+        sl_dist = max(struct_sl_dist, vol_sl_dist)
+
+        # Clamp to [0.4%, 1.2%] of entry price
+        min_sl_dist = entry * self.min_sl_pct / 100   # 0.4%
+        max_sl_dist = entry * self.max_sl_pct / 100   # 1.2%
+        sl_dist = max(min_sl_dist, min(sl_dist, max_sl_dist))
+
+        # Add 0.1% execution buffer for slippage
+        sl_dist += entry * 0.001
 
         if setup.side == OrderSide.LONG:
-            sl = entry - atr_for_sl * self.sl_atr_mult
+            sl = entry - sl_dist
         else:
-            sl = entry + atr_for_sl * self.sl_atr_mult
+            sl = entry + sl_dist
+        risk = sl_dist
 
-        risk = abs(entry - sl)
+        # ══════════════════════════════════════════════════════
+        # STEP 4: LIQUIDATION SAFETY CHECK
+        # ══════════════════════════════════════════════════════
+        # Confidence-scaled leverage (user approved up to 50x)
+        leverage = 5  # default
+        leverage_map = getattr(self, 'leverage_map', {})
+        for conf_threshold in sorted(leverage_map.keys(), reverse=True):
+            if setup.confidence >= conf_threshold:
+                leverage = leverage_map[conf_threshold]
+                break
 
-        # ── Enforce minimum SL distance ──
-        min_sl_distance = entry * self.min_sl_pct / 100  # 0.40% of price
-        if risk < min_sl_distance:
-            # Widen SL to minimum distance
-            if setup.side == OrderSide.LONG:
-                sl = entry - min_sl_distance
-            else:
-                sl = entry + min_sl_distance
-            risk = min_sl_distance
+        # Estimated liquidation distance (simplified: ~1/leverage - maintenance margin)
+        liq_buffer_pct = (100.0 / leverage) - 0.5  # rough estimate minus maintenance
+        liq_buffer_dist = entry * liq_buffer_pct / 100
 
-        # ── Dynamic TP multipliers based on conditions ──
-        # TP1 at 0.8R for faster partial profit capture (70% exit)
-        # TP2/TP3 remain extended for runners (30% continues)
-        tp1_rr = self.tp1_rr   # 0.8R — close, fast profit lock
-        tp2_rr = self.tp2_rr   # 2.0R base
-        tp3_rr = self.tp3_rr   # 4.0R base (tiny runner)
+        sl_pct_of_liq = (risk / liq_buffer_dist * 100) if liq_buffer_dist > 0 else 100
+        risk_status = "SAFE"
 
-        # Confidence boost: high confidence → extend TP2/TP3 only
-        # DON'T extend TP1 — we want it to hit quickly and lock in 70%
-        if setup.confidence >= 85:
-            tp2_rr *= 1.2   # 3.0R
-            tp3_rr *= 1.3   # 5.2R
-        elif setup.confidence >= 70:
-            tp2_rr *= 1.1   # 2.75R
-            tp3_rr *= 1.15  # 4.6R
+        if liq_buffer_pct < self.liq_min_buffer_pct:
+            # Liquidation buffer too small — reject
+            logger.info("%s: %s REJECTED — liq buffer %.1f%% < %.1f%% minimum",
+                       symbol, setup.name, liq_buffer_pct, self.liq_min_buffer_pct)
+            return None
 
-        # HTF alignment: if HTF agrees, extend TPs (trend has more room)
+        if sl_pct_of_liq >= self.liq_reject_pct * 100:
+            # SL too close to liquidation — reject
+            logger.info("%s: %s REJECTED — SL uses %.0f%% of liq buffer (max 50%%)",
+                       symbol, setup.name, sl_pct_of_liq)
+            return None
+        elif sl_pct_of_liq >= self.liq_sl_max_pct * 100:
+            risk_status = "WARNING"
+
+        # ══════════════════════════════════════════════════════
+        # STEP 5: TP LEVELS — per spec with regime adaptation
+        # ══════════════════════════════════════════════════════
+        tp1_rr = self.tp1_rr   # 1.0R
+        tp2_rr = self.tp2_rr   # 1.5R
+        tp3_rr = self.tp3_rr   # 2.0R
+
+        # Regime adaptation per spec
+        is_trending = regime in ("trending_up", "trending_down", "breakout")
+        is_ranging = regime in ("ranging", "sideways", "quiet")
+
+        if is_trending:
+            # Wider TPs in trend, trailing SL
+            tp2_rr *= 1.2
+            tp3_rr *= 1.3
+        elif is_ranging:
+            # Tighter TPs, faster exits
+            tp2_rr *= 0.9
+            tp3_rr *= 0.8
+
+        # HTF alignment → extend TPs (trend has room)
         if htf_bias != 0:
             is_aligned = (
                 (htf_bias > 0 and setup.side == OrderSide.LONG) or
                 (htf_bias < 0 and setup.side == OrderSide.SHORT)
             )
             if is_aligned:
-                tp2_rr *= 1.2
-                tp3_rr *= 1.3
+                tp2_rr *= 1.15
+                tp3_rr *= 1.2
 
         # Setup-specific adjustments
-        if setup.name == "trend_continuation":
-            tp2_rr *= 1.1
-            tp3_rr *= 1.2
-        elif setup.name == "bb_squeeze":
-            tp2_rr *= 1.3
-            tp3_rr *= 1.5
-        elif setup.name == "momentum_surge":
+        if setup.name == "bb_squeeze":
             tp2_rr *= 1.2
-            tp3_rr *= 1.4
-        # NOTE: rsi_divergence no longer gets tighter TPs — mean reversion
-        # needs room to play out
+            tp3_rr *= 1.3
 
         # Calculate final TP levels
         if setup.side == OrderSide.LONG:
@@ -2557,37 +3107,34 @@ class ScalpStrategy(BaseStrategy):
             tp3 = entry - risk * tp3_rr
             invalidation = sl + setup.atr * 0.3
 
-        # ── Enforce minimum TP1 distance ──
-        min_tp1_distance = entry * self.min_tp1_pct / 100  # 0.20% of price
+        # ── Enforce TP1 ≥ 2× trading cost (0.4% minimum per spec) ──
+        min_tp1_distance = entry * self.min_tp1_pct / 100
         if abs(tp1 - entry) < min_tp1_distance:
             if setup.side == OrderSide.LONG:
                 tp1 = entry + min_tp1_distance
-                tp2 = entry + min_tp1_distance * 2.0
-                tp3 = entry + min_tp1_distance * 3.5
+                tp2 = max(tp2, entry + min_tp1_distance * 1.5)
+                tp3 = max(tp3, entry + min_tp1_distance * 2.0)
             else:
                 tp1 = entry - min_tp1_distance
-                tp2 = entry - min_tp1_distance * 2.0
-                tp3 = entry - min_tp1_distance * 3.5
+                tp2 = min(tp2, entry - min_tp1_distance * 1.5)
+                tp3 = min(tp3, entry - min_tp1_distance * 2.0)
 
-        # ── Enforce minimum Risk:Reward ratio ──
+        # ── Enforce minimum R:R (1:1 per spec) ──
         actual_rr = abs(tp1 - entry) / risk if risk > 0 else 0
         if actual_rr < self.min_rr_ratio:
-            logger.debug(
-                "%s: %s rejected — R:R %.2f below minimum %.2f",
-                symbol, setup.name, actual_rr, self.min_rr_ratio,
-            )
+            logger.debug("%s: %s rejected — R:R %.2f below %.2f",
+                        symbol, setup.name, actual_rr, self.min_rr_ratio)
             return None
 
         grade = confidence_to_grade(setup.confidence)
 
-        # Signal type: BUY/SELL if confidence >= 75, else PRE_BUY/PRE_SELL
         if setup.confidence >= 75:
             sig_type = SignalType.BUY if setup.side == OrderSide.LONG else SignalType.SELL
         else:
             sig_type = SignalType.PRE_BUY if setup.side == OrderSide.LONG else SignalType.PRE_SELL
 
-        # Effective RR for display
         eff_rr = round((tp1_rr + tp2_rr) / 2, 2)
+        sl_pct = round(risk / entry * 100, 3)
 
         return Signal(
             symbol=symbol,
@@ -2601,23 +3148,80 @@ class ScalpStrategy(BaseStrategy):
             grade=grade,
             risk_reward=eff_rr,
             reason=f"SCALP {setup.name}: {', '.join(setup.confirmations[:4])}",
-            regime=MarketRegime.SIDEWAYS,  # scalps work in any regime
+            regime=MarketRegime.SIDEWAYS,
             metadata={
                 "setup_type": setup.name,
                 "confirmations": setup.confirmations,
                 "htf_bias": htf_bias,
                 "atr": round(setup.atr, 2),
                 "dynamic_tp_rr": [round(tp1_rr, 2), round(tp2_rr, 2), round(tp3_rr, 2)],
+                "sl_pct": sl_pct,
+                "sl_source": "max(structure, volatility)",
+                "risk_status": risk_status,
+                "leverage": leverage,
+                "liq_buffer_pct": round(liq_buffer_pct, 1),
                 "fib_at_level": (fib_data or {}).get("at_fib", False),
                 "fib_nearest": (fib_data or {}).get("nearest_level"),
                 "choch": (choch_data or {}).get("direction") if (choch_data or {}).get("choch_detected") else None,
                 "choch_strength": (choch_data or {}).get("strength", 0) if (choch_data or {}).get("choch_detected") else 0,
+                "regime": regime,
             },
         )
 
     # ------------------------------------------------------------------
     # Signal management
     # ------------------------------------------------------------------
+
+    def _self_optimize(self) -> None:
+        """Self-optimization from last 50 trades per spec section 7.
+
+        Adjusts SL multiplier based on empirical patterns:
+        - Frequent stop-outs before reversal → widen SL slightly
+        - Increasing drawdowns → tighten SL + reduce size
+        - TP3 rarely hits → TPs already adjusted via spec (1:1, 1.5:1, 2:1)
+        """
+        now = time.time()
+        if now - self._last_optimize_time < self._optimize_interval:
+            return
+        self._last_optimize_time = now
+
+        by_setup = self._cached_by_setup
+        if not by_setup:
+            return
+
+        # Aggregate last 50 trades across all setups
+        total_trades = 0
+        stop_outs_with_mfe = 0  # stopped out but MFE > 0.5R (SL too tight)
+        total_mae = 0.0
+        total_mfe = 0.0
+
+        for setup_name, stats in by_setup.items():
+            n = stats.get("count", 0)
+            total_trades += n
+            # Check if avg_mae is high relative to SL (stops too tight)
+            avg_mae = stats.get("avg_mae_r", 0)
+            avg_mfe = stats.get("avg_mfe_r", 0)
+            total_mae += avg_mae * n
+            total_mfe += avg_mfe * n
+
+        if total_trades < 10:
+            return  # not enough data
+
+        avg_mae_all = total_mae / total_trades if total_trades > 0 else 0
+        avg_mfe_all = total_mfe / total_trades if total_trades > 0 else 0
+
+        # If average MAE is close to 1.0R (meaning trades regularly hit SL)
+        # but average MFE is also high (meaning price often went our way first)
+        # → SL is too tight, widen slightly
+        if avg_mae_all > 0.8 and avg_mfe_all > 0.5:
+            self._sl_adjust = min(self._sl_adjust + 0.05, 1.3)  # max 30% wider
+            logger.info("SELF-OPT: Widening SL by %.0f%% (MAE=%.2fR, MFE=%.2fR — stops too tight)",
+                       (self._sl_adjust - 1) * 100, avg_mae_all, avg_mfe_all)
+        # If average MAE is low and MFE is low → trades aren't moving, tighten
+        elif avg_mae_all < 0.4 and avg_mfe_all < 0.3:
+            self._sl_adjust = max(self._sl_adjust - 0.05, 0.8)  # max 20% tighter
+            logger.info("SELF-OPT: Tightening SL by %.0f%% (MAE=%.2fR, MFE=%.2fR — dead trades)",
+                       (1 - self._sl_adjust) * 100, avg_mae_all, avg_mfe_all)
 
     def clear_signal(self, symbol: str) -> None:
         self._last_signal_time.pop(symbol, None)

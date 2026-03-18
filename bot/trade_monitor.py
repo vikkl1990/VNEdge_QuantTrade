@@ -223,29 +223,7 @@ class TradeMonitorAgent:
             self.analyze_trade(sig)
 
     def should_pause_trading(self) -> Tuple[bool, str]:
-        """Check if trading should be paused based on risk conditions.
-
-        Returns (should_pause, reason). The orchestrator should call this
-        before accepting new signals.
-        """
-        m = self._metrics
-
-        # Hard pause: drawdown > 8%
-        if m.get("current_drawdown", 0) > 8:
-            return True, f"Drawdown pause: {m['current_drawdown']:.1f}% drawdown exceeds 8% limit"
-
-        # Streak pause: 5+ consecutive losses
-        if m.get("current_streak", 0) <= -5:
-            return True, f"Streak pause: {abs(m['current_streak'])}-trade loss streak"
-
-        # Rolling WR pause: < 40% over 15+ trades
-        recent = list(self._recent_trades)[-20:]
-        if len(recent) >= 15:
-            wins = sum(1 for t in recent if t.get("is_win", False))
-            rolling_wr = wins / len(recent) * 100
-            if rolling_wr < 40:
-                return True, f"WR pause: rolling {len(recent)}-trade WR is {rolling_wr:.1f}% (< 40%)"
-
+        """No pausing — all signals fire. Confidence scoring handles quality."""
         return False, ""
 
     # ------------------------------------------------------------------

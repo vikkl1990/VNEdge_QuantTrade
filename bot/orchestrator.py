@@ -737,23 +737,9 @@ class BotOrchestrator:
         if hasattr(signal_type, 'value'):
             signal_type = signal_type.value
 
-        # -- Auto-pause check: drawdown / streak / rolling WR guard --
-        try:
-            should_pause, pause_reason = self._trade_monitor.should_pause_trading()
-            if should_pause:
-                self._log.warning("Signal PAUSED by risk guard: %s %s - %s", symbol, signal_type, pause_reason)
-                return
-        except Exception:
-            pass
-
-        # -- AI Learning: Check if signal should be blocked --
-        try:
-            blocked, block_reason = self._signal_learner.is_signal_blocked(sig_dict)
-            if blocked:
-                self._log.info("Signal BLOCKED by AI: %s %s - %s", symbol, signal_type, block_reason)
-                return
-        except Exception:
-            pass
+        # -- NO BLOCKING: All signals fire. Streak/drawdown tracked but not blocked --
+        # (Removed: trade_monitor.should_pause_trading and signal_learner.is_signal_blocked)
+        # Confidence scoring handles signal quality, not hard blocks.
 
         # -- Sync loss streak to AI learner for confidence reduction --
         try:

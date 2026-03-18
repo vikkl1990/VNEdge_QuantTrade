@@ -559,34 +559,54 @@ class ScalpBacktester:
                 except Exception as exc:
                     logger.debug("CSV load failed: %s", exc)
 
-        # Fetch from exchange
+        # Fetch from exchange using CCXT directly
         try:
-            from exchange.ccxt_client import CCXTClient
-            cfg = self.config.get("exchange", {})
-            client = CCXTClient(cfg)
-            await client.initialize()
+            import ccxt.async_support as ccxt
+
+            exchange_cfg = self.config.get("exchange", {})
+            exchange_id = exchange_cfg.get("name", "delta")
+
+            # Map exchange names
+            ccxt_id = {
+                "delta": "delta",
+                "binance": "binance",
+                "bybit": "bybit",
+            }.get(exchange_id, "binance")  # fallback to binance for data
+
+            exchange = getattr(ccxt, ccxt_id)({
+                "apiKey": exchange_cfg.get("api_key", ""),
+                "secret": exchange_cfg.get("api_secret", ""),
+                "options": {"defaultType": "swap"},
+            })
+
+            # Convert symbol for the exchange
+            ex_symbol = symbol
+            if ccxt_id == "delta":
+                ex_symbol = symbol.replace("/", "")  # BTC/USDT -> BTCUSDT
 
             tf_ms = {"1m": 60000, "5m": 300000, "15m": 900000}.get(timeframe, 300000)
             all_rows = []
             since_ms = int(start.timestamp() * 1000)
             end_ms = int(end.timestamp() * 1000)
 
+            logger.info("  Fetching %s %s from %s exchange...", symbol, timeframe, ccxt_id)
+
             while since_ms < end_ms:
-                rows = await client.fetch_ohlcv(symbol, timeframe, since=since_ms, limit=1000)
+                try:
+                    rows = await exchange.fetch_ohlcv(ex_symbol, timeframe, since=since_ms, limit=1000)
+                except Exception as fetch_err:
+                    logger.debug("  Fetch chunk failed: %s", fetch_err)
+                    break
                 if not rows:
                     break
-                for r in rows:
-                    if hasattr(r, "_asdict"):
-                        all_rows.append([r.timestamp, r.open, r.high, r.low, r.close, r.volume])
-                    elif isinstance(r, (list, tuple)):
-                        all_rows.append(list(r)[:6])
-                last_ts = all_rows[-1][0]
+                all_rows.extend(rows)
+                last_ts = rows[-1][0]
                 if last_ts <= since_ms:
                     break
                 since_ms = last_ts + tf_ms
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.2)  # rate limit
 
-            await client.close()
+            await exchange.close()
 
             if all_rows:
                 df = pd.DataFrame(all_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -595,7 +615,9 @@ class ScalpBacktester:
                 df = df[~df.index.duplicated(keep="last")]
                 df.sort_index(inplace=True)
                 mask = (df.index >= pd.Timestamp(start, tz="UTC")) & (df.index <= pd.Timestamp(end, tz="UTC"))
-                return df.loc[mask]
+                result_df = df.loc[mask]
+                logger.info("  Fetched %d %s candles for %s", len(result_df), timeframe, symbol)
+                return result_df
         except Exception as exc:
             logger.warning("Exchange fetch failed for %s %s: %s", symbol, timeframe, exc)
 
@@ -718,6 +740,14 @@ async def main():
 
     config = get_config()
     bt = ScalpBacktester(config)
+
+    # Override strategy settings for backtesting:
+    # Disable live-only gates that use wall-clock time instead of backtest time
+    bt.strategy.max_signals_hr = 999       # rate limiter uses time.time(), not bar time
+    bt.strategy.cooldown_sec = 60          # reduce cooldown for faster backtesting
+    bt.strategy._session_gate_enabled = False  # session gate uses real IST, not bar time
+    bt.COOLDOWN_SEC = 60                    # engine-level cooldown too
+
     result = await bt.run(args.symbols, args.start, args.end, args.balance)
 
     # Print report

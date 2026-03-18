@@ -286,9 +286,13 @@ class ScalpStrategy(BaseStrategy):
         # ── SESSION-AWARE GATING ──
         # Data from 112 trades: Asia Late 37% WR, Asia Early 50%, Europe 63%, US 57%
         # Block the worst session, restrict the marginal one
+        # (Disabled in backtesting via _session_gate_enabled=False)
+        if getattr(self, '_session_gate_enabled', True) is False:
+            self._current_session = "europe"
+            self._session_min_confidence = self.min_confidence
         ist_now = datetime.now(_IST)
         ist_hour = ist_now.hour + ist_now.minute / 60.0
-        if 2.5 <= ist_hour < 9.0:
+        if getattr(self, '_session_gate_enabled', True) and 2.5 <= ist_hour < 9.0:
             # Asia Late (02:30-09:00 IST) — 37% WR, worst session
             # BLOCK all trading — this session destroys edge
             self.last_scan_status[symbol] = {

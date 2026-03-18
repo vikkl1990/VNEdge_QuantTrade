@@ -106,6 +106,12 @@ class TrackedSignal:
     highest_price: float = 0.0
     lowest_price: float = 0.0
 
+    # Profit protection state
+    breakeven_set: bool = False          # early breakeven at +0.5R triggered?
+    tp1_pnl_locked: float = 0.0         # PnL% locked when TP1 partial close fires
+    tp2_pnl_locked: float = 0.0         # PnL% locked when TP2 partial close fires
+    position_remaining_pct: float = 1.0  # fraction of position still open (1.0 → 0.40 → 0.15)
+
     # Timestamps
     entry_time: str = ""
     tp1_time: str = ""
@@ -385,38 +391,58 @@ class SignalTracker:
                     )
                     continue
 
-            # -- Early Invalidation Exit: Momentum Collapse --
-            # If trade showed promise (MFE > 0.3R) but retreated to -0.5R after 5min
+            # -- MFE-Based Profit Protection + Momentum Collapse --
+            # Tiered exit: don't let winners become losers
             if ts.initial_risk > 0 and ts.mfe_r >= 0.3:
-                entry_time = datetime.fromisoformat(ts.entry_time)
-                elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
-                if elapsed >= 300:  # at least 5 minutes open
-                    if is_long:
-                        current_r = (price - ts.entry_price) / ts.initial_risk
-                    else:
-                        current_r = (ts.entry_price - price) / ts.initial_risk
-                    if current_r <= -0.5:
-                        ts.exit_price = price
-                        ts.exit_reason = "momentum_collapse"
-                        ts.exit_time = now_iso
-                        ts.exit_reason_detailed = "momentum_collapse_after_mfe"
-                        ts.status = "stopped"
-                        ts.pnl_pct = self._calc_pnl(ts, price)
-                        to_close.append(tid)
-                        events.append({
-                            "type": "momentum_collapse",
-                            "signal": ts.to_dict(),
-                            "message": (
-                                f"MOMENTUM COLLAPSE: {ts.symbol} {ts.side} @ {price:.2f} | "
-                                f"MFE was {ts.mfe_r:.2f}R, now {current_r:.2f}R | "
-                                f"PnL: {ts.pnl_pct:+.2f}%"
-                            ),
-                        })
-                        logger.warning(
-                            "Momentum collapse: %s %s @ %.2f (MFE %.2fR -> %.2fR) | PnL: %.2f%%",
-                            ts.symbol, ts.side, price, ts.mfe_r, current_r, ts.pnl_pct,
-                        )
-                        continue
+                if is_long:
+                    current_r = (price - ts.entry_price) / ts.initial_risk
+                else:
+                    current_r = (ts.entry_price - price) / ts.initial_risk
+
+                # Tier 1: Had +1.0R profit, now retreated to +0.4R → lock +0.4R
+                profit_protect = False
+                if ts.mfe_r >= 1.0 and current_r <= 0.4:
+                    profit_protect = True
+                    exit_reason_tag = "profit_protect_1R"
+                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.4R)"
+                # Tier 2: Had +0.7R profit, now retreated to +0.15R → lock small profit
+                elif ts.mfe_r >= 0.7 and current_r <= 0.15:
+                    profit_protect = True
+                    exit_reason_tag = "profit_protect_07R"
+                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.15R)"
+                # Tier 3 (original): Had +0.3R, now at -0.5R after 5min → momentum collapse
+                elif ts.mfe_r >= 0.3 and current_r <= -0.5:
+                    try:
+                        entry_time = datetime.fromisoformat(ts.entry_time)
+                        elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
+                        if elapsed >= 300:
+                            profit_protect = True
+                            exit_reason_tag = "momentum_collapse"
+                            exit_detail = f"Momentum collapse: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R"
+                    except (ValueError, TypeError):
+                        pass
+
+                if profit_protect:
+                    ts.exit_price = price
+                    ts.exit_reason = exit_reason_tag
+                    ts.exit_time = now_iso
+                    ts.exit_reason_detailed = exit_reason_tag
+                    ts.status = "stopped" if current_r <= 0 else "partial_win"
+                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    to_close.append(tid)
+                    events.append({
+                        "type": exit_reason_tag,
+                        "signal": ts.to_dict(),
+                        "message": (
+                            f"PROFIT PROTECT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                            f"{exit_detail} | PnL: {ts.pnl_pct:+.2f}%"
+                        ),
+                    })
+                    logger.info(
+                        "Profit protect: %s %s @ %.2f | %s | PnL: %.2f%%",
+                        ts.symbol, ts.side, price, exit_detail, ts.pnl_pct,
+                    )
+                    continue
 
             # -- Check Stop Loss --
             sl_hit = (price <= ts.stop_loss) if is_long else (price >= ts.stop_loss)
@@ -449,6 +475,34 @@ class SignalTracker:
                 })
                 continue
 
+            # -- Early Breakeven Protection at +0.5R --
+            # Move SL to entry + fee buffer when trade reaches 0.5R profit
+            # This prevents profitable trades from reversing to full losses
+            if not ts.breakeven_set and not ts.tp1_hit and ts.initial_risk > 0:
+                if is_long:
+                    current_r_be = (price - ts.entry_price) / ts.initial_risk
+                else:
+                    current_r_be = (ts.entry_price - price) / ts.initial_risk
+                if current_r_be >= 0.5:
+                    fee_buffer_pct = 0.10 / 100  # 0.10% above entry to cover fees
+                    fee_buffer = ts.entry_price * fee_buffer_pct
+                    if is_long:
+                        new_sl = ts.entry_price + fee_buffer
+                    else:
+                        new_sl = ts.entry_price - fee_buffer
+                    # Only tighten, never widen
+                    should_update = (
+                        (is_long and new_sl > ts.stop_loss) or
+                        (not is_long and new_sl < ts.stop_loss)
+                    )
+                    if should_update:
+                        ts.stop_loss = new_sl
+                        ts.breakeven_set = True
+                        logger.info(
+                            "EARLY BE: %s %s @ %.2f | +%.2fR | SL → %.2f (breakeven+fees)",
+                            ts.symbol, ts.side, price, current_r_be, ts.stop_loss,
+                        )
+
             # -- Check TP levels (in order) --
             if not ts.tp1_hit and ts.tp1:
                 tp1_hit = (price >= ts.tp1) if is_long else (price <= ts.tp1)
@@ -456,18 +510,39 @@ class SignalTracker:
                     ts.tp1_hit = True
                     ts.tp1_time = now_iso
                     ts.status = "tp1_hit"
-                    # Fee-aware break-even: move SL to entry + fee buffer
-                    # Round-trip fees = 0.18% of position, so need entry + 0.20% to truly break even
-                    fee_buffer_pct = 0.20 / 100  # slightly above fees to ensure real break-even
-                    fee_buffer = ts.entry_price * fee_buffer_pct
+
+                    # Book partial profit: 60% of position at TP1
                     if is_long:
-                        ts.stop_loss = ts.entry_price + fee_buffer  # break-even + fees
+                        tp1_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
                     else:
-                        ts.stop_loss = ts.entry_price - fee_buffer  # break-even + fees
+                        tp1_pnl = ((ts.entry_price - price) / ts.entry_price) * 100
+                    ts.tp1_pnl_locked = round(0.60 * tp1_pnl, 4)
+                    ts.position_remaining_pct = 0.40
+
+                    # Start trailing at 1.0× ATR (earlier than waiting for TP2)
+                    atr_trail_dist = ts.signal_atr * 1.0 if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
+                    if is_long:
+                        trail_sl = price - atr_trail_dist
+                        # Trail must be at least at breakeven+fees
+                        fee_buffer = ts.entry_price * (0.20 / 100)
+                        trail_sl = max(trail_sl, ts.entry_price + fee_buffer)
+                    else:
+                        trail_sl = price + atr_trail_dist
+                        fee_buffer = ts.entry_price * (0.20 / 100)
+                        trail_sl = min(trail_sl, ts.entry_price - fee_buffer)
+
+                    ts.atr_trail_active = True
+                    ts.atr_trail_price = trail_sl
+                    ts.stop_loss = trail_sl
+
                     events.append({
                         "type": "tp1_hit",
                         "signal": ts.to_dict(),
-                        "message": f"TP1 HIT: {ts.symbol} {ts.side} @ {price:.2f} | SL moved to break-even+fees {ts.stop_loss:.2f}",
+                        "message": (
+                            f"TP1 HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                            f"60% booked ({ts.tp1_pnl_locked:+.2f}%) | "
+                            f"Trail started @ {ts.stop_loss:.2f} (1.0×ATR)"
+                        ),
                     })
 
             if not ts.tp2_hit and ts.tp2 and ts.tp1_hit:
@@ -476,18 +551,23 @@ class SignalTracker:
                     ts.tp2_hit = True
                     ts.tp2_time = now_iso
                     ts.status = "tp2_hit"
-                    # ATR Trailing Stop: engage after TP2 hit
-                    # Trail at 1.5× ATR behind current price
-                    atr_trail_dist = ts.signal_atr * 1.5 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.5
+
+                    # Book 25% partial at TP2
+                    if is_long:
+                        tp2_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
+                    else:
+                        tp2_pnl = ((ts.entry_price - price) / ts.entry_price) * 100
+                    ts.tp2_pnl_locked = round(0.25 * tp2_pnl, 4)
+                    ts.position_remaining_pct = 0.15  # only runner left
+
+                    # Tighten ATR trail to 0.8× ATR (runner protection)
+                    atr_trail_dist = ts.signal_atr * 0.8 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
                     if is_long:
                         ts.atr_trail_price = price - atr_trail_dist
-                    else:
-                        ts.atr_trail_price = price + atr_trail_dist
-                    ts.atr_trail_active = True
-                    # Ensure trail is at least at TP1 level (lock TP1 profit)
-                    if is_long:
+                        # Floor at TP1 (lock TP1 profit for runner)
                         ts.atr_trail_price = max(ts.atr_trail_price, ts.tp1)
                     else:
+                        ts.atr_trail_price = price + atr_trail_dist
                         ts.atr_trail_price = min(ts.atr_trail_price, ts.tp1)
                     ts.stop_loss = ts.atr_trail_price
                     events.append({
@@ -495,8 +575,8 @@ class SignalTracker:
                         "signal": ts.to_dict(),
                         "message": (
                             f"TP2 HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
-                            f"ATR trail engaged @ {ts.atr_trail_price:.2f} "
-                            f"(1.5×ATR={atr_trail_dist:.2f})"
+                            f"25% booked ({ts.tp2_pnl_locked:+.2f}%) | "
+                            f"Trail tightened @ {ts.atr_trail_price:.2f} (0.8×ATR)"
                         ),
                     })
 
@@ -518,10 +598,15 @@ class SignalTracker:
                         "message": f"TP3 FULL WIN: {ts.symbol} {ts.side} @ {price:.2f} | PnL: {ts.pnl_pct:+.2f}%",
                     })
 
-            # -- ATR TRAILING STOP RATCHET (after TP2) --
-            # If ATR trail is active, ratchet it behind price on every tick
-            if ts.atr_trail_active and ts.tp2_hit and not ts.tp3_hit:
-                atr_trail_dist = ts.signal_atr * 1.5 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.5
+            # -- ATR TRAILING STOP RATCHET (after TP1 or TP2) --
+            # Trail distance tightens as TPs are hit:
+            #   After TP1: 1.0× ATR (protecting 40% remaining)
+            #   After TP2: 0.8× ATR (protecting 15% runner)
+            if ts.atr_trail_active and ts.tp1_hit and not ts.tp3_hit:
+                if ts.tp2_hit:
+                    atr_trail_dist = ts.signal_atr * 0.8 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
+                else:
+                    atr_trail_dist = ts.signal_atr * 1.0 if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
                 if is_long:
                     new_trail = price - atr_trail_dist
                     # Only ratchet UP (tighter), never down
@@ -712,10 +797,13 @@ class SignalTracker:
     def _calc_pnl(ts: TrackedSignal, exit_price: float) -> float:
         """Calculate P&L percentage for a signal (gross and net).
 
-        Position split (Phase 2): 40% TP1, 30% TP2, 30% trail
-        - TP1 (40%): Quick profit lock at 0.8R
-        - TP2 (30%): Solid reward at 2.0R
-        - TP3 (30%): ATR-trailed runner for big moves
+        Position split: 60% TP1, 25% TP2, 15% runner
+        - TP1 (60%): Primary profit lock at 1.5R
+        - TP2 (25%): Extended target at 2.0R+
+        - TP3 (15%): ATR-trailed runner for big moves
+
+        Uses ACTUAL locked PnL from partial closes when available,
+        not fictional splits assuming TPs were hit at target prices.
 
         Fees applied:
         - Entry: taker fee (0.06%) on full position
@@ -735,18 +823,22 @@ class SignalTracker:
             else:
                 return ((ts.entry_price - price) / ts.entry_price) * 100
 
-        # 40/30/30 split — balanced profit capture with runner
-        if ts.tp3_hit:
-            gross_pct = (0.40 * pnl_at(ts.tp1) +
-                         0.30 * pnl_at(ts.tp2) +
-                         0.30 * pnl_at(ts.tp3))
+        # Use actual locked PnL from partial closes (60/25/15 split)
+        if ts.tp1_pnl_locked != 0 or ts.tp2_pnl_locked != 0:
+            # Real partial closes happened — use locked values + remaining at exit
+            remaining_pnl = ts.position_remaining_pct * pnl_at(exit_price)
+            gross_pct = ts.tp1_pnl_locked + ts.tp2_pnl_locked + remaining_pnl
+        elif ts.tp3_hit:
+            gross_pct = (0.60 * pnl_at(ts.tp1) +
+                         0.25 * pnl_at(ts.tp2) +
+                         0.15 * pnl_at(ts.tp3))
         elif ts.tp2_hit:
-            gross_pct = (0.40 * pnl_at(ts.tp1) +
-                         0.30 * pnl_at(ts.tp2) +
-                         0.30 * pnl_at(exit_price))
+            gross_pct = (0.60 * pnl_at(ts.tp1) +
+                         0.25 * pnl_at(ts.tp2) +
+                         0.15 * pnl_at(exit_price))
         elif ts.tp1_hit:
-            gross_pct = (0.40 * pnl_at(ts.tp1) +
-                         0.60 * pnl_at(exit_price))
+            gross_pct = (0.60 * pnl_at(ts.tp1) +
+                         0.40 * pnl_at(exit_price))
         else:
             gross_pct = pnl_at(exit_price)
 
@@ -778,23 +870,19 @@ class SignalTracker:
                 raw_r = (exit_price - ts.entry_price) / ts.initial_risk
             else:
                 raw_r = (ts.entry_price - exit_price) / ts.initial_risk
-            # For partial exits (TP split), use weighted R
+
+            def r_at(price: float) -> float:
+                if is_long:
+                    return (price - ts.entry_price) / ts.initial_risk
+                return (ts.entry_price - price) / ts.initial_risk
+
+            # For partial exits (60/25/15 split), use weighted R
             if ts.tp3_hit:
-                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
-                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
-                         0.30 * ((ts.tp2 - ts.entry_price) / ts.initial_risk if is_long
-                         else (ts.entry_price - ts.tp2) / ts.initial_risk) +
-                         0.30 * raw_r)
+                r_val = 0.60 * r_at(ts.tp1) + 0.25 * r_at(ts.tp2) + 0.15 * raw_r
             elif ts.tp2_hit:
-                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
-                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
-                         0.30 * ((ts.tp2 - ts.entry_price) / ts.initial_risk if is_long
-                         else (ts.entry_price - ts.tp2) / ts.initial_risk) +
-                         0.30 * raw_r)
+                r_val = 0.60 * r_at(ts.tp1) + 0.25 * r_at(ts.tp2) + 0.15 * raw_r
             elif ts.tp1_hit:
-                r_val = (0.40 * ((ts.tp1 - ts.entry_price) / ts.initial_risk if is_long
-                         else (ts.entry_price - ts.tp1) / ts.initial_risk) +
-                         0.60 * raw_r)
+                r_val = 0.60 * r_at(ts.tp1) + 0.40 * raw_r
             else:
                 r_val = raw_r
             ts.exit_r = round(r_val, 4)

@@ -184,20 +184,18 @@ class ScalpStrategy(BaseStrategy):
         self.st_mult: float = ind_cfg.get("supertrend", {}).get("multiplier", 3.0)
 
         # --- Scalp-specific thresholds ---
-        self.min_confidence: int = max(filt_cfg.get("min_confidence", 70), 65)  # lowered from 72 — too few signals
-        self.cooldown_sec: int = 180         # 3 min between signals (was 2 — reduce whipsaw)
-        self.max_signals_hr: int = 8         # fewer, higher quality signals (was 10)
-        self.sl_atr_mult: float = 2.5          # SL = 2.5× 5m-ATR (was 1.8× 1m-ATR — too tight, noise kills)
-        self.tp1_rr: float = 0.8             # TP1 at 0.8R — closer for faster partial profit capture
-        self.tp2_rr: float = 2.0             # TP2 at 2.0R — realistic extended target
-        self.tp3_rr: float = 4.0             # TP3 at 4.0R — small runner
+        self.min_confidence: int = max(filt_cfg.get("min_confidence", 75), 75)  # raised — only high-quality signals
+        self.cooldown_sec: int = 180         # 3 min between signals (reduce whipsaw)
+        self.max_signals_hr: int = 4         # quality over quantity (was 8)
+        self.sl_atr_mult: float = 2.5          # SL = 2.5× 5m-ATR (BTC 5m wicks 0.3%+)
+        self.tp1_rr: float = 1.5             # TP1 at 1.5R — meaningful first target (60% closed here)
+        self.tp2_rr: float = 2.5             # TP2 at 2.5R — extended target (25% closed here)
+        self.tp3_rr: float = 4.0             # TP3 at 4.0R — runner (15% remaining)
 
         # --- Minimum SL/TP distances (% of price) ---
-        # Review data: 0.25% SL still gets noise-stopped on BTC ($185 at $74k)
-        # BTC 5m candles wick 0.3-0.5% routinely. Need ≥0.40% floor.
-        self.min_sl_pct: float = 0.40        # raised from 0.25% — BTC 5m wicks 0.3%+
-        self.min_tp1_pct: float = 0.30       # lowered for 0.8R TP1 — still covers fees
-        self.min_rr_ratio: float = 0.8       # matches new 0.8R TP1 target
+        self.min_sl_pct: float = 0.40        # BTC 5m wicks 0.3%+, need ≥0.40% floor
+        self.min_tp1_pct: float = 0.50       # raised for 1.5R TP1 — needs meaningful distance
+        self.min_rr_ratio: float = 1.2       # minimum R:R gate — reject if R:R < 1.2
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -553,23 +551,38 @@ class ScalpStrategy(BaseStrategy):
             self._funnel = {k: 0 for k in self._funnel}
             self._funnel_reset_time = now
 
-        # ── Run ALL scanners (including shadow/suppressed for data) ──
+        # ── Run only PROVEN scanners (positive EV historically) ──
+        # Killed: rsi_extreme (no edge), momentum_ride (0% WR),
+        #         bb_band_walk (0% WR), post_impulse (marginal),
+        #         supertrend_flip (26% WR, -1.03%), momentum_surge (38% WR, -2.41%)
         all_scanners = [
-            self._scan_ema_momentum,
-            self._scan_trend_continuation,
-            self._scan_rsi_divergence,
-            self._scan_rsi_extreme,
-            self._scan_momentum_ride,
-            self._scan_bb_band_walk,
-            self._scan_post_impulse,
-            self._scan_supertrend_flip,
-            self._scan_bb_squeeze,
-            self._scan_momentum_surge,
+            self._scan_ema_momentum,       # 64% WR, +2.77% PnL — best performer
+            self._scan_trend_continuation, # 80% WR, +0.54% PnL — highest WR
+            self._scan_rsi_divergence,     # 60% WR, +0.85% PnL — solid reversal
+            self._scan_bb_squeeze,         # 50% WR — good in squeeze regimes
         ]
+
+        # ── REGIME-FIRST FILTERING ──
+        # Only run scanners allowed in the current regime.
+        # This prevents counter-trend signals from ever being generated.
+        allowed_scanners = []
+        for scanner_func in all_scanners:
+            setup_name = scanner_func.__name__.replace("_scan_", "")
+            if is_scanner_allowed_in_regime(setup_name, regime):
+                allowed_scanners.append(scanner_func)
+            else:
+                self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+                label = scanner_names.get(scanner_func.__name__, scanner_func.__name__)
+                setups_checked.append({
+                    "name": label, "triggered": False,
+                    "reason": f"REGIME BLOCKED: {setup_name} not allowed in {regime}",
+                    "scanner_status": self._weight_manager.get_status(setup_name),
+                    "scanner_weight": self._weight_manager.get_weight(setup_name),
+                })
 
         scan_results: List[ScanResult] = []
 
-        for scanner in all_scanners:
+        for scanner in allowed_scanners:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
             setup_name = scanner.__name__.replace("_scan_", "")
             diag = scanner_diagnostics.get(label, "")

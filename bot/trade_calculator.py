@@ -21,14 +21,29 @@ from typing import Optional
 
 
 # ─────────────────────────────────────────────────────────────
-# Constants (Delta Exchange India)
+# Fee rates — read from config, fallback to Delta Exchange India defaults
 # ─────────────────────────────────────────────────────────────
 
-TAKER_FEE = 0.0006       # 0.06%
-MAKER_FEE = 0.0004       # 0.04%
-SETTLEMENT_FEE = 0.0006  # 0.06%
-ROUND_TRIP_TAKER = TAKER_FEE * 2 + SETTLEMENT_FEE  # 0.18%
-ROUND_TRIP_MAKER = MAKER_FEE * 2 + SETTLEMENT_FEE  # 0.14%
+def _load_fees():
+    """Load fee rates from config, with Delta India defaults."""
+    try:
+        from config import get_config
+        cfg = get_config()
+        pt = cfg.get("paper_trading", {})
+        return {
+            "taker": pt.get("taker_fee_rate", 0.0006),
+            "maker": pt.get("maker_fee_rate", 0.0004),
+            "settlement": pt.get("settlement_fee_rate", 0.0006),
+        }
+    except Exception:
+        return {"taker": 0.0006, "maker": 0.0004, "settlement": 0.0006}
+
+_FEES = _load_fees()
+TAKER_FEE = _FEES["taker"]
+MAKER_FEE = _FEES["maker"]
+SETTLEMENT_FEE = _FEES["settlement"]
+ROUND_TRIP_TAKER = TAKER_FEE * 2 + SETTLEMENT_FEE
+ROUND_TRIP_MAKER = MAKER_FEE * 2 + SETTLEMENT_FEE
 
 # Maintenance margin rate (for positions < 5 BTC equivalent)
 BASE_MM_RATE = 0.005  # 0.5%

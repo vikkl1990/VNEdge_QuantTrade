@@ -22,10 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-try:
-    import numpy as np
-except ImportError:
-    np = None  # type: ignore
+# numpy removed — not used in this module
 
 logger = logging.getLogger(__name__)
 

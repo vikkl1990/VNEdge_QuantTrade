@@ -237,19 +237,19 @@ class ScalpStrategy(BaseStrategy):
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
         self.div_min_swing: float = 0.002    # minimum price swing % (was 0.001)
 
-        # --- State ---
-        self._last_signal_time: Dict[str, float] = {}
-        self._signal_count_hr: List[float] = []
-        # FIX 3: Per-scanner cooldown (prevent same scanner firing repeatedly)
-        self._scanner_cooldowns: Dict[str, float] = {}  # key: "scanner_symbol" → last fire time
-        self._scanner_cooldown_sec: int = 300  # 5 minutes — prevents duplicates, doesn't miss setups
+        # --- State (DECOUPLED per symbol — each pair has independent state) ---
+        self._last_signal_time: Dict[str, float] = {}  # symbol → last signal time
+        self._signal_count_hr: Dict[str, List[float]] = {}  # symbol → [timestamps]
+        # Per-scanner+symbol cooldown
+        self._scanner_cooldowns: Dict[str, float] = {}  # "scanner_symbol" → last fire time
+        self._scanner_cooldown_sec: int = 300  # 5 minutes
 
         # --- Scanner weight manager (adaptive from R-performance) ---
         self._weight_manager = ScannerWeightManager()
 
-        # --- Regime filter (market regime detection + position sizing) ---
+        # --- Regime filter (per-symbol regime state) ---
         self._regime_filter = RegimeFilter()
-        self._last_regime_info: Dict[str, Any] = {}
+        self._last_regime_info: Dict[str, Dict[str, Any]] = {}  # symbol → regime info
 
         # --- EV Engine (expected value gating) ---
         self._ev_engine = EVEngine()
@@ -267,13 +267,8 @@ class ScalpStrategy(BaseStrategy):
         self._sl_adjust: float = 1.0  # multiplier on SL (1.0 = default)
         self._cached_by_setup: Dict[str, Dict] = {}  # cached from signal tracker
 
-        # --- Opportunity funnel counters (for dashboard) ---
-        self._funnel: Dict[str, int] = {
-            "scanned": 0, "strong": 0, "valid": 0, "weak": 0,
-            "near_miss": 0, "rejected": 0,
-            "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0,
-            "blocked_ev": 0,
-        }
+        # --- Opportunity funnel counters (per-symbol) ---
+        self._funnels: Dict[str, Dict[str, int]] = {}  # symbol → funnel counts
         self._funnel_reset_time: float = time.time()
 
         # --- Scan status (for dashboard "why no signal" display) ---
@@ -309,8 +304,23 @@ class ScalpStrategy(BaseStrategy):
         confirm_df = candles_dict.get(self.confirm_tf)
         htf_df = candles_dict.get(self.htf)
 
-        # Track signal count (no blocking — just tracking for dashboard)
-        self._signal_count_hr = [t for t in self._signal_count_hr if now - t < 3600]
+        # Track signal count per symbol (decoupled — BTC signals don't count against ETH)
+        if symbol not in self._signal_count_hr:
+            self._signal_count_hr[symbol] = []
+        self._signal_count_hr[symbol] = [t for t in self._signal_count_hr[symbol] if now - t < 3600]
+
+        # Per-symbol funnel
+        _empty_funnel = {"scanned": 0, "strong": 0, "valid": 0, "weak": 0,
+                         "near_miss": 0, "rejected": 0,
+                         "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0, "blocked_ev": 0}
+        if symbol not in self._funnels:
+            self._funnels[symbol] = dict(_empty_funnel)
+        # Reset funnel every hour
+        if now - self._funnel_reset_time > 3600:
+            self._funnels = {s: dict(_empty_funnel) for s in self._funnels}
+            self._funnel_reset_time = now
+        # Use per-symbol funnel for this call
+        self._funnel = self._funnels[symbol]
 
         # ── SESSION-AWARE GATING ──
         # Data from 112 trades: Asia Late 37% WR, Asia Early 50%, Europe 63%, US 57%
@@ -363,18 +373,14 @@ class ScalpStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # ── ATR VOLATILITY TRACKING (soft penalty, NOT a block) ──
-        # Low volatility reduces confidence instead of blocking signals.
-        self._atr_penalty: int = 0
+        # ── ATR VOLATILITY TRACKING ──
+        # Store ratio for hard veto layer (< 0.7 = dead market, no trading)
+        self._atr_ratio: float = 1.0
         if confirm_df is not None and len(confirm_df) >= 30 and self._confirm_atr > 0 and confirm_atr_series is not None:
             try:
                 atr_sma = float(confirm_atr_series.rolling(20).mean().iloc[-1])
-                if atr_sma > 0 and self._confirm_atr < atr_sma * 0.7:
-                    self._atr_penalty = -15  # soft penalty instead of hard block
-                elif atr_sma > 0 and self._confirm_atr < atr_sma * 0.85:
-                    self._atr_penalty = -8   # moderate penalty
-                elif atr_sma > 0 and self._confirm_atr > atr_sma * 1.2:
-                    self._atr_penalty = +5   # volatility expanding = confidence boost
+                if atr_sma > 0:
+                    self._atr_ratio = self._confirm_atr / atr_sma
             except Exception:
                 pass
 
@@ -432,7 +438,7 @@ class ScalpStrategy(BaseStrategy):
 
         # --- Detect market regime ---
         regime = self._regime_filter.detect_regime(indicators)
-        self._last_regime_info = {
+        self._last_regime_info[symbol] = {
             "regime": regime,
             "action": {},
             "indicators_snapshot": {
@@ -615,35 +621,69 @@ class ScalpStrategy(BaseStrategy):
         # Post-Impulse: needs recent impulse candle + current small candle + pullback
         scanner_diagnostics["Post-Impulse"] = f"Scanning last 3-8 candles for impulse (body > 0.8x ATR) + current small candle + shallow pullback"
 
-        # ── Reset funnel counters every hour ──
-        if now - self._funnel_reset_time > 3600:
-            self._funnel = {k: 0 for k in self._funnel}
-            self._funnel_reset_time = now
+        # (funnel reset moved to per-symbol init above)
 
-        # ── Run only PROVEN scanners (positive EV historically) ──
-        # Killed: rsi_extreme (no edge), momentum_ride (0% WR),
-        #         bb_band_walk (0% WR), post_impulse (marginal),
-        #         supertrend_flip (26% WR, -1.03%), momentum_surge (38% WR, -2.41%)
-        all_scanners = [
-            # PROVEN PROFITABLE (3-month backtest with maker fees):
-            self._scan_structure_bounce,    # 64% WR, +$45 — BEST scanner
-            self._scan_ema_momentum,        # 57% WR, +$2
-            self._scan_order_block_entry,   # institutional zones
-            self._scan_vwap_mean_revert,    # 53% WR, ~breakeven
-            self._scan_trend_continuation,  # 54% WR, ~breakeven
-            self._scan_rsi_divergence,      # low volume, keep for diversification
-            # DROPPED (negative EV even with maker fees):
-            # self._scan_liquidity_sweep,   # 51% WR, -$52 — DROP
-            # self._scan_bb_squeeze,        # 51% WR, -$16 — DROP
-        ]
+        # ══════════════════════════════════════════════════════
+        # REGIME-FIRST ROUTER — Only run scanners allowed in current regime
+        # This is THE core change: regime gates which scanners fire.
+        # ══════════════════════════════════════════════════════
+        REGIME_SCANNER_ROUTING = {
+            "trending_up": [
+                self._scan_trend_continuation,
+                self._scan_ema_momentum,
+                self._scan_structure_bounce,
+            ],
+            "trending_down": [
+                self._scan_trend_continuation,
+                self._scan_ema_momentum,
+                self._scan_structure_bounce,
+            ],
+            "breakout": [
+                self._scan_structure_bounce,
+                self._scan_order_block_entry,
+                self._scan_ema_momentum,
+            ],
+            "ranging": [
+                self._scan_vwap_mean_revert,
+                self._scan_rsi_divergence,
+                self._scan_structure_bounce,
+            ],
+            "sideways": [
+                self._scan_vwap_mean_revert,
+                self._scan_rsi_divergence,
+                self._scan_structure_bounce,
+            ],
+            "volatile": [
+                self._scan_structure_bounce,
+                self._scan_order_block_entry,
+            ],
+            "high_volatility": [
+                self._scan_structure_bounce,
+                self._scan_order_block_entry,
+            ],
+            "mean_reversion": [
+                self._scan_vwap_mean_revert,
+                self._scan_rsi_divergence,
+            ],
+            "quiet": [],       # NO TRADING in dead markets
+            "low_liquidity": [],  # NO TRADING
+        }
 
-        # ── REGIME-FIRST FILTERING ──
-        # Only run scanners allowed in the current regime.
-        # This prevents counter-trend signals from ever being generated.
-        # All scanners run — no regime blocking. Regime applied as confidence penalty later.
+        # Get allowed scanners for current regime
+        allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
+
+        if not allowed_scanners:
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"REGIME VETO: {regime} — no scanners allowed",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []
+
         scan_results: List[ScanResult] = []
 
-        for scanner in all_scanners:
+        for scanner in allowed_scanners:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
             setup_name = scanner.__name__.replace("_scan_", "")
             diag = scanner_diagnostics.get(label, "")
@@ -792,36 +832,84 @@ class ScalpStrategy(BaseStrategy):
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
 
-        # ── ANTI-DUPLICATE: per-scanner cooldown ──
+        # ══════════════════════════════════════════════════════
+        # HARD VETO LAYER — ANY veto = NO TRADE
+        # This replaces all soft penalties with binary decisions.
+        # ══════════════════════════════════════════════════════
+        vetos = []
+
+        # VETO 1: Scanner cooldown (anti-duplicate)
         cooldown_key = f"{best_sr.scanner_name}_{symbol}"
         last_fire = self._scanner_cooldowns.get(cooldown_key, 0)
-        would_block_cooldown = (now - last_fire < self._scanner_cooldown_sec)
-        self._last_would_block_cooldown = would_block_cooldown
-        if would_block_cooldown and not self._is_learning:
-            remaining = int(self._scanner_cooldown_sec - (now - last_fire))
+        if now - last_fire < self._scanner_cooldown_sec:
+            vetos.append(f"COOLDOWN: {best_sr.scanner_name} fired {int((now-last_fire)/60)}m ago")
+
+        # VETO 2: HTF mismatch (signal direction vs higher timeframe trend)
+        if htf_bias != 0:
+            htf_opposes = (
+                (htf_bias < 0 and best.side == OrderSide.LONG) or
+                (htf_bias > 0 and best.side == OrderSide.SHORT)
+            )
+            if htf_opposes:
+                vetos.append(f"HTF MISMATCH: HTF={'bearish' if htf_bias < 0 else 'bullish'} vs signal {best.side.value}")
+
+        # VETO 3: Dead session (hours with proven negative edge)
+        ist_now_check = datetime.now(_IST)
+        utc_hour = (ist_now_check.hour - 5) % 24  # IST to UTC approx
+        dead_hours = {2, 3, 4, 5, 10, 11}  # From hour analysis: negative bias
+        if utc_hour in dead_hours:
+            vetos.append(f"DEAD SESSION: UTC hour {utc_hour} has no edge")
+
+        # VETO 4: Low volatility (ATR contracting)
+        atr_ratio = getattr(self, '_atr_ratio', 1.0)
+        if atr_ratio < 0.7:
+            vetos.append(f"LOW VOLATILITY: ATR ratio {atr_ratio:.2f} < 0.7")
+
+        # VETO 5: No volume
+        last_row_vol = df.iloc[-1]
+        rel_vol_check = float(last_row_vol.get("rel_vol", 1.0)) if not np.isnan(last_row_vol.get("rel_vol", 1.0)) else 0
+        if rel_vol_check < 0.8:
+            vetos.append(f"NO VOLUME: rel_vol={rel_vol_check:.1f} < 0.8")
+
+        # VETO 6: CHOCH conflict (structural break opposes signal)
+        if choch_data.get("choch_detected", False):
+            choch_dir = choch_data.get("direction")
+            choch_strength = choch_data.get("strength", 0)
+            choch_bars = choch_data.get("bars_ago", 999)
+            if choch_bars <= 10 and choch_strength >= 60:
+                choch_opposes = (
+                    (choch_dir == "bearish" and best.side == OrderSide.LONG) or
+                    (choch_dir == "bullish" and best.side == OrderSide.SHORT)
+                )
+                if choch_opposes:
+                    vetos.append(f"CHOCH CONFLICT: {choch_dir} structure break vs {best.side.value}")
+
+        # VETO 7: Candle quality — trigger candle must be meaningful
+        trigger_candle = df.iloc[-1]
+        candle_body = abs(float(trigger_candle.get("close", 0)) - float(trigger_candle.get("open", 0)))
+        candle_range = float(trigger_candle.get("high", 0)) - float(trigger_candle.get("low", 0))
+        if candle_range > 0:
+            body_ratio = candle_body / candle_range
+            if body_ratio < 0.3:  # doji — no conviction
+                vetos.append(f"WEAK CANDLE: body ratio {body_ratio:.2f} < 0.3 (doji)")
+
+        # Apply vetos (in learning mode: log but don't block)
+        if vetos and not self._is_learning:
+            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
-                "reason": f"COOLDOWN: {best_sr.scanner_name} fired {int((now-last_fire)/60)}m ago ({remaining}s left)",
+                "reason": f"VETO: {vetos[0]}",  # show first veto
+                "all_vetos": vetos,
                 "indicators": indicators, "setups_checked": setups_checked,
                 "funnel": dict(self._funnel),
             }
             return []
 
-        # ── Apply session + ATR soft penalties to confidence ──
-        session_penalty = getattr(self, '_session_penalty', 0)
-        atr_penalty = getattr(self, '_atr_penalty', 0)
-        if session_penalty != 0:
-            best.confidence = max(best.confidence + session_penalty, 0)
-            if session_penalty < 0:
-                best.confirmations.append(f"Session penalty {session_penalty}")
-            else:
-                best.confirmations.append(f"Session boost +{session_penalty}")
-        if atr_penalty != 0:
-            best.confidence = max(best.confidence + atr_penalty, 0)
-            if atr_penalty < 0:
-                best.confirmations.append(f"Low volatility penalty {atr_penalty}")
-            else:
-                best.confirmations.append(f"High volatility boost +{atr_penalty}")
+        # In learning mode, tag the signal with would-block info
+        if vetos and self._is_learning:
+            best.confirmations.append(f"[WOULD_BLOCK: {len(vetos)} vetos]")
+
+        # ── Apply confidence modifiers (boosts only, no penalties) ──
 
         # ── Fibonacci confidence modifier ──
         if fib_data.get("at_fib", False):
@@ -864,11 +952,27 @@ class ScalpStrategy(BaseStrategy):
             best.confidence = min(best.confidence + regime_boost, 100)
             best.confirmations.append(f"Regime boost +{regime_boost} ({regime})")
 
-        # EV: compute and add to metadata (no block)
+        # EV: compute with calibrated lookup (scanner+side+regime+session)
         setup_name_ev = best_sr.scanner_name
-        ev_result = self._ev_engine.compute_ev(setup_name_ev, self._cached_by_setup, regime=regime)
+        ev_side = best.side.value if best.side else ""
+        ev_session = getattr(self, '_current_session', '')
+        ev_result = self._ev_engine.compute_ev(
+            setup_name_ev, self._cached_by_setup,
+            regime=regime, side=ev_side, session=ev_session,
+        )
         self._last_ev_results[setup_name_ev] = ev_result.to_dict()
         ev_size_mult = ev_result.size_multiplier
+
+        # HARD EV VETO — reject negative EV trades
+        if ev_result.verdict == "REJECT" and not self._is_learning:
+            self._funnel["blocked_ev"] = self._funnel.get("blocked_ev", 0) + 1
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"EV REJECT: {ev_result.reason}",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []
 
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
 
@@ -928,8 +1032,8 @@ class ScalpStrategy(BaseStrategy):
         )
 
         self._last_signal_time[symbol] = now
-        self._signal_count_hr.append(now)
-        # FIX 3: Record per-scanner cooldown
+        self._signal_count_hr.setdefault(symbol, []).append(now)
+        # Record per-scanner cooldown
         self._scanner_cooldowns[f"{best_sr.scanner_name}_{symbol}"] = now
 
         self.last_scan_status[symbol] = {
@@ -3076,7 +3180,7 @@ class ScalpStrategy(BaseStrategy):
             grade=grade,
             risk_reward=eff_rr,
             reason=f"SCALP {setup.name}: {', '.join(setup.confirmations[:4])}",
-            regime=MarketRegime.SIDEWAYS,
+            regime=regime or MarketRegime.SIDEWAYS,  # Use detected regime, not hardcoded
             metadata={
                 "setup_type": setup.name,
                 "confirmations": setup.confirmations,

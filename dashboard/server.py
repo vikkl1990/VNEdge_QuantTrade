@@ -38,10 +38,14 @@ class _SafeEncoder(json.JSONEncoder):
             return int(obj)
         if isinstance(obj, (np.floating,)):
             return float(obj)
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         if isinstance(obj, (datetime,)):
             return obj.isoformat()
+        if isinstance(obj, bool):
+            return bool(obj)
         if hasattr(obj, 'value'):  # enums
             return obj.value
         return super().default(obj)

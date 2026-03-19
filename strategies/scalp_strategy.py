@@ -240,18 +240,32 @@ class ScalpStrategy(BaseStrategy):
         self.min_edge_high_conf = 0.18  # conservative_move ≥ 0.18% for conf 90+
         self.min_edge_low_conf = 0.25   # conservative_move ≥ 0.25% for conf < 90
 
+        # ═══ STRUCTURE_BOUNCE_ONLY MODE ═══
+        # Backtest proven: 68% WR, +164% PnL, +0.16R — ONLY profitable scanner
+        # When True: only structure_bounce trades, everything else ML-only
+        self.structure_bounce_only: bool = True  # ← THE SWITCH
+
+        # Overrides when structure_bounce_only is active:
+        self._sb_only_min_conf: int = 82       # higher bar for quality
+        self._sb_only_min_tp1_pct: float = 0.72  # wider TP to cover Scalper fees
+        self._sb_only_lev_cap: int = 18        # slightly conservative leverage
+
         # --- Tier 2: Scanner weight tiers ---
+        # structure_bounce_only=True overrides these to shadow everything else
         self.scanner_size_tiers = {
-            "structure_bounce": 1.0,     # full size — best performer
-            "order_block_entry": 1.0,    # full size — institutional zones
-            "ema_momentum": 0.6,         # reduced — only LONG
-            "trend_continuation": 0.6,   # reduced
-            "rsi_divergence": 0.0,       # shadow/ML only — no trade
-            "vwap_mean_revert": 0.0,     # shadow/ML only
-            "liquidity_sweep": 0.0,      # shadow/ML only
-            "simple_bias": 0.0,          # ML training only
+            "structure_bounce": 1.0,     # ✅ ONLY real trader (68% WR, +164%)
+            "order_block_entry": 0.8,    # ✅ Institutional zones — secondary
+            "rsi_divergence": 0.0,       # ❌ ML-only (70% WR but tiny sample)
+            "ema_momentum": 0.0,         # ❌ ML-only (-14% PnL)
+            "trend_continuation": 0.0,   # ❌ ML-only (+0.4% marginal)
+            "vwap_mean_revert": 0.0,     # ❌ ML-only (-10% PnL)
+            "liquidity_sweep": 0.0,      # ❌ ML-only
+            "simple_bias": 0.0,          # ❌ ML training only
         }
         self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
+
+        # Scalper window config (attached to each signal)
+        self.scalper_windows = {"BTC": 27 * 60, "ETH": 12 * 60, "AVAX": 12 * 60}
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -878,10 +892,26 @@ class ScalpStrategy(BaseStrategy):
         # TIER 2: SCANNER VETO + WEIGHT GATE
         # Shadow scanners only log for ML, no actual trade
         # ══════════════════════════════════════════════════════
+        # ══════════════════════════════════════════════════════
+        # GATE 14b: STRUCTURE_BOUNCE_ONLY ENFORCEMENT
+        # When active: ONLY structure_bounce (and order_block as secondary) trade
+        # Everything else → ML log only, no actual trade
+        # ══════════════════════════════════════════════════════
         scanner_size = self.scanner_size_tiers.get(best_sr.scanner_name, 0.6)
-        # In learning mode: shadow scanners STILL fire (for ML data)
-        # In normal mode: shadow scanners blocked (no trade)
-        if scanner_size <= 0.0 and not self._is_learning and best_sr.scanner_name != "simple_bias":
+
+        # structure_bounce_only mode: override scanner weights
+        if self.structure_bounce_only and not self._is_learning:
+            if best_sr.scanner_name not in ("structure_bounce", "order_block_entry"):
+                scanner_size = 0.0  # force shadow — only SB+OB trade
+
+            # Apply stricter thresholds for SB-only mode
+            if best_sr.scanner_name == "structure_bounce":
+                if best.confidence < self._sb_only_min_conf:
+                    scanner_size = 0.0  # below SB-only min confidence
+
+        # In learning mode: ALL scanners fire (for ML data collection)
+        # In normal mode: shadow scanners blocked
+        if scanner_size <= 0.0 and not self._is_learning:
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1205,6 +1235,12 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ev_verdict"] = ev_result.verdict
         signal.metadata["ev_size_mult"] = ev_size_mult
         signal.metadata["p_win"] = round(ev_result.p_win, 4)
+
+        # ── Scalper window: attach to signal for tracker to enforce ──
+        coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
+        signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 12 * 60)
+        signal.metadata["structure_bounce_only"] = self.structure_bounce_only
+        signal.metadata["order_type"] = "post_only"  # always maker entry
 
         # ── Log feature vector for ML training ──
         self._feature_logger.log_signal(
@@ -3335,6 +3371,10 @@ class ScalpStrategy(BaseStrategy):
                 leverage = leverage_map[conf_threshold]
                 break
 
+        # SB-only mode: cap leverage further
+        if self.structure_bounce_only and setup.name == "structure_bounce":
+            leverage = min(leverage, self._sb_only_lev_cap)  # 18x max
+
         # Tier 2: Liquidation buffer must be > 2.2× SL (was 1.25×)
         liq_buffer_pct = (100.0 / leverage) - 0.5
         liq_buffer_dist = entry * liq_buffer_pct / 100
@@ -3414,8 +3454,9 @@ class ScalpStrategy(BaseStrategy):
             tp3 = entry - risk * tp3_rr
             invalidation = sl + setup.atr * 0.3
 
-        # ── Enforce TP1 ≥ 2× trading cost (0.4% minimum per spec) ──
-        min_tp1_distance = entry * self.min_tp1_pct / 100
+        # ── Enforce TP1 minimum — SB-only mode uses stricter threshold ──
+        effective_min_tp1 = self._sb_only_min_tp1_pct if (self.structure_bounce_only and setup.name == "structure_bounce") else self.min_tp1_pct
+        min_tp1_distance = entry * effective_min_tp1 / 100
         if abs(tp1 - entry) < min_tp1_distance:
             if setup.side == OrderSide.LONG:
                 tp1 = entry + min_tp1_distance

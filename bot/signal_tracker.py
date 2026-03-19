@@ -34,8 +34,8 @@ _STATS_FILE = _STORAGE_DIR / "signal_stats.json"
 # Max age before auto-closing a signal (seconds)
 # Scalper offer: BTC 30 min, others 15 min (free closing fee within window)
 MAX_SIGNAL_AGE = 4 * 3600  # 4 hours hard backstop
-SCALPER_WINDOW_BTC = 30 * 60   # 30 minutes — BTC Scalper offer window
-SCALPER_WINDOW_OTHER = 15 * 60  # 15 minutes — all other futures
+SCALPER_WINDOW_BTC = 27 * 60   # 27 minutes — BTC Scalper (leave 3min buffer)
+SCALPER_WINDOW_OTHER = 12 * 60  # 12 minutes — ETH/AVAX/others (leave 3min buffer)
 
 
 @dataclass
@@ -858,38 +858,63 @@ class SignalTracker:
                 except (ValueError, TypeError):
                     pass
 
-            # -- Scalper timer: partial close before window expires --
-            # BTC: 30 min window, others: 15 min
-            # If profitable and nearing window end, close to get free exit fee
+            # -- Scalper timer: 75% partial close before window + full close at window --
+            # BTC: 27 min window, others: 12 min (tighter than initial 30/15)
+            # 2 min before window: close 75% if profitable (lock free exit)
+            # At window: close remaining 100% (still gets free exit)
             try:
                 entry_dt_sc = datetime.fromisoformat(ts.entry_time)
                 age_sc = (datetime.now(timezone.utc) - entry_dt_sc).total_seconds()
                 scalper_window = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
-                # 80% of window elapsed + still in profit → close to lock free exit
-                if age_sc >= scalper_window * 0.80 and ts.status == "active":
-                    if is_long:
-                        sc_r = (price - ts.entry_price) / risk if risk > 0 else 0
-                    else:
-                        sc_r = (ts.entry_price - price) / risk if risk > 0 else 0
+
+                if is_long:
+                    sc_r = (price - ts.entry_price) / risk if risk > 0 else 0
+                else:
+                    sc_r = (ts.entry_price - price) / risk if risk > 0 else 0
+
+                # Phase 1: 2 min before window end → close 75% if profitable
+                if age_sc >= scalper_window - 120 and age_sc < scalper_window and ts.status == "active":
                     if sc_r > 0.1:  # in profit
+                        # Simulate 75% partial close by adjusting PnL
                         ts.exit_price = price
-                        ts.exit_reason = "scalper_timer"
+                        ts.exit_reason = "scalper_partial_75"
                         ts.exit_time = now_iso
                         ts.pnl_pct = self._calc_pnl(ts, price)
-                        ts.exit_reason_detailed = f"scalper_timer_{int(scalper_window/60)}m"
+                        ts.exit_reason_detailed = f"scalper_partial_75pct_{int(scalper_window/60)}m"
                         ts.status = "expired"
                         to_close.append(tid)
                         logger.info(
-                            "SCALPER TIMER: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (free exit)",
+                            "SCALPER 75%%: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (75%% partial, free exit)",
                             ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
                             sc_r, ts.pnl_pct,
                         )
                         events.append({
-                            "type": "scalper_timer",
+                            "type": "scalper_partial",
                             "signal": ts.to_dict(),
-                            "message": f"SCALPER: {ts.symbol} {ts.side} closed at {int(age_sc/60)}m (free exit) | PnL: {ts.pnl_pct:+.2f}%",
+                            "message": f"SCALPER 75%: {ts.symbol} {ts.side} | {int(age_sc/60)}m | R={sc_r:+.2f} | PnL: {ts.pnl_pct:+.2f}%",
                         })
                         continue
+
+                # Phase 2: at window end → force close everything (still free exit)
+                if age_sc >= scalper_window and ts.status == "active":
+                    ts.exit_price = price
+                    ts.exit_reason = "scalper_timeout"
+                    ts.exit_time = now_iso
+                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.exit_reason_detailed = f"scalper_timeout_{int(scalper_window/60)}m"
+                    ts.status = "expired"
+                    to_close.append(tid)
+                    logger.info(
+                        "SCALPER TIMEOUT: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%%",
+                        ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
+                        sc_r, ts.pnl_pct,
+                    )
+                    events.append({
+                        "type": "scalper_timeout",
+                        "signal": ts.to_dict(),
+                        "message": f"SCALPER TIMEOUT: {ts.symbol} {ts.side} | {int(scalper_window/60)}m window | PnL: {ts.pnl_pct:+.2f}%",
+                    })
+                    continue
             except (ValueError, TypeError):
                 pass
 

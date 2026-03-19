@@ -103,12 +103,18 @@ class PaperExecutionEngine:
         """Simulate a market entry order."""
         lev = leverage or self.default_leverage
 
-        # Apply slippage to entry
-        slip = entry_price * (self.slippage_pct / 100.0)
+        # MAKER-ONLY: use maker fee (post_only=True simulation)
+        # In real execution: place limit order slightly inside spread
+        # In paper: simulate with maker fee + reduced slippage
+        use_maker = True  # Always maker for entry (Scalper optimization)
+
+        # Apply reduced slippage for maker (limit orders have less slippage)
+        slip_pct = self.slippage_pct * 0.3 if use_maker else self.slippage_pct  # 70% less slip
+        slip = entry_price * (slip_pct / 100.0)
         if side == "long":
-            fill_price = entry_price + slip  # worse fill for longs
+            fill_price = entry_price + slip
         else:
-            fill_price = entry_price - slip  # worse fill for shorts
+            fill_price = entry_price - slip
 
         # Calculate position size if not specified
         if position_size is None:
@@ -120,7 +126,9 @@ class PaperExecutionEngine:
             position_size = (risk_amount / sl_distance) * lev
 
         notional = fill_price * position_size / lev
-        fee = notional * self.taker_fee_rate  # Entry uses taker (market order)
+        # Scalper + Maker: entry at maker rate (0.02%), exit free within window
+        entry_fee_rate = self.maker_fee_rate if use_maker else self.taker_fee_rate
+        fee = notional * entry_fee_rate  # Maker entry = 0.02% (was taker 0.06%)
 
         if notional > self.balance:
             logger.warning(

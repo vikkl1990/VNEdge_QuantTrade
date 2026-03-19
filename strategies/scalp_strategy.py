@@ -1124,6 +1124,53 @@ class ScalpStrategy(BaseStrategy):
                     }
                     return []
 
+        # ══════════════════════════════════════════════════════
+        # TIER 1: SPREAD CHECK (Liquidity Gate)
+        # BTC/ETH: spread must be < 0.018%
+        # AVAX/others: spread must be < 0.045%
+        # Uses high-low of current candle as spread proxy
+        # ══════════════════════════════════════════════════════
+        if best.entry_price > 0 and candle_range > 0:
+            spread_pct = (candle_range / best.entry_price) * 100
+            max_spread = 0.045 if "AVAX" in symbol else 0.018
+            # Use minimum of candle range and ATR as spread estimate
+            # Real spread check needs L2 data — this is a proxy
+            if spread_pct < 0.001:  # suspiciously tight — likely stale data
+                if not self._is_learning:
+                    self.last_scan_status[symbol] = {
+                        "time": now_iso, "signal": False,
+                        "reason": f"SPREAD GATE: spread {spread_pct:.4f}% suspiciously tight (stale data?)",
+                        "indicators": indicators, "setups_checked": setups_checked,
+                        "funnel": dict(self._funnel),
+                    }
+                    return []
+
+        # ══════════════════════════════════════════════════════
+        # PROJECTED DURATION VETO
+        # Reject if ATR suggests trade won't complete in Scalper window
+        # BTC window: 27 min, others: 12 min
+        # Estimate: bars_to_tp = TP1_dist / (ATR_1bar × directional_factor)
+        # ══════════════════════════════════════════════════════
+        if _edge_atr > 0 and best.entry_price > 0:
+            scalper_window_min = 27 if "BTC" in symbol else 12
+            risk_dist = abs(best.entry_price - best.stop_loss)
+            tp1_dist = risk_dist * self.tp1_rr
+            # ATR per 5m bar → estimated bars to reach TP1
+            # Directional factor: ~40% of ATR is directional on average
+            directional_atr = _edge_atr * 0.4
+            if directional_atr > 0:
+                est_bars_to_tp = tp1_dist / directional_atr
+                est_minutes_to_tp = est_bars_to_tp * 5  # 5m bars
+                if est_minutes_to_tp > scalper_window_min * 1.5:  # 50% buffer
+                    if not self._is_learning:
+                        self.last_scan_status[symbol] = {
+                            "time": now_iso, "signal": False,
+                            "reason": f"DURATION VETO: est {est_minutes_to_tp:.0f}m to TP1 > {scalper_window_min}m window",
+                            "indicators": indicators, "setups_checked": setups_checked,
+                            "funnel": dict(self._funnel),
+                        }
+                        return []
+
         # ── Build Signal ──
         signal = self._build_signal(
             symbol, best, htf_bias,

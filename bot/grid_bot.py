@@ -180,10 +180,10 @@ class GridBot:
             if high >= sell_price:
                 # GRID FILL! Buy→Sell cycle complete
                 gross_pct = (sell_price - pos.buy_price) / pos.buy_price * 100
-                fee_pct = self.fee_rt * 100  # fee on sell side only (buy fee already paid)
-                net_pct = gross_pct - self.fee_rt * 100 * 2  # fees on both legs
+                # fee_rt is ROUND-TRIP (includes both buy + sell legs)
+                net_pct = gross_pct - self.fee_rt * 100  # fee_rt already covers both sides
                 profit_usd = self.position_usd * net_pct / 100
-                fees_usd = self.position_usd * self.fee_rt * 2
+                fees_usd = self.position_usd * self.fee_rt
 
                 fill = GridFill(
                     symbol=symbol,

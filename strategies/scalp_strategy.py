@@ -466,6 +466,7 @@ class ScalpStrategy(BaseStrategy):
             "_scan_liquidity_sweep": "Liquidity Sweep",
             "_scan_order_block_entry": "Order Block",
             "_scan_vwap_mean_revert": "VWAP Mean Revert",
+            "_scan_simple_bias": "Simple Bias (ML)",
         }
         setups_checked = []
 
@@ -672,6 +673,12 @@ class ScalpStrategy(BaseStrategy):
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
 
+        # In paper_learning mode: ALL scanners run regardless of regime
+        if self._is_learning:
+            allowed_scanners = list(all_scanners)  # override: run everything
+            # Also add simple bias scanner — fires on any candle with volume
+            allowed_scanners.append(self._scan_simple_bias)
+
         if not allowed_scanners:
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -812,21 +819,28 @@ class ScalpStrategy(BaseStrategy):
         ]
 
         if not tradeable:
-            # Report best near-miss for dashboard insight
-            best_near = max(near_misses, key=lambda s: s.weighted_score) if near_misses else None
-            reason = "No setup conditions met"
-            if best_near:
-                reason = f"Near miss: {best_near.scanner_name} scored {best_near.weighted_score:.0f} (need 50+)"
+            # ── LEARNING MODE FALLBACK: generate bias signal for ML training ──
+            if self._is_learning and near_misses:
+                # Take the best near-miss as a weak signal — ML needs data
+                best_near = max(near_misses, key=lambda s: s.weighted_score)
+                tradeable = [best_near]
+                logger.info("LEARNING: promoting near-miss %s (score=%.0f) for ML training",
+                           best_near.scanner_name, best_near.weighted_score)
+            else:
+                best_near = max(near_misses, key=lambda s: s.weighted_score) if near_misses else None
+                reason = "No setup conditions met"
+                if best_near:
+                    reason = f"Near miss: {best_near.scanner_name} scored {best_near.weighted_score:.0f} (need 50+)"
 
-            self.last_scan_status[symbol] = {
-                "time": now_iso, "signal": False,
-                "reason": reason,
-                "indicators": indicators,
-                "setups_checked": setups_checked,
-                "near_misses": [sr.to_dict() for sr in near_misses[:3]],
-                "funnel": dict(self._funnel),
-            }
-            return []
+                self.last_scan_status[symbol] = {
+                    "time": now_iso, "signal": False,
+                    "reason": reason,
+                    "indicators": indicators,
+                    "setups_checked": setups_checked,
+                    "near_misses": [sr.to_dict() for sr in near_misses[:3]],
+                    "funnel": dict(self._funnel),
+                }
+                return []
 
         # Pick best by weighted score
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
@@ -2128,6 +2142,84 @@ class ScalpStrategy(BaseStrategy):
             name="liquidity_sweep",
             side=side,
             confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # LEARNING MODE: Simple Bias Scanner (fires on any directional candle)
+    # ==================================================================
+
+    def _scan_simple_bias(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Simple directional bias — fires on almost any candle.
+
+        ONLY used in paper_learning mode to generate ML training data.
+        Scores based on body ratio, volume, and EMA alignment.
+        """
+        if len(df) < 10:
+            return None
+
+        last = df.iloc[-1]
+        atr = last.get("atr", 0)
+        close = float(last["close"])
+        open_ = float(last["open"])
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        # Any candle with a body = directional bias
+        bullish = close > open_
+        body = abs(close - open_)
+        candle_range = float(last["high"]) - float(last["low"])
+        if candle_range <= 0:
+            return None
+
+        body_ratio = body / candle_range
+        if body_ratio < 0.15:  # skip pure dojis
+            return None
+
+        side = OrderSide.LONG if bullish else OrderSide.SHORT
+        confs = []
+        score = 20  # base score for any directional candle
+
+        # Body ratio bonus
+        if body_ratio > 0.6:
+            score += 10
+            confs.append(f"Strong body ({body_ratio:.0%})")
+        elif body_ratio > 0.4:
+            score += 5
+            confs.append(f"Decent body ({body_ratio:.0%})")
+        else:
+            confs.append(f"Weak body ({body_ratio:.0%})")
+
+        # Volume
+        vol_r = last.get("rel_vol", 1.0)
+        if not np.isnan(vol_r) and vol_r > 1.0:
+            score += 10
+            confs.append(f"Volume {vol_r:.1f}x")
+
+        # EMA alignment
+        ema8 = last.get("ema_8", 0)
+        ema21 = last.get("ema_21", 0)
+        if side == OrderSide.LONG and ema8 > ema21:
+            score += 10
+            confs.append("EMA aligned")
+        elif side == OrderSide.SHORT and ema8 < ema21:
+            score += 10
+            confs.append("EMA aligned")
+
+        confs.insert(0, "Learning bias signal")
+
+        sl = close - atr * self.sl_atr_mult if side == OrderSide.LONG else close + atr * self.sl_atr_mult
+
+        return _SetupResult(
+            name="simple_bias",
+            side=side,
+            confidence=min(score, 100),
             confirmations=confs,
             entry_price=close,
             stop_loss=sl,

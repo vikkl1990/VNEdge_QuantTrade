@@ -6,7 +6,8 @@ bot:
   name: "CryptoAlgoBot"
   version: "1.0.0"
   mode: "paper"  # signal_only | paper | live | backtest | forward_test
-  strict_mode: true  # Only alert on A+ and A grade signals
+  operating_mode: "paper_learning"  # paper_learning | paper_enforced | live
+  strict_mode: false  # Disabled in learning mode
 
 symbols:
   - "BTC/USDT"

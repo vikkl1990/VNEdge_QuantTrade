@@ -589,11 +589,37 @@ class ScalpBacktester:
             "breakeven_set": pos.breakeven_set,
         })
 
-        # Update balance (simplified: use PnL percentage on $25 stake)
-        stake = 25.0
-        dollar_pnl = stake * pnl_pct / 100
-        self.balance += dollar_pnl
-        self.total_fees += stake * 0.04 / 100  # 0.04% maker round trip fees
+        # Super scalp leverage model — matches live signal_tracker
+        conf = pos.confidence
+        if conf >= 95:
+            lev, margin = 100, 100.0
+        elif conf >= 90:
+            lev, margin = 75, 100.0
+        elif conf >= 85:
+            lev, margin = 50, 75.0
+        elif conf >= 80:
+            lev, margin = 40, 75.0
+        elif conf >= 75:
+            lev, margin = 30, 50.0
+        elif conf >= 65:
+            lev, margin = 25, 50.0
+        else:
+            lev, margin = 20, 50.0
+
+        # Contract-based position sizing (Delta specs)
+        contract_sz = 0.001 if "BTC" in pos.symbol else 0.01
+        raw_pos = margin * lev
+        entry = pos.entry_price
+        raw_cts = raw_pos / (entry * contract_sz)
+        num_cts = max(1, int(raw_cts))
+        position_usd = num_cts * contract_sz * entry
+
+        # PnL on leveraged position
+        dollar_pnl = position_usd * pnl_pct / 100
+        fees = position_usd * 0.0018  # 0.18% taker round-trip
+        net_pnl = dollar_pnl - fees
+        self.balance += net_pnl
+        self.total_fees += fees
 
     def _unrealized_pnl(self, pos: SimPosition, data: Dict, ts: datetime) -> float:
         sym_data = data.get(pos.symbol, {})
@@ -601,7 +627,20 @@ class ScalpBacktester:
         if df is None or ts not in df.index:
             return 0.0
         price = float(df.loc[ts, "close"])
-        return 25.0 * pos.pnl_at(price) / 100
+        # Use same leverage model for unrealized
+        conf = pos.confidence
+        if conf >= 95: lev, margin = 100, 100.0
+        elif conf >= 90: lev, margin = 75, 100.0
+        elif conf >= 85: lev, margin = 50, 75.0
+        elif conf >= 80: lev, margin = 40, 75.0
+        elif conf >= 75: lev, margin = 30, 50.0
+        elif conf >= 65: lev, margin = 25, 50.0
+        else: lev, margin = 20, 50.0
+        contract_sz = 0.001 if "BTC" in pos.symbol else 0.01
+        entry = pos.entry_price
+        num_cts = max(1, int(margin * lev / (entry * contract_sz)))
+        position_usd = num_cts * contract_sz * entry
+        return position_usd * pos.pnl_at(price) / 100
 
     async def _fetch_candles(
         self, symbol: str, timeframe: str, start: datetime, end: datetime

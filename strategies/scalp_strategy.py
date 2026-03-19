@@ -70,6 +70,8 @@ from strategies.regime_filter import (
 )
 from bot.ev_engine import EVEngine
 from bot.feature_logger import FeatureLogger
+from bot.mode_manager import get_mode_manager
+from bot.training_dataset import TrainingDataset
 from data.structure import build_structure_map, StructureMap
 
 logger = logging.getLogger(__name__)
@@ -160,11 +162,22 @@ class ScalpStrategy(BaseStrategy):
     name = "quick_scalp"
 
     def __init__(self, config: Dict[str, Any]) -> None:
+        bot_cfg = config.get("bot", {})
         strat_cfg = config.get("strategy", {})
         ind_cfg = strat_cfg.get("indicators", {})
         filt_cfg = strat_cfg.get("filters", {})
         risk_cfg = config.get("risk", {})
         tf_cfg = config.get("timeframes", {})
+
+        # --- Operating Mode (centralized via ModeManager) ---
+        self._mode = get_mode_manager(config)
+        self.operating_mode = self._mode.mode
+        self._is_learning = self._mode.is_learning()
+        if self._is_learning:
+            logger.info("🧠 PAPER LEARNING MODE — all signals fire, no blocking, max data collection")
+
+        # --- Training Dataset (ML-ready trade records) ---
+        self._training_dataset = TrainingDataset()
 
         # --- Timeframes ---
         self.primary_tf: str = tf_cfg.get("trigger", "5m")    # 5m trigger — better S/N than 1m
@@ -203,9 +216,9 @@ class ScalpStrategy(BaseStrategy):
         self.min_rr_ratio: float = 1.2       # min 1.2R — ensures positive EV
 
         # --- Liquidation safety (critical at high leverage) ---
-        self.liq_sl_max_pct: float = 0.30    # SL ≤ 30% of liquidation buffer
-        self.liq_reject_pct: float = 0.50    # Reject if SL ≥ 50% of liq buffer
-        self.liq_min_buffer_pct: float = 1.5 # Min 1.5% liq buffer (allows up to 50x)
+        self.liq_sl_max_pct: float = 0.40    # SL ≤ 40% of liq buffer = WARNING
+        self.liq_reject_pct: float = 0.80    # Reject only if SL ≥ 80% of liq buffer
+        self.liq_min_buffer_pct: float = 0.3 # Min 0.3% — allows up to 100x super scalp
 
         # --- Confidence-scaled leverage ---
         # Higher confidence = more leverage (user OK with up to 50x)
@@ -229,7 +242,7 @@ class ScalpStrategy(BaseStrategy):
         self._signal_count_hr: List[float] = []
         # FIX 3: Per-scanner cooldown (prevent same scanner firing repeatedly)
         self._scanner_cooldowns: Dict[str, float] = {}  # key: "scanner_symbol" → last fire time
-        self._scanner_cooldown_sec: int = 900  # 15 minutes between same scanner+symbol
+        self._scanner_cooldown_sec: int = 300  # 5 minutes — prevents duplicates, doesn't miss setups
 
         # --- Scanner weight manager (adaptive from R-performance) ---
         self._weight_manager = ScannerWeightManager()
@@ -737,13 +750,20 @@ class ScalpStrategy(BaseStrategy):
                     self._funnel["rejected"] += 1
 
         # ── Select best tradeable result ──
-        # All tiers evaluated — confidence scoring naturally filters
-        tradeable = [
-            sr for sr in scan_results
-            if sr.setup_result is not None
-            and sr.tier in (TIER_STRONG, TIER_VALID, TIER_WEAK)
-            and self._weight_manager.is_tradeable(sr.scanner_name)
-        ]
+        if self._is_learning:
+            # LEARNING MODE: accept ALL triggered scanners, no tier filter
+            tradeable = [
+                sr for sr in scan_results
+                if sr.setup_result is not None
+                and sr.tier in (TIER_STRONG, TIER_VALID, TIER_WEAK, TIER_NEAR_MISS)
+            ]
+        else:
+            tradeable = [
+                sr for sr in scan_results
+                if sr.setup_result is not None
+                and sr.tier in (TIER_STRONG, TIER_VALID, TIER_WEAK)
+                and self._weight_manager.is_tradeable(sr.scanner_name)
+            ]
 
         # Sort near-misses for dashboard visibility
         near_misses = [
@@ -771,6 +791,21 @@ class ScalpStrategy(BaseStrategy):
         # Pick best by weighted score
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
+
+        # ── ANTI-DUPLICATE: per-scanner cooldown ──
+        cooldown_key = f"{best_sr.scanner_name}_{symbol}"
+        last_fire = self._scanner_cooldowns.get(cooldown_key, 0)
+        would_block_cooldown = (now - last_fire < self._scanner_cooldown_sec)
+        self._last_would_block_cooldown = would_block_cooldown
+        if would_block_cooldown and not self._is_learning:
+            remaining = int(self._scanner_cooldown_sec - (now - last_fire))
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"COOLDOWN: {best_sr.scanner_name} fired {int((now-last_fire)/60)}m ago ({remaining}s left)",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []
 
         # ── Apply session + ATR soft penalties to confidence ──
         session_penalty = getattr(self, '_session_penalty', 0)
@@ -837,6 +872,23 @@ class ScalpStrategy(BaseStrategy):
 
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
 
+        # ── DEAD TRADE PREVENTION: Momentum gate ──
+        # Don't enter if price hasn't moved in last 5 candles.
+        # 24/58 losses were dead trades (MFE=0.00R) — price was flat.
+        # Check: last 5 candles high-low range vs ATR. If range < 0.3× ATR, skip.
+        if len(df) >= 6 and best.atr > 0:
+            recent_5 = df.iloc[-5:]
+            recent_range = float(recent_5["high"].max() - recent_5["low"].min())
+            atr_check = self._confirm_atr if self._confirm_atr > 0 else best.atr
+            if recent_range < atr_check * 0.3:
+                self.last_scan_status[symbol] = {
+                    "time": now_iso, "signal": False,
+                    "reason": f"MOMENTUM GATE: Price flat (range={recent_range:.2f} < 0.3×ATR={atr_check*0.3:.2f})",
+                    "indicators": indicators, "setups_checked": setups_checked,
+                    "funnel": dict(self._funnel),
+                }
+                return []
+
         # ── Build Signal ──
         signal = self._build_signal(
             symbol, best, htf_bias,
@@ -899,6 +951,34 @@ class ScalpStrategy(BaseStrategy):
             signal.confidence, best_sr.scanner_weight, signal.grade.value,
             ", ".join(best.confirmations),
         )
+
+        # Record to ML training dataset
+        try:
+            self._training_dataset.record_from_signal(
+                signal.to_dict() if hasattr(signal, 'to_dict') else {
+                    "trade_id": signal.metadata.get("trade_id", ""),
+                    "symbol": symbol,
+                    "side": best.side.value,
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                    "take_profits": signal.take_profits,
+                    "confidence": signal.confidence,
+                    "grade": signal.grade.value if hasattr(signal.grade, 'value') else str(signal.grade),
+                    "timestamp": now_iso,
+                    "metadata": signal.metadata,
+                },
+                would_blocks={
+                    "cooldown": getattr(self, '_last_would_block_cooldown', False),
+                    "rr": signal.metadata.get("would_block_rr", False),
+                    "liq": signal.metadata.get("would_block_liq", False),
+                },
+                features=indicators,
+                session=getattr(self, '_current_session', ''),
+                regime=regime,
+            )
+        except Exception as e:
+            logger.debug("Training dataset write failed: %s", e)
+
         return [signal]
 
     def _estimate_proximity_score(self, diag: str) -> int:
@@ -1459,7 +1539,19 @@ class ScalpStrategy(BaseStrategy):
             confs.append("MACD hist negative")
             score += 10
 
-        # HTF alignment
+        # Counter-trend divergence — penalize but don't block in learning mode
+        if side == OrderSide.LONG and htf_bias == -1:
+            if not getattr(self, '_is_learning', False):
+                return None
+            score -= 15  # heavy penalty but still fires for data collection
+            confs.append("COUNTER-TREND (would_block)")
+        if side == OrderSide.SHORT and htf_bias == 1:
+            if not getattr(self, '_is_learning', False):
+                return None
+            score -= 15
+            confs.append("COUNTER-TREND (would_block)")
+
+        # HTF alignment bonus (only for aligned divergences)
         if htf_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("HTF aligned")
             score += 15
@@ -1473,7 +1565,7 @@ class ScalpStrategy(BaseStrategy):
             score += 10
 
         confidence = min(score, 100)
-        sl = close - atr * 1.2 if side == OrderSide.LONG else close + atr * 1.2  # slightly wider for reversal
+        sl = close - atr * 1.2 if side == OrderSide.LONG else close + atr * 1.2
 
         return _SetupResult(
             name="rsi_divergence",
@@ -1711,6 +1803,7 @@ class ScalpStrategy(BaseStrategy):
         """Price touches a known S/R level + rejection candle."""
         sm = self._structure_map
         if sm is None:
+            logger.debug("structure_bounce: no structure map")
             return None
 
         last = df.iloc[-1]
@@ -1736,30 +1829,52 @@ class ScalpStrategy(BaseStrategy):
         if sm.nearest_support:
             lvl = sm.nearest_support
             dist_pct = (close - lvl.price) / close * 100
-            if 0 <= dist_pct < 0.3:  # within 0.3% of support
-                # Rejection candle: long lower wick, close in upper portion
+            # Within 0.5% of support OR inside the zone
+            in_zone = lvl.zone_low <= close <= lvl.zone_high
+            if in_zone or (0 <= dist_pct < 0.5):
                 lower_wick = min(open_, close) - low
-                if lower_wick > body * 1.5 and close > (low + full_range * 0.6):
+                # Relaxed rejection: wick > body OR close in upper 55% of range
+                has_rejection = (lower_wick > body * 1.0 and close > (low + full_range * 0.55))
+                # Also accept bullish candle at the level even without perfect wick
+                bullish_at_level = (close > open_ and close > (low + full_range * 0.5))
+                if has_rejection or bullish_at_level:
                     side = OrderSide.LONG
                     target_level = lvl
                     confs.append(f"S/R support bounce ({lvl.level_type})")
                     score += 30
-                    confs.append(f"Rejection wick ({lower_wick/atr:.1f}x ATR)")
-                    score += 15 if lower_wick > atr * 0.5 else 10
+                    if lower_wick > atr * 0.5:
+                        confs.append(f"Rejection wick ({lower_wick/atr:.1f}x ATR)")
+                        score += 15
+                    elif lower_wick > atr * 0.3:
+                        confs.append(f"Wick at level ({lower_wick/atr:.1f}x ATR)")
+                        score += 10
+                    if in_zone:
+                        confs.append("Inside structure zone")
+                        score += 5
 
         # Check if price is near a resistance level (SHORT setup)
         if side is None and sm.nearest_resistance:
             lvl = sm.nearest_resistance
             dist_pct = (lvl.price - close) / close * 100
-            if 0 <= dist_pct < 0.3:
+            in_zone = lvl.zone_low <= close <= lvl.zone_high
+            if in_zone or (0 <= dist_pct < 0.5):
                 upper_wick = high - max(open_, close)
-                if upper_wick > body * 1.5 and close < (low + full_range * 0.4):
+                has_rejection = (upper_wick > body * 1.0 and close < (low + full_range * 0.45))
+                bearish_at_level = (close < open_ and close < (low + full_range * 0.5))
+                if has_rejection or bearish_at_level:
                     side = OrderSide.SHORT
                     target_level = lvl
                     confs.append(f"S/R resistance rejection ({lvl.level_type})")
                     score += 30
-                    confs.append(f"Rejection wick ({upper_wick/atr:.1f}x ATR)")
-                    score += 15 if upper_wick > atr * 0.5 else 10
+                    if upper_wick > atr * 0.5:
+                        confs.append(f"Rejection wick ({upper_wick/atr:.1f}x ATR)")
+                        score += 15
+                    elif upper_wick > atr * 0.3:
+                        confs.append(f"Wick at level ({upper_wick/atr:.1f}x ATR)")
+                        score += 10
+                    if in_zone:
+                        confs.append("Inside structure zone")
+                        score += 5
 
         if side is None or target_level is None:
             return None
@@ -1790,10 +1905,14 @@ class ScalpStrategy(BaseStrategy):
         confidence = min(score, 100)
 
         # SL below/above the structure zone + buffer
+        # CLAMP: max SL = 2× ATR or 0.5% of price (whichever is smaller)
+        max_sl_dist = min(atr * 2.0, close * 0.005)
         if side == OrderSide.LONG:
-            sl = target_level.zone_low - close * 0.001
+            struct_sl = target_level.zone_low - close * 0.001
+            sl = max(struct_sl, close - max_sl_dist)  # don't let SL be too far
         else:
-            sl = target_level.zone_high + close * 0.001
+            struct_sl = target_level.zone_high + close * 0.001
+            sl = min(struct_sl, close + max_sl_dist)  # don't let SL be too far
 
         return _SetupResult(
             name="structure_bounce",
@@ -2854,16 +2973,18 @@ class ScalpStrategy(BaseStrategy):
         risk_status = "SAFE"
 
         if liq_buffer_pct < self.liq_min_buffer_pct:
-            # Liquidation buffer too small — reject
-            logger.info("%s: %s REJECTED — liq buffer %.1f%% < %.1f%% minimum",
-                       symbol, setup.name, liq_buffer_pct, self.liq_min_buffer_pct)
-            return None
+            if not self._is_learning:
+                logger.info("%s: %s REJECTED — liq buffer %.1f%% < %.1f%% minimum",
+                           symbol, setup.name, liq_buffer_pct, self.liq_min_buffer_pct)
+                return None
+            risk_status = "WARNING"
 
         if sl_pct_of_liq >= self.liq_reject_pct * 100:
-            # SL too close to liquidation — reject
-            logger.info("%s: %s REJECTED — SL uses %.0f%% of liq buffer (max 50%%)",
-                       symbol, setup.name, sl_pct_of_liq)
-            return None
+            if not self._is_learning:
+                logger.info("%s: %s REJECTED — SL uses %.0f%% of liq buffer (max 50%%)",
+                           symbol, setup.name, sl_pct_of_liq)
+                return None
+            risk_status = "WARNING"
         elif sl_pct_of_liq >= self.liq_sl_max_pct * 100:
             risk_status = "WARNING"
 
@@ -2928,7 +3049,7 @@ class ScalpStrategy(BaseStrategy):
 
         # ── Enforce minimum R:R (1:1 per spec) ──
         actual_rr = abs(tp1 - entry) / risk if risk > 0 else 0
-        if actual_rr < self.min_rr_ratio:
+        if actual_rr < self.min_rr_ratio and not self._is_learning:
             logger.debug("%s: %s rejected — R:R %.2f below %.2f",
                         symbol, setup.name, actual_rr, self.min_rr_ratio)
             return None
@@ -2972,6 +3093,12 @@ class ScalpStrategy(BaseStrategy):
                 "choch": (choch_data or {}).get("direction") if (choch_data or {}).get("choch_detected") else None,
                 "choch_strength": (choch_data or {}).get("strength", 0) if (choch_data or {}).get("choch_detected") else 0,
                 "regime": regime,
+                # ML training data — would_block flags
+                "would_block_cooldown": getattr(self, '_last_would_block_cooldown', False),
+                "would_block_rr": actual_rr < self.min_rr_ratio,
+                "would_block_liq": liq_buffer_pct < self.liq_min_buffer_pct,
+                "session": getattr(self, '_current_session', 'unknown'),
+                "operating_mode": self.operating_mode,
             },
         )
 

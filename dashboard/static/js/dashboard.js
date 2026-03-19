@@ -52,7 +52,12 @@
 
     function formatTime(isoStr) {
         if (!isoStr) return "--";
-        try { return new Date(isoStr).toLocaleTimeString("en-IN", { hour12: false, timeZone: "Asia/Kolkata" }); }
+        try {
+            const d = new Date(isoStr);
+            const day = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" });
+            const time = d.toLocaleTimeString("en-IN", { hour12: false, hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+            return `${day} ${time}`;
+        }
         catch (e) { return isoStr; }
     }
 
@@ -1824,9 +1829,7 @@
 
             let guardActive = false;
             let guardReason = "";
-            if (dd > 8) { guardActive = true; guardReason = "DD>" + dd.toFixed(1) + "%"; }
-            else if (streak <= -5) { guardActive = true; guardReason = streak + " streak"; }
-            else if (rw < 40 && monitorReport.total_analyzed >= 15) { guardActive = true; guardReason = "WR " + rw.toFixed(0) + "%"; }
+            if (dd > 15) { guardActive = true; guardReason = "DD>" + dd.toFixed(1) + "%"; }
 
             if (guardActive) {
                 rgBadge.style.display = "inline-flex";

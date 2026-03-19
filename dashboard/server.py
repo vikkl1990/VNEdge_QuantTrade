@@ -542,6 +542,16 @@ class DashboardServer:
         except Exception as e:
             data["error"] = str(e)
 
+        # WebSocket status
+        if hasattr(self, '_orchestrator') and self._orchestrator and hasattr(self._orchestrator, '_delta_ws'):
+            ws = self._orchestrator._delta_ws
+            if ws:
+                data["websocket"] = ws.get_status()
+            else:
+                data["websocket"] = {"connected": False, "status": "not_started"}
+        else:
+            data["websocket"] = {"connected": False, "status": "not_available"}
+
         # VM upgrade status (read from status file if exists)
         upgrade_status_file = Path.home() / "vm_upgrade_status.json"
         if upgrade_status_file.exists():

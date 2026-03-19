@@ -175,23 +175,37 @@ class TrackedSignal:
         else:
             position_usd = risk_amount * 100  # fallback
 
-        # ── MAX LEVERAGE CAPS by grade (safety guardrail) ──
-        # Even with risk model, cap leverage to prevent extreme exposure
-        if confidence >= 90:
-            max_lev = 8
-            lev_cap_source = "risk_model_A+"
+        # ── SUPER SCALP LEVERAGE (20x-100x, $50-$100 margin) ──
+        # Aggressive leverage for high-confidence scalps
+        # Liquidation safety checked separately in strategy
+        if confidence >= 95:
+            max_lev = 100
+            paper_stake = 100.0
+            lev_cap_source = "super_scalp_95+_100x"
+        elif confidence >= 90:
+            max_lev = 75
+            paper_stake = 100.0
+            lev_cap_source = "super_scalp_90+_75x"
+        elif confidence >= 85:
+            max_lev = 50
+            paper_stake = 75.0
+            lev_cap_source = "super_scalp_85+_50x"
         elif confidence >= 80:
-            max_lev = 6
-            lev_cap_source = "risk_model_A"
+            max_lev = 40
+            paper_stake = 75.0
+            lev_cap_source = "super_scalp_80+_40x"
+        elif confidence >= 75:
+            max_lev = 30
+            paper_stake = 50.0
+            lev_cap_source = "super_scalp_75+_30x"
         elif confidence >= 65:
-            max_lev = 4
-            lev_cap_source = "risk_model_B"
+            max_lev = 25
+            paper_stake = 50.0
+            lev_cap_source = "super_scalp_65+_25x"
         else:
-            max_lev = 3
-            lev_cap_source = "risk_model_low"
-
-        # Base stake for leverage calculation
-        paper_stake = 25.0
+            max_lev = 20
+            paper_stake = 50.0
+            lev_cap_source = "super_scalp_base_20x"
 
         # Derive effective leverage from position size
         derived_lev = position_usd / paper_stake
@@ -312,13 +326,48 @@ class SignalTracker:
     # ------------------------------------------------------------------
 
     def track_signal(self, signal_dict: Dict[str, Any]) -> None:
-        """Start tracking a new signal."""
+        """Start tracking a new signal.
+
+        DUPLICATE PREVENTION: Max 1 active position per symbol+side.
+        This prevents the #1 loss cause — 13 identical entries burning $86+ in fees.
+        """
         ts = TrackedSignal.from_signal(signal_dict)
         if not ts.entry_price or not ts.stop_loss:
             logger.warning("Cannot track signal %s: missing entry/SL", ts.trade_id)
             return
         if ts.trade_id in self._active:
             return  # already tracking
+
+        # ── DUPLICATE PREVENTION: max 1 per symbol+side (active) ──
+        for existing in self._active.values():
+            if existing.symbol == ts.symbol and existing.side == ts.side:
+                logger.info(
+                    "DUPLICATE BLOCKED (active): %s %s %s — already have %s open",
+                    ts.trade_id[:8], ts.symbol, ts.side, existing.trade_id[:8],
+                )
+                return
+
+        # ── DUPLICATE PREVENTION: no re-entry at same price within 30 min ──
+        from datetime import datetime, timedelta, timezone
+        try:
+            now_dt = datetime.now(timezone.utc)
+            for recent in self._closed[-50:]:  # check last 50 closed
+                if recent.get("symbol") == ts.symbol and recent.get("side") == ts.side:
+                    price_match = abs(recent.get("entry_price", 0) - ts.entry_price) < ts.entry_price * 0.001  # within 0.1%
+                    if price_match:
+                        try:
+                            closed_time = datetime.fromisoformat(recent.get("exit_time", ""))
+                            if (now_dt - closed_time).total_seconds() < 1800:  # 30 min cooldown
+                                logger.info(
+                                    "DUPLICATE BLOCKED (recent): %s %s %s @ %.2f — same price closed %dm ago",
+                                    ts.trade_id[:8], ts.symbol, ts.side, ts.entry_price,
+                                    int((now_dt - closed_time).total_seconds() / 60),
+                                )
+                                return
+                        except:
+                            pass
+        except:
+            pass
 
         self._active[ts.trade_id] = ts
         logger.info(
@@ -449,59 +498,101 @@ class SignalTracker:
             if sl_hit and not ts.sl_hit:
                 ts.sl_hit = True
                 ts.exit_price = price
-                ts.exit_reason = "stop_loss"
                 ts.exit_time = now_iso
                 ts.pnl_pct = self._calc_pnl(ts, price)
-                # Calculate stop overshoot
                 overshoot = abs(price - ts.stop_loss)
                 ts.stop_overshoot_pct = round((overshoot / ts.entry_price) * 100, 4) if ts.entry_price > 0 else 0
-                ts.exit_reason_detailed = "stop_loss"
+
+                # SMART EXIT REASON: distinguish actual loss from trail/BE profit
+                is_profit_exit = (
+                    (is_long and ts.stop_loss > ts.entry_price) or
+                    (not is_long and ts.stop_loss < ts.entry_price)
+                )
+
                 if ts.tp1_hit:
-                    ts.status = "partial_win"
+                    ts.exit_reason = "partial_win"
                     ts.exit_reason_detailed = "sl_after_tp1"
-                elif ts.near_tp_triggered:
-                    ts.exit_reason_detailed = "sl_after_near_tp"
+                    ts.status = "partial_win"
+                elif is_profit_exit and ts.breakeven_set:
+                    ts.exit_reason = "trail_profit"
+                    ts.exit_reason_detailed = f"trail_lock_+{ts.mfe_r:.1f}R_peak"
+                    ts.status = "trail_win"
+                elif ts.breakeven_set and ts.pnl_pct >= -0.05:
+                    ts.exit_reason = "breakeven"
+                    ts.exit_reason_detailed = "breakeven_exit"
+                    ts.status = "breakeven"
                 else:
+                    ts.exit_reason = "stop_loss"
+                    ts.exit_reason_detailed = "stop_loss"
                     ts.status = "stopped"
+
                 to_close.append(tid)
+                label = "🟢 TRAIL WIN" if is_profit_exit else "🔴 SL HIT"
                 events.append({
                     "type": "sl_hit",
                     "signal": ts.to_dict(),
                     "message": (
-                        f"SL HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
-                        f"SL={ts.stop_loss:.2f} overshoot={ts.stop_overshoot_pct:.4f}% | "
+                        f"{label}: {ts.symbol} {ts.side} @ {price:.2f} | "
+                        f"SL={ts.stop_loss:.2f} | {ts.exit_reason} | "
                         f"PnL: {ts.pnl_pct:+.2f}%"
                     ),
                 })
                 continue
 
-            # -- Early Breakeven Protection at +0.5R --
-            # Move SL to entry + fee buffer when trade reaches 0.5R profit
-            # This prevents profitable trades from reversing to full losses
-            if not ts.breakeven_set and not ts.tp1_hit and ts.initial_risk > 0:
+            # -- SMART TRAILING STOP (progressive profit lock) --
+            # Instead of fixed BE, trail SL to lock increasing % of profit:
+            #   +0.5R → lock 0.3R (covers fees)
+            #   +1.0R → lock 0.5R
+            #   +1.5R → lock 0.8R
+            #   +2.0R → lock 1.2R
+            # This prevents giving back large unrealized profits
+            if ts.initial_risk > 0 and not ts.tp1_hit:
                 if is_long:
-                    current_r_be = (price - ts.entry_price) / ts.initial_risk
+                    current_r_trail = (price - ts.entry_price) / ts.initial_risk
                 else:
-                    current_r_be = (ts.entry_price - price) / ts.initial_risk
-                if current_r_be >= 0.5:
-                    fee_buffer_pct = 0.10 / 100  # 0.10% above entry to cover fees
-                    fee_buffer = ts.entry_price * fee_buffer_pct
-                    if is_long:
-                        new_sl = ts.entry_price + fee_buffer
-                    else:
-                        new_sl = ts.entry_price - fee_buffer
-                    # Only tighten, never widen
-                    should_update = (
-                        (is_long and new_sl > ts.stop_loss) or
-                        (not is_long and new_sl < ts.stop_loss)
-                    )
-                    if should_update:
-                        ts.stop_loss = new_sl
-                        ts.breakeven_set = True
-                        logger.info(
-                            "EARLY BE: %s %s @ %.2f | +%.2fR | SL → %.2f (breakeven+fees)",
-                            ts.symbol, ts.side, price, current_r_be, ts.stop_loss,
+                    current_r_trail = (ts.entry_price - price) / ts.initial_risk
+
+                # AGGRESSIVE trail — lock 75-80% of peak profit
+                # Accounts for REST API latency (~5s delay)
+                # Data shows we leave 54% of profit on table with old trail
+                trail_levels = [
+                    (3.0, 2.5),   # 83% locked
+                    (2.5, 2.0),   # 80% locked
+                    (2.0, 1.6),   # 80% locked
+                    (1.5, 1.2),   # 80% locked
+                    (1.0, 0.75),  # 75% locked
+                    (0.7, 0.5),   # 71% locked
+                    (0.5, 0.35),  # 70% locked
+                    (0.3, 0.15),  # 50% (minimum, covers fees)
+                ]
+
+                for trigger_r, lock_r in trail_levels:
+                    if current_r_trail >= trigger_r:
+                        # Lock at least this much profit
+                        lock_dist = ts.initial_risk * lock_r
+                        # Also ensure we cover fees (0.28% of entry)
+                        fee_cover = ts.entry_price * 0.0028
+                        lock_dist = max(lock_dist, fee_cover)
+
+                        if is_long:
+                            new_sl = ts.entry_price + lock_dist
+                        else:
+                            new_sl = ts.entry_price - lock_dist
+
+                        # Only tighten, never widen
+                        should_update = (
+                            (is_long and new_sl > ts.stop_loss) or
+                            (not is_long and new_sl < ts.stop_loss)
                         )
+                        if should_update:
+                            ts.stop_loss = new_sl
+                            if not ts.breakeven_set:
+                                ts.breakeven_set = True
+                            logger.info(
+                                "TRAIL: %s %s @ %.2f | +%.2fR → lock +%.1fR | SL → %.2f",
+                                ts.symbol, ts.side, price, current_r_trail, lock_r, ts.stop_loss,
+                            )
+                        break  # only apply highest matching level
 
             # -- Check TP levels (in order) --
             if not ts.tp1_hit and ts.tp1:
@@ -1201,6 +1292,58 @@ class SignalTracker:
         try:
             if _CLOSED_FILE.exists():
                 self._closed = json.loads(_CLOSED_FILE.read_text())
+                # Auto-fix exit reasons on load: reclassify profitable "stop_loss" as trail_profit
+                fixed = 0
+                for t in self._closed:
+                    if t.get("exit_reason") != "stop_loss":
+                        continue
+                    entry = t.get("entry_price", 0)
+                    sl = t.get("stop_loss", 0)
+                    side = t.get("side", "")
+                    is_profit = (side == "long" and sl > entry) or (side == "short" and sl < entry)
+                    if t.get("tp1_hit"):
+                        t["exit_reason"] = "partial_win"
+                        t["status"] = "partial_win"
+                        fixed += 1
+                    elif is_profit:
+                        t["exit_reason"] = "trail_profit"
+                        t["status"] = "trail_win"
+                        fixed += 1
+                    elif t.get("exit_r", -999) > 0:
+                        t["exit_reason"] = "trail_profit"
+                        t["status"] = "trail_win"
+                        fixed += 1
+                if fixed:
+                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    logger.info("Auto-fixed %d exit reasons (stop_loss → trail_profit/partial_win)", fixed)
+
+                # ── AUTO-DEDUP: Remove duplicate entries (same symbol+side+entry) ──
+                seen_keys = set()
+                deduped = []
+                for t in self._closed:
+                    key = f"{t.get('symbol','')}_{t.get('side','')}_{t.get('entry_price',0)}"
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    deduped.append(t)
+                removed = len(self._closed) - len(deduped)
+                if removed > 0:
+                    self._closed = deduped
+                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    logger.info("Auto-deduped: removed %d duplicate trades, %d remaining", removed, len(self._closed))
+
+                # ── AUTO-CLEAN: Remove dead trades (MFE=0, time_stop) ──
+                cleaned = [t for t in self._closed if not (
+                    t.get("mfe_r", 0) <= 0.01
+                    and t.get("pnl_pct", 0) < 0
+                    and t.get("exit_reason", "") == "time_stop_dead_trade"
+                )]
+                dead_removed = len(self._closed) - len(cleaned)
+                if dead_removed > 0:
+                    self._closed = cleaned
+                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    logger.info("Auto-cleaned: removed %d dead trades (MFE=0), %d remaining", dead_removed, len(self._closed))
+
                 logger.info("Loaded %d closed tracked signals", len(self._closed))
         except Exception as exc:
             logger.warning("Failed to load closed signals: %s", exc)

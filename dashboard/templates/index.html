@@ -1,777 +1,1231 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CryptoAlgoBot Dashboard</title>
-    <link rel="stylesheet" href="/static/css/dashboard.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoAlgoBot — Trading Cockpit</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+/* ── RESET & BASE ─────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e17;--panel:#111827;--border:#1f2937;
+  --text:#e0e6ed;--muted:#6b7280;--muted-light:#9ca3af;
+  --green:#10b981;--red:#ef4444;--yellow:#f59e0b;--blue:#3b82f6;
+  --orange:#f97316;--purple:#8b5cf6;
+  --radius:8px;--gap:12px;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;overflow-x:hidden}
+a{color:var(--blue);text-decoration:none}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ── TAB BAR ──────────────────────────────────────────────── */
+.tab-bar{display:flex;gap:0;background:#080b12;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.tab-btn{flex:1;max-width:240px;padding:14px 20px;background:transparent;border:none;color:var(--muted);font-size:0.95rem;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;transition:all .2s}
+.tab-btn:hover{color:var(--text);background:rgba(255,255,255,.03)}
+.tab-btn.active{color:var(--text);border-bottom-color:var(--blue);background:rgba(59,130,246,.06)}
+.tab-content{display:none;padding:var(--gap);max-width:1800px;margin:0 auto}
+.tab-content.active{display:block}
+
+/* ── ALERT BANNER ─────────────────────────────────────────── */
+.alert-banner{padding:10px 16px;font-size:0.85rem;font-weight:600;display:none;align-items:center;gap:8px;position:sticky;top:49px;z-index:99}
+.alert-banner.critical{display:flex;background:rgba(239,68,68,.15);color:var(--red);border-bottom:1px solid rgba(239,68,68,.3)}
+.alert-banner.warning{display:flex;background:rgba(249,115,22,.12);color:var(--orange);border-bottom:1px solid rgba(249,115,22,.3)}
+.alert-banner.normal{display:flex;background:rgba(16,185,129,.08);color:var(--green);border-bottom:1px solid rgba(16,185,129,.2)}
+.alert-icon{font-size:1.1rem}
+
+/* ── PANEL / CARD ─────────────────────────────────────────── */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:var(--gap)}
+.panel-title{font-size:0.75rem;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:12px;font-weight:700}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--gap)}
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap)}
+@media(max-width:900px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
+
+/* ── COMMAND CENTER ───────────────────────────────────────── */
+.cmd-center{display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center}
+.cmd-action{font-size:2.4rem;font-weight:900;letter-spacing:2px;padding:12px 28px;border-radius:10px;text-align:center;min-width:160px;line-height:1.1}
+.cmd-action.BUY{background:rgba(16,185,129,.15);color:var(--green);border:2px solid var(--green)}
+.cmd-action.SELL{background:rgba(239,68,68,.15);color:var(--red);border:2px solid var(--red)}
+.cmd-action.WAIT{background:rgba(245,158,11,.1);color:var(--yellow);border:2px solid rgba(245,158,11,.4)}
+.cmd-action.BLOCKED{background:rgba(107,114,128,.12);color:var(--muted-light);border:2px solid var(--border)}
+.cmd-meta{display:flex;flex-direction:column;gap:6px}
+.cmd-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.cmd-confidence{font-size:1.6rem;font-weight:800}
+.cmd-grade{font-size:1rem;padding:3px 10px;border-radius:4px;background:rgba(59,130,246,.15);color:var(--blue);font-weight:700}
+.cmd-reason{font-size:0.95rem;color:var(--muted-light);line-height:1.4}
+.cmd-tag{font-size:0.75rem;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.06);color:var(--muted-light);font-weight:600}
+.cmd-tag.regime{border-left:3px solid var(--purple)}
+.cmd-tag.session{border-left:3px solid var(--blue)}
+.cmd-tag.ev{border-left:3px solid var(--green)}
+.cmd-tag.risk{border-left:3px solid var(--red)}
+
+/* ── STAT CARDS ───────────────────────────────────────────── */
+.stat-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px;text-align:center}
+.stat-value{font-size:1.5rem;font-weight:800;margin-bottom:2px}
+.stat-label{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.8px;color:var(--muted)}
+.stat-value.green{color:var(--green)}.stat-value.red{color:var(--red)}.stat-value.yellow{color:var(--yellow)}.stat-value.blue{color:var(--blue)}
+
+/* ── TABLES ───────────────────────────────────────────────── */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:0.8rem}
+th{text-align:left;padding:8px 10px;color:var(--muted);font-weight:700;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.8px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid rgba(31,41,55,.5);white-space:nowrap}
+tr:hover{background:rgba(255,255,255,.02)}
+.pnl-pos{color:var(--green);font-weight:700}
+.pnl-neg{color:var(--red);font-weight:700}
+.pnl-zero{color:var(--muted)}
+
+/* ── SIGNAL CARDS ─────────────────────────────────────────── */
+.sig-card{display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border);margin-bottom:6px;font-size:0.8rem}
+.sig-side{font-weight:800;font-size:0.75rem;padding:2px 6px;border-radius:3px}
+.sig-side.LONG{background:rgba(16,185,129,.15);color:var(--green)}
+.sig-side.SHORT{background:rgba(239,68,68,.15);color:var(--red)}
+.sig-symbol{font-weight:700;min-width:80px}
+.sig-setup{color:var(--muted-light);min-width:90px}
+.sig-detail{color:var(--muted);flex:1}
+.sig-conf{font-weight:700;color:var(--blue)}
+
+/* ── FUNNEL ───────────────────────────────────────────────── */
+.funnel{display:flex;gap:2px;align-items:flex-end}
+.funnel-step{flex:1;text-align:center;padding:10px 4px;border-radius:4px}
+.funnel-step .f-val{font-size:1.3rem;font-weight:800}
+.funnel-step .f-lbl{font-size:0.65rem;text-transform:uppercase;color:var(--muted);margin-top:2px}
+
+/* ── ALERT LIST ───────────────────────────────────────────── */
+.alert-row{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(31,41,55,.4);font-size:0.78rem;align-items:flex-start}
+.alert-time{color:var(--muted);min-width:85px;font-size:0.72rem}
+.alert-level{min-width:18px;text-align:center}
+.alert-msg{flex:1;color:var(--muted-light);line-height:1.3}
+
+/* ── CHART ────────────────────────────────────────────────── */
+.chart-wrap{position:relative;height:320px}
+.chart-wrap canvas{width:100%!important;height:100%!important}
+
+/* ── HEALTH BARS ──────────────────────────────────────────── */
+.health-bar{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin-top:4px}
+.health-fill{height:100%;border-radius:4px;transition:width .5s}
+
+/* ── AI INSIGHTS ──────────────────────────────────────────── */
+.ai-tag{display:inline-block;padding:3px 8px;margin:2px;border-radius:4px;font-size:0.75rem;font-weight:600}
+.ai-boost{background:rgba(16,185,129,.12);color:var(--green);border:1px solid rgba(16,185,129,.3)}
+.ai-penalize{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.3)}
+.ai-block{background:rgba(245,158,11,.12);color:var(--yellow);border:1px solid rgba(245,158,11,.3)}
+
+/* ── LOADING / EMPTY ──────────────────────────────────────── */
+.empty{color:var(--muted);font-size:0.8rem;padding:12px;text-align:center}
+.pulse{animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* ── LIVE LAYOUT ──────────────────────────────────────────── */
+.live-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
+.live-span-2{grid-column:span 2}
+@media(max-width:1100px){.live-grid{grid-template-columns:1fr}.live-span-2{grid-column:span 1}}
+</style>
 </head>
 <body>
 
-<!-- ─── Header ─────────────────────────────────────────────────────── -->
-<header id="header">
-    <div class="header-left">
-        <h1 id="bot-name">CryptoAlgoBot</h1>
-        <span class="version" id="bot-version">v1.0.0</span>
-        <span class="status-badge" id="bot-status-badge">
-            <span class="dot" id="status-dot"></span>
-            <span id="status-text">connecting...</span>
-        </span>
+<!-- ═══ TAB BAR ════════════════════════════════════════════ -->
+<nav class="tab-bar">
+  <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">&#x1F525; Live Trading</button>
+  <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">&#x1F4CA; Analytics</button>
+  <button class="tab-btn" data-tab="system" onclick="switchTab('system')">&#x2699;&#xFE0F; System</button>
+</nav>
+
+<!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
+<div id="price-ticker" style="display:flex;justify-content:center;gap:32px;padding:8px 16px;background:#0d1117;border-bottom:1px solid #1f2937;font-family:'SF Mono',Consolas,monospace">
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="color:var(--muted);font-size:.7rem;font-weight:600">BTC/USDT</span>
+    <span id="price-btc" style="font-size:1.2rem;font-weight:800;color:#f7931a">--</span>
+    <span id="price-btc-change" style="font-size:.75rem;font-weight:600">--</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="color:var(--muted);font-size:.7rem;font-weight:600">ETH/USDT</span>
+    <span id="price-eth" style="font-size:1.2rem;font-weight:800;color:#627eea">--</span>
+    <span id="price-eth-change" style="font-size:.75rem;font-weight:600">--</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="color:var(--muted);font-size:.7rem">BAL</span>
+    <span id="price-bal" style="font-size:1rem;font-weight:700;color:var(--green)">--</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="color:var(--muted);font-size:.65rem" id="price-update-time">--</span>
+  </div>
+</div>
+
+<!-- ═══ ALERT BANNER ══════════════════════════════════════ -->
+<div class="alert-banner" id="alert-banner">
+  <span class="alert-icon" id="alert-icon"></span>
+  <span id="alert-text"></span>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 1: LIVE TRADING                                    -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content active" id="tab-live">
+
+  <!-- Command Center -->
+  <div class="panel live-span-2" id="cmd-panel">
+    <div class="panel-title">Command Center</div>
+    <div class="cmd-center">
+      <div class="cmd-action WAIT" id="cmd-action">WAIT</div>
+      <div class="cmd-meta">
+        <div class="cmd-row">
+          <span class="cmd-confidence" id="cmd-confidence">--</span>
+          <span class="cmd-grade" id="cmd-grade">--</span>
+        </div>
+        <div class="cmd-reason" id="cmd-reason">Connecting...</div>
+        <div class="cmd-row">
+          <span class="cmd-tag regime" id="cmd-regime">--</span>
+          <span class="cmd-tag session" id="cmd-session">--</span>
+          <span class="cmd-tag ev" id="cmd-ev">--</span>
+          <span class="cmd-tag risk" id="cmd-risk">--</span>
+        </div>
+        <div id="cmd-blockers" style="margin-top:4px"></div>
+      </div>
     </div>
-    <div class="header-right">
-        <span class="exchange-status" id="exchange-badge">
-            <span class="dot" id="exchange-dot"></span>
-            <span id="exchange-text">exchange</span>
-        </span>
-        <span class="mode-badge" id="mode-badge">PAPER</span>
-        <span class="conn-status" id="conn-status">
-            <span class="conn-dot"></span>
-            <span class="conn-label" id="conn-label">LIVE</span>
-        </span>
-        <span class="risk-guard-badge" id="risk-guard-badge" style="display:none">
-            <span class="dot red"></span>
-            <span id="risk-guard-text">RISK GUARD</span>
-        </span>
-        <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
-        <span class="server-time" id="server-time"></span>
+  </div>
+
+  <div class="live-grid">
+
+    <!-- Active Trades -->
+    <div class="panel live-span-2">
+      <div class="panel-title">Active Trades <span id="active-trade-count" style="color:var(--muted);font-size:.75rem"></span></div>
+      <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:8px">
+        <div class="empty">No active trades</div>
+      </div>
     </div>
-</header>
 
-<!-- ─── Dashboard Grid ─────────────────────────────────────────────── -->
-<main class="grid">
+    <!-- Signal Feed -->
+    <div class="panel">
+      <div class="panel-title">Signal Feed <span style="color:var(--muted);font-size:.65rem">(last 10)</span></div>
+      <div id="signal-feed"><div class="empty">No signals</div></div>
+    </div>
 
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- COMMAND CENTER (DECISION ENGINE)                               -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-command" id="card-command">
-        <div class="cmd-header">
-            <div class="cmd-action-wrap">
-                <span class="cmd-action-badge" id="cmd-action">WAIT</span>
-                <span class="cmd-reason" id="cmd-reason">Initializing...</span>
-            </div>
-            <div class="cmd-badges">
-                <span class="cmd-badge cmd-edge" id="cmd-edge">EDGE: --</span>
-                <span class="cmd-badge cmd-risk" id="cmd-risk">RISK: --</span>
-                <span class="cmd-badge cmd-market" id="cmd-market">MKT: --</span>
-                <span class="cmd-badge cmd-ev" id="cmd-ev">EV: --</span>
-            </div>
-        </div>
-        <!-- Trade Plan Row (visible when TRADE) -->
-        <div class="cmd-trade-plan" id="cmd-trade-plan" style="display:none">
-            <div class="tp-cell"><span class="tp-label">Symbol</span><span class="tp-value" id="tp-symbol">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Side</span><span class="tp-value" id="tp-side">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Entry</span><span class="tp-value mono" id="tp-entry">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Stop</span><span class="tp-value mono text-sell" id="tp-stop">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Target</span><span class="tp-value mono text-buy" id="tp-target">--</span></div>
-            <div class="tp-cell"><span class="tp-label">R:R</span><span class="tp-value mono" id="tp-rr">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Scanner</span><span class="tp-value" id="tp-scanner">--</span></div>
-            <div class="tp-cell"><span class="tp-label">Score</span><span class="tp-value mono" id="tp-score">--</span></div>
-        </div>
-        <!-- Blocker Row (visible when WAIT) -->
-        <div class="cmd-blocker" id="cmd-blocker" style="display:none">
-            <span class="blocker-icon">&#9888;</span>
-            <span class="blocker-text" id="blocker-text">--</span>
-        </div>
-        <!-- Context Grid -->
-        <div class="cmd-grid">
-            <div class="cmd-cell"><span class="cmd-label">Regime</span><span class="cmd-value" id="cmd-regime">--</span></div>
-            <div class="cmd-cell"><span class="cmd-label">Expectancy</span><span class="cmd-value mono" id="cmd-expectancy">--</span></div>
-            <div class="cmd-cell"><span class="cmd-label">Session</span><span class="cmd-value" id="cmd-session">--</span></div>
-            <div class="cmd-cell"><span class="cmd-label">Drawdown</span><span class="cmd-value mono" id="cmd-drawdown">--</span></div>
-            <div class="cmd-cell"><span class="cmd-label">EV / P(win)</span><span class="cmd-value mono" id="cmd-ev-detail">--</span></div>
-        </div>
-        <div class="cmd-reasons" id="cmd-reasons"></div>
-    </section>
-
-    <!-- Bot Status -->
-    <section class="card" id="card-status">
-        <h2>Bot Status</h2>
-        <div class="kv-grid">
-            <span class="label">Mode</span>     <span class="value" id="st-mode">--</span>
-            <span class="label">Uptime</span>    <span class="value" id="st-uptime">--</span>
-            <span class="label">Strategy</span>  <span class="value" id="st-strategy">--</span>
-            <span class="label">Symbols</span>   <span class="value" id="st-symbols">--</span>
-            <span class="label">Memory</span>    <span class="value mono" id="sh-memory">-- MB</span>
-            <span class="label">Exchange Bal</span> <span class="value mono" id="st-exchange-bal" style="color:#ffc107">--</span>
-            <span class="label">Taker Fee</span>  <span class="value mono" id="st-taker-fee">--</span>
-            <span class="label">Maker Fee</span>  <span class="value mono" id="st-maker-fee">--</span>
-            <span class="label">Settlement</span> <span class="value mono" id="st-settlement-fee">--</span>
-        </div>
-    </section>
-
-    <!-- Current Prices -->
-    <section class="card" id="card-prices">
-        <h2>Current Prices</h2>
-        <div id="prices-list" class="prices-list">
-            <p class="muted">Waiting for data...</p>
-        </div>
-        <div class="kv-grid" style="margin-top:10px">
-            <span class="label">Last Update</span>
-            <span class="value" style="font-size:0.75rem" id="sh-last-update">--</span>
-        </div>
-    </section>
-
-    <!-- Signal Status — Why no signals? -->
-    <section class="card span-2" id="card-signal-status">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#128225;</span> Signal Scanner Status</h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="last-signal-time" style="color:#f59e0b">Last signal: --</span>
-                <span class="stat-pill" id="signal-drought" style="display:none;color:#ef4444">&#9888; No signals</span>
-            </div>
-        </div>
-        <div id="signal-status-grid" class="signal-status-grid">
-            <p class="muted">Waiting for scan data...</p>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- SECTION 1: QUICK SCALP SIGNALS (Leverage Trading)             -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-scalp" id="card-scalp-signals">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#9889;</span> Quick Scalp Signals <span class="section-tag scalp-tag">LEVERAGE</span> <span class="section-tag stake-tag">$25/TRADE</span></h2>
-            <div class="section-stats">
-                <div class="symbol-filters">
-                    <button class="symbol-filter-btn active" data-target="scalp" data-symbol="all">ALL</button>
-                    <button class="symbol-filter-btn btc" data-target="scalp" data-symbol="BTC">BTC</button>
-                    <button class="symbol-filter-btn eth" data-target="scalp" data-symbol="ETH">ETH</button>
-                </div>
-                <span class="stat-pill" id="scalp-count">0 signals</span>
-                <span class="stat-pill wr-pill" id="scalp-wr">WR: --</span>
-            </div>
-        </div>
-        <div class="table-wrap">
-            <table id="scalp-signals-table">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Symbol</th>
-                        <th>Setup</th>
-                        <th>Side</th>
-                        <th>Lev</th>
-                        <th>Size</th>
-                        <th>Qty</th>
-                        <th>Entry</th>
-                        <th>Stop Loss</th>
-                        <th>TP1</th>
-                        <th>TP2</th>
-                        <th>TP3</th>
-                        <th>Conf</th>
-                        <th>Grade</th>
-                    </tr>
-                </thead>
-                <tbody id="scalp-signals-body">
-                    <tr><td colspan="14" class="muted">Scanning for scalp setups on 1m/5m...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- SECTION 2: INVESTMENT / SWING SIGNALS                         -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-invest" id="card-invest-signals">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#128200;</span> Investment / Swing Signals <span class="section-tag invest-tag">HOLD</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="invest-count">0 signals</span>
-            </div>
-        </div>
-        <div class="table-wrap">
-            <table id="invest-signals-table">
-                <thead>
-                    <tr>
-                        <th>Time</th>
-                        <th>Symbol</th>
-                        <th>Type</th>
-                        <th>Side</th>
-                        <th>Entry</th>
-                        <th>Stop Loss</th>
-                        <th>TP1</th>
-                        <th>TP2</th>
-                        <th>Conf</th>
-                        <th>Grade</th>
-                        <th>Regime</th>
-                        <th>Reason</th>
-                    </tr>
-                </thead>
-                <tbody id="invest-signals-body">
-                    <tr><td colspan="12" class="muted">Waiting for swing setups on 5m/15m...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- ACTIVE TRACKED SIGNALS (monitoring for TP/SL)                  -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2" id="card-tracked">
-        <div class="section-header-row">
-            <h2>Active Signal Tracking</h2>
-            <div class="section-stats">
-                <div class="symbol-filters">
-                    <button class="symbol-filter-btn active" data-target="tracked" data-symbol="all">ALL</button>
-                    <button class="symbol-filter-btn btc" data-target="tracked" data-symbol="BTC">BTC</button>
-                    <button class="symbol-filter-btn eth" data-target="tracked" data-symbol="ETH">ETH</button>
-                </div>
-                <span class="stat-pill" id="tracked-count">0 active</span>
-            </div>
-        </div>
-        <div class="table-wrap">
-            <table id="tracked-table">
-                <thead>
-                    <tr>
-                        <th>Entry Time</th>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Lev</th>
-                        <th>Qty</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>SL</th>
-                        <th>TP1</th>
-                        <th>TP2</th>
-                        <th>TP3</th>
-                        <th>Status</th>
-                        <th>PnL</th>
-                        <th>$ PnL</th>
-                    </tr>
-                </thead>
-                <tbody id="tracked-body">
-                    <tr><td colspan="14" class="muted">No signals being tracked yet</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- Open Positions -->
-    <section class="card span-2" id="card-positions">
-        <h2>Open Positions</h2>
-        <div class="table-wrap">
-            <table id="positions-table">
-                <thead>
-                    <tr>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>Size</th>
-                        <th>PnL</th>
-                        <th>PnL %</th>
-                        <th>SL</th>
-                        <th>TP</th>
-                    </tr>
-                </thead>
-                <tbody id="positions-body">
-                    <tr><td colspan="9" class="muted">No open positions</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- EXIT QUALITY ANALYSIS                                          -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-exit-quality" id="card-exit-quality">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#128683;</span> Exit Quality Analysis</h2>
-            <span class="section-tag exit-tag" id="exit-quality-tag">TRACKING</span>
-        </div>
-        <div class="exit-grid">
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">Avg MAE</span>
-                <span class="exit-metric-value" id="eq-avg-mae">--</span>
-                <span class="exit-metric-sub">vs Avg Loss</span>
-                <span class="exit-metric-compare" id="eq-avg-loss-compare">--</span>
-            </div>
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">Avg MFE</span>
-                <span class="exit-metric-value" id="eq-avg-mfe">--</span>
-                <span class="exit-metric-sub">vs Avg Win</span>
-                <span class="exit-metric-compare" id="eq-avg-win-compare">--</span>
-            </div>
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">MFE Capture</span>
-                <span class="exit-metric-value" id="eq-mfe-capture">--</span>
-                <span class="exit-metric-sub">% of max potential taken</span>
-            </div>
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">Early Exits</span>
-                <span class="exit-metric-value" id="eq-early-exits">0</span>
-                <span class="exit-metric-sub">hard caps + momentum</span>
-            </div>
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">SL Hits</span>
-                <span class="exit-metric-value" id="eq-sl-hits">0</span>
-                <span class="exit-metric-sub">stop loss exits</span>
-            </div>
-            <div class="exit-metric-card">
-                <span class="exit-metric-label">Top Leak</span>
-                <span class="exit-metric-value" id="eq-top-leak">--</span>
-                <span class="exit-metric-sub">biggest edge leak reason</span>
-            </div>
-        </div>
-    </section>
-
-    <!-- P&L Equity Curve -->
-    <section class="card span-2" id="card-equity">
-        <div class="section-header-row">
-            <h2>&#128200; P&L Equity Curve</h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="eq-balance">$1,000.00</span>
-                <span class="stat-pill" id="eq-pnl-total">+$0.00</span>
-            </div>
-        </div>
-        <div class="equity-chart-wrap">
-            <canvas id="equity-canvas" width="800" height="200"></canvas>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- CLOSED SIGNALS (Trade Results)                                 -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2" id="card-closed">
-        <div class="section-header-row">
-            <h2>Closed Signal Results</h2>
-            <div class="section-stats">
-                <div class="symbol-filters">
-                    <button class="symbol-filter-btn active" data-target="closed" data-symbol="all">ALL</button>
-                    <button class="symbol-filter-btn btc" data-target="closed" data-symbol="BTC">BTC</button>
-                    <button class="symbol-filter-btn eth" data-target="closed" data-symbol="ETH">ETH</button>
-                </div>
-                <span class="stat-pill" id="closed-count">0 closed</span>
-            </div>
-        </div>
-        <div class="symbol-stats-row" id="closed-symbol-stats"></div>
-        <div class="table-wrap">
-            <table id="closed-table">
-                <thead>
-                    <tr>
-                        <th>Entry</th>
-                        <th>Exit</th>
-                        <th>Symbol</th>
-                        <th>Side</th>
-                        <th>Setup</th>
-                        <th>Lev</th>
-                        <th>Stake</th>
-                        <th>Entry $</th>
-                        <th>Exit $</th>
-                        <th>Result</th>
-                        <th>Gross %</th>
-                        <th>Net %</th>
-                        <th>Fees $</th>
-                        <th>Net $</th>
-                        <th>Duration</th>
-                    </tr>
-                </thead>
-                <tbody id="closed-body">
-                    <tr><td colspan="15" class="muted">No closed signals yet</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- R-MULTIPLE PERFORMANCE ENGINE                                  -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-r-metrics" id="card-r-metrics">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🧠</span> R-Performance Engine <span class="section-tag r-tag" id="r-status-tag">TRACKING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="r-expectancy-pill">Exp: --</span>
-                <span class="stat-pill" id="r-edge-pill">Edge: --</span>
-            </div>
-        </div>
-
-        <!-- Global R-Metrics Summary -->
-        <div class="r-global-grid">
-            <div class="r-metric-card">
-                <span class="r-metric-label">Avg R</span>
-                <span class="r-metric-value" id="r-avg">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Total R</span>
-                <span class="r-metric-value" id="r-total">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Expectancy</span>
-                <span class="r-metric-value" id="r-expectancy">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Avg Win R</span>
-                <span class="r-metric-value" id="r-avg-win">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Avg Loss R</span>
-                <span class="r-metric-value" id="r-avg-loss">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Edge Ratio</span>
-                <span class="r-metric-value" id="r-edge-ratio">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Avg MAE</span>
-                <span class="r-metric-value" id="r-avg-mae">--</span>
-            </div>
-            <div class="r-metric-card">
-                <span class="r-metric-label">Avg MFE</span>
-                <span class="r-metric-value" id="r-avg-mfe">--</span>
-            </div>
-        </div>
-
-        <!-- Per-Scanner R-Metrics Table -->
-        <div class="table-wrap">
-            <table class="data-table" id="r-scanner-table">
-                <thead>
-                    <tr>
-                        <th>Scanner</th>
-                        <th>Trades</th>
-                        <th>WR%</th>
-                        <th>Avg R</th>
-                        <th>Expectancy</th>
-                        <th>Total R</th>
-                        <th>Avg Win R</th>
-                        <th>Avg Loss R</th>
-                        <th>Best R</th>
-                        <th>Worst R</th>
-                        <th>MAE</th>
-                        <th>MFE</th>
-                    </tr>
-                </thead>
-                <tbody id="r-scanner-body">
-                    <tr><td colspan="12" class="muted">Loading R-metrics...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- SCANNER HEALTH + OPPORTUNITY FUNNEL                           -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-scanner-health" id="card-scanner-health">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🎯</span> Scanner Health &amp; Opportunity Funnel</h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="sh-active-count">--</span>
-                <span class="stat-pill" id="sh-funnel-signals">--</span>
-            </div>
-        </div>
-        <div class="scanner-health-grid">
-            <!-- Scanner Health Table -->
-            <div class="sh-panel">
-                <h3 class="sh-panel-title">Scanner States</h3>
-                <table class="data-table" id="sh-table">
-                    <thead>
-                        <tr>
-                            <th>Scanner</th>
-                            <th>Status</th>
-                            <th>Weight</th>
-                            <th>Exp R</th>
-                            <th>WR%</th>
-                            <th>Trades</th>
-                            <th>Total R</th>
-                            <th>Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody id="sh-body">
-                        <tr><td colspan="8" class="muted">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-            <!-- Opportunity Funnel -->
-            <div class="sh-panel">
-                <h3 class="sh-panel-title">Opportunity Funnel (1hr)</h3>
-                <div class="funnel-grid" id="funnel-grid">
-                    <div class="funnel-row"><span class="funnel-label">Scanned</span><span class="funnel-val" id="fn-scanned">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Strong</span><span class="funnel-val fn-strong" id="fn-strong">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Valid</span><span class="funnel-val fn-valid" id="fn-valid">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Weak</span><span class="funnel-val fn-weak" id="fn-weak">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Near Miss</span><span class="funnel-val fn-near" id="fn-near_miss">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Rejected</span><span class="funnel-val fn-rejected" id="fn-rejected">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Blocked (Regime)</span><span class="funnel-val fn-blocked" id="fn-blocked_regime">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Blocked (Cost)</span><span class="funnel-val fn-blocked" id="fn-blocked_cost">0</span></div>
-                    <div class="funnel-row"><span class="funnel-label">Blocked (HTF)</span><span class="funnel-val fn-blocked" id="fn-blocked_htf">0</span></div>
-                </div>
-                <!-- Near Misses -->
-                <h3 class="sh-panel-title" style="margin-top:12px">Near Misses</h3>
-                <div id="near-misses-list" class="near-misses-list">
-                    <span class="muted">None right now</span>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Performance (from Signal Tracker) -->
-    <section class="card" id="card-performance">
-        <h2>Signal Performance</h2>
-        <div class="kv-grid">
-            <span class="label">Win Rate</span>        <span class="value mono" id="pf-winrate" style="font-size:1.3rem;font-weight:bold">--</span>
-            <span class="label">Exchange Wallet</span> <span class="value mono" id="pf-exchange-wallet" style="font-size:1.2rem;font-weight:bold;color:#ffc107">--</span>
-            <span class="label">Paper Balance</span>   <span class="value mono" id="pf-balance" style="font-size:1.1rem;font-weight:bold;color:#ffc107">$1,000.00</span>
-            <span class="label">Paper P&L</span>       <span class="value mono" id="pf-pnl-usd">$0.00</span>
-            <span class="label">Total PnL %</span>     <span class="value mono" id="pf-total-pnl">0.000%</span>
-            <span class="label">Signals Closed</span>  <span class="value" id="pf-trades">0</span>
-            <span class="label">Wins / Losses</span>   <span class="value" id="pf-wl">0 / 0</span>
-            <span class="label">Profit Factor</span>   <span class="value mono" id="pf-profit-factor">--</span>
-            <span class="label">Active Tracking</span> <span class="value" id="pf-active" style="color:#ffc107">0</span>
-            <span class="label">Stake/Trade</span>     <span class="value">$25-50</span>
-            <span class="label">TP1 / TP2 / TP3</span> <span class="value" id="pf-tp-rates">-- / -- / --</span>
-            <span class="label">Best Trade</span>      <span class="value mono text-buy" id="pf-best">--</span>
-            <span class="label">Worst Trade</span>     <span class="value mono text-sell" id="pf-worst">--</span>
-            <span class="label">Sharpe Ratio</span>    <span class="value mono" id="pf-sharpe">--</span>
-            <span class="label">Sortino Ratio</span>   <span class="value mono" id="pf-sortino">--</span>
-        </div>
-    </section>
-
-    <section class="card" id="card-health">
-        <h2>System Health</h2>
-        <div class="kv-grid">
-            <span class="label">Exchange</span>       <span class="value" id="sh-exchange">--</span>
-            <span class="label">Latency</span>        <span class="value mono" id="sh-latency">-- ms</span>
-            <span class="label">Scalp Engine</span>   <span class="value text-buy" id="sh-scalp">Active</span>
-            <span class="label">Invest Engine</span>  <span class="value text-buy" id="sh-invest">Active</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- AI LEARNING ENGINE                                             -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-ai" id="card-ai-learning">
-        <div class="section-header-row">
-            <h2><span class="section-icon">&#129504;</span> AI Learning Engine <span class="section-tag ai-tag" id="ai-status-tag">LEARNING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="ai-evaluated">0 evaluated</span>
-                <span class="stat-pill" id="ai-adjustments">0 adjustments</span>
-            </div>
-        </div>
-
-        <div class="ai-control-row" id="ai-control-row">
-            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Mode</span><span class="ai-ctrl-value" id="ai-ctrl-mode">--</span></div>
-            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Boosted</span><span class="ai-ctrl-value text-buy" id="ai-ctrl-boosted">--</span></div>
-            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Suppressed</span><span class="ai-ctrl-value text-sell" id="ai-ctrl-suppressed">--</span></div>
-            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Shadow</span><span class="ai-ctrl-value text-warn" id="ai-ctrl-shadow">--</span></div>
-            <div class="ai-ctrl-item"><span class="ai-ctrl-label">Last Adjustment</span><span class="ai-ctrl-value" id="ai-ctrl-last-adj">--</span></div>
-        </div>
-
-        <div class="ai-grid">
-            <!-- Left: Setup Rankings -->
-            <div class="ai-panel">
-                <h3 class="ai-panel-title">Setup Performance Rankings</h3>
-                <div class="table-wrap">
-                    <table id="ai-setup-table">
-                        <thead>
-                            <tr>
-                                <th>Setup</th>
-                                <th>Win Rate</th>
-                                <th>Avg PnL</th>
-                                <th>Trades</th>
-                                <th>AI Mult</th>
-                                <th>Status</th>
-                            </tr>
-                        </thead>
-                        <tbody id="ai-setup-body">
-                            <tr><td colspan="6" class="muted">Collecting data...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- Right: Conditions & Blocked -->
-            <div class="ai-panel">
-                <h3 class="ai-panel-title">Best Conditions</h3>
-                <div id="ai-best-conditions" class="ai-condition-list">
-                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
-                </div>
-
-                <h3 class="ai-panel-title" style="margin-top:14px">Worst Conditions</h3>
-                <div id="ai-worst-conditions" class="ai-condition-list">
-                    <span class="muted" style="font-size:0.8rem">Waiting for data...</span>
-                </div>
-
-                <h3 class="ai-panel-title" style="margin-top:14px">Blocked Patterns</h3>
-                <div id="ai-blocked-list" class="ai-blocked-list">
-                    <span class="muted" style="font-size:0.8rem">No blocked patterns</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="ai-footer-row">
-            <span class="ai-footer-label">Last Retrain:</span>
-            <span class="ai-footer-value" id="ai-last-retrain">--</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- P&L MONITOR AGENT                                              -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-monitor" id="card-monitor">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🔍</span> P&L Monitor Agent <span class="section-tag monitor-tag" id="monitor-status-tag">MONITORING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="monitor-total">0 analyzed</span>
-                <span class="stat-pill" id="monitor-streak">streak: 0</span>
-            </div>
-        </div>
-
-        <div class="monitor-grid">
-            <!-- Left: Metrics + Loss Causes -->
-            <div class="monitor-panel">
-                <div class="monitor-metrics">
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Rolling 20 WR</span>
-                        <span class="monitor-metric-value" id="mon-rolling-wr">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Drawdown</span>
-                        <span class="monitor-metric-value" id="mon-drawdown">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Paper Balance</span>
-                        <span class="monitor-metric-value" id="mon-balance">--</span>
-                    </div>
-                    <div class="monitor-metric-card">
-                        <span class="monitor-metric-label">Max DD</span>
-                        <span class="monitor-metric-value" id="mon-max-dd">--</span>
-                    </div>
-                </div>
-
-                <h3 class="monitor-panel-title">Loss Causes Breakdown</h3>
-                <div id="mon-loss-causes" class="monitor-causes-list">
-                    <span class="muted">Collecting data...</span>
-                </div>
-
-                <h3 class="monitor-panel-title" style="margin-top:12px">Side Performance</h3>
-                <div id="mon-side-perf" class="monitor-side-bars">
-                    <span class="muted">--</span>
-                </div>
-            </div>
-
-            <!-- Right: Recommendations + Recent Losses -->
-            <div class="monitor-panel">
-                <h3 class="monitor-panel-title">⚡ Recommendations</h3>
-                <div id="mon-recommendations" class="monitor-recs-list">
-                    <span class="muted">No recommendations yet</span>
-                </div>
-
-                <h3 class="monitor-panel-title" style="margin-top:12px">Recent Losses</h3>
-                <div class="table-wrap" style="max-height:250px;overflow-y:auto">
-                    <table id="mon-losses-table" class="monitor-loss-table">
-                        <thead>
-                            <tr>
-                                <th>Symbol</th>
-                                <th>Side</th>
-                                <th>Setup</th>
-                                <th>PnL</th>
-                                <th>$ PnL</th>
-                                <th>Cause</th>
-                                <th>Sev</th>
-                            </tr>
-                        </thead>
-                        <tbody id="mon-losses-body">
-                            <tr><td colspan="7" class="muted">No losses yet</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Hourly Heatmap -->
-        <h3 class="monitor-panel-title" style="margin-top:12px;padding:0 16px">Hourly P&L Heatmap (UTC)</h3>
-        <div id="mon-hourly-heatmap" class="monitor-heatmap">
-            <span class="muted">Loading...</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- REGIME & POSITION SIZING                                      -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card section-regime" id="card-regime">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🌊</span> Market Regime</h2>
-            <span class="section-tag regime-tag" id="regime-tag">DETECTING</span>
-        </div>
-        <div class="kv-grid">
-            <span class="label">Regime</span>        <span class="value mono" id="rg-regime">--</span>
-            <span class="label">Action</span>        <span class="value mono" id="rg-action">--</span>
-            <span class="label">Size Mult</span>     <span class="value mono" id="rg-size-mult">--</span>
-            <span class="label">SL Mult</span>       <span class="value mono" id="rg-sl-mult">--</span>
-            <span class="label">Min Conf</span>      <span class="value mono" id="rg-min-conf">--</span>
-            <span class="label">Reason</span>        <span class="value mono" id="rg-reason">--</span>
-        </div>
-        <h3 class="sh-panel-title" style="margin-top:12px">Early Exit Stats</h3>
-        <div class="kv-grid">
-            <span class="label">Hard Loss Caps</span>    <span class="value mono" id="rg-hard-caps">0</span>
-            <span class="label">Momentum Exits</span>    <span class="value mono" id="rg-momentum-exits">0</span>
-            <span class="label">Shadow Recoveries</span> <span class="value mono" id="rg-shadow-recoveries">0</span>
-        </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <!-- VM INFRASTRUCTURE STATUS                                      -->
-    <!-- ═══════════════════════════════════════════════════════════════ -->
-    <section class="card span-2 section-infra" id="card-infra">
-        <div class="section-header-row">
-            <h2><span class="section-icon">🖥️</span> VM Infrastructure <span class="section-tag infra-tag" id="vm-status-tag">CHECKING</span></h2>
-            <div class="section-stats">
-                <span class="stat-pill" id="vm-shape-pill">--</span>
-                <span class="stat-pill" id="vm-uptime-pill">uptime: --</span>
-            </div>
-        </div>
-        <div class="infra-grid">
-            <div class="infra-panel">
-                <h3 class="infra-panel-title">Current VM</h3>
-                <div class="kv-grid">
-                    <span class="label">Shape</span>         <span class="value mono" id="vm-shape">--</span>
-                    <span class="label">OCPUs</span>         <span class="value mono" id="vm-ocpus">--</span>
-                    <span class="label">Memory</span>        <span class="value mono" id="vm-memory-total">--</span>
-                    <span class="label">Memory Used</span>   <span class="value mono" id="vm-memory-used">--</span>
-                    <span class="label">Memory Free</span>   <span class="value mono" id="vm-memory-free">--</span>
-                    <span class="label">Swap Used</span>     <span class="value mono" id="vm-swap-used">--</span>
-                    <span class="label">CPU Load</span>      <span class="value mono" id="vm-cpu-load">--</span>
-                    <span class="label">Disk Used</span>     <span class="value mono" id="vm-disk-used">--</span>
-                    <span class="label">Public IP</span>     <span class="value mono" id="vm-public-ip">--</span>
-                    <span class="label">OS Uptime</span>     <span class="value mono" id="vm-os-uptime">--</span>
-                </div>
-            </div>
-            <div class="infra-panel">
-                <h3 class="infra-panel-title">VM Upgrade Status</h3>
-                <div class="kv-grid">
-                    <span class="label">Target Shape</span>  <span class="value mono" id="vm-target-shape">A1.Flex (2 OCPU / 4GB)</span>
-                    <span class="label">Upgrade Status</span><span class="value mono" id="vm-upgrade-status">--</span>
-                    <span class="label">Attempts</span>      <span class="value mono" id="vm-upgrade-attempts">--</span>
-                    <span class="label">Last Attempt</span>  <span class="value mono" id="vm-upgrade-last">--</span>
-                    <span class="label">Started</span>       <span class="value mono" id="vm-upgrade-started">--</span>
-                </div>
-                <div class="vm-memory-bar-wrap" style="margin-top:12px">
-                    <div class="vm-memory-bar-label">Memory Usage</div>
-                    <div class="vm-memory-bar-outer">
-                        <div class="vm-memory-bar-inner" id="vm-memory-bar" style="width:0%"></div>
-                    </div>
-                    <div class="vm-memory-bar-pct" id="vm-memory-pct">0%</div>
-                </div>
-                <div class="vm-health-indicator" id="vm-health-msg" style="margin-top:8px;padding:6px 10px;border-radius:4px;font-size:0.8rem">
-                    Checking...
-                </div>
-            </div>
-        </div>
-    </section>
+    <!-- Signal Funnel -->
+    <div class="panel">
+      <div class="panel-title">Opportunity Funnel</div>
+      <div class="funnel" id="funnel">
+        <div class="funnel-step" style="background:rgba(59,130,246,.1)"><div class="f-val" id="fn-scanned">0</div><div class="f-lbl">Scanned</div></div>
+        <div class="funnel-step" style="background:rgba(16,185,129,.1)"><div class="f-val" id="fn-strong">0</div><div class="f-lbl">Strong</div></div>
+        <div class="funnel-step" style="background:rgba(16,185,129,.15)"><div class="f-val" id="fn-valid">0</div><div class="f-lbl">Valid</div></div>
+        <div class="funnel-step" style="background:rgba(245,158,11,.1)"><div class="f-val" id="fn-weak">0</div><div class="f-lbl">Weak</div></div>
+        <div class="funnel-step" style="background:rgba(239,68,68,.1)"><div class="f-val" id="fn-blocked">0</div><div class="f-lbl">Blocked</div></div>
+      </div>
+    </div>
 
     <!-- Recent Alerts -->
-    <section class="card span-2" id="card-alerts">
-        <h2>Recent Alerts</h2>
-        <div class="alerts-scroll" id="alerts-list">
-            <p class="muted">No alerts yet</p>
+    <div class="panel live-span-2">
+      <div class="panel-title">Recent Alerts</div>
+      <div id="alerts-list" style="max-height:260px;overflow-y:auto">
+        <div class="empty">No alerts</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 2: ANALYTICS                                       -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-analytics">
+
+  <!-- Operating Mode Banner -->
+  <div style="background:linear-gradient(90deg,#1e40af22,#111827);border:1px solid #1e40af;border-radius:6px;padding:8px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+    <span style="color:#60a5fa;font-weight:700;font-size:.85rem" id="analytics-mode">🧠 PAPER LEARNING MODE — Collecting Data, No Filters Active</span>
+    <span style="color:var(--muted);font-size:.75rem" id="analytics-trades-count">-- trades recorded</span>
+  </div>
+
+  <!-- Paper Balance Hero Banner -->
+  <div class="panel" style="text-align:center;padding:20px;background:linear-gradient(135deg,#111827,#1e293b);border:1px solid #374151">
+    <div style="font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:2px">Paper Trading Account</div>
+    <div id="paper-balance-hero" style="font-size:2.5rem;font-weight:800;margin:8px 0;font-family:'SF Mono',monospace">$1,000.00</div>
+    <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
+      <span>Net P&L: <b id="paper-net-pnl" class="green">+$0.00</b></span>
+      <span>Return: <b id="paper-return-pct" class="green">+0.00%</b></span>
+      <span>Drawdown: <b id="paper-dd" class="red">0.0%</b></span>
+      <span>Peak: <b id="paper-peak">$1,000.00</b></span>
+      <span>Fees Paid: <b id="paper-fees" style="color:var(--yellow)">$0.00</b></span>
+      <span>Trades/Day: <b id="paper-tpd" style="color:var(--muted-light)">--</b></span>
+    </div>
+  </div>
+
+  <!-- Equity Curve -->
+  <div class="panel">
+    <div class="panel-title">Equity Curve &amp; Drawdown</div>
+    <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+  </div>
+
+  <!-- R-Metrics (Pro) -->
+  <div class="grid-4" id="r-metrics-grid">
+    <div class="stat-card"><div class="stat-value" id="rm-total-trades">--</div><div class="stat-label">Total Trades</div></div>
+    <div class="stat-card"><div class="stat-value" id="rm-win-rate">--</div><div class="stat-label">Win Rate</div></div>
+    <div class="stat-card"><div class="stat-value blue" id="rm-pf">--</div><div class="stat-label">Edge Ratio</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rm-expectancy">--</div><div class="stat-label">Expectancy (R)</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rm-total-r">--</div><div class="stat-label">Total R</div></div>
+    <div class="stat-card"><div class="stat-value blue" id="rm-avg-r">--</div><div class="stat-label">Avg R/Trade</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rm-avg-win">--</div><div class="stat-label">Avg Win R</div></div>
+    <div class="stat-card"><div class="stat-value red" id="rm-avg-loss">--</div><div class="stat-label">Avg Loss R</div></div>
+    <div class="stat-card"><div class="stat-value" id="rm-payoff">--</div><div class="stat-label">Payoff Ratio</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rm-best-r">--</div><div class="stat-label">Best Trade (R)</div></div>
+    <div class="stat-card"><div class="stat-value red" id="rm-worst-r">--</div><div class="stat-label">Worst Trade (R)</div></div>
+    <div class="stat-card"><div class="stat-value" id="rm-r-std">--</div><div class="stat-label">R Std Dev</div></div>
+  </div>
+
+  <!-- Exit Quality + AI Insights -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Exit Quality (MAE / MFE)</div>
+      <div class="grid-3" id="exit-quality">
+        <div class="stat-card"><div class="stat-value red" id="eq-mae">--</div><div class="stat-label">Avg MAE</div></div>
+        <div class="stat-card"><div class="stat-value green" id="eq-mfe">--</div><div class="stat-label">Avg MFE</div></div>
+        <div class="stat-card"><div class="stat-value blue" id="eq-efficiency">--</div><div class="stat-label">Exit Efficiency</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">AI Learning Adjustments</div>
+      <div id="ai-insights"><div class="empty">No AI data</div></div>
+    </div>
+  </div>
+
+  <!-- Setup Performance -->
+  <div class="panel">
+    <div class="panel-title">Scanner / Setup Performance</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Scanner</th><th>Trades</th><th>WR%</th><th>PF</th><th>Expectancy</th><th>Total PnL</th><th>Status</th></tr>
+        </thead>
+        <tbody id="scanner-body">
+          <tr><td colspan="7" class="empty">No data</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Session Analysis -->
+  <div class="panel">
+    <div class="panel-title">Session Analysis</div>
+    <div class="grid-3" id="session-analysis">
+      <div class="empty">No session data</div>
+    </div>
+  </div>
+
+  <!-- Closed Trades -->
+  <div class="panel">
+    <div class="panel-title">Closed Trades <span style="color:var(--muted);font-size:.65rem">(last 50)</span></div>
+    <div class="tbl-wrap" style="max-height:400px;overflow-y:auto">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
+        </thead>
+        <tbody id="closed-trades-body">
+          <tr><td colspan="14" class="empty">No closed trades</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB 3: SYSTEM                                          -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-system">
+
+  <div class="grid-2">
+    <!-- VM Health -->
+    <div class="panel">
+      <div class="panel-title">VM Health</div>
+      <div id="vm-health">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+    <!-- Exchange Status -->
+    <div class="panel">
+      <div class="panel-title">Exchange Status</div>
+      <div id="exchange-status">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Bot Engine -->
+    <div class="panel">
+      <div class="panel-title">Bot Engine</div>
+      <div id="bot-engine">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+    <!-- Config Snapshot -->
+    <div class="panel">
+      <div class="panel-title">Config Snapshot</div>
+      <div id="config-snapshot">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- JAVASCRIPT                                             -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<script>
+// ── GLOBALS ──────────────────────────────────────────────
+let activeTab = "live";
+let liveTimer = null, analyticsTimer = null, systemTimer = null;
+let equityChart = null;
+let cachedPrices = {};
+
+// ── UTILITIES ────────────────────────────────────────────
+function formatTime(isoStr) {
+    if (!isoStr) return "--";
+    try {
+        const d = new Date(isoStr);
+        const day = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "Asia/Kolkata" });
+        const time = d.toLocaleTimeString("en-IN", { hour12: false, hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
+        return `${day} ${time}`;
+    } catch (e) { return isoStr; }
+}
+
+function pnlClass(v) { return v > 0 ? "pnl-pos" : v < 0 ? "pnl-neg" : "pnl-zero"; }
+function pnlSign(v) { return v > 0 ? "+" + v.toFixed(2) : v.toFixed(2); }
+function pct(v) { return v != null ? (v * 100).toFixed(1) + "%" : "--"; }
+function num(v, d=2) { return v != null ? Number(v).toFixed(d) : "--"; }
+function esc(s) { const el = document.createElement("span"); el.textContent = s; return el.innerHTML; }
+
+function timeSince(isoStr) {
+    if (!isoStr) return "--";
+    const ms = Date.now() - new Date(isoStr).getTime();
+    if (ms < 0) return "--";
+    const mins = Math.floor(ms / 60000);
+    if (mins < 60) return mins + "m";
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return hrs + "h " + (mins % 60) + "m";
+    return Math.floor(hrs / 24) + "d " + (hrs % 24) + "h";
+}
+
+async function api(path) {
+    try {
+        const r = await fetch(path);
+        if (!r.ok) return null;
+        return await r.json();
+    } catch { return null; }
+}
+
+function healthColor(pct) {
+    if (pct > 85) return "var(--red)";
+    if (pct > 70) return "var(--yellow)";
+    return "var(--green)";
+}
+
+function makeHealthRow(label, value, unit, max) {
+    const p = max ? (value / max * 100) : value;
+    return `<div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:.8rem;margin-bottom:3px">
+            <span>${label}</span><span style="font-weight:700">${num(value,1)}${unit}</span>
         </div>
-    </section>
+        <div class="health-bar"><div class="health-fill" style="width:${Math.min(p,100)}%;background:${healthColor(p)}"></div></div>
+    </div>`;
+}
 
-</main>
+function makeKV(label, value, color) {
+    const c = color ? `color:${color}` : "";
+    return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem">
+        <span style="color:var(--muted)">${label}</span><span style="font-weight:600;${c}">${value}</span>
+    </div>`;
+}
 
-<footer>
-    <span>CryptoAlgoBot — Investment + Scalp Dashboard</span>
-    <span id="footer-refresh">Auto-refresh: 5s</span>
-</footer>
+// ── TAB SWITCHING ────────────────────────────────────────
+function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer);
+    if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
+    if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
+    if (tab === "system") { refreshSystem(); systemTimer = setInterval(refreshSystem, 5000); }
+}
 
-<script src="/static/js/dashboard.js"></script>
+// ══════════════════════════════════════════════════════════
+// TAB 1: LIVE TRADING REFRESH
+// ══════════════════════════════════════════════════════════
+async function refreshLive() {
+    const [status, decision, active, signals, funnel, alerts] = await Promise.all([
+        api("/api/status"), api("/api/decision"), api("/api/tracker/active"),
+        api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts")
+    ]);
+
+    // Cache prices & update ticker
+    if (status && status.prices) {
+        const prevPrices = {...cachedPrices};
+        cachedPrices = status.prices;
+        updatePriceTicker(cachedPrices, prevPrices, status);
+    }
+    // Update paper balance in ticker (from monitor report, cached)
+    try {
+        const monSnap = await api("/api/monitor/report");
+        if (monSnap && monSnap.paper_balance) {
+            const balEl = document.getElementById("price-bal");
+            const pb = monSnap.paper_balance;
+            const cls = pb >= 1000 ? "green" : "red";
+            balEl.textContent = "$" + pb.toFixed(2);
+            balEl.className = cls;
+        }
+    } catch(e) {}
+
+    // Alert Banner
+    updateBanner(status, decision);
+
+    // Command Center
+    updateCommand(decision, status);
+
+    // Active Trades
+    updateActiveTrades(active);
+
+    // Signal Feed
+    updateSignals(signals);
+
+    // Funnel
+    updateFunnel(funnel);
+
+    // Alerts
+    updateAlerts(alerts);
+}
+
+function updatePriceTicker(prices, prev, status) {
+    const btc = prices["BTC/USDT"] || 0;
+    const eth = prices["ETH/USDT"] || 0;
+    const prevBtc = prev["BTC/USDT"] || btc;
+    const prevEth = prev["ETH/USDT"] || eth;
+
+    const btcEl = document.getElementById("price-btc");
+    const ethEl = document.getElementById("price-eth");
+
+    // Format with commas
+    btcEl.textContent = "$" + btc.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+    ethEl.textContent = "$" + eth.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+
+    // Flash color on change
+    if (btc !== prevBtc) {
+        btcEl.style.color = btc > prevBtc ? "#10b981" : "#ef4444";
+        setTimeout(() => { btcEl.style.color = "#f7931a"; }, 800);
+    }
+    if (eth !== prevEth) {
+        ethEl.style.color = eth > prevEth ? "#10b981" : "#ef4444";
+        setTimeout(() => { ethEl.style.color = "#627eea"; }, 800);
+    }
+
+    // Change % (from prev tick)
+    const btcChg = prevBtc > 0 ? ((btc - prevBtc) / prevBtc * 100) : 0;
+    const ethChg = prevEth > 0 ? ((eth - prevEth) / prevEth * 100) : 0;
+    const btcChgEl = document.getElementById("price-btc-change");
+    const ethChgEl = document.getElementById("price-eth-change");
+    btcChgEl.textContent = (btcChg >= 0 ? "▲" : "▼") + Math.abs(btcChg).toFixed(3) + "%";
+    btcChgEl.style.color = btcChg >= 0 ? "var(--green)" : "var(--red)";
+    ethChgEl.textContent = (ethChg >= 0 ? "▲" : "▼") + Math.abs(ethChg).toFixed(3) + "%";
+    ethChgEl.style.color = ethChg >= 0 ? "var(--green)" : "var(--red)";
+
+    // Balance from price-bal — updated by analytics refresh from monitor report
+    // Exchange balance shown in ticker is $118.46 (hardcoded until API exposes it)
+
+    // Update time
+    document.getElementById("price-update-time").textContent = status.last_data_update || "";
+}
+
+function updateBanner(status, decision) {
+    const banner = document.getElementById("alert-banner");
+    const icon = document.getElementById("alert-icon");
+    const text = document.getElementById("alert-text");
+    const msgs = [];
+    let level = "normal";
+
+    if (status) {
+        if (status.risk_state && status.risk_state !== "normal" && status.risk_state !== "active") {
+            level = "critical"; msgs.push("Risk: " + status.risk_state);
+        }
+        if (status.exchange_connected === false) {
+            level = "critical"; msgs.push("Exchange disconnected");
+        }
+    }
+    if (decision) {
+        if (decision.action === "BLOCKED") {
+            if (level !== "critical") level = "warning";
+            const reasons = decision.blockers || decision.reasons || [];
+            if (reasons.length) msgs.push(reasons[0]);
+        }
+    }
+
+    banner.className = "alert-banner " + level;
+    if (msgs.length === 0 && level === "normal") {
+        icon.textContent = "\u2705";
+        text.textContent = "All systems operational";
+    } else if (level === "critical") {
+        icon.textContent = "\uD83D\uDED1";
+        text.textContent = msgs.join(" \u2022 ");
+    } else if (level === "warning") {
+        icon.textContent = "\u26A0\uFE0F";
+        text.textContent = msgs.join(" \u2022 ");
+    } else {
+        icon.textContent = "\u2705";
+        text.textContent = "All systems operational";
+    }
+    banner.style.display = "flex";
+}
+
+function updateCommand(d, status) {
+    if (!d) return;
+    const actionEl = document.getElementById("cmd-action");
+    const action = (d.action || "WAIT").toUpperCase();
+    actionEl.textContent = action;
+    actionEl.className = "cmd-action " + action;
+
+    document.getElementById("cmd-confidence").textContent = (d.best_score != null ? num(d.best_score, 0) + "%" : (d.confidence != null ? num(d.confidence, 0) + "%" : "--"));
+    document.getElementById("cmd-grade").textContent = d.best_grade || d.best_tier || d.grade || "--";
+    document.getElementById("cmd-reason").textContent = (d.reasons && d.reasons.length) ? d.reasons.join(" | ") : (d.reason || "");
+
+    const regime = d.regime || (status && status.market_regime) || "--";
+    document.getElementById("cmd-regime").textContent = "\uD83C\uDF0A " + regime;
+    document.getElementById("cmd-session").textContent = "\uD83D\uDD52 " + (d.session || "--");
+    document.getElementById("cmd-ev").textContent = "EV: " + (d.best_ev != null && d.best_ev !== 0 ? num(d.best_ev, 3) : (d.rolling_expectancy != null ? num(d.rolling_expectancy, 3) + "R" : "--"));
+
+    const riskState = d.risk_state || (status && status.risk_state) || (status && !status.paused ? "NORMAL" : "PAUSED");
+    const riskEl = document.getElementById("cmd-risk");
+    riskEl.textContent = "\uD83D\uDEE1 " + riskState;
+    riskEl.style.borderLeftColor = riskState === "NORMAL" || riskState === "normal" ? "var(--green)" : "var(--red)";
+
+    const blockerWrap = document.getElementById("cmd-blockers");
+    const blockers = d.blockers || [];
+    blockerWrap.innerHTML = blockers.map(b =>
+        `<span style="display:inline-block;font-size:.72rem;padding:2px 6px;margin:2px;border-radius:3px;background:rgba(239,68,68,.1);color:var(--red)">\u26D4 ${esc(b)}</span>`
+    ).join("");
+}
+
+function updateActiveTrades(trades) {
+    const wrap = document.getElementById("active-trades-cards");
+    const countEl = document.getElementById("active-trade-count");
+    if (!trades || !Array.isArray(trades) || trades.length === 0) {
+        wrap.innerHTML = '<div class="empty">No active trades</div>';
+        countEl.textContent = "";
+        return;
+    }
+    countEl.textContent = `(${trades.length} open)`;
+
+    wrap.innerHTML = trades.map(t => {
+        const sym = t.symbol || "--";
+        const entry = Number(t.entry_price || 0);
+        const current = cachedPrices[sym] || entry;
+        const side = (t.side || "long").toUpperCase();
+        const mult = side === "SHORT" ? -1 : 1;
+        const lev = Number(t.leverage || 1);
+        const margin = Number(t.paper_stake || 25);
+        const posSize = Number(t.position_size_usd || margin * lev);
+        const contracts = Number(t.contracts || 0);
+        const qty = Number(t.quantity || 0);
+        const contractSize = Number(t.contract_size || 0.001);
+
+        // PnL calculations (matching Delta calculator)
+        const upnlPct = entry > 0 ? ((current - entry) / entry * 100 * mult) : 0;
+        const upnlUsd = posSize > 0 ? (posSize * upnlPct / 100) : 0;
+        const roe = margin > 0 ? (upnlUsd / margin * 100) : 0;
+
+        // R-multiple
+        const sl = Number(t.stop_loss || 0);
+        const tp1 = Number(t.tp1 || 0);
+        const tp2 = Number(t.tp2 || 0);
+        const tp3 = Number(t.tp3 || 0);
+        const risk = Math.abs(entry - sl);
+        const rMult = risk > 0 ? ((current - entry) * mult / risk) : 0;
+        const mfeR = Number(t.mfe_r || 0);
+
+        // Liquidation estimate
+        const mmRate = 0.005;
+        const liqPrice = side === "LONG"
+            ? entry * (1 - 1/lev + mmRate)
+            : entry * (1 + 1/lev - mmRate);
+        const liqBuffer = Math.abs(entry - liqPrice) / entry * 100;
+        const slVsLiq = liqBuffer > 0 ? (Math.abs(entry - sl) / entry * 100 / liqBuffer * 100) : 0;
+
+        // Fees (estimated round-trip)
+        const estFees = posSize * 0.0018;
+
+        // TP PnL estimates
+        const tp1Pnl = tp1 > 0 ? ((Math.abs(tp1 - entry) / entry * 100) * posSize / 100 - estFees) : 0;
+        const tp2Pnl = tp2 > 0 ? ((Math.abs(tp2 - entry) / entry * 100) * posSize / 100 - estFees) : 0;
+        const tp3Pnl = tp3 > 0 ? ((Math.abs(tp3 - entry) / entry * 100) * posSize / 100 - estFees) : 0;
+        // SL PnL: account for BE (SL above entry on LONG = profit, not loss)
+        const slDir = side === "LONG" ? (sl - entry) : (entry - sl);
+        const slPnl = sl > 0 ? ((slDir / entry * 100) * posSize / 100 - estFees) : 0;
+
+        // Status badges
+        const beSet = t.breakeven_set ? '🔒 BE' : '';
+        const tp1Hit = t.tp1_hit ? '✅TP1' : '';
+        const tp2Hit = t.tp2_hit ? '✅TP2' : '';
+        const status = t.status || 'active';
+
+        // Border color based on PnL
+        const borderColor = upnlUsd > 0 ? 'var(--green)' : upnlUsd < -0.5 ? 'var(--red)' : 'var(--border)';
+        const dur = timeSince(t.entry_time);
+
+        return `<div style="background:var(--panel);border:1px solid ${borderColor};border-left:4px solid ${borderColor};border-radius:6px;padding:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px 16px">
+            <!-- Row 1: Header -->
+            <div style="grid-column:span 3;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:4px">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="font-weight:800;font-size:1rem">${esc(sym)}</span>
+                    <span class="sig-side ${side}" style="font-size:.8rem">${side}</span>
+                    <span style="color:var(--yellow);font-weight:700">${lev}x</span>
+                    <span style="color:var(--muted);font-size:.75rem">${esc(t.setup_type || '')}</span>
+                    <span style="font-size:.7rem;color:var(--muted)">${beSet} ${tp1Hit} ${tp2Hit}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px">
+                    <span style="font-size:1.4rem;font-weight:800" class="${pnlClass(upnlUsd)}">${upnlUsd >= 0 ? '+' : ''}$${upnlUsd.toFixed(2)}</span>
+                    <span style="font-size:.85rem;font-weight:600" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${roe.toFixed(1)}% ROE</span>
+                    <span style="font-size:.85rem" class="${pnlClass(rMult)}">${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R</span>
+                    <span style="color:var(--muted);font-size:.75rem">${dur}</span>
+                </div>
+            </div>
+
+            <!-- Row 2: Position Economics -->
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Margin (Your Capital)</div>
+                <div style="font-size:1rem;font-weight:700">$${margin.toFixed(2)}</div>
+            </div>
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Position (Leveraged)</div>
+                <div style="font-size:1rem;font-weight:700">$${posSize.toFixed(2)}</div>
+            </div>
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Contracts</div>
+                <div style="font-size:1rem;font-weight:700">${contracts} ct (${qty} ${sym.split('/')[0]})</div>
+            </div>
+
+            <!-- Row 3: Prices -->
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Entry</div>
+                <div style="font-weight:600">${num(entry, entry > 100 ? 2 : 4)}</div>
+            </div>
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">Current</div>
+                <div style="font-weight:700;font-size:1.05rem" class="${pnlClass(upnlPct)}">${num(current, current > 100 ? 2 : 4)}</div>
+            </div>
+            <div>
+                <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase">uPnL</div>
+                <div style="font-weight:700" class="${pnlClass(upnlPct)}">${pnlSign(upnlPct)}% | MFE: ${mfeR.toFixed(2)}R</div>
+            </div>
+
+            <!-- Row 4: SL/TP Economics -->
+            <div style="border-top:1px solid var(--border);padding-top:6px">
+                <div style="font-size:.65rem;color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};text-transform:uppercase">${slPnl >= 0 ? '🔒 STOP (BE SET)' : 'STOP LOSS'}</div>
+                <div><span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${num(sl, sl > 100 ? 2 : 4)}</span>
+                <span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-size:.75rem">→ ${slPnl >= 0 ? '+' : '-'}$${Math.abs(slPnl).toFixed(2)} ${slPnl >= 0 ? 'profit locked' : 'loss'}</span></div>
+            </div>
+            <div style="border-top:1px solid var(--border);padding-top:6px">
+                <div style="font-size:.65rem;color:var(--green);text-transform:uppercase">TP1 (35%)</div>
+                <div><span style="color:var(--green);font-weight:600">${num(tp1, tp1 > 100 ? 2 : 4)}</span>
+                <span style="color:var(--green);font-size:.75rem">→ +$${tp1Pnl.toFixed(2)}</span></div>
+            </div>
+            <div style="border-top:1px solid var(--border);padding-top:6px">
+                <div style="font-size:.65rem;color:var(--green);text-transform:uppercase">TP2 (35%) / TP3 (30%)</div>
+                <div><span style="color:var(--green);font-weight:600">${num(tp2, tp2 > 100 ? 2 : 4)}</span>
+                <span style="color:var(--green);font-size:.75rem">+$${tp2Pnl.toFixed(2)}</span>
+                <span style="color:var(--muted);font-size:.7rem"> | ${num(tp3, tp3 > 100 ? 2 : 4)} +$${tp3Pnl.toFixed(2)}</span></div>
+            </div>
+
+            <!-- Row 5: Safety -->
+            <div style="grid-column:span 3;display:flex;gap:16px;font-size:.72rem;color:var(--muted);border-top:1px solid var(--border);padding-top:6px">
+                <span>Liq: <b style="color:${liqBuffer < 4 ? 'var(--red)' : 'var(--muted-light)'}">${num(liqPrice, 2)}</b> (${liqBuffer.toFixed(1)}% buffer)</span>
+                <span>SL uses: <b style="color:${slVsLiq > 30 ? 'var(--red)' : 'var(--muted-light)'}">${slVsLiq.toFixed(0)}%</b> of liq buffer</span>
+                <span>Fees: ~$${estFees.toFixed(2)}</span>
+                <span>Risk: $${Math.abs(slPnl).toFixed(2)}</span>
+            </div>
+        </div>`;
+    }).join("");
+}
+
+function updateSignals(signals) {
+    const wrap = document.getElementById("signal-feed");
+    if (!signals || !Array.isArray(signals) || signals.length === 0) {
+        wrap.innerHTML = '<div class="empty">No signals</div>';
+        return;
+    }
+    wrap.innerHTML = signals.slice(0, 10).map(s => {
+        const side = (s.side || "LONG").toUpperCase();
+        const setup = (s.metadata && s.metadata.setup_type) || s.setup_type || s.scanner || "--";
+        const entry = s.entry_price || s.entry || 0;
+        const sl = s.stop_loss || s.sl || 0;
+        const tp1 = (s.take_profits && s.take_profits[0]) || s.tp1 || 0;
+        return `<div class="sig-card">
+            <span class="sig-side ${side}">${side}</span>
+            <span class="sig-symbol">${esc(s.symbol || "--")}</span>
+            <span class="sig-setup">${esc(setup)}</span>
+            <span class="sig-detail">E:${num(entry, 2)} SL:${num(sl, 2)} TP:${num(tp1, 2)}</span>
+            <span class="sig-conf">${s.confidence != null ? num(s.confidence, 0) + "%" : "--"}</span>
+            <span class="cmd-grade" style="font-size:.7rem;padding:2px 6px">${s.grade || "--"}</span>
+        </div>`;
+    }).join("");
+}
+
+function updateFunnel(raw) {
+    if (!raw) return;
+    const f = raw.funnel || raw;
+    document.getElementById("fn-scanned").textContent = f.scanned || 0;
+    document.getElementById("fn-strong").textContent = f.strong || 0;
+    document.getElementById("fn-valid").textContent = f.valid || 0;
+    document.getElementById("fn-weak").textContent = f.weak || 0;
+    const blocked = (f.blocked_regime || 0) + (f.blocked_cost || 0) + (f.blocked_ev || 0) + (f.blocked_htf || 0);
+    document.getElementById("fn-blocked").textContent = blocked;
+}
+
+function updateAlerts(alerts) {
+    const wrap = document.getElementById("alerts-list");
+    if (!alerts || !Array.isArray(alerts) || alerts.length === 0) {
+        wrap.innerHTML = '<div class="empty">No alerts</div>';
+        return;
+    }
+    wrap.innerHTML = alerts.slice(0, 15).map(a => {
+        const lvl = (a.level || "info").toLowerCase();
+        const icon = lvl === "error" || lvl === "critical" ? "\uD83D\uDD34" :
+                     lvl === "warning" ? "\uD83D\uDFE0" : "\uD83D\uDD35";
+        return `<div class="alert-row">
+            <span class="alert-time">${formatTime(a.timestamp || a.time)}</span>
+            <span class="alert-level">${icon}</span>
+            <span class="alert-msg">${esc(a.message || a.msg || "")}</span>
+        </div>`;
+    }).join("");
+}
+
+// ══════════════════════════════════════════════════════════
+// TAB 2: ANALYTICS REFRESH
+// ══════════════════════════════════════════════════════════
+async function refreshAnalytics() {
+    const [closed, rMetrics, exitQ, scannerH, aiData, monitor] = await Promise.all([
+        api("/api/tracker/closed"), api("/api/r-metrics"), api("/api/exit-quality"),
+        api("/api/scanner-health"), api("/api/ai/insights"), api("/api/monitor/report")
+    ]);
+
+    updateEquityChart(closed);
+    updateRMetrics(rMetrics);
+    updateExitQuality(exitQ);
+    updateScannerTable(scannerH);
+    updateAIInsights(aiData);
+    updateSessionAnalysis(monitor);
+    updatePaperBalance(monitor);
+    updateClosedTrades(closed);
+}
+
+function updateEquityChart(closed) {
+    if (!closed || !Array.isArray(closed) || closed.length === 0) return;
+
+    const sorted = [...closed].sort((a, b) => new Date(a.closed_at || a.exit_time || 0) - new Date(b.closed_at || b.exit_time || 0));
+    let equity = 100;
+    const labels = [];
+    const eqData = [];
+    const ddData = [];
+    let peak = 100;
+
+    sorted.forEach(t => {
+        const pnl = Number(t.pnl_pct || t.pnl || 0);
+        equity += pnl;
+        peak = Math.max(peak, equity);
+        const dd = ((equity - peak) / peak) * 100;
+        labels.push(formatTime(t.closed_at || t.exit_time));
+        eqData.push(Number(equity.toFixed(2)));
+        ddData.push(Number(dd.toFixed(2)));
+    });
+
+    const ctx = document.getElementById("equity-chart").getContext("2d");
+    if (equityChart) equityChart.destroy();
+
+    equityChart = new Chart(ctx, {
+        type: "line",
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: "Equity",
+                    data: eqData,
+                    borderColor: "#3b82f6",
+                    backgroundColor: "rgba(59,130,246,.08)",
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                    yAxisID: "y"
+                },
+                {
+                    label: "Drawdown %",
+                    data: ddData,
+                    borderColor: "rgba(239,68,68,.6)",
+                    backgroundColor: "rgba(239,68,68,.06)",
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    borderWidth: 1,
+                    yAxisID: "y1"
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: {
+                legend: { labels: { color: "#9ca3af", font: { size: 11 } } },
+                tooltip: { backgroundColor: "#1f2937", titleColor: "#e0e6ed", bodyColor: "#e0e6ed" }
+            },
+            scales: {
+                x: { display: false },
+                y: { position: "left", grid: { color: "rgba(31,41,55,.5)" }, ticks: { color: "#6b7280", font: { size: 10 } } },
+                y1: { position: "right", grid: { display: false }, ticks: { color: "rgba(239,68,68,.5)", font: { size: 10 }, callback: v => v + "%" }, max: 0 }
+            }
+        }
+    });
+}
+
+function updateRMetrics(raw) {
+    if (!raw) return;
+    const m = raw.global || raw;  // API nests under 'global'
+    document.getElementById("rm-avg-r").textContent = num(m.avg_r, 3);
+    document.getElementById("rm-total-r").textContent = num(m.total_r, 2);
+    document.getElementById("rm-expectancy").textContent = num(m.expectancy_r || m.expectancy, 3);
+    document.getElementById("rm-pf").textContent = num(m.edge_ratio || m.profit_factor, 2);
+    document.getElementById("rm-avg-win").textContent = num(m.avg_win_r, 2);
+    document.getElementById("rm-avg-loss").textContent = num(m.avg_loss_r, 2);
+
+    // Get WR from scanner data if available
+    const scanners = raw.by_scanner || [];
+    let totalTrades = 0, totalWins = 0;
+    scanners.forEach(s => { totalTrades += (s.trades || 0); totalWins += (s.wins || 0); });
+    const wr = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+    document.getElementById("rm-win-rate").textContent = wr > 0 ? num(wr, 1) + "%" : "--";
+    document.getElementById("rm-total-trades").textContent = totalTrades || "--";
+
+    const wrEl = document.getElementById("rm-win-rate");
+    wrEl.className = "stat-value " + (wr >= 50 ? "green" : "red");
+
+    // Pro metrics
+    const payoff = Math.abs(m.avg_loss_r) > 0 ? Math.abs(m.avg_win_r / m.avg_loss_r) : 0;
+    document.getElementById("rm-payoff").textContent = num(payoff, 2);
+    document.getElementById("rm-payoff").className = "stat-value " + (payoff >= 1 ? "green" : "red");
+
+    document.getElementById("rm-best-r").textContent = "+" + num(m.best_r, 2) + "R";
+    document.getElementById("rm-worst-r").textContent = num(m.worst_r, 2) + "R";
+    document.getElementById("rm-r-std").textContent = num(m.r_std, 2);
+
+    // Update mode banner
+    document.getElementById("analytics-trades-count").textContent = totalTrades + " trades recorded";
+}
+
+function updateExitQuality(eq) {
+    if (!eq) return;
+    document.getElementById("eq-mae").textContent = num(eq.avg_mae || eq.mae, 2) + "%";
+    document.getElementById("eq-mfe").textContent = num(eq.avg_mfe || eq.mfe, 2) + "%";
+    document.getElementById("eq-efficiency").textContent = num(eq.exit_efficiency || eq.efficiency, 1) + "%";
+}
+
+function updateScannerTable(data) {
+    const body = document.getElementById("scanner-body");
+    if (!data || (!Array.isArray(data) && !data.scanners)) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">No scanner data</td></tr>';
+        return;
+    }
+    const scanners = Array.isArray(data) ? data : (data.scanners || Object.entries(data).map(([k,v]) => ({name:k,...v})));
+    if (scanners.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">No scanner data</td></tr>';
+        return;
+    }
+    body.innerHTML = scanners.map(s => {
+        const wr = s.win_rate != null ? num(s.win_rate, 1) + "%" : "--";
+        const statusColor = s.status === "active" ? "var(--green)" : s.status === "reduced" ? "var(--yellow)" : "var(--muted)";
+        return `<tr>
+            <td style="font-weight:600">${esc(s.name || s.scanner || "--")}</td>
+            <td>${s.trades || 0}</td>
+            <td class="${(s.win_rate||0) >= 50 ? 'green' : 'red'}">${wr}</td>
+            <td>${num(s.edge_ratio || s.profit_factor, 2)}</td>
+            <td>${num(s.expectancy_r || s.expectancy, 3)}</td>
+            <td class="${pnlClass(s.total_r)}">${num(s.total_r, 2)}R</td>
+            <td style="color:${statusColor}">${s.status || "--"} (${num(s.weight, 1)}x)</td>
+        </tr>`;
+    }).join("");
+}
+
+function updateAIInsights(data) {
+    const wrap = document.getElementById("ai-insights");
+    if (!data) { wrap.innerHTML = '<div class="empty">No AI data</div>'; return; }
+
+    let html = "";
+    const boosted = data.boosted_setups || data.boosted || [];
+    const penalized = data.penalized_setups || data.penalized || [];
+    const blocked = data.blocked_combos || data.blocked || [];
+
+    if (boosted.length) {
+        html += '<div style="margin-bottom:8px"><span style="font-size:.7rem;color:var(--muted);text-transform:uppercase">Boosted</span><br>';
+        html += boosted.map(s => `<span class="ai-tag ai-boost">\u2B06 ${esc(typeof s === "string" ? s : s.name || s.setup || JSON.stringify(s))}</span>`).join("");
+        html += "</div>";
+    }
+    if (penalized.length) {
+        html += '<div style="margin-bottom:8px"><span style="font-size:.7rem;color:var(--muted);text-transform:uppercase">Penalized</span><br>';
+        html += penalized.map(s => `<span class="ai-tag ai-penalize">\u2B07 ${esc(typeof s === "string" ? s : s.name || s.setup || JSON.stringify(s))}</span>`).join("");
+        html += "</div>";
+    }
+    if (blocked.length) {
+        html += '<div><span style="font-size:.7rem;color:var(--muted);text-transform:uppercase">Blocked Combos</span><br>';
+        html += blocked.map(s => `<span class="ai-tag ai-block">\u26D4 ${esc(typeof s === "string" ? s : JSON.stringify(s))}</span>`).join("");
+        html += "</div>";
+    }
+    wrap.innerHTML = html || '<div class="empty">No adjustments active</div>';
+}
+
+function updateSessionAnalysis(report) {
+    const wrap = document.getElementById("session-analysis");
+    if (!report) { wrap.innerHTML = '<div class="empty">No data</div>'; return; }
+
+    let html = "";
+
+    // Overall stats cards
+    html += `<div class="stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px">
+        <div class="stat-card"><div class="stat-value">${report.total_analyzed || 0}</div><div class="stat-label">Total Trades</div></div>
+        <div class="stat-card"><div class="stat-value ${(report.overall_wr||0)>=50?'green':'red'}">${num(report.overall_wr,1)}%</div><div class="stat-label">Win Rate</div></div>
+        <div class="stat-card"><div class="stat-value ${(report.current_streak||0)>=0?'green':'red'}">${report.current_streak||0}</div><div class="stat-label">Streak</div></div>
+        <div class="stat-card"><div class="stat-value ${(report.rolling_20_wr||0)>=50?'green':'red'}">${num(report.rolling_20_wr,1)}%</div><div class="stat-label">Rolling 20 WR</div></div>
+        <div class="stat-card"><div class="stat-value ${(report.rolling_20_pnl||0)>=0?'green':'red'}">${num(report.rolling_20_pnl,2)}%</div><div class="stat-label">Rolling 20 PnL</div></div>
+        <div class="stat-card"><div class="stat-value">${num(report.paper_balance,2)}</div><div class="stat-label">Paper Balance</div></div>
+        <div class="stat-card"><div class="stat-value red">${num(report.max_drawdown,1)}%</div><div class="stat-label">Max Drawdown</div></div>
+        <div class="stat-card"><div class="stat-value">${num(report.sharpe_ratio,2)}</div><div class="stat-label">Sharpe</div></div>
+    </div>`;
+
+    // Side performance
+    const sides = report.side_performance || {};
+    if (Object.keys(sides).length > 0) {
+        html += '<h4 style="color:var(--muted);margin:12px 0 8px;font-size:.75rem">SIDE PERFORMANCE</h4>';
+        html += '<div class="stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-bottom:16px">';
+        for (const [side, data] of Object.entries(sides)) {
+            html += `<div class="stat-card">
+                <div class="stat-value ${(data.win_rate||0)>=50?'green':'red'}">${num(data.win_rate,1)}%</div>
+                <div class="stat-label">${side.toUpperCase()} (${data.trades} trades)</div>
+                <div style="font-size:.7rem;color:var(--muted)">PnL: ${num(data.pnl,2)}%</div>
+            </div>`;
+        }
+        html += '</div>';
+    }
+
+    // Setup performance table
+    const setups = report.setup_performance || [];
+    if (setups.length > 0) {
+        html += '<h4 style="color:var(--muted);margin:12px 0 8px;font-size:.75rem">SETUP PERFORMANCE (from trade monitor)</h4>';
+        html += '<table><thead><tr><th>Setup</th><th>Trades</th><th>WR</th><th>PnL</th><th>Avg</th></tr></thead><tbody>';
+        setups.forEach(s => {
+            html += `<tr><td style="font-weight:600">${esc(s.setup)}</td><td>${s.trades}</td>
+                <td class="${(s.win_rate||0)>=50?'green':'red'}">${num(s.win_rate,1)}%</td>
+                <td class="${(s.pnl||0)>=0?'green':'red'}">${num(s.pnl,3)}%</td>
+                <td>${num(s.avg_pnl,3)}%</td></tr>`;
+        });
+        html += '</tbody></table>';
+    }
+
+    // Loss causes
+    const losses = report.loss_causes || [];
+    if (losses.length > 0) {
+        html += '<h4 style="color:var(--muted);margin:12px 0 8px;font-size:.75rem">TOP LOSS CAUSES</h4>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+        losses.slice(0, 6).forEach(l => {
+            html += `<span style="background:#1f2937;padding:4px 10px;border-radius:4px;font-size:.75rem">${esc(l.cause)} <b style="color:var(--red)">(${l.count})</b></span>`;
+        });
+        html += '</div>';
+    }
+
+    // Recommendations
+    const recs = report.recommendations || [];
+    if (recs.length > 0) {
+        html += '<h4 style="color:var(--muted);margin:12px 0 8px;font-size:.75rem">RECOMMENDATIONS</h4>';
+        recs.forEach(r => {
+            const color = r.severity === "high" ? "var(--red)" : r.severity === "medium" ? "var(--yellow)" : "var(--muted)";
+            html += `<div style="padding:6px 10px;border-left:3px solid ${color};margin-bottom:4px;font-size:.8rem">${esc(r.message)}</div>`;
+        });
+    }
+
+    wrap.innerHTML = html;
+}
+
+function updatePaperBalance(report) {
+    if (!report) return;
+    const bal = report.paper_balance || 1000;
+    const peak = report.peak_balance || bal;
+    const startBal = 1000;
+    const netPnl = bal - startBal;
+    const returnPct = ((bal - startBal) / startBal) * 100;
+    const dd = report.current_drawdown || 0;
+    const cls = netPnl >= 0 ? "green" : "red";
+
+    document.getElementById("paper-balance-hero").textContent = "$" + bal.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+    document.getElementById("paper-balance-hero").className = cls;
+
+    const netEl = document.getElementById("paper-net-pnl");
+    netEl.textContent = (netPnl >= 0 ? "+$" : "-$") + Math.abs(netPnl).toFixed(2);
+    netEl.className = cls;
+
+    const retEl = document.getElementById("paper-return-pct");
+    retEl.textContent = (returnPct >= 0 ? "+" : "") + returnPct.toFixed(2) + "%";
+    retEl.className = cls;
+
+    document.getElementById("paper-dd").textContent = dd.toFixed(1) + "%";
+    document.getElementById("paper-peak").textContent = "$" + peak.toFixed(2);
+
+    // Fees estimate (0.18% × position per trade × total trades)
+    const totalTrades = report.total_analyzed || 0;
+    const avgPos = 100; // rough avg position $
+    const totalFees = totalTrades * avgPos * 0.0018;
+    document.getElementById("paper-fees").textContent = "$" + totalFees.toFixed(2);
+
+    // Trades per day (rough: total / days since first trade)
+    const days = Math.max(1, (Date.now() - new Date("2026-03-01").getTime()) / 86400000);
+    const tpd = (totalTrades / days).toFixed(1);
+    document.getElementById("paper-tpd").textContent = tpd;
+}
+
+function updateClosedTrades(closed) {
+    const body = document.getElementById("closed-trades-body");
+    if (!closed || !Array.isArray(closed) || closed.length === 0) {
+        body.innerHTML = '<tr><td colspan="14" class="empty">No closed trades</td></tr>';
+        return;
+    }
+    const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
+
+    body.innerHTML = sorted.slice(0, 50).map(t => {
+        const pnl = Number(t.pnl_pct || t.pnl || 0);
+        const pnlUsd = Number(t.pnl_usd || 0);
+        const r = Number(t.exit_r || t.r_multiple || t.r || 0);
+        const mfe = Number(t.mfe_r || 0);
+        const lev = t.leverage || "--";
+        const tp = [t.tp1_hit?"1":"", t.tp2_hit?"2":"", t.tp3_hit?"3":""].filter(Boolean).join(",") || "—";
+
+        // Duration
+        let dur = "--";
+        try {
+            const et = new Date(t.entry_time);
+            const xt = new Date(t.exit_time || t.closed_at);
+            const mins = Math.round((xt - et) / 60000);
+            dur = mins >= 60 ? Math.floor(mins/60) + "h" + (mins%60) + "m" : mins + "m";
+        } catch(e) {}
+
+        // Row color based on PnL
+        const rowBg = pnl > 0 ? "rgba(16,185,129,.04)" : pnl < -0.3 ? "rgba(239,68,68,.04)" : "";
+
+        return `<tr style="background:${rowBg}">
+            <td>${formatTime(t.closed_at || t.exit_time)}</td>
+            <td style="font-weight:600">${esc(t.symbol || "--")}</td>
+            <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
+            <td>${esc(t.setup_type || t.scanner || "--")}</td>
+            <td style="color:var(--yellow)">${lev}x</td>
+            <td>${num(t.entry_price || t.entry, t.entry_price > 100 ? 2 : 4)}</td>
+            <td>${num(t.exit_price || t.exit, t.exit_price > 100 ? 2 : 4)}</td>
+            <td class="${pnlClass(pnl)}" style="font-weight:600">${pnlSign(pnl)}%</td>
+            <td class="${pnlClass(pnlUsd)}" style="font-weight:700">${pnlUsd >= 0 ? "+$" : "-$"}${Math.abs(pnlUsd).toFixed(2)}</td>
+            <td class="${pnlClass(r)}">${pnlSign(r)}R</td>
+            <td style="color:${mfe > 1 ? 'var(--green)' : 'var(--muted)'}">${mfe.toFixed(2)}R</td>
+            <td>${esc(t.exit_reason || "--")}</td>
+            <td style="color:var(--muted)">${dur}</td>
+            <td style="font-size:.75rem">${tp !== "—" ? "TP" + tp : "—"}</td>
+        </tr>`;
+    }).join("");
+}
+
+// ══════════════════════════════════════════════════════════
+// TAB 3: SYSTEM REFRESH
+// ══════════════════════════════════════════════════════════
+async function refreshSystem() {
+    const [infra, status] = await Promise.all([api("/api/infra"), api("/api/status")]);
+
+    updateVMHealth(infra);
+    updateExchangeStatus(status);
+    updateBotEngine(status);
+    updateConfigSnapshot(status);
+}
+
+function updateVMHealth(infra) {
+    const wrap = document.getElementById("vm-health");
+    if (!infra) { wrap.innerHTML = '<div class="empty">No infra data</div>'; return; }
+
+    // API nests: infra.cpu.percent, infra.memory.percent, infra.disk.percent
+    const cpuPct = infra.cpu?.percent || infra.cpu_percent || 0;
+    const memPct = infra.memory?.percent || infra.memory_percent || 0;
+    const memUsed = infra.memory?.used_mb || 0;
+    const memTotal = infra.memory?.total_mb || 0;
+    const swapUsed = infra.memory?.swap_used_mb || 0;
+    const swapTotal = infra.memory?.swap_total_mb || 0;
+    const swapPct = swapTotal > 0 ? (swapUsed / swapTotal * 100) : 0;
+    const diskPct = infra.disk?.percent || infra.disk_percent || 0;
+    const diskUsed = infra.disk?.used_gb || 0;
+    const diskTotal = infra.disk?.total_gb || 0;
+    const uptime = infra.os_uptime || infra.uptime || "--";
+    const shape = infra.shape || "--";
+
+    let html = "";
+    html += makeHealthRow("CPU", cpuPct, "%", 100);
+    html += makeHealthRow("Memory", memPct, `% (${memUsed}/${memTotal} MB)`, 100);
+    html += makeHealthRow("Swap", swapPct, `% (${swapUsed}/${swapTotal} MB)`, 100);
+    html += makeHealthRow("Disk", diskPct, `% (${diskUsed}/${diskTotal} GB)`, 100);
+    html += makeKV("VM Uptime", uptime);
+    html += makeKV("Instance", shape);
+    wrap.innerHTML = html;
+}
+
+function updateExchangeStatus(status) {
+    const wrap = document.getElementById("exchange-status");
+    if (!status) { wrap.innerHTML = '<div class="empty">No status data</div>'; return; }
+
+    const connected = status.exchange_status === "connected";
+    const fees = status.fees || {};
+    // Fees come as decimals (0.0006) — convert to % display
+    const makerPct = fees.maker != null ? (fees.maker * 100).toFixed(2) + "%" : "--";
+    const takerPct = fees.taker != null ? (fees.taker * 100).toFixed(2) + "%" : "--";
+    const settlePct = fees.settlement != null ? (fees.settlement * 100).toFixed(2) + "%" : "--";
+
+    let html = "";
+    html += makeKV("Connection", connected ? "\u2705 Connected" : "\u274C Disconnected", connected ? "var(--green)" : "var(--red)");
+    html += makeKV("Balance", "$118.46", "var(--green)");
+    html += makeKV("Maker Fee", makerPct);
+    html += makeKV("Taker Fee", takerPct);
+    html += makeKV("Settlement Fee", settlePct);
+    html += makeKV("Total Round-Trip", fees.taker && fees.settlement ? ((fees.taker + fees.taker + fees.settlement) * 100).toFixed(2) + "%" : "--");
+    html += makeKV("Latency", (status.exchange_latency_ms || 0) + " ms");
+    html += makeKV("Last Data", status.last_data_update || "--");
+    wrap.innerHTML = html;
+}
+
+function updateBotEngine(status) {
+    const wrap = document.getElementById("bot-engine");
+    if (!status) { wrap.innerHTML = '<div class="empty">No status data</div>'; return; }
+
+    let html = "";
+    html += makeKV("Mode", (status.mode || "--").toUpperCase(), status.mode === "live" ? "var(--green)" : "var(--yellow)");
+    html += makeKV("Strategy", status.active_strategy || status.strategy || "--");
+    html += makeKV("Symbols", Array.isArray(status.symbols) ? status.symbols.join(", ") : (status.symbols || "--"));
+    html += makeKV("Uptime", status.uptime || "--");
+    html += makeKV("Memory", (status.memory_mb || status.memory || "--") + " MB");
+    html += makeKV("Bot Status", status.bot_status || "--", status.bot_status === "running" ? "var(--green)" : "var(--red)");
+    html += makeKV("Paused", status.paused ? "YES" : "No", status.paused ? "var(--red)" : "var(--green)");
+    wrap.innerHTML = html;
+}
+
+function updateConfigSnapshot(status) {
+    const wrap = document.getElementById("config-snapshot");
+    if (!status) { wrap.innerHTML = '<div class="empty">No status data</div>'; return; }
+
+    let html = "";
+    html += makeKV("Bot Name", status.bot_name || "CryptoAlgoBot");
+    html += makeKV("Version", status.bot_version || "--");
+    html += makeKV("Exchange", status.exchange_status || "--", status.exchange_status === "connected" ? "var(--green)" : "var(--red)");
+    html += makeKV("Refresh Interval", (status.refresh_interval || 5) + "s");
+    html += makeKV("Server Time", formatTime(status.server_time));
+    wrap.innerHTML = html || '<div class="empty">No config data</div>';
+}
+
+// ── INIT ─────────────────────────────────────────────────
+switchTab("live");
+</script>
 </body>
 </html>

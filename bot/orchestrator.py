@@ -21,6 +21,13 @@ from bot.signal_tracker import SignalTracker
 from bot.trade_monitor import TradeMonitorAgent
 from config.constants import AlertLevel, BotMode, SignalType
 
+# Optional WebSocket for low-latency price feeds
+try:
+    from exchange.delta_ws import DeltaWebSocket
+    _HAS_DELTA_WS = True
+except ImportError:
+    _HAS_DELTA_WS = False
+
 
 class BotOrchestrator:
     """Orchestrates all trading bot components in a single async event loop.
@@ -171,6 +178,21 @@ class BotOrchestrator:
                 await self._data_feed.subscribe(sym)
             await self._data_feed.start()
 
+            # 3b. Start WebSocket for real-time prices (reduces latency 5000ms → 100ms)
+            self._delta_ws = None
+            self._ws_prices: Dict[str, float] = {}
+            if _HAS_DELTA_WS:
+                try:
+                    self._delta_ws = DeltaWebSocket(
+                        symbols=self._symbols,
+                        on_price=self._on_ws_price,
+                    )
+                    await self._delta_ws.connect()
+                    self._log.info("DeltaWebSocket started for real-time prices")
+                except Exception as exc:
+                    self._log.warning("DeltaWebSocket failed to start: %s (falling back to REST)", exc)
+                    self._delta_ws = None
+
             # 4. Start heartbeat monitor
             await self._heartbeat.start()
 
@@ -241,6 +263,13 @@ class BotOrchestrator:
         self._running = False
         self._log.info("Shutting down components...")
 
+        # Close WebSocket
+        if self._delta_ws:
+            try:
+                await self._delta_ws.close()
+            except Exception:
+                pass
+
         # Save final state
         try:
             await self._save_state()
@@ -284,21 +313,40 @@ class BotOrchestrator:
     # Fast trade monitor (5s cycle — higher priority than signal scanning)
     # ------------------------------------------------------------------
 
-    async def _fast_trade_monitor_loop(self) -> None:
-        """Dedicated loop for active trade monitoring at 5s intervals.
+    async def _on_ws_price(self, symbol: str, last: float, bid: float, ask: float, mark: float) -> None:
+        """WebSocket price callback — fires every ~100ms per symbol."""
+        self._ws_prices[symbol] = last
 
-        Runs independently of signal scanning to minimize SL/TP overshoot.
-        Checks all active signals against current prices every cycle.
+        # If we have active trades, update them immediately (real-time!)
+        if self._signal_tracker.active_count > 0:
+            events = self._signal_tracker.update_prices({symbol: last})
+            for ev in events:
+                msg = ev.get("message", "")
+                ev_type = ev.get("type", "")
+                level = AlertLevel.INFO if "TP" in ev_type.upper() else AlertLevel.WARNING
+                await self._alert_manager.send(msg, level=level)
+
+    async def _fast_trade_monitor_loop(self) -> None:
+        """Dedicated loop for active trade monitoring.
+
+        If WebSocket is connected: runs every 1s (WS provides real-time prices).
+        If REST only: runs every 5s (polling fallback).
         """
+        ws_active = self._delta_ws is not None and self._delta_ws.is_connected
+        interval = 1 if ws_active else self.TRADE_MONITOR_INTERVAL
+
         self._log.info(
-            "Fast trade monitor started (interval=%ds)",
-            self.TRADE_MONITOR_INTERVAL,
+            "Fast trade monitor started (interval=%ds, ws=%s)",
+            interval, "YES" if ws_active else "NO",
         )
         last_check = time.monotonic()
 
         while not self._stop_event.is_set():
             try:
-                await asyncio.sleep(self.TRADE_MONITOR_INTERVAL)
+                # Adaptive interval: 1s with WS, 5s without
+                ws_active = self._delta_ws is not None and self._delta_ws.is_connected
+                interval = 1 if ws_active else self.TRADE_MONITOR_INTERVAL
+                await asyncio.sleep(interval)
 
                 if not self._running or self._signal_tracker.active_count == 0:
                     continue
@@ -307,18 +355,21 @@ class BotOrchestrator:
                 time_since_last = now - last_check
 
                 # Warn if monitoring fell behind schedule
-                if time_since_last > self.TRADE_MONITOR_INTERVAL * 2:
+                if time_since_last > interval * 3:
                     self._log.warning(
                         "Trade monitor DELAYED: %.1fs since last check (target: %ds)",
-                        time_since_last, self.TRADE_MONITOR_INTERVAL,
+                        time_since_last, interval,
                     )
 
-                # Gather current prices
+                # Gather current prices — prefer WebSocket, fallback to REST
                 prices: dict = {}
-                for sym in self._symbols:
-                    price = self._data_manager.get_latest_price(sym)
-                    if price is not None:
-                        prices[sym] = price
+                if ws_active and self._ws_prices:
+                    prices = dict(self._ws_prices)
+                else:
+                    for sym in self._symbols:
+                        price = self._data_manager.get_latest_price(sym)
+                        if price is not None:
+                            prices[sym] = price
 
                 if not prices:
                     continue

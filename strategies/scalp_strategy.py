@@ -695,9 +695,17 @@ class ScalpStrategy(BaseStrategy):
 
         # In paper_learning mode: ALL scanners run regardless of regime
         if self._is_learning:
-            allowed_scanners = list(all_scanners)  # override: run everything
-            # Also add simple bias scanner — fires on any candle with volume
-            allowed_scanners.append(self._scan_simple_bias)
+            allowed_scanners = [
+                self._scan_ema_momentum,
+                self._scan_trend_continuation,
+                self._scan_rsi_divergence,
+                self._scan_bb_squeeze,
+                self._scan_structure_bounce,
+                self._scan_order_block_entry,
+                self._scan_vwap_mean_revert,
+                self._scan_liquidity_sweep,
+                self._scan_simple_bias,
+            ]
 
         if not allowed_scanners:
             self.last_scan_status[symbol] = {
@@ -871,7 +879,9 @@ class ScalpStrategy(BaseStrategy):
         # Shadow scanners only log for ML, no actual trade
         # ══════════════════════════════════════════════════════
         scanner_size = self.scanner_size_tiers.get(best_sr.scanner_name, 0.6)
-        if scanner_size <= 0.0 and not self._is_learning:
+        # In learning mode: shadow scanners STILL fire (for ML data)
+        # In normal mode: shadow scanners blocked (no trade)
+        if scanner_size <= 0.0 and not self._is_learning and best_sr.scanner_name != "simple_bias":
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,

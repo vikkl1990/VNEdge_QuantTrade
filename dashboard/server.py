@@ -316,6 +316,8 @@ class DashboardServer:
         app.router.add_get("/api/regime", self._handle_regime)
         app.router.add_get("/api/decision", self._handle_decision)
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
+        app.router.add_get("/api/grid/status", self._handle_grid_status)
+        app.router.add_get("/api/grid/positions", self._handle_grid_positions)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -685,6 +687,18 @@ class DashboardServer:
             else:
                 data["top_leak"] = "N/A"
         return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_grid_status(self, request: web.Request) -> web.Response:
+        """Return Grid Bot status."""
+        if hasattr(self, '_grid_bot') and self._grid_bot:
+            return web.json_response(self._grid_bot.get_status(), dumps=_safe_dumps)
+        return web.json_response({"enabled": False})
+
+    async def _handle_grid_positions(self, request: web.Request) -> web.Response:
+        """Return Grid Bot open positions."""
+        if hasattr(self, '_grid_bot') and self._grid_bot:
+            return web.json_response(self._grid_bot.get_open_positions(), dumps=_safe_dumps)
+        return web.json_response([])
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

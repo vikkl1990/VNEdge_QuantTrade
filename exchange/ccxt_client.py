@@ -280,15 +280,21 @@ class CcxtExchangeClient(ExchangeBase):
     async def _ensure_markets(self) -> None:
         """Load market info once so symbol resolution works."""
         if not self._markets_loaded and self._exchange is not None:
-            await self._exchange.load_markets()
-            self._markets_loaded = True
-            # Re-apply Delta India URL override — load_markets() can reset URLs
+            # Force Delta India URLs BEFORE loading markets
             if self._is_delta_india:
                 self._exchange.urls["api"] = {
                     "public": "https://api.india.delta.exchange",
                     "private": "https://api.india.delta.exchange",
                 }
-                logger.info("Re-applied Delta India API URLs after load_markets()")
+            await self._exchange.load_markets()
+            self._markets_loaded = True
+            # Re-apply after load (ccxt sometimes resets)
+            if self._is_delta_india:
+                self._exchange.urls["api"] = {
+                    "public": "https://api.india.delta.exchange",
+                    "private": "https://api.india.delta.exchange",
+                }
+                logger.info("Delta India markets loaded: %d symbols available", len(self._exchange.markets))
 
     def _track_request(self) -> None:
         """Bump internal request counters."""
@@ -456,6 +462,7 @@ class CcxtExchangeClient(ExchangeBase):
         limit: int = 100,
     ) -> List[OHLCV]:
         assert self._exchange is not None, "Call connect() first"
+        await self._ensure_markets()
         ex_symbol = self._to_exchange_symbol(symbol)
 
         raw: List[list] = await self._retry(

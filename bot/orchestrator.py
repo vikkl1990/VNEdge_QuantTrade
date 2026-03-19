@@ -112,6 +112,10 @@ class BotOrchestrator:
         # Signal tracker for TP/SL monitoring and P&L/WR stats
         self._signal_tracker = SignalTracker()
 
+        # Grid Bot — profits from oscillation
+        from bot.grid_bot import GridBot
+        self._grid_bot = GridBot(config)
+
         # AI learner for adaptive confidence adjustment
         self._signal_learner = SignalLearner()
 
@@ -215,6 +219,7 @@ class BotOrchestrator:
             self._dashboard._trade_monitor = self._trade_monitor
             self._dashboard._strategy = self._strategy
             self._dashboard._decision_engine = self._decision_engine
+            self._dashboard._grid_bot = self._grid_bot
             dash_cfg = self._config.get("dashboard", {})
             dash_host = dash_cfg.get("host", "0.0.0.0") if isinstance(dash_cfg, dict) else "0.0.0.0"
             dash_port = dash_cfg.get("port", 8080) if isinstance(dash_cfg, dict) else 8080
@@ -373,6 +378,17 @@ class BotOrchestrator:
 
                 if not prices:
                     continue
+
+                # ── GRID BOT: process every price tick ──
+                for sym, price in prices.items():
+                    candle_data = self._data_manager.get_latest_candle(sym, "5m") if hasattr(self._data_manager, 'get_latest_candle') else None
+                    high = candle_data.get("high", price) if candle_data else price
+                    low = candle_data.get("low", price) if candle_data else price
+                    grid_events = self._grid_bot.update(sym, price, high, low)
+                    for gev in grid_events:
+                        msg = gev.get("message", "")
+                        if gev.get("type") == "grid_fill":
+                            self._log.info(msg)
 
                 # Check all active signals for TP/SL hits
                 events = self._signal_tracker.update_prices(prices)

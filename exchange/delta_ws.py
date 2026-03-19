@@ -29,6 +29,7 @@ WS_URL = "wss://socket.india.delta.exchange"
 SYMBOL_MAP = {
     "BTC/USDT": "BTCUSD",
     "ETH/USDT": "ETHUSD",
+    "AVAX/USDT": "AVAXUSD",
 }
 
 REVERSE_MAP = {v: k for k, v in SYMBOL_MAP.items()}

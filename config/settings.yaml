@@ -12,6 +12,7 @@ bot:
 symbols:
   - "BTC/USDT"
   - "ETH/USDT"
+  - "AVAX/USDT"
 
 exchange:
   name: "delta"            # binance | bybit | okx | delta
@@ -120,10 +121,20 @@ paper_trading:
   settlement_fee_rate: 0.0006   # Delta settlement: 0.06%
   slippage_pct: 0.05
 
+grid:
+  enabled: true
+  grid_pct: 0.002              # 0.2% spacing between grid levels
+  num_levels: 10               # 10 levels above and below center
+  position_usd: 50             # $50 per grid level
+  fee_rt: 0.0010               # maker fees (0.10% round-trip)
+  max_positions: 20            # max open buys per symbol
+  stale_pct: 0.02              # close positions that drift >2%
+  sma_period: 100              # grid center = 100-bar SMA
+
 backtest:
   start_date: "2025-01-01"
   end_date: "2025-12-31"
-  fee_rate: 0.0004
+  fee_rate: 0.0009            # REAL: entry 0.06% + exit 0.06% + settlement 0.06% = 0.18% RT / 2 sides
   slippage_pct: 0.05
   initial_balance: 10000
 

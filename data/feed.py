@@ -171,14 +171,24 @@ class DataFeed:
 
         options: Dict[str, Any] = {"defaultType": self._cfg["exchange"].get("market_type", "spot")}
 
-        exchange = exchange_cls(
-            {
-                "apiKey": api_key,
-                "secret": api_secret,
-                "enableRateLimit": self._cfg["exchange"].get("rate_limit", True),
-                "options": options,
+        exchange_opts = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "enableRateLimit": self._cfg["exchange"].get("rate_limit", True),
+            "options": options,
+        }
+
+        # Delta India region support — override API URLs
+        region = self._cfg["exchange"].get("region", "").lower()
+        if self._exchange_name == "delta" and region == "india":
+            exchange_opts["urls"] = {
+                "api": {
+                    "public": "https://api.india.delta.exchange",
+                    "private": "https://api.india.delta.exchange",
+                },
             }
-        )
+
+        exchange = exchange_cls(exchange_opts)
 
         if self._cfg["exchange"].get("testnet", False):
             exchange.set_sandbox_mode(True)
@@ -265,14 +275,23 @@ class DataFeed:
     # Historical bootstrap
     # ------------------------------------------------------------------
 
+    def _to_exchange_symbol(self, symbol: str) -> str:
+        """Convert canonical symbol to exchange format."""
+        region = self._cfg["exchange"].get("region", "").lower()
+        if self._exchange_name == "delta" and region == "india":
+            base = symbol.split("/")[0]
+            return f"{base}/USD:USD"
+        return symbol
+
     async def _load_history(self, limit: int = 200) -> None:
         """Fetch recent historical candles for all subscriptions via REST."""
         assert self._exchange is not None
         for sub in self._subscriptions.values():
+            ex_symbol = self._to_exchange_symbol(sub.symbol)
             for tf in sub.timeframes:
                 try:
                     ohlcv = await self._exchange.fetch_ohlcv(
-                        sub.symbol, timeframe=tf, limit=limit
+                        ex_symbol, timeframe=tf, limit=limit
                     )
                     candles = [
                         {
@@ -473,9 +492,10 @@ class DataFeed:
     async def _poll_once(self, sub: _Subscription, tf: str) -> None:
         """Fetch the latest candles for one (symbol, tf) pair via REST."""
         assert self._exchange is not None
+        ex_symbol = self._to_exchange_symbol(sub.symbol)
         since = sub.last_candle_ts.get(tf)
         ohlcv = await self._exchange.fetch_ohlcv(
-            sub.symbol, timeframe=tf, since=int(since) if since else None, limit=10
+            ex_symbol, timeframe=tf, since=int(since) if since else None, limit=10
         )
         if not ohlcv:
             return

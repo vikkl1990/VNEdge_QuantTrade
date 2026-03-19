@@ -589,6 +589,9 @@ class DashboardServer:
             scalp = self._strategy._scalp
             if hasattr(scalp, '_funnel'):
                 data["funnel"] = dict(scalp._funnel)
+            # Veto stats debug info
+            if hasattr(scalp, '_veto_stats'):
+                data["veto_stats"] = dict(scalp._veto_stats)
             # Get near misses from latest scan status
             for symbol, status in scalp.last_scan_status.items():
                 nm = status.get("near_misses", [])

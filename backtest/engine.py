@@ -151,8 +151,10 @@ class BacktestEngine:
         sl_cfg = risk_cfg.get("stop_loss", {})
         safety_cfg = risk_cfg.get("safety", {})
 
-        # Execution model
-        self._fee_rate: float = bt_cfg.get("fee_rate", 0.0004)
+        # Execution model — Delta India real fees
+        # Taker: 0.06% entry + 0.06% exit + 0.06% settlement = 0.18% round trip
+        # Per-side fee = 0.09% (half of round trip, applied on entry AND exit)
+        self._fee_rate: float = bt_cfg.get("fee_rate", 0.0009)  # 0.09% per side = 0.18% RT
         self._slippage_pct: float = bt_cfg.get("slippage_pct", 0.05)
         self._initial_balance: float = bt_cfg.get("initial_balance", 10_000.0)
 
@@ -168,10 +170,11 @@ class BacktestEngine:
             tp_cfg.get("tp3_close_pct", 30) / 100.0,
         ]
 
-        # Trailing stop
+        # Trailing stop — only activate at 1.0R+ (fee-aware)
+        # Any trail below 0.76R is net negative after 0.18% fees
         self._trailing_enabled: bool = trail_cfg.get("enabled", True)
         self._trailing_activation_rr: float = trail_cfg.get("activation_rr", 1.0)
-        self._trailing_pct: float = trail_cfg.get("trail_pct", 0.5) / 100.0
+        self._trailing_pct: float = trail_cfg.get("trail_pct", 0.3) / 100.0  # 0.3% trail (locks ~80% at 1R)
         self._break_even_after_tp1: bool = trail_cfg.get("break_even_after_tp1", True)
 
         # Stop loss

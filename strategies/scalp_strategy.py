@@ -1039,17 +1039,60 @@ class ScalpStrategy(BaseStrategy):
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
 
-        # Apply vetos (in learning mode: log but don't block)
-        if vetos and not self._is_learning:
+        # Separate hard vs soft vetos for structure_bounce
+        # structure_bounce is our best scanner (73% WR, +35% PnL) — don't kill it easily.
+        # Only truly dangerous vetos stay hard. Others become confidence penalties.
+        is_sb = best_sr.scanner_name == "structure_bounce"
+
+        # For structure_bounce: only HTF, CHOCH, and REGIME MISMATCH are hard vetos
+        # Everything else (ATR, Volume, No-Chase, Candle quality, Cooldown, Session) → soft penalty
+        sb_hard_prefixes = ("HTF STRICT:", "CHOCH CONFLICT:", "REGIME MISMATCH:")
+        sb_soft_prefixes = ("LOW VOLATILITY:", "NO VOLUME:", "NO CHASE:", "WEAK CANDLE:",
+                            "COOLDOWN:", "ASIA LATE", "DEAD SESSION:")
+
+        hard_vetos = []
+        soft_vetos = []
+        conf_penalty = 0
+
+        for v in vetos:
+            if is_sb and any(v.startswith(p) for p in sb_soft_prefixes):
+                soft_vetos.append(v)
+                conf_penalty += 8  # -8 confidence per soft veto
+            elif is_sb and not any(v.startswith(p) for p in sb_hard_prefixes):
+                # Unknown veto type for SB → soft
+                soft_vetos.append(v)
+                conf_penalty += 8
+            else:
+                hard_vetos.append(v)
+
+        # Track veto stats for debugging (exposed to dashboard)
+        if not hasattr(self, '_veto_stats'):
+            self._veto_stats = {}
+        for v in vetos:
+            veto_type = v.split(":")[0].strip()
+            self._veto_stats[veto_type] = self._veto_stats.get(veto_type, 0) + 1
+
+        # Apply hard vetos (in learning mode: log but don't block)
+        if hard_vetos and not self._is_learning:
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
-                "reason": f"VETO: {vetos[0]}",  # show first veto
-                "all_vetos": vetos,
+                "reason": f"VETO: {hard_vetos[0]}",
+                "all_vetos": hard_vetos,
+                "soft_vetos": soft_vetos,
                 "indicators": indicators, "setups_checked": setups_checked,
                 "funnel": dict(self._funnel),
             }
             return []
+
+        # Apply soft veto confidence penalty (structure_bounce only)
+        if soft_vetos and not self._is_learning:
+            best = _SetupResult(
+                name=best.name, side=best.side,
+                confidence=max(best.confidence - conf_penalty, 40),
+                confirmations=best.confirmations + [f"[SOFT_PENALTY: -{conf_penalty} from {len(soft_vetos)} vetos]"],
+                entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+            )
 
         # In learning mode, tag the signal with would-block info
         if vetos and self._is_learning:
@@ -1138,7 +1181,7 @@ class ScalpStrategy(BaseStrategy):
             # Required minimum based on confidence
             min_edge = self.min_edge_high_conf if best.confidence >= 90 else self.min_edge_low_conf
 
-            if conservative_move < min_edge and not self._is_learning:
+            if conservative_move < min_edge and not self._is_learning and not is_sb:
                 self._funnel["blocked_cost"] = self._funnel.get("blocked_cost", 0) + 1
                 self.last_scan_status[symbol] = {
                     "time": now_iso, "signal": False,
@@ -1155,7 +1198,7 @@ class ScalpStrategy(BaseStrategy):
             recent_range = float(recent_5["high"].max() - recent_5["low"].min())
             atr_check = self._confirm_atr if self._confirm_atr > 0 else best.atr
             if recent_range < atr_check * 0.42:
-                if not self._is_learning:
+                if not self._is_learning and not is_sb:
                     self.last_scan_status[symbol] = {
                         "time": now_iso, "signal": False,
                         "reason": f"MOMENTUM GATE: flat (range={recent_range:.2f} < 0.42×ATR={atr_check*0.42:.2f})",
@@ -1163,6 +1206,14 @@ class ScalpStrategy(BaseStrategy):
                         "funnel": dict(self._funnel),
                     }
                     return []
+                elif is_sb:
+                    # Structure bounce at quiet S/R can still work — just penalize
+                    best = _SetupResult(
+                        name=best.name, side=best.side,
+                        confidence=max(best.confidence - 10, 40),
+                        confirmations=best.confirmations + ["[FLAT_MKT_PENALTY: -10]"],
+                        entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                    )
 
         # ══════════════════════════════════════════════════════
         # TIER 1: SPREAD CHECK (Liquidity Gate)
@@ -1202,7 +1253,7 @@ class ScalpStrategy(BaseStrategy):
                 est_bars_to_tp = tp1_dist / directional_atr
                 est_minutes_to_tp = est_bars_to_tp * 5  # 5m bars
                 if est_minutes_to_tp > scalper_window_min * 1.5:  # 50% buffer
-                    if not self._is_learning:
+                    if not self._is_learning and not is_sb:
                         self.last_scan_status[symbol] = {
                             "time": now_iso, "signal": False,
                             "reason": f"DURATION VETO: est {est_minutes_to_tp:.0f}m to TP1 > {scalper_window_min}m window",
@@ -1402,62 +1453,125 @@ class ScalpStrategy(BaseStrategy):
     def _scan_ema_momentum(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """EMA 8/21 cross with RSI and volume confirmation.
+        """SEQUENCE-BASED EMA Momentum: cross → pullback → RSI turn → volume confirm.
 
-        LONG:  EMA8 crosses above EMA21, RSI 40-70, volume above avg
-        SHORT: EMA8 crosses below EMA21, RSI 30-60, volume above avg
+        Instead of triggering on the cross candle itself, we look for a 4-step sequence:
+        1. EMA8/21 cross occurred within last 6 candles (the event)
+        2. Price pulled back to test the cross area (within 0.5× ATR of EMA midpoint)
+        3. RSI turned in signal direction (rising for LONG, falling for SHORT)
+        4. Current candle has volume > 1.0× avg and closes in signal direction
+
+        This avoids firing on the cross candle (which is often the worst entry) and
+        waits for the pullback-and-go confirmation.
         """
-        if len(df) < 3:
+        if len(df) < 8:
             return None
 
         last = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        ema8_now = last["ema_8"]
-        ema21_now = last["ema_21"]
-        ema8_prev = prev["ema_8"]
-        ema21_prev = prev["ema_21"]
-        rsi = last["rsi"]
-        rel_vol = last.get("rel_vol", 1.0)
         atr = last["atr"]
         close = last["close"]
+        open_ = last["open"]
 
         if atr <= 0 or np.isnan(atr):
             return None
 
-        # Detect cross
-        bullish_cross = ema8_prev <= ema21_prev and ema8_now > ema21_now
-        bearish_cross = ema8_prev >= ema21_prev and ema8_now < ema21_now
+        # --- STEP 1: Find EMA cross in last 6 candles (NOT current bar) ---
+        cross_idx = None
+        cross_type = None  # "bullish" or "bearish"
+        for i in range(2, min(7, len(df))):
+            bar = df.iloc[-i]
+            bar_prev = df.iloc[-i - 1] if (i + 1) <= len(df) else None
+            if bar_prev is None:
+                continue
+            e8 = bar["ema_8"]
+            e21 = bar["ema_21"]
+            e8p = bar_prev["ema_8"]
+            e21p = bar_prev["ema_21"]
+            if np.isnan(e8) or np.isnan(e21) or np.isnan(e8p) or np.isnan(e21p):
+                continue
+            if e8p <= e21p and e8 > e21:
+                cross_idx = i
+                cross_type = "bullish"
+                break
+            elif e8p >= e21p and e8 < e21:
+                cross_idx = i
+                cross_type = "bearish"
+                break
 
-        if not bullish_cross and not bearish_cross:
+        if cross_idx is None:
             return None
 
-        # DATA: ema_momentum LONG = 100% WR, SHORT = 0% WR (0 favorable movement)
-        # Block bearish crosses entirely — EMA cross shorts don't work in this market
-        if bearish_cross:
+        # DATA: ema_momentum SHORT = 0% WR — block bearish entirely
+        if cross_type == "bearish":
             return None
 
-        side = OrderSide.LONG if bullish_cross else OrderSide.SHORT
+        side = OrderSide.LONG if cross_type == "bullish" else OrderSide.SHORT
+
+        # --- STEP 2: Price pulled back to EMA cross area ---
+        ema8_now = last["ema_8"]
+        ema21_now = last["ema_21"]
+        if np.isnan(ema8_now) or np.isnan(ema21_now):
+            return None
+        ema_mid = (ema8_now + ema21_now) / 2
+        pullback_dist = abs(close - ema_mid) / atr
+        # Must be near the EMA zone (within 0.6× ATR)
+        if pullback_dist > 0.6:
+            return None
+        # For LONG: must still be above EMA21 (trend intact)
+        if side == OrderSide.LONG and close < ema21_now * 0.998:
+            return None
+        # For SHORT: must still be below EMA21
+        if side == OrderSide.SHORT and close > ema21_now * 1.002:
+            return None
+
+        # --- STEP 3: RSI turning in signal direction ---
+        rsi = last["rsi"]
+        rsi_prev = df.iloc[-2]["rsi"]
+        rsi_prev2 = df.iloc[-3]["rsi"] if len(df) >= 4 else rsi_prev
+        if np.isnan(rsi) or np.isnan(rsi_prev):
+            return None
+        if side == OrderSide.LONG:
+            rsi_turning = rsi > rsi_prev and rsi_prev <= rsi_prev2  # bottom formed
+            rsi_range_ok = 35 < rsi < 65
+        else:
+            rsi_turning = rsi < rsi_prev and rsi_prev >= rsi_prev2  # top formed
+            rsi_range_ok = 35 < rsi < 65
+        if not (rsi_turning and rsi_range_ok):
+            return None
+
+        # --- STEP 4: Current candle confirms (directional close + volume) ---
+        rel_vol = last.get("rel_vol", 1.0)
+        if np.isnan(rel_vol):
+            rel_vol = 1.0
+        if side == OrderSide.LONG:
+            if close <= open_:  # need bullish candle
+                return None
+        else:
+            if close >= open_:  # need bearish candle
+                return None
+        if rel_vol < 0.9:  # need at least near-average volume
+            return None
+
+        # --- ALL 4 STEPS PASSED: Build signal ---
         confs = []
         score = 0
 
-        # Cross itself = 30 pts
-        confs.append(f"EMA 8/21 {'bullish' if bullish_cross else 'bearish'} cross")
+        confs.append(f"EMA 8/21 {cross_type} cross ({cross_idx} bars ago)")
         score += 30
 
-        # RSI in sweet spot
-        if side == OrderSide.LONG and 40 < rsi < 70:
-            confs.append(f"RSI {rsi:.0f} (healthy)")
-            score += 15
-        elif side == OrderSide.SHORT and 30 < rsi < 60:
-            confs.append(f"RSI {rsi:.0f} (healthy)")
-            score += 15
+        confs.append(f"Pullback to EMA zone ({pullback_dist:.2f}× ATR)")
+        score += 15
 
-        # Volume above average
+        confs.append(f"RSI turning {rsi_prev:.0f}→{rsi:.0f}")
+        score += 15
+
         if rel_vol > 1.2:
             confs.append(f"Volume {rel_vol:.1f}x avg")
             score += 15
-        elif rel_vol > 0.8:
+        elif rel_vol > 1.0:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+        else:
             score += 5
 
         # Price above/below EMA 50 (trend alignment)
@@ -1545,6 +1659,11 @@ class ScalpStrategy(BaseStrategy):
         score = 0
         side = None
 
+        # Candle quality: body must be meaningful (not doji)
+        body_ratio = body / full_range if full_range > 0 else 0
+        if body_ratio < 0.25:
+            return None  # doji/spinning top = unreliable bounce signal
+
         # LONG: price dipped below/near VWAP and bounced
         if close > vwap and low <= vwap * 1.001 and lower_wick > body * 0.8:
             side = OrderSide.LONG
@@ -1614,19 +1733,21 @@ class ScalpStrategy(BaseStrategy):
     def _scan_trend_continuation(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """Trend continuation: EMA alignment + RSI pullback + candle in direction.
+        """SEQUENCE-BASED Trend Continuation: impulse → pullback → hold → trigger.
 
-        This is the bread-and-butter setup that fires in any trending market.
-        It doesn't need a cross or flip — just existing trend + slight pullback.
+        4-step event sequence over last 8 candles:
+        1. IMPULSE: A candle with body > 0.8× ATR in trend direction (within last 8 bars)
+        2. PULLBACK: 2-4 candle pullback (lower highs for LONG, higher lows for SHORT)
+        3. HOLD: Price stays above EMA21 (LONG) or below EMA21 (SHORT) during pullback
+        4. TRIGGER: Current candle is bullish/bearish with volume > 0.9× avg
 
-        LONG:  EMA8 > EMA21, RSI pulled back from higher levels, bullish candle
-        SHORT: EMA8 < EMA21, RSI pulled back from lower levels, bearish candle
+        This replaces the old "EMA aligned + RSI + candle" snapshot check that fired
+        on every single bar in a trend, producing 148 signals in 7 days at 12% WR.
         """
-        if len(df) < 5:
+        if len(df) < 8:
             return None
 
         last = df.iloc[-1]
-        prev = df.iloc[-2]
         atr = last["atr"]
         close = last["close"]
         open_ = last["open"]
@@ -1637,107 +1758,148 @@ class ScalpStrategy(BaseStrategy):
         ema8 = last["ema_8"]
         ema21 = last["ema_21"]
         ema50 = last["ema_50"]
-        rsi = last["rsi"]
-        rsi_prev = prev["rsi"]
-        macd_hist = last.get("macd_hist", 0)
-        st_dir = last.get("supertrend_dir", 0)
 
-        if np.isnan(rsi) or np.isnan(ema8):
+        if np.isnan(ema8) or np.isnan(ema21) or np.isnan(ema50):
             return None
 
-        confs = []
-        score = 0
-        side = None
+        # Determine trend direction from EMA alignment
+        is_uptrend = ema8 > ema21 > ema50
+        is_downtrend = ema8 < ema21 < ema50
+        if not is_uptrend and not is_downtrend:
+            return None  # No clear trend = no continuation signal
 
-        # --- LONG: Uptrend + genuine pullback + bullish reversal candle ---
-        if ema8 > ema21:
-            # Trend exists
-            ema_gap_pct = (ema8 - ema21) / ema21 * 100 if ema21 > 0 else 0
+        side = OrderSide.LONG if is_uptrend else OrderSide.SHORT
+        ema_gap_pct = abs(ema8 - ema21) / ema21 * 100 if ema21 > 0 else 0
+        if ema_gap_pct < 0.05:
+            return None  # EMAs too close = not a real trend
 
-            # Require a REAL pullback: price must have dipped toward EMA zone
-            price_pulled_back = close <= ema8 * 1.001 and close > ema21
-            rsi_recovering = 40 < rsi < 58 and rsi > rsi_prev
-            bullish_candle = close > open_
+        # --- STEP 1: Find impulse candle in last 8 bars ---
+        impulse_idx = None
+        impulse_body = 0
+        for i in range(2, min(9, len(df))):
+            bar = df.iloc[-i]
+            bar_body = abs(bar["close"] - bar["open"])
+            bar_atr = bar.get("atr", atr)
+            if bar_atr <= 0 or np.isnan(bar_atr):
+                bar_atr = atr
+            if bar_body < bar_atr * 0.8:
+                continue  # not impulsive enough
+            # Must be in trend direction
+            if side == OrderSide.LONG and bar["close"] > bar["open"]:
+                impulse_idx = i
+                impulse_body = bar_body
+                break
+            elif side == OrderSide.SHORT and bar["close"] < bar["open"]:
+                impulse_idx = i
+                impulse_body = bar_body
+                break
 
-            if price_pulled_back and rsi_recovering and bullish_candle:
-                side = OrderSide.LONG
-                confs.append("Uptrend continuation")
-                score += 25
+        if impulse_idx is None:
+            return None  # No recent impulse = no continuation setup
 
-                # Bullish candle
-                confs.append("Bullish candle")
-                score += 10
+        # --- STEP 2: Pullback between impulse and now (2-4 candles) ---
+        pullback_bars = impulse_idx - 1  # bars between impulse and current
+        if pullback_bars < 1 or pullback_bars > 5:
+            return None  # Need 1-5 bar pullback, not too fast not too slow
 
-                # EMA gap — scored, not blocked
-                if ema_gap_pct > 0.08:
-                    confs.append(f"EMA8>21 by {ema_gap_pct:.3f}%")
-                    score += 10
-                elif ema_gap_pct < 0.03:
-                    score -= 10  # weak trend penalty
-
-                # Price in the ideal pullback zone (between EMA8 and EMA21)
-                if close < ema8 and close > ema21:
-                    confs.append("Price pullback to EMA zone")
-                    score += 15  # Best entry zone
-
-                # MACD positive
-                if macd_hist > 0:
-                    confs.append("MACD positive")
-                    score += 10
-
-                # Supertrend bullish
-                if st_dir == 1:
-                    confs.append("Supertrend bullish")
-                    score += 10
-
-        # --- SHORT: Downtrend + genuine pullback + bearish reversal candle ---
-        elif ema8 < ema21:
-            ema_gap_pct = (ema21 - ema8) / ema21 * 100 if ema21 > 0 else 0
-
-            price_pulled_back = close >= ema8 * 0.999 and close < ema21
-            rsi_recovering = 42 < rsi < 60 and rsi < rsi_prev
-            bearish_candle = close < open_
-
-            if price_pulled_back and rsi_recovering and bearish_candle:
-                side = OrderSide.SHORT
-                confs.append("Downtrend continuation")
-                score += 25
-
-                confs.append("Bearish candle")
-                score += 10
-
-                if ema_gap_pct > 0.08:
-                    confs.append(f"EMA21>8 by {ema_gap_pct:.3f}%")
-                    score += 10
-                elif ema_gap_pct < 0.03:
-                    score -= 10  # weak trend penalty
-
-                if close < ema8:
-                    confs.append("Price < EMA8")
-                    score += 5
-                elif close < ema21:
-                    confs.append("Price pullback to EMA zone")
-                    score += 10
-
-                if macd_hist < 0:
-                    confs.append("MACD negative")
-                    score += 10
-
-                if st_dir == -1:
-                    confs.append("Supertrend bearish")
-                    score += 10
-
-        if side is None:
+        pullback_candles = [df.iloc[-j] for j in range(2, impulse_idx)]
+        if not pullback_candles:
             return None
 
-        # Volume: boost or penalize (no hard block)
+        # Verify pullback structure
+        if side == OrderSide.LONG:
+            # Pullback = lower highs or consolidation (not new highs)
+            impulse_high = df.iloc[-impulse_idx]["high"]
+            pullback_made_new_high = any(c["high"] > impulse_high for c in pullback_candles)
+            if pullback_made_new_high:
+                return None  # Not a pullback, still impulsing
+            # Check pullback depth: shallow = good (< 1.0× ATR)
+            pullback_low = min(c["low"] for c in pullback_candles)
+            pullback_depth = impulse_high - pullback_low
+            if pullback_depth > atr * 1.5:
+                return None  # Too deep — trend may be failing
+        else:
+            impulse_low = df.iloc[-impulse_idx]["low"]
+            pullback_made_new_low = any(c["low"] < impulse_low for c in pullback_candles)
+            if pullback_made_new_low:
+                return None
+            pullback_high = max(c["high"] for c in pullback_candles)
+            pullback_depth = pullback_high - impulse_low
+            if pullback_depth > atr * 1.5:
+                return None
+
+        # --- STEP 3: Hold — price stayed above EMA21 (LONG) or below (SHORT) ---
+        for pc in pullback_candles:
+            if side == OrderSide.LONG:
+                pc_ema21 = pc.get("ema_21", ema21)
+                if np.isnan(pc_ema21):
+                    pc_ema21 = ema21
+                if pc["close"] < pc_ema21 * 0.997:  # closed below EMA21 = trend broken
+                    return None
+            else:
+                pc_ema21 = pc.get("ema_21", ema21)
+                if np.isnan(pc_ema21):
+                    pc_ema21 = ema21
+                if pc["close"] > pc_ema21 * 1.003:
+                    return None
+
+        # --- STEP 4: Trigger candle — directional close + volume ---
         rel_vol = last.get("rel_vol", 1.0)
         if np.isnan(rel_vol):
             rel_vol = 1.0
+        if side == OrderSide.LONG:
+            if close <= open_:
+                return None  # Need bullish trigger
+        else:
+            if close >= open_:
+                return None  # Need bearish trigger
         if rel_vol < 0.8:
-            score -= 10  # low volume penalty
-        elif rel_vol < 1.0:
-            score -= 5   # below average penalty
+            return None  # Need some volume on trigger
+
+        # Candle body quality — trigger candle should be meaningful
+        body = abs(close - open_)
+        if body < atr * 0.3:
+            return None  # Doji/spinning top = weak trigger
+
+        # --- ALL 4 STEPS PASSED: Score the setup ---
+        confs = []
+        score = 0
+
+        confs.append(f"{'Up' if is_uptrend else 'Down'}trend continuation")
+        score += 25
+
+        confs.append(f"Impulse ({impulse_body/atr:.1f}× ATR, {impulse_idx} bars ago)")
+        score += 15
+
+        confs.append(f"{pullback_bars}-bar pullback (depth {pullback_depth/atr:.1f}× ATR)")
+        score += 10
+
+        confs.append(f"Held above EMA21 during pullback")
+        score += 10
+
+        if ema_gap_pct > 0.08:
+            confs.append(f"EMA gap {ema_gap_pct:.3f}%")
+            score += 10
+
+        # MACD confirmation
+        macd_hist = last.get("macd_hist", 0)
+        if (side == OrderSide.LONG and macd_hist > 0) or (side == OrderSide.SHORT and macd_hist < 0):
+            confs.append("MACD aligned")
+            score += 10
+
+        # Supertrend
+        st_dir = last.get("supertrend_dir", 0)
+        if (side == OrderSide.LONG and st_dir == 1) or (side == OrderSide.SHORT and st_dir == -1):
+            confs.append("Supertrend agrees")
+            score += 5
+
+        # Volume quality
+        if rel_vol > 1.5:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+        elif rel_vol > 1.0:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 5
 
         # HTF alignment bonus
         if htf_bias == (1 if side == OrderSide.LONG else -1):
@@ -1748,11 +1910,6 @@ class ScalpStrategy(BaseStrategy):
         if confirm_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("5m aligned")
             score += 10
-
-        # Volume bonus (already confirmed >= 1.0 above)
-        if rel_vol > 1.5:
-            confs.append(f"Volume {rel_vol:.1f}x")
-            score += 5
 
         confidence = min(score, 100)
         sl = close - atr * self.sl_atr_mult if side == OrderSide.LONG else close + atr * self.sl_atr_mult
@@ -2128,10 +2285,22 @@ class ScalpStrategy(BaseStrategy):
     def _scan_structure_bounce(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """Price touches a known S/R level + rejection candle."""
+        """SEQUENCE-BASED Structure Bounce: approach → rejection → volume → confirmation.
+
+        4-step event sequence:
+        1. APPROACH: Price moved toward S/R level within last 3 candles (within 0.3%)
+        2. REJECTION: A candle at the level with wick > 50% of range, close inside level
+        3. VOLUME: Volume spike on the rejection candle (> 1.2× avg)
+        4. CONFIRMATION: Current candle closes in signal direction away from level
+
+        This replaces the old single-candle check that triggered on any candle near S/R.
+        """
         sm = self._structure_map
         if sm is None:
             logger.debug("structure_bounce: no structure map")
+            return None
+
+        if len(df) < 4:
             return None
 
         last = df.iloc[-1]
@@ -2152,71 +2321,127 @@ class ScalpStrategy(BaseStrategy):
         confs = []
         score = 0
         target_level = None
+        rejection_bar_idx = None  # which bar had the rejection
 
-        # Check if price is near a support level (LONG setup)
-        if sm.nearest_support:
-            lvl = sm.nearest_support
-            dist_pct = (close - lvl.price) / close * 100
-            # Within 0.5% of support OR inside the zone
-            in_zone = lvl.zone_low <= close <= lvl.zone_high
-            if in_zone or (0 <= dist_pct < 0.5):
-                lower_wick = min(open_, close) - low
-                # Relaxed rejection: wick > body OR close in upper 55% of range
-                has_rejection = (lower_wick > body * 1.0 and close > (low + full_range * 0.55))
-                # Also accept bullish candle at the level even without perfect wick
-                bullish_at_level = (close > open_ and close > (low + full_range * 0.5))
-                if has_rejection or bullish_at_level:
-                    side = OrderSide.LONG
-                    target_level = lvl
-                    confs.append(f"S/R support bounce ({lvl.level_type})")
-                    score += 30
-                    if lower_wick > atr * 0.5:
-                        confs.append(f"Rejection wick ({lower_wick/atr:.1f}x ATR)")
-                        score += 15
-                    elif lower_wick > atr * 0.3:
-                        confs.append(f"Wick at level ({lower_wick/atr:.1f}x ATR)")
-                        score += 10
-                    if in_zone:
-                        confs.append("Inside structure zone")
-                        score += 5
+        # --- STEP 1+2: Find approach + rejection in last 5 bars ---
+        for check_offset in range(1, min(6, len(df))):
+            bar = df.iloc[-check_offset]
+            bar_close = float(bar["close"])
+            bar_open = float(bar["open"])
+            bar_high = float(bar["high"])
+            bar_low = float(bar["low"])
+            bar_body = abs(bar_close - bar_open)
+            bar_range = bar_high - bar_low
+            if bar_range <= 0:
+                continue
 
-        # Check if price is near a resistance level (SHORT setup)
-        if side is None and sm.nearest_resistance:
-            lvl = sm.nearest_resistance
-            dist_pct = (lvl.price - close) / close * 100
-            in_zone = lvl.zone_low <= close <= lvl.zone_high
-            if in_zone or (0 <= dist_pct < 0.5):
-                upper_wick = high - max(open_, close)
-                has_rejection = (upper_wick > body * 1.0 and close < (low + full_range * 0.45))
-                bearish_at_level = (close < open_ and close < (low + full_range * 0.5))
-                if has_rejection or bearish_at_level:
-                    side = OrderSide.SHORT
-                    target_level = lvl
-                    confs.append(f"S/R resistance rejection ({lvl.level_type})")
-                    score += 30
-                    if upper_wick > atr * 0.5:
-                        confs.append(f"Rejection wick ({upper_wick/atr:.1f}x ATR)")
-                        score += 15
-                    elif upper_wick > atr * 0.3:
-                        confs.append(f"Wick at level ({upper_wick/atr:.1f}x ATR)")
-                        score += 10
-                    if in_zone:
-                        confs.append("Inside structure zone")
-                        score += 5
+            # Check SUPPORT bounce (LONG)
+            if sm.nearest_support:
+                lvl = sm.nearest_support
+                in_zone = lvl.zone_low <= bar_low <= lvl.zone_high
+                dist_pct = (bar_low - lvl.price) / bar_close * 100 if bar_close > 0 else 999
+                if in_zone or (abs(dist_pct) < 0.5):
+                    lower_wick = min(bar_open, bar_close) - bar_low
+                    # Rejection: wick > 50% of range AND close in upper half
+                    has_rejection = (lower_wick > bar_range * 0.30 and
+                                     bar_close > (bar_low + bar_range * 0.45))
+                    if has_rejection:
+                        side = OrderSide.LONG
+                        target_level = lvl
+                        rejection_bar_idx = check_offset
+                        confs.append(f"S/R support rejection ({lvl.level_type})")
+                        score += 30
+                        if lower_wick > atr * 0.5:
+                            confs.append(f"Rejection wick ({lower_wick/atr:.1f}× ATR)")
+                            score += 15
+                        elif lower_wick > atr * 0.3:
+                            confs.append(f"Wick at level ({lower_wick/atr:.1f}× ATR)")
+                            score += 10
+                        if in_zone:
+                            confs.append("Inside structure zone")
+                            score += 5
+                        break
+
+            # Check RESISTANCE rejection (SHORT)
+            if sm.nearest_resistance:
+                lvl = sm.nearest_resistance
+                in_zone = lvl.zone_low <= bar_high <= lvl.zone_high
+                dist_pct = (lvl.price - bar_high) / bar_close * 100 if bar_close > 0 else 999
+                if in_zone or (abs(dist_pct) < 0.5):
+                    upper_wick = bar_high - max(bar_open, bar_close)
+                    has_rejection = (upper_wick > bar_range * 0.30 and
+                                     bar_close < (bar_low + bar_range * 0.55))
+                    if has_rejection:
+                        side = OrderSide.SHORT
+                        target_level = lvl
+                        rejection_bar_idx = check_offset
+                        confs.append(f"S/R resistance rejection ({lvl.level_type})")
+                        score += 30
+                        if upper_wick > atr * 0.5:
+                            confs.append(f"Rejection wick ({upper_wick/atr:.1f}× ATR)")
+                            score += 15
+                        elif upper_wick > atr * 0.3:
+                            confs.append(f"Wick at level ({upper_wick/atr:.1f}× ATR)")
+                            score += 10
+                        if in_zone:
+                            confs.append("Inside structure zone")
+                            score += 5
+                        break
 
         if side is None or target_level is None:
             return None
+
+        # --- STEP 3: Volume spike on or near rejection candle ---
+        rejection_bar = df.iloc[-rejection_bar_idx]
+        rej_vol = float(rejection_bar.get("rel_vol", 1.0))
+        if np.isnan(rej_vol):
+            rej_vol = 1.0
+        # Also check current bar volume
+        curr_vol = float(last.get("rel_vol", 1.0))
+        if np.isnan(curr_vol):
+            curr_vol = 1.0
+        best_vol = max(rej_vol, curr_vol)
+
+        if best_vol > 1.5:
+            confs.append(f"Volume spike {best_vol:.1f}×")
+            score += 15
+        elif best_vol > 1.2:
+            confs.append(f"Volume {best_vol:.1f}×")
+            score += 10
+        elif best_vol > 0.9:
+            score += 5
+        else:
+            # Low volume at structure = weak bounce, still allow but penalize
+            score -= 5
+
+        # --- STEP 4: Confirmation candle (current bar closes away from level) ---
+        if rejection_bar_idx == 1:
+            # Rejection IS the current candle — accept if it already closed in direction
+            if side == OrderSide.LONG and close <= open_:
+                return None  # Need bullish close for confirmation
+            elif side == OrderSide.SHORT and close >= open_:
+                return None
+        else:
+            # Rejection was earlier — current candle must confirm direction
+            if side == OrderSide.LONG:
+                if close <= open_:
+                    return None  # bearish = no confirmation
+                # Must be moving away from support
+                if close < target_level.price:
+                    return None  # still below level
+            else:
+                if close >= open_:
+                    return None
+                if close > target_level.price:
+                    return None  # still above level
+
+            confs.append(f"Confirmation candle ({rejection_bar_idx - 1} bar delay)")
+            score += 5
 
         # Level strength bonus
         score += min(target_level.strength // 5, 15)
         if target_level.touch_count >= 3:
             confs.append(f"{target_level.touch_count} touches")
-            score += 10
-
-        # Volume at level
-        rel_vol = float(last.get("rel_vol", 1.0))
-        if not np.isnan(rel_vol) and rel_vol > 1.2:
-            confs.append(f"Volume {rel_vol:.1f}x")
             score += 10
 
         # HTF alignment
@@ -2233,21 +2458,20 @@ class ScalpStrategy(BaseStrategy):
         confidence = min(score, 100)
 
         # SL below/above the structure zone + buffer
-        # CLAMP: max SL = 2× ATR or 0.5% of price (whichever is smaller)
         max_sl_dist = min(atr * 2.0, close * 0.005)
         if side == OrderSide.LONG:
             struct_sl = target_level.zone_low - close * 0.001
-            sl = max(struct_sl, close - max_sl_dist)  # don't let SL be too far
+            sl = max(struct_sl, close - max_sl_dist)
         else:
             struct_sl = target_level.zone_high + close * 0.001
-            sl = min(struct_sl, close + max_sl_dist)  # don't let SL be too far
+            sl = min(struct_sl, close + max_sl_dist)
 
         return _SetupResult(
             name="structure_bounce",
             side=side,
             confidence=confidence,
             confirmations=confs,
-            entry_price=target_level.price,  # limit entry at the level
+            entry_price=target_level.price,
             stop_loss=sl,
             atr=atr,
         )

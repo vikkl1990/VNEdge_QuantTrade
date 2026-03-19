@@ -95,20 +95,40 @@ class EVEngine:
         scanner_name: str,
         by_setup: Dict[str, Dict[str, Any]],
         regime: str = "",
+        side: str = "",
+        session: str = "",
     ) -> EVResult:
         """Compute EV for a specific scanner using historical R-metrics.
 
+        Calibrated lookup: tries scanner+side+regime+session first,
+        falls back to coarser keys if insufficient data.
+
         Args:
             scanner_name: Name of the scanner (e.g., "ema_momentum")
-            by_setup: The by_setup dict from signal_tracker.get_stats()
-                      Keys are setup names, values contain:
-                      total, wins, win_rate, avg_win_r, avg_loss_r, expectancy_r
-            regime: Current market regime for threshold adjustment
+            by_setup: Dict from signal_tracker stats
+            regime: Current market regime
+            side: "long" or "short" for directional calibration
+            session: "europe", "us", "asia_early", etc.
 
         Returns:
             EVResult with verdict and size multiplier
         """
-        setup_data = by_setup.get(scanner_name, {})
+        # Calibrated lookup: try most specific key first, fall back to coarser
+        lookup_keys = [
+            f"{scanner_name}_{side}_{regime}_{session}",  # most specific
+            f"{scanner_name}_{side}_{regime}",
+            f"{scanner_name}_{side}",
+            scanner_name,  # coarsest — original behavior
+        ]
+
+        setup_data = {}
+        for key in lookup_keys:
+            candidate = by_setup.get(key, {})
+            if candidate.get("total", 0) >= self.MIN_SAMPLES:
+                setup_data = candidate
+                break
+        if not setup_data:
+            setup_data = by_setup.get(scanner_name, {})
         sample_count = setup_data.get("total", 0)
 
         # Not enough data — allow trading but flag it

@@ -616,7 +616,7 @@ class ScalpBacktester:
 
         # PnL on leveraged position
         dollar_pnl = position_usd * pnl_pct / 100
-        fees = position_usd * 0.0018  # 0.18% taker round-trip
+        fees = position_usd * 0.0008  # 0.08% maker round-trip (Scalper offer: 0.02% open + 0% close + 0.06% settlement)
         net_pnl = dollar_pnl - fees
         self.balance += net_pnl
         self.total_fees += fees
@@ -836,13 +836,29 @@ def print_extended_report(result: BacktestResult):
 # CLI
 # ─────────────────────────────────────────────────────────────────────
 
-async def run_single_tf(config, symbols, start, end, balance, trigger_tf="1m", verbose=False):
-    """Run a single backtest with given trigger TF. Returns (result, trigger_tf)."""
+async def run_single_tf(config, symbols, start, end, balance, trigger_tf="1m", verbose=False, live_mode=False):
+    """Run a single backtest with given trigger TF. Returns (result, trigger_tf).
+
+    live_mode=True: runs with full veto layer, structure_bounce_only, and session gates
+                    (simulates actual live trading conditions)
+    live_mode=False: learning mode, all scanners fire, no vetos (for ML data collection)
+    """
     bt = ScalpBacktester(config, trigger_tf=trigger_tf)
-    bt.strategy.max_signals_hr = 999
-    bt.strategy.cooldown_sec = 0
-    bt.strategy._session_gate_enabled = False
-    bt.COOLDOWN_SEC = 0
+    if live_mode:
+        # Simulate real live conditions: vetos ON, structure_bounce priority
+        bt.strategy._is_learning = False
+        bt.strategy.structure_bounce_only = True
+        bt.strategy._sb_only_min_conf = 65  # lowered from 82 — let more SB signals through
+        bt.strategy.cooldown_sec = 60  # 1 min cooldown (was 180)
+        # Session gate uses datetime.now() (wall clock) — disable in backtest
+        bt.strategy._session_gate_enabled = False
+        bt.COOLDOWN_SEC = 60
+        bt.strategy.max_signals_hr = 30
+    else:
+        bt.strategy.max_signals_hr = 999
+        bt.strategy.cooldown_sec = 0
+        bt.strategy._session_gate_enabled = False
+        bt.COOLDOWN_SEC = 0
     result = await bt.run(symbols, start, end, balance)
     return result, trigger_tf
 
@@ -856,6 +872,7 @@ async def main():
     parser.add_argument("--trigger-tf", default="1m", help="Primary trigger timeframe (1m, 3m, 5m, 10m, 15m)")
     parser.add_argument("--compare", action="store_true", help="Compare ALL timeframes (1m, 3m, 5m, 10m, 15m)")
     parser.add_argument("--export", action="store_true", help="Export CSV + charts")
+    parser.add_argument("--live", action="store_true", help="Simulate live mode (vetos ON, structure_bounce_only)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -942,7 +959,8 @@ async def main():
 
     # ── SINGLE TF MODE ──
     result, _ = await run_single_tf(
-        config, args.symbols, args.start, args.end, args.balance, trigger_tf=args.trigger_tf
+        config, args.symbols, args.start, args.end, args.balance,
+        trigger_tf=args.trigger_tf, live_mode=args.live,
     )
 
     # Print report

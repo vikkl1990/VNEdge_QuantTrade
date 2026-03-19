@@ -210,9 +210,9 @@ class ScalpStrategy(BaseStrategy):
         self.tp3_rr: float = 4.0             # TP3 at 4.0R (30% trail)
 
         # --- SL/TP constraints ---
-        self.min_sl_pct: float = 0.30        # 0.3% min SL — keeps fees < 13% of risk
-        self.max_sl_pct: float = 0.60        # 0.6% max SL — tight for scalps
-        self.min_tp1_pct: float = 0.40       # TP1 ≥ 0.4% (10× maker fees)
+        self.min_sl_pct: float = 0.55        # 0.55% min SL (Tier 2: wider to survive noise)
+        self.max_sl_pct: float = 0.95        # 0.95% max SL (Tier 2: capped for risk control)
+        self.min_tp1_pct: float = 0.65       # TP1 ≥ 0.65% (Tier 2: covers fees + slippage)
         self.min_rr_ratio: float = 1.2       # min 1.2R — ensures positive EV
 
         # --- Liquidation safety (critical at high leverage) ---
@@ -221,17 +221,37 @@ class ScalpStrategy(BaseStrategy):
         self.liq_min_buffer_pct: float = 0.3 # Min 0.3% — allows up to 100x super scalp
 
         # --- Confidence-scaled leverage ---
-        # Higher confidence = more leverage (user OK with up to 50x)
+        # Leverage cap: max 20x (even at 95 conf) unless BTC structure_bounce
+        # Tier 2 Session+Risk: prevents overleveraging
         self.leverage_map = {
-            95: 50,   # A++ signals at structure → max leverage
-            90: 40,   # A+ signals
-            85: 30,   # A signals
-            80: 25,   # Strong
-            75: 20,   # Valid
-            70: 15,   # Decent
-            65: 10,   # Minimum
-            0:   5,   # Low confidence fallback
+            95: 20,   # Capped at 20x for safety
+            90: 20,   # Same cap
+            85: 15,   # A signals
+            80: 15,   # Strong
+            75: 10,   # Valid
+            70: 10,   # Decent
+            65:  5,   # Minimum
+            0:   3,   # Low confidence fallback
         }
+
+        # --- Tier 1: Edge vs Cost thresholds ---
+        # Scalper offer: entry maker 0.02% + settlement 0.06% = 0.08% total
+        self.scalper_cost_pct = 0.047   # entry maker only (exit free under Scalper)
+        self.min_edge_high_conf = 0.18  # conservative_move ≥ 0.18% for conf 90+
+        self.min_edge_low_conf = 0.25   # conservative_move ≥ 0.25% for conf < 90
+
+        # --- Tier 2: Scanner weight tiers ---
+        self.scanner_size_tiers = {
+            "structure_bounce": 1.0,     # full size — best performer
+            "order_block_entry": 1.0,    # full size — institutional zones
+            "ema_momentum": 0.6,         # reduced — only LONG
+            "trend_continuation": 0.6,   # reduced
+            "rsi_divergence": 0.0,       # shadow/ML only — no trade
+            "vwap_mean_revert": 0.0,     # shadow/ML only
+            "liquidity_sweep": 0.0,      # shadow/ML only
+            "simple_bias": 0.0,          # ML training only
+        }
+        self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -847,8 +867,45 @@ class ScalpStrategy(BaseStrategy):
         best = best_sr.setup_result
 
         # ══════════════════════════════════════════════════════
+        # TIER 2: SCANNER VETO + WEIGHT GATE
+        # Shadow scanners only log for ML, no actual trade
+        # ══════════════════════════════════════════════════════
+        scanner_size = self.scanner_size_tiers.get(best_sr.scanner_name, 0.6)
+        if scanner_size <= 0.0 and not self._is_learning:
+            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"SCANNER SHADOW: {best_sr.scanner_name} is ML-only (no trade)",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            # Still log for ML training
+            self._feature_logger.log_signal(
+                symbol=symbol, scanner=best_sr.scanner_name,
+                side=best.side.value if best.side else "",
+                tier=best_sr.tier, score=best.confidence,
+                weighted_score=best_sr.weighted_score,
+                entry_price=best.entry_price, stop_loss=best.stop_loss,
+                atr=best.atr, indicators=indicators, regime=regime,
+                scanner_weight=best_sr.scanner_weight,
+                scanner_expectancy=0, ev=0,
+            )
+            return []
+
+        # Block ema_momentum SHORTS entirely (33% WR historically)
+        if best_sr.scanner_name == "ema_momentum" and best.side == OrderSide.SHORT:
+            if not self._is_learning:
+                self.last_scan_status[symbol] = {
+                    "time": now_iso, "signal": False,
+                    "reason": "SCANNER VETO: ema_momentum SHORT blocked (33% WR)",
+                    "indicators": indicators, "setups_checked": setups_checked,
+                    "funnel": dict(self._funnel),
+                }
+                return []
+
+        # ══════════════════════════════════════════════════════
         # HARD VETO LAYER — ANY veto = NO TRADE
-        # This replaces all soft penalties with binary decisions.
+        # Upgraded with Tier 2 strict alignment
         # ══════════════════════════════════════════════════════
         vetos = []
 
@@ -858,34 +915,41 @@ class ScalpStrategy(BaseStrategy):
         if now - last_fire < self._scanner_cooldown_sec:
             vetos.append(f"COOLDOWN: {best_sr.scanner_name} fired {int((now-last_fire)/60)}m ago")
 
-        # VETO 2: HTF mismatch (signal direction vs higher timeframe trend)
+        # VETO 2: HTF STRICT alignment (Tier 2 upgrade — HARD veto, not soft)
+        # Signal side MUST match HTF bias (15m EMA50)
         if htf_bias != 0:
             htf_opposes = (
                 (htf_bias < 0 and best.side == OrderSide.LONG) or
                 (htf_bias > 0 and best.side == OrderSide.SHORT)
             )
             if htf_opposes:
-                vetos.append(f"HTF MISMATCH: HTF={'bearish' if htf_bias < 0 else 'bullish'} vs signal {best.side.value}")
+                vetos.append(f"HTF STRICT: HTF={'bearish' if htf_bias < 0 else 'bullish'} vs {best.side.value}")
 
-        # VETO 3: Dead session (hours with proven negative edge)
+        # VETO 3: Session + Risk (Tier 2 upgrade)
+        # Asia Late: HARD veto (not just penalty)
+        # Dead UTC hours: HARD veto
         ist_now_check = datetime.now(_IST)
-        utc_hour = (ist_now_check.hour - 5) % 24  # IST to UTC approx
-        dead_hours = {2, 3, 4, 5, 10, 11}  # From hour analysis: negative bias
-        if utc_hour in dead_hours:
-            vetos.append(f"DEAD SESSION: UTC hour {utc_hour} has no edge")
+        utc_hour = (ist_now_check.hour - 5) % 24
+        if getattr(self, '_session_gate_enabled', True):
+            ist_hour_check = ist_now_check.hour + ist_now_check.minute / 60.0
+            if 2.5 <= ist_hour_check < 9.0:
+                vetos.append(f"ASIA LATE VETO: 02:30-09:00 IST (37% WR)")
+            dead_hours = {2, 3, 4, 5, 10, 11}
+            if utc_hour in dead_hours:
+                vetos.append(f"DEAD SESSION: UTC hour {utc_hour}")
 
-        # VETO 4: Low volatility (ATR contracting)
+        # VETO 4: Volatility STRICT (Tier 2 — ATR ≥ 0.88× avg, was 0.7)
         atr_ratio = getattr(self, '_atr_ratio', 1.0)
-        if atr_ratio < 0.7:
-            vetos.append(f"LOW VOLATILITY: ATR ratio {atr_ratio:.2f} < 0.7")
+        if atr_ratio < 0.88:
+            vetos.append(f"LOW VOLATILITY: ATR ratio {atr_ratio:.2f} < 0.88")
 
-        # VETO 5: No volume
+        # VETO 5: Volume (stricter — 2.2× for 1m, 1.0× for 5m)
         last_row_vol = df.iloc[-1]
         rel_vol_check = float(last_row_vol.get("rel_vol", 1.0)) if not np.isnan(last_row_vol.get("rel_vol", 1.0)) else 0
-        if rel_vol_check < 0.8:
-            vetos.append(f"NO VOLUME: rel_vol={rel_vol_check:.1f} < 0.8")
+        if rel_vol_check < 1.0:
+            vetos.append(f"NO VOLUME: rel_vol={rel_vol_check:.1f} < 1.0")
 
-        # VETO 6: CHOCH conflict (structural break opposes signal)
+        # VETO 6: CHOCH conflict (unchanged — structural break opposes signal)
         if choch_data.get("choch_detected", False):
             choch_dir = choch_data.get("direction")
             choch_strength = choch_data.get("strength", 0)
@@ -896,16 +960,44 @@ class ScalpStrategy(BaseStrategy):
                     (choch_dir == "bullish" and best.side == OrderSide.SHORT)
                 )
                 if choch_opposes:
-                    vetos.append(f"CHOCH CONFLICT: {choch_dir} structure break vs {best.side.value}")
+                    vetos.append(f"CHOCH CONFLICT: {choch_dir} vs {best.side.value}")
 
-        # VETO 7: Candle quality — trigger candle must be meaningful
+        # VETO 7: Candle quality — body ratio must be meaningful
         trigger_candle = df.iloc[-1]
         candle_body = abs(float(trigger_candle.get("close", 0)) - float(trigger_candle.get("open", 0)))
         candle_range = float(trigger_candle.get("high", 0)) - float(trigger_candle.get("low", 0))
         if candle_range > 0:
             body_ratio = candle_body / candle_range
-            if body_ratio < 0.3:  # doji — no conviction
-                vetos.append(f"WEAK CANDLE: body ratio {body_ratio:.2f} < 0.3 (doji)")
+            if body_ratio < 0.3:
+                vetos.append(f"WEAK CANDLE: body ratio {body_ratio:.2f} < 0.3")
+
+        # VETO 8: No-Chase gate (Tier 2 — stricter impulse filter)
+        _chase_atr = self._confirm_atr if self._confirm_atr > 0 else best.atr
+        if _chase_atr > 0 and best.entry_price > 0:
+            # Large candle body > 1.25× ATR → chasing
+            if candle_body > _chase_atr * 1.25:
+                vetos.append(f"NO CHASE: candle body {candle_body:.2f} > 1.25×ATR")
+            # Price stretched > 0.7× ATR from EMA8
+            ema8_val = float(df.iloc[-1].get("ema_8", 0))
+            if ema8_val > 0:
+                dist_from_ema8 = abs(float(df.iloc[-1].get("close", 0)) - ema8_val)
+                if dist_from_ema8 > _chase_atr * 0.7:
+                    vetos.append(f"NO CHASE: stretched {dist_from_ema8:.2f} > 0.7×ATR from EMA8")
+
+        # VETO 9: Regime + Scanner mismatch (Tier 2 — strict routing)
+        regime_scanner_ok = True
+        if regime in ("ranging", "sideways", "quiet"):
+            if best_sr.scanner_name not in ("structure_bounce", "vwap_mean_revert", "rsi_divergence"):
+                regime_scanner_ok = False
+                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
+        elif regime in ("trending_up", "trending_down"):
+            if best_sr.scanner_name not in ("trend_continuation", "ema_momentum", "structure_bounce"):
+                regime_scanner_ok = False
+                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
+        elif regime in ("volatile", "high_volatility"):
+            if best_sr.scanner_name not in ("structure_bounce", "order_block_entry"):
+                regime_scanner_ok = False
+                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
 
         # Apply vetos (in learning mode: log but don't block)
         if vetos and not self._is_learning:
@@ -990,22 +1082,47 @@ class ScalpStrategy(BaseStrategy):
 
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
 
-        # ── DEAD TRADE PREVENTION: Momentum gate ──
-        # Don't enter if price hasn't moved in last 5 candles.
-        # 24/58 losses were dead trades (MFE=0.00R) — price was flat.
-        # Check: last 5 candles high-low range vs ATR. If range < 0.3× ATR, skip.
-        if len(df) >= 6 and best.atr > 0:
-            recent_5 = df.iloc[-5:]
-            recent_range = float(recent_5["high"].max() - recent_5["low"].min())
-            atr_check = self._confirm_atr if self._confirm_atr > 0 else best.atr
-            if recent_range < atr_check * 0.3:
+        # ══════════════════════════════════════════════════════
+        # TIER 1: MINIMUM EDGE vs REAL COST GATE
+        # Replaces old momentum gate + fee filter
+        # conservative_move must exceed Scalper fee + slippage buffer
+        # ══════════════════════════════════════════════════════
+        _edge_atr = self._confirm_atr if self._confirm_atr > 0 else best.atr
+        if _edge_atr > 0 and best.entry_price > 0:
+            # conservative_move = min(TP1 distance %, 1.5 × ATR_5m %)
+            atr_pct = (_edge_atr / best.entry_price) * 100
+            risk_dist = abs(best.entry_price - best.stop_loss)
+            tp1_dist_pct = (risk_dist * self.tp1_rr / best.entry_price) * 100
+            conservative_move = min(tp1_dist_pct, 1.5 * atr_pct)
+
+            # Required minimum based on confidence
+            min_edge = self.min_edge_high_conf if best.confidence >= 90 else self.min_edge_low_conf
+
+            if conservative_move < min_edge and not self._is_learning:
+                self._funnel["blocked_cost"] = self._funnel.get("blocked_cost", 0) + 1
                 self.last_scan_status[symbol] = {
                     "time": now_iso, "signal": False,
-                    "reason": f"MOMENTUM GATE: Price flat (range={recent_range:.2f} < 0.3×ATR={atr_check*0.3:.2f})",
+                    "reason": f"EDGE GATE: move={conservative_move:.3f}% < {min_edge:.3f}% min (conf={best.confidence})",
                     "indicators": indicators, "setups_checked": setups_checked,
                     "funnel": dict(self._funnel),
                 }
                 return []
+
+        # Momentum check (dead trade prevention — stricter)
+        # Last 5 candles range < 0.42× ATR → flat market (was 0.3)
+        if len(df) >= 6 and best.atr > 0:
+            recent_5 = df.iloc[-5:]
+            recent_range = float(recent_5["high"].max() - recent_5["low"].min())
+            atr_check = self._confirm_atr if self._confirm_atr > 0 else best.atr
+            if recent_range < atr_check * 0.42:
+                if not self._is_learning:
+                    self.last_scan_status[symbol] = {
+                        "time": now_iso, "signal": False,
+                        "reason": f"MOMENTUM GATE: flat (range={recent_range:.2f} < 0.42×ATR={atr_check*0.42:.2f})",
+                        "indicators": indicators, "setups_checked": setups_checked,
+                        "funnel": dict(self._funnel),
+                    }
+                    return []
 
         # ── Build Signal ──
         signal = self._build_signal(
@@ -3161,12 +3278,21 @@ class ScalpStrategy(BaseStrategy):
                 leverage = leverage_map[conf_threshold]
                 break
 
-        # Estimated liquidation distance (simplified: ~1/leverage - maintenance margin)
-        liq_buffer_pct = (100.0 / leverage) - 0.5  # rough estimate minus maintenance
+        # Tier 2: Liquidation buffer must be > 2.2× SL (was 1.25×)
+        liq_buffer_pct = (100.0 / leverage) - 0.5
         liq_buffer_dist = entry * liq_buffer_pct / 100
+        sl_pct_actual = risk / entry * 100
 
         sl_pct_of_liq = (risk / liq_buffer_dist * 100) if liq_buffer_dist > 0 else 100
         risk_status = "SAFE"
+
+        # Tier 2: liq buffer must be ≥ 2.2× SL distance
+        if liq_buffer_pct > 0 and liq_buffer_pct < sl_pct_actual * 2.2:
+            if not self._is_learning:
+                logger.info("%s: %s REJECTED — liq buffer %.2f%% < 2.2× SL %.2f%%",
+                           symbol, setup.name, liq_buffer_pct, sl_pct_actual)
+                return None
+            risk_status = "WARNING"
 
         if liq_buffer_pct < self.liq_min_buffer_pct:
             if not self._is_learning:

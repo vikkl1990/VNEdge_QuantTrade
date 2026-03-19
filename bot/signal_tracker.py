@@ -32,7 +32,10 @@ _CLOSED_FILE = _STORAGE_DIR / "closed_signals.json"
 _STATS_FILE = _STORAGE_DIR / "signal_stats.json"
 
 # Max age before auto-closing a signal (seconds)
-MAX_SIGNAL_AGE = 4 * 3600  # 4 hours
+# Scalper offer: BTC 30 min, others 15 min (free closing fee within window)
+MAX_SIGNAL_AGE = 4 * 3600  # 4 hours hard backstop
+SCALPER_WINDOW_BTC = 30 * 60   # 30 minutes — BTC Scalper offer window
+SCALPER_WINDOW_OTHER = 15 * 60  # 15 minutes — all other futures
 
 
 @dataclass
@@ -440,36 +443,27 @@ class SignalTracker:
                     )
                     continue
 
-            # -- MFE-Based Profit Protection + Momentum Collapse --
-            # Tiered exit: don't let winners become losers
-            if ts.initial_risk > 0 and ts.mfe_r >= 0.3:
+            # -- FEE-AWARE Profit Protection --
+            # Only protect at levels that are NET profitable after 0.18% fees
+            # Minimum profitable exit = 0.76R (covers fees with margin)
+            # REMOVED: 0.3R and 0.15R protection — both net negative
+            if ts.initial_risk > 0 and ts.mfe_r >= 1.0:
                 if is_long:
                     current_r = (price - ts.entry_price) / ts.initial_risk
                 else:
                     current_r = (ts.entry_price - price) / ts.initial_risk
 
-                # Tier 1: Had +1.0R profit, now retreated to +0.4R → lock +0.4R
                 profit_protect = False
-                if ts.mfe_r >= 1.0 and current_r <= 0.4:
+                # Only protect if we can lock at least 0.8R (net positive)
+                if ts.mfe_r >= 1.5 and current_r <= 0.8:
                     profit_protect = True
-                    exit_reason_tag = "profit_protect_1R"
-                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.4R)"
-                # Tier 2: Had +0.7R profit, now retreated to +0.15R → lock small profit
-                elif ts.mfe_r >= 0.7 and current_r <= 0.15:
+                    exit_reason_tag = "profit_protect_15R"
+                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.8R)"
+                elif ts.mfe_r >= 1.0 and current_r <= -0.5:
+                    # Had 1.0R profit but now losing — momentum collapse
                     profit_protect = True
-                    exit_reason_tag = "profit_protect_07R"
-                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.15R)"
-                # Tier 3 (original): Had +0.3R, now at -0.5R after 5min → momentum collapse
-                elif ts.mfe_r >= 0.3 and current_r <= -0.5:
-                    try:
-                        entry_time = datetime.fromisoformat(ts.entry_time)
-                        elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds()
-                        if elapsed >= 300:
-                            profit_protect = True
-                            exit_reason_tag = "momentum_collapse"
-                            exit_detail = f"Momentum collapse: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R"
-                    except (ValueError, TypeError):
-                        pass
+                    exit_reason_tag = "momentum_collapse"
+                    exit_detail = f"Momentum collapse: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R"
 
                 if profit_protect:
                     ts.exit_price = price
@@ -552,18 +546,17 @@ class SignalTracker:
                 else:
                     current_r_trail = (ts.entry_price - price) / ts.initial_risk
 
-                # AGGRESSIVE trail — lock 75-80% of peak profit
-                # Accounts for REST API latency (~5s delay)
-                # Data shows we leave 54% of profit on table with old trail
+                # FEE-AWARE trail — minimum lock must exceed fees (0.76R)
+                # Any exit below 0.76R is NET NEGATIVE after 0.18% round-trip fees
+                # Data: trail at 0.3R = +0.106% gross - 0.180% fee = -0.074% NET LOSS
+                # Only trail at 1.0R+ where exit is genuinely profitable
                 trail_levels = [
                     (3.0, 2.5),   # 83% locked
                     (2.5, 2.0),   # 80% locked
                     (2.0, 1.6),   # 80% locked
                     (1.5, 1.2),   # 80% locked
-                    (1.0, 0.75),  # 75% locked
-                    (0.7, 0.5),   # 71% locked
-                    (0.5, 0.35),  # 70% locked
-                    (0.3, 0.15),  # 50% (minimum, covers fees)
+                    (1.0, 0.8),   # 80% locked — MINIMUM profitable trail
+                    # REMOVED: 0.7/0.5/0.3 trails — all net-negative after fees
                 ]
 
                 for trigger_r, lock_r in trail_levels:
@@ -826,10 +819,16 @@ class SignalTracker:
                     current_threshold = mfe_threshold * 0.8
 
                     dead_trade = False
-                    if age_sec >= base_time and max_fav_r < mfe_threshold and current_r < current_threshold:
-                        dead_trade = True
-                    # Hard backstop: never hold longer than 90 minutes with no progress
-                    elif age_sec >= 90 * 60 and max_fav_r < 0.5 and current_r < 0.3:
+
+                    # SMART TIME STOP: Never close if price is above entry
+                    # If we're not losing, there's no reason to exit
+                    # Only time-stop trades that are LOSING and going nowhere
+                    if current_r >= 0:
+                        dead_trade = False  # above entry → HOLD, never time-stop
+                    elif age_sec >= base_time and max_fav_r < mfe_threshold and current_r < -0.2:
+                        dead_trade = True  # below entry, never moved, losing → close
+                    # Hard backstop: 4 hours max for any trade below entry
+                    elif age_sec >= 4 * 3600 and current_r < 0:
                         dead_trade = True
 
                     if dead_trade:
@@ -858,6 +857,41 @@ class SignalTracker:
                             continue
                 except (ValueError, TypeError):
                     pass
+
+            # -- Scalper timer: partial close before window expires --
+            # BTC: 30 min window, others: 15 min
+            # If profitable and nearing window end, close to get free exit fee
+            try:
+                entry_dt_sc = datetime.fromisoformat(ts.entry_time)
+                age_sc = (datetime.now(timezone.utc) - entry_dt_sc).total_seconds()
+                scalper_window = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
+                # 80% of window elapsed + still in profit → close to lock free exit
+                if age_sc >= scalper_window * 0.80 and ts.status == "active":
+                    if is_long:
+                        sc_r = (price - ts.entry_price) / risk if risk > 0 else 0
+                    else:
+                        sc_r = (ts.entry_price - price) / risk if risk > 0 else 0
+                    if sc_r > 0.1:  # in profit
+                        ts.exit_price = price
+                        ts.exit_reason = "scalper_timer"
+                        ts.exit_time = now_iso
+                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.exit_reason_detailed = f"scalper_timer_{int(scalper_window/60)}m"
+                        ts.status = "expired"
+                        to_close.append(tid)
+                        logger.info(
+                            "SCALPER TIMER: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (free exit)",
+                            ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
+                            sc_r, ts.pnl_pct,
+                        )
+                        events.append({
+                            "type": "scalper_timer",
+                            "signal": ts.to_dict(),
+                            "message": f"SCALPER: {ts.symbol} {ts.side} closed at {int(age_sc/60)}m (free exit) | PnL: {ts.pnl_pct:+.2f}%",
+                        })
+                        continue
+            except (ValueError, TypeError):
+                pass
 
             # -- Check expiry (4 hours) — applies to ALL non-closed statuses --
             try:

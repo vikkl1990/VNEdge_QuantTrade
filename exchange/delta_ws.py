@@ -222,7 +222,7 @@ class DeltaWebSocket:
             self.msg_count += 1
 
             # Track latency
-            ts = ticker.get("timestamp")
+            ts = data.get("timestamp")
             if ts:
                 try:
                     latency = (time.time() * 1000) - float(ts)

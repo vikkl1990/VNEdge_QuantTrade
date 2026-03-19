@@ -136,17 +136,8 @@ tr:hover{background:rgba(255,255,255,.02)}
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
-<div id="price-ticker" style="display:flex;justify-content:center;gap:32px;padding:8px 16px;background:#0d1117;border-bottom:1px solid #1f2937;font-family:'SF Mono',Consolas,monospace">
-  <div style="display:flex;align-items:center;gap:10px">
-    <span style="color:var(--muted);font-size:.7rem;font-weight:600">BTC/USDT</span>
-    <span id="price-btc" style="font-size:1.2rem;font-weight:800;color:#f7931a">--</span>
-    <span id="price-btc-change" style="font-size:.75rem;font-weight:600">--</span>
-  </div>
-  <div style="display:flex;align-items:center;gap:10px">
-    <span style="color:var(--muted);font-size:.7rem;font-weight:600">ETH/USDT</span>
-    <span id="price-eth" style="font-size:1.2rem;font-weight:800;color:#627eea">--</span>
-    <span id="price-eth-change" style="font-size:.75rem;font-weight:600">--</span>
-  </div>
+<div id="price-ticker" style="display:flex;justify-content:center;gap:24px;padding:8px 16px;background:#0d1117;border-bottom:1px solid #1f2937;font-family:'SF Mono',Consolas,monospace;flex-wrap:wrap">
+  <div id="ticker-symbols" style="display:flex;gap:24px;flex-wrap:wrap"></div>
   <div style="display:flex;align-items:center;gap:10px">
     <span style="color:var(--muted);font-size:.7rem">BAL</span>
     <span id="price-bal" style="font-size:1rem;font-weight:700;color:var(--green)">--</span>
@@ -160,6 +151,18 @@ tr:hover{background:rgba(255,255,255,.02)}
 <div class="alert-banner" id="alert-banner">
   <span class="alert-icon" id="alert-icon"></span>
   <span id="alert-text"></span>
+</div>
+<!-- Mode + Exchange Balance bar -->
+<div style="display:flex;justify-content:space-between;padding:4px 16px;background:#0d1117;border-bottom:1px solid #1f2937;font-size:.7rem">
+  <div style="display:flex;gap:12px;align-items:center">
+    <span id="mode-badge" style="padding:2px 8px;border-radius:4px;background:#7c3aed;color:#fff;font-weight:700;font-size:.65rem">📡 PAPER LEARNING</span>
+    <span style="color:var(--muted)">Exchange: <span id="exchange-bal" style="color:#f59e0b;font-weight:600">$118.46</span></span>
+    <span style="color:var(--muted)">Paper: <span id="paper-bal-mini" style="color:var(--green);font-weight:600">$1,000.00</span></span>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span style="color:var(--muted)">Grid: <span id="grid-mini-profit" style="color:var(--green);font-weight:600">$0.00</span></span>
+    <span style="color:var(--muted)">Signals: <span id="signals-mini-count" style="font-weight:600">0</span></span>
+  </div>
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -214,6 +217,33 @@ tr:hover{background:rgba(255,255,255,.02)}
         <div class="funnel-step" style="background:rgba(16,185,129,.15)"><div class="f-val" id="fn-valid">0</div><div class="f-lbl">Valid</div></div>
         <div class="funnel-step" style="background:rgba(245,158,11,.1)"><div class="f-val" id="fn-weak">0</div><div class="f-lbl">Weak</div></div>
         <div class="funnel-step" style="background:rgba(239,68,68,.1)"><div class="f-val" id="fn-blocked">0</div><div class="f-lbl">Blocked</div></div>
+      </div>
+    </div>
+
+    <!-- Grid Bot Status -->
+    <div class="panel">
+      <div class="panel-title">🔲 Grid Bot <span id="grid-status-badge" style="font-size:.65rem;padding:2px 6px;border-radius:4px;background:var(--green);color:#000;font-weight:700">ACTIVE</span></div>
+      <div id="grid-panel" style="font-size:.8rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          <div><span style="color:var(--muted)">Total Fills</span><br><span id="grid-fills" style="font-size:1.4rem;font-weight:800;color:var(--green)">0</span></div>
+          <div><span style="color:var(--muted)">Profit</span><br><span id="grid-profit" style="font-size:1.4rem;font-weight:800;color:var(--green)">$0.00</span></div>
+          <div><span style="color:var(--muted)">Fills/hr</span><br><span id="grid-fills-hr" style="font-weight:700">0</span></div>
+          <div><span style="color:var(--muted)">$/hr</span><br><span id="grid-profit-hr" style="font-weight:700">$0.00</span></div>
+        </div>
+        <div style="margin-top:8px;font-size:.7rem;color:var(--muted)">
+          <span>Grid: <span id="grid-spacing">0.2%</span></span> |
+          <span>Levels: <span id="grid-levels">10</span></span> |
+          <span>Fee: <span id="grid-fee">0.10%</span></span>
+        </div>
+        <div id="grid-positions-list" style="margin-top:8px;font-size:.7rem;max-height:120px;overflow-y:auto"></div>
+      </div>
+    </div>
+
+    <!-- Per-Symbol Regime -->
+    <div class="panel">
+      <div class="panel-title">📊 Per-Symbol Status</div>
+      <div id="per-symbol-status" style="font-size:.8rem">
+        <div class="empty">Waiting for data...</div>
       </div>
     </div>
 
@@ -494,46 +524,57 @@ async function refreshLive() {
 
     // Alerts
     updateAlerts(alerts);
+
+    // Grid Bot
+    try {
+        const grid = await api("/api/grid/status");
+        if (grid) updateGridPanel(grid);
+    } catch(e) {}
+
+    // Per-symbol status
+    updatePerSymbolStatus(status, decision);
+
+    // Mini bar (mode, exchange bal, grid profit)
+    try {
+        const mon = await api("/api/monitor/report");
+        if (mon) {
+            const ppEl = document.getElementById("paper-bal-mini");
+            if (ppEl) ppEl.textContent = "$" + (mon.paper_balance || 0).toLocaleString("en-US", {minimumFractionDigits:2});
+            const scEl = document.getElementById("signals-mini-count");
+            if (scEl) scEl.textContent = mon.total_analyzed || 0;
+        }
+    } catch(e) {}
 }
 
+const SYMBOL_COLORS = {"BTC":"#f7931a","ETH":"#627eea","AVAX":"#e84142","SOL":"#9945ff","LINK":"#2a5ada","DOGE":"#c3a634","SUI":"#4da2ff","WIF":"#8b5cf6"};
 function updatePriceTicker(prices, prev, status) {
-    const btc = prices["BTC/USDT"] || 0;
-    const eth = prices["ETH/USDT"] || 0;
-    const prevBtc = prev["BTC/USDT"] || btc;
-    const prevEth = prev["ETH/USDT"] || eth;
+    const container = document.getElementById("ticker-symbols");
+    if (!container) return;
 
-    const btcEl = document.getElementById("price-btc");
-    const ethEl = document.getElementById("price-eth");
-
-    // Format with commas
-    btcEl.textContent = "$" + btc.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
-    ethEl.textContent = "$" + eth.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
-
-    // Flash color on change
-    if (btc !== prevBtc) {
-        btcEl.style.color = btc > prevBtc ? "#10b981" : "#ef4444";
-        setTimeout(() => { btcEl.style.color = "#f7931a"; }, 800);
+    // Build ticker dynamically for all symbols
+    const symbols = Object.keys(prices).sort();
+    let html = "";
+    for (const sym of symbols) {
+        const price = prices[sym] || 0;
+        const prevPrice = prev[sym] || price;
+        const base = sym.split("/")[0];
+        const color = SYMBOL_COLORS[base] || "#9ca3af";
+        const chg = prevPrice > 0 ? ((price - prevPrice) / prevPrice * 100) : 0;
+        const chgColor = chg >= 0 ? "var(--green)" : "var(--red)";
+        const arrow = chg >= 0 ? "▲" : "▼";
+        const decimals = price > 100 ? 2 : price > 1 ? 2 : 4;
+        const fmtPrice = price > 100 ? "$" + price.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) : "$" + price.toFixed(decimals);
+        html += `<div style="display:flex;align-items:center;gap:8px">
+            <span style="color:var(--muted);font-size:.7rem;font-weight:600">${base}/USDT</span>
+            <span style="font-size:1.1rem;font-weight:800;color:${color}">${fmtPrice}</span>
+            <span style="font-size:.7rem;font-weight:600;color:${chgColor}">${arrow}${Math.abs(chg).toFixed(3)}%</span>
+        </div>`;
     }
-    if (eth !== prevEth) {
-        ethEl.style.color = eth > prevEth ? "#10b981" : "#ef4444";
-        setTimeout(() => { ethEl.style.color = "#627eea"; }, 800);
-    }
-
-    // Change % (from prev tick)
-    const btcChg = prevBtc > 0 ? ((btc - prevBtc) / prevBtc * 100) : 0;
-    const ethChg = prevEth > 0 ? ((eth - prevEth) / prevEth * 100) : 0;
-    const btcChgEl = document.getElementById("price-btc-change");
-    const ethChgEl = document.getElementById("price-eth-change");
-    btcChgEl.textContent = (btcChg >= 0 ? "▲" : "▼") + Math.abs(btcChg).toFixed(3) + "%";
-    btcChgEl.style.color = btcChg >= 0 ? "var(--green)" : "var(--red)";
-    ethChgEl.textContent = (ethChg >= 0 ? "▲" : "▼") + Math.abs(ethChg).toFixed(3) + "%";
-    ethChgEl.style.color = ethChg >= 0 ? "var(--green)" : "var(--red)";
-
-    // Balance from price-bal — updated by analytics refresh from monitor report
-    // Exchange balance shown in ticker is $118.46 (hardcoded until API exposes it)
+    container.innerHTML = html;
 
     // Update time
-    document.getElementById("price-update-time").textContent = status.last_data_update || "";
+    const timeEl = document.getElementById("price-update-time");
+    if (timeEl) timeEl.textContent = status.last_data_update || "";
 }
 
 function updateBanner(status, decision) {
@@ -777,6 +818,65 @@ function updateFunnel(raw) {
     document.getElementById("fn-weak").textContent = f.weak || 0;
     const blocked = (f.blocked_regime || 0) + (f.blocked_cost || 0) + (f.blocked_ev || 0) + (f.blocked_htf || 0);
     document.getElementById("fn-blocked").textContent = blocked;
+}
+
+function updateGridPanel(g) {
+    if (!g) return;
+    const el = (id) => document.getElementById(id);
+    const fills = el("grid-fills"); if (fills) fills.textContent = g.total_fills || 0;
+    const profit = el("grid-profit"); if (profit) { profit.textContent = "$" + (g.total_profit || 0).toFixed(2); profit.style.color = g.total_profit >= 0 ? "var(--green)" : "var(--red)"; }
+    const fhr = el("grid-fills-hr"); if (fhr) fhr.textContent = (g.fills_per_hour || 0).toFixed(1);
+    const phr = el("grid-profit-hr"); if (phr) { phr.textContent = "$" + (g.profit_per_hour || 0).toFixed(2); phr.style.color = g.profit_per_hour >= 0 ? "var(--green)" : "var(--red)"; }
+    const sp = el("grid-spacing"); if (sp) sp.textContent = (g.grid_pct || 0).toFixed(1) + "%";
+    const lv = el("grid-levels"); if (lv) lv.textContent = g.num_levels || 0;
+    const fe = el("grid-fee"); if (fe) fe.textContent = (g.fee_rt_pct || 0).toFixed(2) + "%";
+    const badge = el("grid-status-badge"); if (badge) { badge.textContent = g.total_fills > 0 ? "TRADING" : "BUILDING SMA"; badge.style.background = g.total_fills > 0 ? "var(--green)" : "#f59e0b"; }
+    const miniProfit = el("grid-mini-profit"); if (miniProfit) miniProfit.textContent = "$" + (g.total_profit || 0).toFixed(2);
+
+    // Show open positions
+    const posList = el("grid-positions-list");
+    if (posList && g.positions) {
+        const syms = Object.keys(g.positions);
+        if (syms.length === 0) {
+            posList.innerHTML = '<span style="color:var(--muted)">No grid positions yet (building SMA)</span>';
+        } else {
+            let html = '';
+            for (const sym of syms) {
+                const p = g.positions[sym];
+                html += `<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid #1f2937">
+                    <span>${sym.split("/")[0]}</span>
+                    <span>Open: ${p.open || 0}</span>
+                    <span>Center: $${(p.center || 0).toFixed(2)}</span>
+                </div>`;
+            }
+            posList.innerHTML = html;
+        }
+    }
+}
+
+function updatePerSymbolStatus(status, decision) {
+    const container = document.getElementById("per-symbol-status");
+    if (!container || !status || !status.prices) return;
+
+    const prices = status.prices;
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">';
+
+    for (const sym of Object.keys(prices).sort()) {
+        const base = sym.split("/")[0];
+        const color = SYMBOL_COLORS[base] || "#9ca3af";
+        const price = prices[sym];
+        const decimals = price > 100 ? 2 : 4;
+        const isBest = decision && decision.best_symbol === sym;
+        const border = isBest ? "border:1px solid var(--green)" : "border:1px solid #1f2937";
+
+        html += `<div style="padding:6px;border-radius:4px;${border};text-align:center">
+            <div style="font-weight:700;color:${color};font-size:.85rem">${base}</div>
+            <div style="font-size:.75rem;color:var(--muted)">$${price.toFixed(decimals)}</div>
+            <div style="font-size:.65rem;color:var(--muted)">Scanning</div>
+        </div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
 }
 
 function updateAlerts(alerts) {

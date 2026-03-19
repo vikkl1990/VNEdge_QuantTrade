@@ -111,6 +111,22 @@ class GridBot:
             self.grid_pct * 100, self.num_levels, self.position_usd, self.fee_rt * 100,
         )
 
+    def seed_history(self, symbol: str, closes: list) -> None:
+        """Seed price history from historical candle data.
+
+        Call this on startup to avoid waiting 8+ hours for SMA to build.
+        Pass the last 100-200 close prices from the data feed.
+        """
+        if not closes:
+            return
+        self._price_history[symbol] = list(closes[-self.sma_period - 10:])
+        center = float(np.mean(self._price_history[symbol][-self.sma_period:]))
+        self._last_grid_center[symbol] = center
+        logger.info(
+            "GridBot seeded %s: %d prices, SMA center=$%.4f — READY TO TRADE",
+            symbol, len(self._price_history[symbol]), center,
+        )
+
     def update(self, symbol: str, price: float, high: float = 0, low: float = 0) -> List[Dict[str, Any]]:
         """
         Process a new price tick for a symbol.

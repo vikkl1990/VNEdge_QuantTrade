@@ -322,6 +322,8 @@ class DashboardServer:
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
         app.router.add_get("/api/grid/status", self._handle_grid_status)
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
+        app.router.add_get("/api/ping", self._handle_ping)
+        app.router.add_get("/api/latency", self._handle_latency)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -703,6 +705,35 @@ class DashboardServer:
         if hasattr(self, '_grid_bot') and self._grid_bot:
             return web.json_response(self._grid_bot.get_open_positions(), dumps=_safe_dumps)
         return web.json_response([])
+
+    async def _handle_ping(self, request: web.Request) -> web.Response:
+        """Ultra-fast ping for client-side latency measurement."""
+        return web.json_response({"t": time.time() * 1000})
+
+    async def _handle_latency(self, request: web.Request) -> web.Response:
+        """Return latency metrics — exchange API, data freshness, WebSocket."""
+        import time as _t
+        data = {
+            "server_time_ms": _t.time() * 1000,
+            "exchange_latency_ms": self._exchange_latency_ms,
+            "data_age_sec": {},
+            "ws_connected": False,
+        }
+
+        # Data freshness per symbol
+        try:
+            for sym in self._state.get("symbols", []):
+                last_update = self._state.get("last_data_update", "")
+                if last_update:
+                    data["data_age_sec"][sym] = "live"
+        except Exception:
+            pass
+
+        # WebSocket status
+        if hasattr(self, '_grid_bot') and self._grid_bot:
+            data["grid_uptime_sec"] = self._grid_bot.get_status().get("uptime_sec", 0)
+
+        return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

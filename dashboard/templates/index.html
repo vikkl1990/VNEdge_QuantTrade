@@ -162,6 +162,7 @@ tr:hover{background:rgba(255,255,255,.02)}
   <div style="display:flex;gap:12px;align-items:center">
     <span style="color:var(--muted)">Grid: <span id="grid-mini-profit" style="color:var(--green);font-weight:600">$0.00</span></span>
     <span style="color:var(--muted)">Signals: <span id="signals-mini-count" style="font-weight:600">0</span></span>
+    <span style="color:var(--muted)">Latency: <span id="latency-ms" style="font-weight:600;color:var(--green)">--</span></span>
   </div>
 </div>
 
@@ -542,6 +543,19 @@ async function refreshLive() {
             if (ppEl) ppEl.textContent = "$" + (mon.paper_balance || 0).toLocaleString("en-US", {minimumFractionDigits:2});
             const scEl = document.getElementById("signals-mini-count");
             if (scEl) scEl.textContent = mon.total_analyzed || 0;
+        }
+    } catch(e) {}
+
+    // Latency measurement
+    try {
+        const t0 = performance.now();
+        const ping = await api("/api/ping");
+        const t1 = performance.now();
+        const latMs = Math.round(t1 - t0);
+        const latEl = document.getElementById("latency-ms");
+        if (latEl) {
+            latEl.textContent = latMs + "ms";
+            latEl.style.color = latMs < 100 ? "var(--green)" : latMs < 500 ? "#f59e0b" : "var(--red)";
         }
     } catch(e) {}
 }

@@ -182,7 +182,17 @@ class BotOrchestrator:
                 await self._data_feed.subscribe(sym)
             await self._data_feed.start()
 
-            # 3b. Start WebSocket for real-time prices (reduces latency 5000ms → 100ms)
+            # 3b. Seed Grid Bot with historical candle data (no 8-hour wait)
+            for sym in self._symbols:
+                try:
+                    candles = self._data_manager.get_candles(sym, "5m")
+                    if candles is not None and len(candles) > 0:
+                        closes = [float(c.get("close", c[-1]) if isinstance(c, dict) else c[4]) for c in (candles.to_dict("records") if hasattr(candles, "to_dict") else candles)]
+                        self._grid_bot.seed_history(sym, closes)
+                except Exception as exc:
+                    self._log.debug("Grid seed skipped for %s: %s", sym, exc)
+
+            # 3c. Start WebSocket for real-time prices (reduces latency 5000ms → 100ms)
             self._delta_ws = None
             self._ws_prices: Dict[str, float] = {}
             if _HAS_DELTA_WS:

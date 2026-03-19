@@ -112,9 +112,11 @@ class BotOrchestrator:
         # Signal tracker for TP/SL monitoring and P&L/WR stats
         self._signal_tracker = SignalTracker()
 
-        # Grid Bot — profits from oscillation
+        # Grid Bot — PAUSED (loses money in downtrends due to stale cleanup)
+        # Will re-enable when regime detection can auto-pause in downtrends
         from bot.grid_bot import GridBot
         self._grid_bot = GridBot(config)
+        self._grid_bot_enabled = False  # ← DISABLED
 
         # AI learner for adaptive confidence adjustment
         self._signal_learner = SignalLearner()
@@ -197,10 +199,10 @@ class BotOrchestrator:
                                 closes = [float(c[4]) for c in candles]
                         else:
                             closes = []
-                        if closes:
+                        if closes and getattr(self, '_grid_bot_enabled', False):
                             self._grid_bot.seed_history(sym, closes)
-                        else:
-                            self._log.info("Grid seed: no close data for %s", sym)
+                        elif not getattr(self, '_grid_bot_enabled', False):
+                            self._log.info("Grid Bot PAUSED — skipping seed for %s", sym)
                     else:
                         self._log.info("Grid seed: no candles yet for %s (will build from live)", sym)
                 except Exception as exc:
@@ -405,16 +407,17 @@ class BotOrchestrator:
                 if not prices:
                     continue
 
-                # ── GRID BOT: process every price tick ──
-                for sym, price in prices.items():
-                    candle_data = self._data_manager.get_latest_candle(sym, "5m") if hasattr(self._data_manager, 'get_latest_candle') else None
-                    high = candle_data.get("high", price) if candle_data else price
-                    low = candle_data.get("low", price) if candle_data else price
-                    grid_events = self._grid_bot.update(sym, price, high, low)
-                    for gev in grid_events:
-                        msg = gev.get("message", "")
-                        if gev.get("type") == "grid_fill":
-                            self._log.info(msg)
+                # ── GRID BOT: PAUSED — loses money in downtrends ──
+                if getattr(self, '_grid_bot_enabled', False):
+                    for sym, price in prices.items():
+                        candle_data = self._data_manager.get_latest_candle(sym, "5m") if hasattr(self._data_manager, 'get_latest_candle') else None
+                        high = candle_data.get("high", price) if candle_data else price
+                        low = candle_data.get("low", price) if candle_data else price
+                        grid_events = self._grid_bot.update(sym, price, high, low)
+                        for gev in grid_events:
+                            msg = gev.get("message", "")
+                            if gev.get("type") == "grid_fill":
+                                self._log.info(msg)
 
                 # Check all active signals for TP/SL hits
                 events = self._signal_tracker.update_prices(prices)

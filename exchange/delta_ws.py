@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional
 
 import aiohttp
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.delta_ws")  # use bot.* namespace for visibility
 
 # Delta India WebSocket endpoint
 WS_URL = "wss://socket.india.delta.exchange"

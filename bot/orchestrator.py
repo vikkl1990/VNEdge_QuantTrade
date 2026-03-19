@@ -187,10 +187,24 @@ class BotOrchestrator:
                 try:
                     candles = self._data_manager.get_candles(sym, "5m")
                     if candles is not None and len(candles) > 0:
-                        closes = [float(c.get("close", c[-1]) if isinstance(c, dict) else c[4]) for c in (candles.to_dict("records") if hasattr(candles, "to_dict") else candles)]
-                        self._grid_bot.seed_history(sym, closes)
+                        # Handle both DataFrame and list formats
+                        if hasattr(candles, 'to_dict'):
+                            closes = candles["close"].astype(float).tolist()
+                        elif isinstance(candles, list) and candles:
+                            if isinstance(candles[0], dict):
+                                closes = [float(c["close"]) for c in candles]
+                            else:
+                                closes = [float(c[4]) for c in candles]
+                        else:
+                            closes = []
+                        if closes:
+                            self._grid_bot.seed_history(sym, closes)
+                        else:
+                            self._log.info("Grid seed: no close data for %s", sym)
+                    else:
+                        self._log.info("Grid seed: no candles yet for %s (will build from live)", sym)
                 except Exception as exc:
-                    self._log.debug("Grid seed skipped for %s: %s", sym, exc)
+                    self._log.warning("Grid seed failed for %s: %s", sym, exc)
 
             # 3c. Start WebSocket for real-time prices (reduces latency 5000ms → 100ms)
             self._delta_ws = None
@@ -363,8 +377,10 @@ class BotOrchestrator:
                 interval = 1 if ws_active else self.TRADE_MONITOR_INTERVAL
                 await asyncio.sleep(interval)
 
-                if not self._running or self._signal_tracker.active_count == 0:
+                if not self._running:
                     continue
+                # Grid bot runs ALWAYS (even with 0 active trades)
+                # Signal tracker only runs when there are active trades
 
                 now = time.monotonic()
                 time_since_last = now - last_check

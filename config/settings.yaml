@@ -123,13 +123,15 @@ paper_trading:
 
 grid:
   enabled: true
-  grid_pct: 0.002              # 0.2% spacing between grid levels
-  num_levels: 10               # 10 levels above and below center
-  position_usd: 50             # $50 per grid level
+  grid_pct: 0.003              # 0.3% spacing — wider for $15+/day target
+  num_levels: 15               # 15 levels — more coverage
+  position_usd: 50             # $50 base per level (DCA adjusts: $30-$100)
   fee_rt: 0.0010               # maker fees (0.10% round-trip)
-  max_positions: 20            # max open buys per symbol
-  stale_pct: 0.02              # close positions that drift >2%
+  max_positions: 30            # max open buys per symbol
+  stale_pct: 0.025             # 2.5% — wider for 10x leverage
   sma_period: 100              # grid center = 100-bar SMA
+  leverage: 10                 # 10x — more levels with same capital
+  smart_buys: true             # support-aware + momentum filter + DCA
 
 backtest:
   start_date: "2025-01-01"

@@ -2389,12 +2389,12 @@ class ScalpStrategy(BaseStrategy):
             return None
 
         body_ratio = body / candle_range
-        if body_ratio < 0.15:  # skip pure dojis
+        if body_ratio < 0.05:  # only skip absolute flat candles
             return None
 
         side = OrderSide.LONG if bullish else OrderSide.SHORT
-        confs = []
-        score = 20  # base score for any directional candle
+        confs = ["Learning bias signal"]
+        score = 40  # base score — enough for NEAR_MISS tier (35+) to fire in learning
 
         # Body ratio bonus
         if body_ratio > 0.6:

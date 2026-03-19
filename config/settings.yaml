@@ -115,10 +115,11 @@ risk:
 
 paper_trading:
   initial_balance: 10000
-  maker_fee_rate: 0.0004        # Delta India maker: 0.04%
-  taker_fee_rate: 0.0006        # Delta India taker: 0.06%
-  fee_rate: 0.0006              # Default to taker (market orders)
-  settlement_fee_rate: 0.0006   # Delta settlement: 0.06%
+  # SCALPER OFFER FEES (zero closing fee!)
+  maker_fee_rate: 0.0002        # Scalper maker: 0.02% (entry only, no close)
+  taker_fee_rate: 0.0005        # Scalper taker: 0.05% (entry only, no close)
+  fee_rate: 0.0005              # Default to scalper taker
+  settlement_fee_rate: 0.0006   # Delta settlement: 0.06% (unchanged)
   slippage_pct: 0.05
 
 grid:
@@ -126,7 +127,7 @@ grid:
   grid_pct: 0.003              # 0.3% spacing — wider for $15+/day target
   num_levels: 15               # 15 levels — more coverage
   position_usd: 50             # $50 base per level (DCA adjusts: $30-$100)
-  fee_rt: 0.0010               # maker fees (0.10% round-trip)
+  fee_rt: 0.0008               # Scalper maker: 0.02% entry + 0.00% close + 0.06% settlement = 0.08% RT
   max_positions: 30            # max open buys per symbol
   stale_pct: 0.025             # 2.5% — wider for 10x leverage
   sma_period: 100              # grid center = 100-bar SMA
@@ -136,7 +137,7 @@ grid:
 backtest:
   start_date: "2025-01-01"
   end_date: "2025-12-31"
-  fee_rate: 0.0009            # REAL: entry 0.06% + exit 0.06% + settlement 0.06% = 0.18% RT / 2 sides
+  fee_rate: 0.00055           # SCALPER: entry 0.05% + exit 0.00% + settlement 0.06% = 0.11% RT / 2 sides
   slippage_pct: 0.05
   initial_balance: 10000
 

@@ -76,6 +76,10 @@ class TrackedSignal:
     gross_pnl_usd: float = 0.0   # Dollar PnL before fees
     total_fees_pct: float = 0.0   # Total fees as % of position
     total_fees_usd: float = 0.0   # Total fees in dollars
+    fee_type: str = ""           # "scalper" (0.08%) or "standard" (0.18%)
+    within_scalper: bool = False  # did trade close within Scalper window?
+    trade_duration_sec: float = 0.0  # actual trade duration in seconds
+    scalper_window_sec: float = 0.0  # applicable Scalper window
 
     # ATR for trailing stop (passed from strategy)
     signal_atr: float = 0.0           # ATR value at signal time (for ATR trail)
@@ -975,27 +979,29 @@ class SignalTracker:
     # ------------------------------------------------------------------
 
     # Delta Exchange fee schedule
+    # Standard fees
     TAKER_FEE_PCT = 0.06    # 0.06% per side (taker)
-    MAKER_FEE_PCT = 0.04    # 0.04% per side (maker) — not used for market orders
+    MAKER_FEE_PCT = 0.04    # 0.04% per side (maker)
     SETTLEMENT_FEE_PCT = 0.06  # 0.06% settlement fee on close
+
+    # Scalper offer fees (0% closing fee within window)
+    SCALPER_ENTRY_MAKER_PCT = 0.02   # 0.02% maker opening fee
+    SCALPER_ENTRY_TAKER_PCT = 0.05   # 0.05% taker opening fee
+    SCALPER_EXIT_FEE_PCT = 0.00      # FREE exit within Scalper window
 
     @staticmethod
     def _calc_pnl(ts: TrackedSignal, exit_price: float) -> float:
         """Calculate P&L percentage for a signal (gross and net).
 
         Position split: 35% TP1, 35% TP2, 30% runner
-        - TP1 (60%): Primary profit lock at 1.5R
-        - TP2 (25%): Extended target at 2.0R+
-        - TP3 (15%): ATR-trailed runner for big moves
 
-        Uses ACTUAL locked PnL from partial closes when available,
-        not fictional splits assuming TPs were hit at target prices.
-
-        Fees applied:
-        - Entry: taker fee (0.06%) on full position
-        - Exit: taker fee (0.06%) on full position
-        - Settlement: 0.06% on close
-        Total round-trip fees: ~0.18% of position value
+        Fee logic — Scalper-aware:
+        - If trade closes within Scalper window (BTC=27m, ETH/others=12m):
+          Entry: 0.02% (maker limit order) + Exit: 0.00% + Settlement: 0.06%
+          Total: 0.08% round-trip
+        - If trade closes OUTSIDE Scalper window:
+          Entry: 0.06% (taker) + Exit: 0.06% (taker) + Settlement: 0.06%
+          Total: 0.18% round-trip
         """
         if ts.entry_price == 0:
             return 0.0
@@ -1011,7 +1017,6 @@ class SignalTracker:
 
         # Use actual locked PnL from partial closes (35/35/30 split)
         if ts.tp1_pnl_locked != 0 or ts.tp2_pnl_locked != 0:
-            # Real partial closes happened — use locked values + remaining at exit
             remaining_pnl = ts.position_remaining_pct * pnl_at(exit_price)
             gross_pct = ts.tp1_pnl_locked + ts.tp2_pnl_locked + remaining_pnl
         elif ts.tp3_hit:
@@ -1028,13 +1033,42 @@ class SignalTracker:
         else:
             gross_pct = pnl_at(exit_price)
 
-        # Calculate fees as % of position
-        # Entry taker fee + Exit taker fee + Settlement fee
-        fee_pct = (
-            SignalTracker.TAKER_FEE_PCT      # entry
-            + SignalTracker.TAKER_FEE_PCT     # exit
-            + SignalTracker.SETTLEMENT_FEE_PCT  # settlement
-        )  # = 0.18% total round-trip
+        # Determine if trade closed within Scalper window
+        scalper_window_sec = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
+        within_scalper = False
+        trade_duration_sec = 0
+        try:
+            entry_dt = datetime.fromisoformat(ts.entry_time)
+            if ts.exit_time:
+                exit_dt = datetime.fromisoformat(ts.exit_time) if isinstance(ts.exit_time, str) else ts.exit_time
+            else:
+                exit_dt = datetime.now(timezone.utc)
+            trade_duration_sec = (exit_dt - entry_dt).total_seconds()
+            within_scalper = trade_duration_sec <= scalper_window_sec
+        except (ValueError, TypeError):
+            pass
+
+        # Calculate fees based on Scalper eligibility
+        if within_scalper:
+            # Scalper offer: maker entry (0.02%) + FREE exit (0%) + settlement (0.06%)
+            fee_pct = (
+                SignalTracker.SCALPER_ENTRY_MAKER_PCT  # 0.02% entry
+                + SignalTracker.SCALPER_EXIT_FEE_PCT   # 0.00% exit (FREE)
+                + SignalTracker.SETTLEMENT_FEE_PCT     # 0.06% settlement
+            )  # = 0.08% total
+            ts.fee_type = "scalper"
+        else:
+            # Standard fees: taker entry + taker exit + settlement
+            fee_pct = (
+                SignalTracker.TAKER_FEE_PCT        # 0.06% entry
+                + SignalTracker.TAKER_FEE_PCT      # 0.06% exit
+                + SignalTracker.SETTLEMENT_FEE_PCT # 0.06% settlement
+            )  # = 0.18% total
+            ts.fee_type = "standard"
+
+        ts.trade_duration_sec = trade_duration_sec
+        ts.scalper_window_sec = scalper_window_sec
+        ts.within_scalper = within_scalper
 
         # Net PnL = Gross PnL - fees
         net_pct = gross_pct - fee_pct
@@ -1273,7 +1307,10 @@ class SignalTracker:
             "fee_schedule": {
                 "taker_pct": self.TAKER_FEE_PCT,
                 "settlement_pct": self.SETTLEMENT_FEE_PCT,
-                "round_trip_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
+                "round_trip_standard_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
+                "round_trip_scalper_pct": self.SCALPER_ENTRY_MAKER_PCT + self.SCALPER_EXIT_FEE_PCT + self.SETTLEMENT_FEE_PCT,
+                "scalper_window_btc_min": SCALPER_WINDOW_BTC // 60,
+                "scalper_window_other_min": SCALPER_WINDOW_OTHER // 60,
             },
             # R-Multiple metrics (global)
             "r_metrics": self._calc_global_r_metrics(all_r_values, all_mae, all_mfe, win_count, total),

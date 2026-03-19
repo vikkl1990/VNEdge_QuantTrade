@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CryptoAlgoBot — Trading Cockpit</title>
+<title>VN Edge — Trade With Precision</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 /* ── RESET & BASE ─────────────────────────────────────────── */
@@ -1330,7 +1331,7 @@ function updateConfigSnapshot(status) {
     if (!status) { wrap.innerHTML = '<div class="empty">No status data</div>'; return; }
 
     let html = "";
-    html += makeKV("Bot Name", status.bot_name || "CryptoAlgoBot");
+    html += makeKV("Bot Name", status.bot_name || "VN Edge");
     html += makeKV("Version", status.bot_version || "--");
     html += makeKV("Exchange", status.exchange_status || "--", status.exchange_status === "connected" ? "var(--green)" : "var(--red)");
     html += makeKV("Refresh Interval", (status.refresh_interval || 5) + "s");

@@ -91,7 +91,7 @@ class Signal:
             "grade": self.grade.value,
             "risk_reward": round(self.risk_reward, 2),
             "reason": self.reason,
-            "regime": self.regime.value,
+            "regime": self.regime.value if hasattr(self.regime, 'value') else str(self.regime),
             "timestamp": self.timestamp.isoformat(),
             "metadata": self.metadata,
         }

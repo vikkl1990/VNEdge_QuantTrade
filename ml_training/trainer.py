@@ -43,9 +43,10 @@ STATUS_FILE = STORAGE_DIR / "ml_training_status.json"
 
 # Symbols to train on
 TRAINING_SYMBOLS = [
+    # Delta India available pairs (verified)
     "BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT",
-    "LINK/USDT", "DOGE/USDT", "BONK/USDT", "PEPE/USDT",
-    "SHIB/USDT", "SUI/USDT", "WIF/USDT",
+    "LINK/USDT", "DOGE/USDT",
+    # NOT on Delta India: BONK, PEPE, SHIB, SUI, WIF
 ]
 
 # Timeframes for comparison
@@ -284,7 +285,7 @@ class TrainingOrchestrator:
     async def run_full_pipeline(self, symbols: Optional[List[str]] = None,
                                  timeframes: Optional[List[str]] = None):
         """Run the complete training pipeline."""
-        symbols = symbols or TRAINING_SYMBOLS[:3]  # start with top 3
+        symbols = symbols or TRAINING_SYMBOLS  # all 11 symbols
         timeframes = timeframes or COMPARISON_TIMEFRAMES
 
         self._status["phase"] = "collecting"
@@ -430,8 +431,8 @@ class TrainingOrchestrator:
                     df, symbol, SCANNERS,
                     n_splits=5, n_estimators=50, max_depth=6,
                     label_mode="mfe",
-                    mfe_threshold_r=0.2,
-                    mfe_max_bars=30,
+                    mfe_threshold_r=0.8,
+                    mfe_max_bars=15,
                 )
                 candidate_results[symbol] = result
 
@@ -448,8 +449,8 @@ class TrainingOrchestrator:
             # Record run in tracker for comparison
             self._tracker.record_run(
                 run_config={"symbols": symbols, "timeframes": timeframes,
-                            "label_mode": "mfe", "mfe_threshold_r": 0.2,
-                            "candidate_tf": "5m"},
+                            "label_mode": "mfe", "mfe_threshold_r": 0.8,
+                            "mfe_max_bars": 15, "candidate_tf": "5m"},
                 scanner_results=all_results,
                 ml_results=candidate_results,
                 label=f"{'_'.join(symbols)}_5m_mfe_candidates",

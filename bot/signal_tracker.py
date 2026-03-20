@@ -580,17 +580,23 @@ class SignalTracker:
                 else:
                     current_r_trail = (ts.entry_price - price) / ts.initial_risk
 
-                # FEE-AWARE trail — minimum lock must exceed fees (0.76R)
-                # Any exit below 0.76R is NET NEGATIVE after 0.18% round-trip fees
-                # Data: trail at 0.3R = +0.106% gross - 0.180% fee = -0.074% NET LOSS
-                # Only trail at 1.0R+ where exit is genuinely profitable
+                # PROGRESSIVE TRAIL — move SL as profit grows to protect gains.
+                # Lower levels lock breakeven/small profit to prevent giving
+                # back ALL unrealized profit on reversal. Even if net-of-fees
+                # is near zero, it's far better than a full -1.0R SL loss.
+                #
+                # Fee context: round-trip ~0.36% of position ≈ 0.4-0.5R
+                # So locks below 0.5R are roughly breakeven after fees,
+                # but STILL better than -1.0R loss.
                 trail_levels = [
                     (3.0, 2.5),   # 83% locked
                     (2.5, 2.0),   # 80% locked
                     (2.0, 1.6),   # 80% locked
                     (1.5, 1.2),   # 80% locked
-                    (1.0, 0.8),   # 80% locked — MINIMUM profitable trail
-                    # REMOVED: 0.7/0.5/0.3 trails — all net-negative after fees
+                    (1.0, 0.8),   # 80% locked — solidly profitable
+                    (0.7, 0.5),   # 71% locked — breakeven+ after fees
+                    (0.5, 0.25),  # 50% locked — ~breakeven after fees (vs -1R loss)
+                    (0.3, 0.0),   # Move SL to entry (breakeven) — MUCH better than full SL
                 ]
 
                 for trigger_r, lock_r in trail_levels:

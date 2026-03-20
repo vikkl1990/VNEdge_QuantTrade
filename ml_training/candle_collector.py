@@ -195,6 +195,10 @@ class CandleCollector:
                 await asyncio.sleep(0.15)
 
             except Exception as e:
+                error_str = str(e)
+                if "does not have market symbol" in error_str:
+                    logger.warning("Symbol %s not available on exchange, skipping", symbol)
+                    break
                 logger.warning("Fetch error %s %s: %s, retrying...", symbol, timeframe, e)
                 await asyncio.sleep(2.0)
                 request_count += 1

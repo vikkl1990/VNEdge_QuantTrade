@@ -99,7 +99,7 @@ async def main():
         trainer = TrainingOrchestrator(exchange, config)
 
         logger.info("Starting training pipeline...")
-        logger.info("  Symbols: %s", symbols or "default (BTC, ETH, AVAX)")
+        logger.info("  Symbols: %s", symbols or "default (all 11 symbols)")
         logger.info("  Timeframes: %s", timeframes or "default (1m, 5m, 15m)")
 
         try:

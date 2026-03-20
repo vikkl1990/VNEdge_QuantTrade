@@ -70,6 +70,7 @@ from strategies.regime_filter import (
 )
 from bot.ev_engine import EVEngine
 from bot.feature_logger import FeatureLogger
+from bot.ml_scorer import MLScorer, build_scoring_features
 from bot.mode_manager import get_mode_manager
 from bot.training_dataset import TrainingDataset
 from data.structure import build_structure_map, StructureMap
@@ -288,6 +289,50 @@ class ScalpStrategy(BaseStrategy):
         # --- EV Engine (expected value gating) ---
         self._ev_engine = EVEngine()
         self._last_ev_results: Dict[str, Any] = {}
+
+        # --- ML Scorer (VM2 scoring API) ---
+        ml_cfg = config.get("ml", {})
+        self._ml_scorer = MLScorer(
+            url=ml_cfg.get("scoring_url", "http://129.80.31.92:8081/api/score"),
+            enabled=ml_cfg.get("enabled", True),
+            shadow_mode=ml_cfg.get("shadow_mode", True),  # Start shadow — log only, no veto
+        )
+        self._ml_shadow_mode: bool = ml_cfg.get("shadow_mode", True)
+        self._last_ml_result: Dict[str, Any] = {}
+
+        # Per-symbol ML probability thresholds (from calibration analysis)
+        # Higher thresholds for noisier/lower-liquidity coins
+        self._ml_thresholds: Dict[str, float] = {
+            "BTC/USDT": 0.62,
+            "ETH/USDT": 0.66,
+            "SOL/USDT": 0.67,
+            "LINK/USDT": 0.65,
+            "AVAX/USDT": 0.68,
+            "DOGE/USDT": 0.70,
+            "PEPE/USDT": 0.70,
+            "SHIB/USDT": 0.70,
+            "BONK/USDT": 0.70,
+            "SUI/USDT": 0.70,
+            "WIF/USDT": 0.70,
+        }
+        # Override from config if provided
+        self._ml_thresholds.update(ml_cfg.get("thresholds", {}))
+
+        # Per-scanner ATR-based SL/TP multipliers (replace fixed %)
+        # Keys: (sl_atr_mult, tp1_rr, tp2_rr, tp3_rr)
+        self._scanner_sl_tp: Dict[str, Dict[str, float]] = {
+            "ema_momentum":       {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "trend_continuation": {"sl_atr": 1.5, "tp1_rr": 2.0, "tp2_rr": 3.0, "tp3_rr": 5.0},
+            "vwap_mean_revert":   {"sl_atr": 1.0, "tp1_rr": 1.2, "tp2_rr": 2.0, "tp3_rr": 3.0},
+            "rsi_divergence":     {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "structure_bounce":   {"sl_atr": 1.0, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "bb_squeeze":         {"sl_atr": 1.3, "tp1_rr": 1.8, "tp2_rr": 3.0, "tp3_rr": 5.0},
+            "order_block_entry":  {"sl_atr": 1.0, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "liquidity_sweep":    {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "simple_bias":        {"sl_atr": 1.5, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+        }
+        # Override from config if provided
+        self._scanner_sl_tp.update(ml_cfg.get("scanner_sl_tp", {}))
 
         # --- Feature Logger (ML training data) ---
         self._feature_logger = FeatureLogger()
@@ -958,11 +1003,36 @@ class ScalpStrategy(BaseStrategy):
         # ══════════════════════════════════════════════════════
         vetos = []
 
-        # VETO 1: Scanner cooldown (anti-duplicate)
+        # VETO 1: Scanner cooldown (anti-duplicate) — ALWAYS enforced, even in learning mode
+        # This prevents signal spam (same scanner+symbol every minute)
         cooldown_key = f"{best_sr.scanner_name}_{symbol}"
         last_fire = self._scanner_cooldowns.get(cooldown_key, 0)
         if now - last_fire < self._scanner_cooldown_sec:
-            vetos.append(f"COOLDOWN: {best_sr.scanner_name} fired {int((now-last_fire)/60)}m ago")
+            elapsed = int(now - last_fire)
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"COOLDOWN: {best_sr.scanner_name} fired {elapsed}s ago (need {self._scanner_cooldown_sec}s)",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []  # Hard block — no signal spam
+
+        # VETO 1b: Side-conflict cooldown — prevent LONG→SHORT→LONG flip within 3 min
+        # Also ALWAYS enforced, prevents whipsaw noise
+        side_key = f"{symbol}_{best.side.value}"
+        opposite_side = "short" if best.side == OrderSide.LONG else "long"
+        opposite_key = f"{symbol}_{opposite_side}"
+        last_opposite = self._scanner_cooldowns.get(f"_side_{opposite_key}", 0)
+        side_cooldown_sec = 180  # 3 minutes
+        if now - last_opposite < side_cooldown_sec and last_opposite > 0:
+            elapsed = int(now - last_opposite)
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": f"SIDE CONFLICT: {opposite_side.upper()} signal {elapsed}s ago, blocking {best.side.value.upper()} flip",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []  # Hard block — no whipsaw
 
         # VETO 2: HTF STRICT alignment (Tier 2 upgrade — HARD veto, not soft)
         # Signal side MUST match HTF bias (15m EMA50)
@@ -1278,6 +1348,90 @@ class ScalpStrategy(BaseStrategy):
                         }
                         return []
 
+        # ══════════════════════════════════════════════════════
+        # ML SCORING GATE — VM2 ML API validation
+        # After all rule-based vetos pass, score via ML model.
+        # Shadow mode: log ML verdict but never veto.
+        # Live mode: veto if ML probability < per-symbol threshold.
+        # ══════════════════════════════════════════════════════
+        ml_result = {"probability": 0.5, "verdict": "SKIPPED"}
+        try:
+            # Build feature vector matching training features
+            ml_features = build_scoring_features(
+                df, idx=-1, side=best.side.value if best.side else "long",
+                symbol=symbol,
+            )
+            # Add context features not in candle data
+            ml_features["confidence"] = float(best.confidence)
+            ml_features["weighted_score"] = float(best_sr.weighted_score)
+
+            # Score via VM2 ML API
+            ml_result = self._ml_scorer.score_candidate(
+                scanner_name=best_sr.scanner_name,
+                features=ml_features,
+            )
+            self._last_ml_result[symbol] = ml_result
+
+            ml_prob = ml_result.get("probability", 0.5)
+            ml_verdict = ml_result.get("verdict", "?")
+            ml_latency = ml_result.get("latency_ms", 0)
+
+            # Pre-decision log: always log what ML thinks
+            logger.info(
+                "ML SCORE [%s] %s %s: prob=%.3f verdict=%s latency=%.0fms | "
+                "scanner=%s conf=%d regime=%s session=%s",
+                "SHADOW" if self._ml_shadow_mode else "LIVE",
+                best.side.value.upper() if best.side else "?",
+                symbol, ml_prob, ml_verdict, ml_latency,
+                best_sr.scanner_name, best.confidence, regime,
+                getattr(self, '_current_session', ''),
+            )
+
+            # Get per-symbol threshold
+            ml_threshold = self._ml_thresholds.get(symbol, 0.65)
+
+            # ML VETO — only if NOT in shadow mode and NOT in learning mode
+            if not self._ml_shadow_mode and not self._is_learning:
+                if ml_prob < ml_threshold:
+                    self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
+                    logger.info(
+                        "ML VETO: %s %s prob=%.3f < threshold=%.2f (scanner=%s)",
+                        best.side.value.upper() if best.side else "?",
+                        symbol, ml_prob, ml_threshold, best_sr.scanner_name,
+                    )
+                    self.last_scan_status[symbol] = {
+                        "time": now_iso, "signal": False,
+                        "reason": f"ML VETO: prob={ml_prob:.3f} < {ml_threshold:.2f} ({ml_verdict})",
+                        "ml_result": ml_result,
+                        "indicators": indicators, "setups_checked": setups_checked,
+                        "funnel": dict(self._funnel),
+                    }
+                    # Still log for ML analysis
+                    self._feature_logger.log_signal(
+                        symbol=symbol, scanner=best_sr.scanner_name,
+                        side=best.side.value if best.side else "",
+                        tier=best_sr.tier, score=best.confidence,
+                        weighted_score=best_sr.weighted_score,
+                        entry_price=best.entry_price, stop_loss=best.stop_loss,
+                        atr=best.atr, indicators=indicators, regime=regime,
+                        scanner_weight=best_sr.scanner_weight,
+                        scanner_expectancy=0, ev=0,
+                    )
+                    return []
+
+        except Exception as e:
+            # Fail-open: if ML scoring fails, proceed with the trade
+            logger.warning("ML scoring failed for %s (fail-open): %s", symbol, e)
+            ml_result = {"probability": 0.5, "verdict": "ERROR", "error": str(e)}
+
+        # ── Apply per-scanner SL/TP overrides ──
+        scanner_exits = self._scanner_sl_tp.get(best_sr.scanner_name, {})
+        if scanner_exits:
+            # Store for _build_signal to use
+            self._active_scanner_exits = scanner_exits
+        else:
+            self._active_scanner_exits = {}
+
         # ── Build Signal ──
         signal = self._build_signal(
             symbol, best, htf_bias,
@@ -1303,6 +1457,21 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ev_size_mult"] = ev_size_mult
         signal.metadata["p_win"] = round(ev_result.p_win, 4)
 
+        # ── ML scoring metadata ──
+        signal.metadata["ml_probability"] = round(ml_result.get("probability", 0.5), 4)
+        signal.metadata["ml_verdict"] = ml_result.get("verdict", "?")
+        signal.metadata["ml_latency_ms"] = ml_result.get("latency_ms", 0)
+        signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
+        signal.metadata["ml_threshold"] = self._ml_thresholds.get(symbol, 0.65)
+        signal.metadata["ml_model_version"] = ml_result.get("model_version", "unknown")
+
+        # ── Per-scanner SL/TP config ──
+        if scanner_exits:
+            signal.metadata["scanner_sl_atr"] = scanner_exits.get("sl_atr", self.sl_atr_mult)
+            signal.metadata["scanner_tp1_rr"] = scanner_exits.get("tp1_rr", self.tp1_rr)
+            signal.metadata["scanner_tp2_rr"] = scanner_exits.get("tp2_rr", self.tp2_rr)
+            signal.metadata["scanner_tp3_rr"] = scanner_exits.get("tp3_rr", self.tp3_rr)
+
         # ── Scalper window: attach to signal for tracker to enforce ──
         coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
         signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 12 * 60)
@@ -1326,6 +1495,9 @@ class ScalpStrategy(BaseStrategy):
         self._signal_count_hr.setdefault(symbol, []).append(now)
         # Record per-scanner cooldown
         self._scanner_cooldowns[f"{best_sr.scanner_name}_{symbol}"] = now
+        # Record per-side cooldown (prevents LONG→SHORT→LONG flip)
+        side_val = best.side.value if best.side else "long"
+        self._scanner_cooldowns[f"_side_{symbol}_{side_val}"] = now
 
         self.last_scan_status[symbol] = {
             "time": now_iso, "signal": True,
@@ -1341,9 +1513,10 @@ class ScalpStrategy(BaseStrategy):
         }
 
         logger.info(
-            "SCALP %s [%s]: %s %s | conf=%d w=%.1fx grade=%s | %s",
+            "SCALP %s [%s]: %s %s | conf=%d w=%.1fx grade=%s | ML=%.3f/%s | %s",
             best.name, best_sr.tier.upper(), best.side.value.upper(), symbol,
             signal.confidence, best_sr.scanner_weight, signal.grade.value,
+            ml_result.get("probability", 0.5), ml_result.get("verdict", "?"),
             ", ".join(best.confirmations),
         )
 
@@ -3557,10 +3730,13 @@ class ScalpStrategy(BaseStrategy):
         entry = setup.entry_price
 
         # ══════════════════════════════════════════════════════
-        # STEP 1: COMPUTE VOLATILITY-BASED SL
+        # STEP 1: COMPUTE VOLATILITY-BASED SL (per-scanner ATR mult)
         # ══════════════════════════════════════════════════════
         atr_for_sl = self._confirm_atr if self._confirm_atr > 0 else setup.atr
-        sl_mult = self.sl_atr_mult * getattr(self, '_sl_adjust', 1.0)  # self-optimize adjustment
+        # Per-scanner SL ATR multiplier (defaults to global self.sl_atr_mult)
+        scanner_exits = getattr(self, '_active_scanner_exits', {})
+        sl_mult_base = scanner_exits.get("sl_atr", self.sl_atr_mult)
+        sl_mult = sl_mult_base * getattr(self, '_sl_adjust', 1.0)  # self-optimize adjustment
         vol_sl_dist = atr_for_sl * sl_mult
 
         # ══════════════════════════════════════════════════════
@@ -3650,9 +3826,10 @@ class ScalpStrategy(BaseStrategy):
         # ══════════════════════════════════════════════════════
         # STEP 5: TP LEVELS — per spec with regime adaptation
         # ══════════════════════════════════════════════════════
-        tp1_rr = self.tp1_rr   # 1.0R
-        tp2_rr = self.tp2_rr   # 1.5R
-        tp3_rr = self.tp3_rr   # 2.0R
+        # Per-scanner TP ratios (fall back to global defaults)
+        tp1_rr = scanner_exits.get("tp1_rr", self.tp1_rr)
+        tp2_rr = scanner_exits.get("tp2_rr", self.tp2_rr)
+        tp3_rr = scanner_exits.get("tp3_rr", self.tp3_rr)
 
         # Regime adaptation per spec
         is_trending = regime in ("trending_up", "trending_down", "breakout")
@@ -3828,3 +4005,13 @@ class ScalpStrategy(BaseStrategy):
 
     def get_active_signal(self, symbol: str) -> None:
         return None
+
+    def get_ml_stats(self) -> Dict[str, Any]:
+        """Return ML scoring stats for dashboard display."""
+        return {
+            "scorer": self._ml_scorer.get_stats(),
+            "shadow_mode": self._ml_shadow_mode,
+            "thresholds": self._ml_thresholds,
+            "last_results": dict(self._last_ml_result),
+            "scanner_sl_tp": self._scanner_sl_tp,
+        }

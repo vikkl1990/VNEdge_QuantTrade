@@ -146,15 +146,15 @@ tr:hover{background:var(--accent-dim)}
       <h3>Best Setups Found</h3>
       <table>
         <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
+        <tbody id="best-setups"></tbody>
       </table>
-      <tbody id="best-setups"></tbody>
     </div>
     <div class="card">
       <h3>Worst Setups (Avoid)</h3>
       <table>
         <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
+        <tbody id="worst-setups"></tbody>
       </table>
-      <tbody id="worst-setups"></tbody>
     </div>
   </div>
 </div>
@@ -165,8 +165,8 @@ tr:hover{background:var(--accent-dim)}
     <h3>Scanner Backtest Results (Live-Identical Criteria)</h3>
     <table>
       <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th><th>MFE</th><th>MAE</th><th>WF Verdict</th></tr>
+      <tbody id="scanner-results"></tbody>
     </table>
-    <tbody id="scanner-results"></tbody>
   </div>
 </div>
 
@@ -179,8 +179,8 @@ tr:hover{background:var(--accent-dim)}
     </p>
     <table>
       <tr><th>Model</th><th>Symbol</th><th>Side</th><th>TF</th><th>Samples</th><th>Accuracy</th><th>AUC-ROC</th><th>Precision</th><th>Recall</th><th>+Rate</th></tr>
+      <tbody id="ml-models-table"></tbody>
     </table>
-    <tbody id="ml-models-table"></tbody>
   </div>
 
   <div class="card" style="margin-top:16px">
@@ -223,8 +223,8 @@ confidence = int(prob * 100)  # Real calibrated probability
     </p>
     <table>
       <tr><th>TF</th><th>Scanner</th><th>Symbol</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>WF Verdict</th></tr>
+      <tbody id="tf-comparison"></tbody>
     </table>
-    <tbody id="tf-comparison"></tbody>
   </div>
 </div>
 
@@ -253,8 +253,8 @@ confidence = int(prob * 100)  # Real calibrated probability
     <h3>Calibrated Probabilities per Setup</h3>
     <table>
       <tr><th>Setup Key</th><th>Win Rate</th><th>Trades</th><th>Exp(R)</th><th>Data OK?</th></tr>
+      <tbody id="calibrated-probs"></tbody>
     </table>
-    <tbody id="calibrated-probs"></tbody>
   </div>
 </div>
 

@@ -282,14 +282,52 @@ async def async_main(args):
     return 0
 
 
+PID_FILE = Path(__file__).resolve().parent / ".bot.pid"
+
+
+def _acquire_pid_lock():
+    """Ensure only one bot instance runs at a time.
+
+    Creates a .bot.pid file with the current PID. If the file already
+    exists and the process is still alive, exit immediately.
+    """
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            # Check if old process is alive
+            os.kill(old_pid, 0)
+            # Process exists — abort
+            print(
+                f"ERROR: Bot already running (PID {old_pid}). "
+                f"Kill it first or remove {PID_FILE}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except (ValueError, ProcessLookupError, PermissionError):
+            # PID file stale or process dead — safe to overwrite
+            pass
+    PID_FILE.write_text(str(os.getpid()))
+
+
+def _release_pid_lock():
+    """Remove the PID file on exit."""
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def main():
     """Synchronous wrapper around the async entry point."""
     args = parse_args()
+    _acquire_pid_lock()
     try:
         return asyncio.run(async_main(args))
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
         return 130
+    finally:
+        _release_pid_lock()
 
 
 if __name__ == "__main__":

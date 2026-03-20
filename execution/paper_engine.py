@@ -84,6 +84,39 @@ class PaperExecutionEngine:
     # Order execution
     # ------------------------------------------------------------------
 
+    async def execute(
+        self, symbol: str, signal: Dict[str, Any]
+    ) -> Optional[Trade]:
+        """Dispatch a signal dict from the orchestrator to execute_entry.
+
+        This is the interface the orchestrator calls:
+            order_result = await self._execution.execute(symbol, sig_dict)
+        """
+        side = signal.get("side", "long")
+        entry_price = signal.get("entry_price", 0.0)
+        stop_loss = signal.get("stop_loss", 0.0)
+        take_profits = signal.get("take_profits", [])
+
+        if entry_price <= 0:
+            logger.warning("execute() called with invalid entry_price for %s", symbol)
+            return None
+
+        return await self.execute_entry(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profits=take_profits,
+            position_size=signal.get("position_size"),
+            leverage=signal.get("leverage"),
+            trade_id=signal.get("trade_id"),
+            reason=signal.get("entry_reason", signal.get("reason", "")),
+            grade=signal.get("grade", ""),
+            confidence=signal.get("confidence", 0),
+            timeframe=signal.get("timeframe", ""),
+            indicators=signal.get("indicators"),
+        )
+
     async def execute_entry(
         self,
         symbol: str,

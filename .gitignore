@@ -29,3 +29,11 @@ Thumbs.db
 
 # Deployment state
 deploy/.last_deployment.json
+
+# Claude Code
+.claude/
+
+# Large data files
+storage/
+data/candles/
+backtest/results/

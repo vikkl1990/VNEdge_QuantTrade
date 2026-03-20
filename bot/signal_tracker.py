@@ -354,6 +354,17 @@ class SignalTracker:
                 )
                 return
 
+        # ── CONFLICT PREVENTION: block opposite-direction on same symbol ──
+        # Data shows LONG+SHORT on same symbol within seconds = guaranteed loss after fees
+        for existing in self._active.values():
+            if existing.symbol == ts.symbol and existing.side != ts.side:
+                logger.info(
+                    "CONFLICT BLOCKED: %s %s %s — opposite signal %s %s already active (%s)",
+                    ts.trade_id[:8], ts.symbol, ts.side,
+                    existing.trade_id[:8], existing.side, existing.symbol,
+                )
+                return
+
         # ── DUPLICATE PREVENTION: no re-entry at same price within 30 min ──
         from datetime import datetime, timedelta, timezone
         try:
@@ -447,46 +458,65 @@ class SignalTracker:
                     )
                     continue
 
-            # -- FEE-AWARE Profit Protection --
-            # Only protect at levels that are NET profitable after 0.18% fees
-            # Minimum profitable exit = 0.76R (covers fees with margin)
-            # REMOVED: 0.3R and 0.15R protection — both net negative
-            if ts.initial_risk > 0 and ts.mfe_r >= 1.0:
+            # -- DYNAMIC TRAILING PROFIT PROTECTION --
+            # Continuously trails stop based on MFE. No more waiting for
+            # fixed thresholds — every tick of profit is partially locked.
+            #
+            # Trail levels:
+            #   MFE 0.3R+  → trail floor = breakeven (0.0R)
+            #   MFE 0.5R+  → trail floor = 50% of MFE
+            #   MFE 1.0R+  → trail floor = 65% of MFE
+            #   MFE 1.5R+  → trail floor = 75% of MFE
+            # Exit when current_r drops below trail floor.
+            if ts.initial_risk > 0:
                 if is_long:
                     current_r = (price - ts.entry_price) / ts.initial_risk
                 else:
                     current_r = (ts.entry_price - price) / ts.initial_risk
 
                 profit_protect = False
-                # Only protect if we can lock at least 0.8R (net positive)
-                if ts.mfe_r >= 1.5 and current_r <= 0.8:
+                exit_reason_tag = ""
+                exit_detail = ""
+                trail_floor = None
+
+                if ts.mfe_r >= 1.5:
+                    trail_floor = ts.mfe_r * 0.75
+                    exit_reason_tag = "trail_lock_75pct"
+                elif ts.mfe_r >= 1.0:
+                    trail_floor = ts.mfe_r * 0.65
+                    exit_reason_tag = "trail_lock_65pct"
+                elif ts.mfe_r >= 0.5:
+                    trail_floor = ts.mfe_r * 0.50
+                    exit_reason_tag = "trail_lock_50pct"
+                elif ts.mfe_r >= 0.3:
+                    trail_floor = 0.15  # lock 0.15R minimum (covers fees)
+                    exit_reason_tag = "trail_breakeven"
+
+                if trail_floor is not None and current_r <= trail_floor:
                     profit_protect = True
-                    exit_reason_tag = "profit_protect_15R"
-                    exit_detail = f"Profit protect: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R (locked +0.8R)"
-                elif ts.mfe_r >= 1.0 and current_r <= -0.5:
-                    # Had 1.0R profit but now losing — momentum collapse
-                    profit_protect = True
-                    exit_reason_tag = "momentum_collapse"
-                    exit_detail = f"Momentum collapse: MFE {ts.mfe_r:.2f}R → {current_r:.2f}R"
+                    exit_detail = (
+                        f"Trail stop: MFE {ts.mfe_r:.2f}R, floor {trail_floor:.2f}R, "
+                        f"current {current_r:.2f}R"
+                    )
 
                 if profit_protect:
                     ts.exit_price = price
                     ts.exit_reason = exit_reason_tag
                     ts.exit_time = now_iso
                     ts.exit_reason_detailed = exit_reason_tag
-                    ts.status = "stopped" if current_r <= 0 else "partial_win"
+                    ts.status = "breakeven" if current_r <= 0.05 else "partial_win"
                     ts.pnl_pct = self._calc_pnl(ts, price)
                     to_close.append(tid)
                     events.append({
                         "type": exit_reason_tag,
                         "signal": ts.to_dict(),
                         "message": (
-                            f"PROFIT PROTECT: {ts.symbol} {ts.side} @ {price:.2f} | "
+                            f"TRAIL STOP: {ts.symbol} {ts.side} @ {price:.2f} | "
                             f"{exit_detail} | PnL: {ts.pnl_pct:+.2f}%"
                         ),
                     })
                     logger.info(
-                        "Profit protect: %s %s @ %.2f | %s | PnL: %.2f%%",
+                        "Trail stop: %s %s @ %.2f | %s | PnL: %.2f%%",
                         ts.symbol, ts.side, price, exit_detail, ts.pnl_pct,
                     )
                     continue
@@ -824,15 +854,24 @@ class SignalTracker:
 
                     dead_trade = False
 
+                    # EARLY KILL: If after 5 min MFE < 0.15R and losing, signal was wrong
+                    # Data: 16 trades with MFE < 0.15R lost $49 — they never moved right
+                    if age_sec >= 300 and max_fav_r < 0.15 and current_r < -0.15:
+                        dead_trade = True
+                        logger.info(
+                            "EARLY KILL: %s %s | 5min+ with MFE %.2fR < 0.15R, current %.2fR",
+                            ts.symbol, ts.side, max_fav_r, current_r,
+                        )
+
                     # SMART TIME STOP: Never close if price is above entry
                     # If we're not losing, there's no reason to exit
                     # Only time-stop trades that are LOSING and going nowhere
-                    if current_r >= 0:
+                    if not dead_trade and current_r >= 0:
                         dead_trade = False  # above entry → HOLD, never time-stop
-                    elif age_sec >= base_time and max_fav_r < mfe_threshold and current_r < -0.2:
+                    elif not dead_trade and age_sec >= base_time and max_fav_r < mfe_threshold and current_r < -0.2:
                         dead_trade = True  # below entry, never moved, losing → close
                     # Hard backstop: 4 hours max for any trade below entry
-                    elif age_sec >= 4 * 3600 and current_r < 0:
+                    elif not dead_trade and age_sec >= 4 * 3600 and current_r < 0:
                         dead_trade = True
 
                     if dead_trade:
@@ -875,6 +914,28 @@ class SignalTracker:
                     sc_r = (price - ts.entry_price) / risk if risk > 0 else 0
                 else:
                     sc_r = (ts.entry_price - price) / risk if risk > 0 else 0
+
+                # Phase 0: 5 min before window end → close 70% if any profit (safety net)
+                if age_sc >= scalper_window - 300 and age_sc < scalper_window - 120 and ts.status == "active":
+                    if sc_r > 0.10:  # any meaningful profit
+                        ts.exit_price = price
+                        ts.exit_reason = "scalper_early_lock"
+                        ts.exit_time = now_iso
+                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.exit_reason_detailed = f"scalper_early_lock_70pct_{int(scalper_window/60)}m"
+                        ts.status = "expired"
+                        to_close.append(tid)
+                        logger.info(
+                            "SCALPER EARLY LOCK 70%%: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (5min warning)",
+                            ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
+                            sc_r, ts.pnl_pct,
+                        )
+                        events.append({
+                            "type": "scalper_early_lock",
+                            "signal": ts.to_dict(),
+                            "message": f"SCALPER 5MIN WARNING: {ts.symbol} {ts.side} | {int(age_sc/60)}m | R={sc_r:+.2f} | Locked 70%",
+                        })
+                        continue
 
                 # Phase 1: 2 min before window end → close 75% if profitable
                 if age_sc >= scalper_window - 120 and age_sc < scalper_window and ts.status == "active":

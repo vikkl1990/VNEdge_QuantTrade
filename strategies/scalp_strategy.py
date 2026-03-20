@@ -909,9 +909,18 @@ class ScalpStrategy(BaseStrategy):
                 if best.confidence < self._sb_only_min_conf:
                     scanner_size = 0.0  # below SB-only min confidence
 
-        # In learning mode: ALL scanners fire (for ML data collection)
-        # In normal mode: shadow scanners blocked
-        if scanner_size <= 0.0 and not self._is_learning:
+        # Shadow proven-negative scanners EVEN in learning mode
+        # simple_bias: 25% WR, fires on any EMA alignment → pure noise
+        # liquidity_sweep: fake sweeps, net negative after fees
+        # These scanners drag the paper balance down and pollute ML data
+        if best_sr.scanner_name in ("simple_bias", "liquidity_sweep"):
+            scanner_size = 0.0  # ML log only, no trade — even in learning
+
+        # Shadow scanners: block from trading (log for ML only)
+        # Block if: (1) scanner_size=0 in non-learning mode, OR
+        #           (2) scanner is simple_bias/liquidity_sweep (always shadow, even learning)
+        _force_shadow = best_sr.scanner_name in ("simple_bias", "liquidity_sweep")
+        if scanner_size <= 0.0 and (not self._is_learning or _force_shadow):
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1039,6 +1048,13 @@ class ScalpStrategy(BaseStrategy):
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
 
+        # VETO 10: Regime-Side conflict — block shorts in uptrend, longs in downtrend
+        # Data: SHORTS lost $35 while LONGS gained $6.49 in a bullish session
+        if regime in ("trending_up",) and best.side == OrderSide.SHORT:
+            vetos.append(f"REGIME SIDE: SHORT blocked in {regime} — counter-trend")
+        elif regime in ("trending_down",) and best.side == OrderSide.LONG:
+            vetos.append(f"REGIME SIDE: LONG blocked in {regime} — counter-trend")
+
         # Separate hard vs soft vetos for structure_bounce
         # structure_bounce is our best scanner (73% WR, +35% PnL) — don't kill it easily.
         # Only truly dangerous vetos stay hard. Others become confidence penalties.
@@ -1046,7 +1062,7 @@ class ScalpStrategy(BaseStrategy):
 
         # For structure_bounce: only HTF, CHOCH, and REGIME MISMATCH are hard vetos
         # Everything else (ATR, Volume, No-Chase, Candle quality, Cooldown, Session) → soft penalty
-        sb_hard_prefixes = ("HTF STRICT:", "CHOCH CONFLICT:", "REGIME MISMATCH:")
+        sb_hard_prefixes = ("HTF STRICT:", "CHOCH CONFLICT:", "REGIME MISMATCH:", "REGIME SIDE:")
         sb_soft_prefixes = ("LOW VOLATILITY:", "NO VOLUME:", "NO CHASE:", "WEAK CANDLE:",
                             "COOLDOWN:", "ASIA LATE", "DEAD SESSION:")
 

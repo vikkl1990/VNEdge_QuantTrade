@@ -658,6 +658,150 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         features["tf_alignment"] = 0.0
 
     # ================================================================
+    # 26. LIQUIDITY SWEEP / GRAB DETECTION
+    # Detects stop hunts: price sweeps above equal highs (or below equal lows)
+    # then reverses. The #1 high-probability SMC setup.
+    # ================================================================
+    # Equal highs/lows detection: 2+ recent highs/lows within 0.1% of each other
+    recent_highs_max = h.rolling(20).max()
+    recent_lows_min = l.rolling(20).min()
+
+    # Count how many times high touched the rolling max (equal highs forming)
+    near_high = ((recent_highs_max - h).abs() / atr.replace(0, np.nan)) < 0.15
+    near_low = ((l - recent_lows_min).abs() / atr.replace(0, np.nan)) < 0.15
+    features["equal_highs_count"] = near_high.astype(float).rolling(20).sum()
+    features["equal_lows_count"] = near_low.astype(float).rolling(20).sum()
+
+    # Sweep event: price exceeds recent high/low then reverses (close back inside)
+    swept_high = (h > recent_highs_max.shift(1)) & (c < recent_highs_max.shift(1))
+    swept_low = (l < recent_lows_min.shift(1)) & (c > recent_lows_min.shift(1))
+
+    # Sweep size (how far past the level, normalized by ATR)
+    features["sweep_high_size"] = np.where(
+        swept_high, (h - recent_highs_max.shift(1)) / atr.replace(0, np.nan), 0.0
+    )
+    features["sweep_low_size"] = np.where(
+        swept_low, (recent_lows_min.shift(1) - l) / atr.replace(0, np.nan), 0.0
+    )
+
+    # Sweep + reversal flag (sweep happened AND candle closed as reversal)
+    features["sweep_high_reversal"] = (swept_high & (c < o)).astype(float)  # bearish close after high sweep
+    features["sweep_low_reversal"] = (swept_low & (c > o)).astype(float)    # bullish close after low sweep
+
+    # Recent sweep activity (any sweep in last 5 bars = setup forming)
+    features["recent_sweep_bull"] = features["sweep_low_reversal"].rolling(5).max()
+    features["recent_sweep_bear"] = features["sweep_high_reversal"].rolling(5).max()
+
+    # ================================================================
+    # 27. BOS / CHOCH + DISPLACEMENT
+    # Break of Structure: price breaks above recent swing high (bullish BOS)
+    # or below recent swing low (bearish BOS).
+    # Change of Character: BOS in opposite direction of prior trend.
+    # Displacement: the impulse candle that caused the break.
+    # ================================================================
+    # Swing highs/lows (simplified: 5-bar pivot)
+    swing_high = h.rolling(5, center=True).max()
+    swing_low = l.rolling(5, center=True).min()
+    is_swing_high = (h == swing_high)
+    is_swing_low = (l == swing_low)
+
+    # Track most recent swing high/low levels
+    recent_swing_high = h.where(is_swing_high).ffill()
+    recent_swing_low = l.where(is_swing_low).ffill()
+
+    # BOS: current close breaks above recent swing high or below recent swing low
+    bullish_bos = (c > recent_swing_high.shift(1)) & (c.shift(1) <= recent_swing_high.shift(1))
+    bearish_bos = (c < recent_swing_low.shift(1)) & (c.shift(1) >= recent_swing_low.shift(1))
+
+    features["bullish_bos"] = bullish_bos.astype(float)
+    features["bearish_bos"] = bearish_bos.astype(float)
+
+    # Displacement: body size of the BOS candle (normalized by ATR)
+    body_atr = (c - o).abs() / atr.replace(0, np.nan)
+    features["bos_displacement"] = np.where(
+        bullish_bos | bearish_bos, body_atr, 0.0
+    )
+
+    # Strong displacement flag (> 1.5 ATR body on BOS candle)
+    features["strong_displacement"] = (features["bos_displacement"] > 1.5).astype(float)
+
+    # CHOCH: BOS that opposes the recent trend direction
+    # Prior trend approximated by EMA8 slope over last 10 bars
+    ema8_slope_10 = df["ema_8"].diff(10) / atr.replace(0, np.nan)
+    prior_trend_bull = ema8_slope_10 > 0.3
+    prior_trend_bear = ema8_slope_10 < -0.3
+    features["choch_bull"] = (bullish_bos & prior_trend_bear).astype(float)  # bullish break after downtrend
+    features["choch_bear"] = (bearish_bos & prior_trend_bull).astype(float)  # bearish break after uptrend
+
+    # BOS recency (any BOS in last 3 bars = active structure break)
+    features["recent_bos_bull"] = bullish_bos.astype(float).rolling(3).max()
+    features["recent_bos_bear"] = bearish_bos.astype(float).rolling(3).max()
+
+    # BOS + FVG confluence (BOS that also created an FVG = strongest signal)
+    features["bos_with_fvg"] = np.where(
+        (bullish_bos | bearish_bos) & (bull_fvg_exists | bear_fvg_exists),
+        1.0, 0.0
+    )
+
+    # ================================================================
+    # 28. KILLZONE / SESSION BOOST FEATURES
+    # High-probability trading windows. NOT hard blocks — continuous
+    # boost/penalty for ML to weight.
+    # ================================================================
+    if hasattr(df.index, 'hour'):
+        hour = df.index.hour
+        minute = df.index.minute if hasattr(df.index, 'minute') else 0
+        hour_frac = hour + minute / 60.0
+
+        # London killzone: 07:00-10:00 UTC (peak volatility EU session)
+        features["kz_london"] = ((hour_frac >= 7.0) & (hour_frac < 10.0)).astype(float)
+        # NY killzone: 13:00-16:00 UTC (NY open + overlap)
+        features["kz_newyork"] = ((hour_frac >= 13.0) & (hour_frac < 16.0)).astype(float)
+        # Silver Bullet windows: 14:00-15:00 UTC (NY AM), 19:00-20:00 UTC (NY PM)
+        features["kz_silver_bullet"] = (
+            ((hour_frac >= 14.0) & (hour_frac < 15.0)) |
+            ((hour_frac >= 19.0) & (hour_frac < 20.0))
+        ).astype(float)
+        # Dead zone: 00:00-06:00 UTC (low liquidity, noise)
+        features["kz_dead_zone"] = ((hour_frac >= 0.0) & (hour_frac < 6.0)).astype(float)
+        # Any killzone active (composite)
+        features["kz_active"] = (
+            features["kz_london"] + features["kz_newyork"] + features["kz_silver_bullet"]
+        ).clip(upper=1.0)
+    else:
+        features["kz_london"] = 0.0
+        features["kz_newyork"] = 0.0
+        features["kz_silver_bullet"] = 0.0
+        features["kz_dead_zone"] = 0.0
+        features["kz_active"] = 0.0
+
+    # ================================================================
+    # 29. CONFLUENCE SCORE (multi-signal alignment)
+    # Counts how many structural signals align. Higher = better candidate.
+    # NOT a hard filter — ML learns the optimal threshold.
+    # ================================================================
+    # Bullish confluence components
+    bull_signals = (
+        features["recent_sweep_bull"] +                         # liquidity sweep
+        features["recent_bos_bull"] +                           # break of structure
+        (features["at_bull_ob"] if "at_bull_ob" in features else 0) +  # at order block
+        (features["fvg_imbalance"] > 0.3).astype(float) +      # FVG imbalance bullish
+        (features["structural_alignment"] > 0).astype(float) +  # VWAP+EMA200 aligned
+        features.get("kz_active", 0)                            # in killzone
+    )
+    bear_signals = (
+        features["recent_sweep_bear"] +
+        features["recent_bos_bear"] +
+        (features["at_bear_ob"] if "at_bear_ob" in features else 0) +
+        (features["fvg_imbalance"] < -0.3).astype(float) +
+        (features["structural_alignment"] < 0).astype(float) +
+        features.get("kz_active", 0)
+    )
+    features["confluence_bull"] = bull_signals
+    features["confluence_bear"] = bear_signals
+    features["confluence_max"] = pd.concat([bull_signals, bear_signals], axis=1).max(axis=1)
+
+    # ================================================================
     # CLEANUP: Replace NaN/inf with 0.0 for all features
     # ================================================================
     features = features.replace([np.inf, -np.inf], 0.0).fillna(0.0)

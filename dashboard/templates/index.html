@@ -265,6 +265,7 @@ tr:hover{background:rgba(99,148,255,.02)}
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
+  <button class="tab-btn" data-tab="latency" onclick="switchTab('latency')">⚡ Latency Arb</button>
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
 </nav>
@@ -446,6 +447,78 @@ tr:hover{background:rgba(99,148,255,.02)}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB: LATENCY ARB                                       -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-latency">
+
+  <!-- Status Banner -->
+  <div class="panel" style="border-left:3px solid var(--cyan)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="font-size:1.3rem">⚡</span>
+        <div>
+          <div style="font-size:.95rem;font-weight:800;color:var(--cyan)">Latency Arbitrage — Binance → Delta India</div>
+          <div style="font-size:.7rem;color:var(--text-muted)">Measuring price dislocation between exchanges in real-time</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <span class="info-badge" id="la-status-badge" style="background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.2);color:var(--cyan)">MEASURING</span>
+        <span style="font-size:.72rem;color:var(--text-muted);font-family:var(--font-mono)" id="la-uptime">Uptime: --</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Global Stats -->
+  <div class="grid-4" id="la-global-stats">
+    <div class="stat-card"><div class="stat-value blue" id="la-binance-msgs">0</div><div class="stat-label">Binance Ticks</div></div>
+    <div class="stat-card"><div class="stat-value blue" id="la-delta-msgs">0</div><div class="stat-label">Delta Ticks</div></div>
+    <div class="stat-card"><div class="stat-value yellow" id="la-dislocations">0</div><div class="stat-label">Dislocations > 0.20%</div></div>
+    <div class="stat-card"><div class="stat-value green" id="la-signals">0</div><div class="stat-label">Signals Generated</div></div>
+  </div>
+
+  <!-- Per-Symbol Cards -->
+  <div class="panel">
+    <div class="panel-title">⚡ Per-Pair Dislocation Monitor <span class="badge">LIVE</span></div>
+    <div id="la-symbol-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px">
+      <div class="empty">Waiting for data...</div>
+    </div>
+  </div>
+
+  <!-- Dislocation History Table -->
+  <div class="panel">
+    <div class="panel-title">Recent Dislocations <span class="badge" id="la-history-sym">BTC/USDT</span></div>
+    <div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap" id="la-sym-tabs"></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Time</th><th>Binance</th><th>Delta</th><th>Dislocation</th><th>Direction</th><th>Latency</th>
+        </tr></thead>
+        <tbody id="la-history-body">
+          <tr><td colspan="6" class="empty">No data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Edge Analysis -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">💰 Edge Analysis</div>
+      <div id="la-edge-analysis">
+        <div class="empty">Collecting data...</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">📊 Dislocation Distribution</div>
+      <div id="la-disl-distribution">
+        <div class="empty">Collecting data...</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 2: ANALYTICS                                       -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-analytics">
@@ -581,7 +654,8 @@ tr:hover{background:rgba(99,148,255,.02)}
 <script>
 // ── GLOBALS ──────────────────────────────────────────────
 let activeTab = "live";
-let liveTimer = null, analyticsTimer = null, systemTimer = null;
+let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null;
+let laSelectedSymbol = "BTC/USDT";
 let equityChart = null;
 let cachedPrices = {};
 
@@ -649,8 +723,9 @@ function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
-    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer);
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer);
     if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
+    if (tab === "latency") { refreshLatencyArb(); latencyTimer = setInterval(refreshLatencyArb, 1000); }
     if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
     if (tab === "system") { refreshSystem(); systemTimer = setInterval(refreshSystem, 5000); }
 }
@@ -1363,6 +1438,201 @@ function updateClosedTrades(closed) {
             <td style="font-size:.73rem">${tp !== "\u2014" ? "TP" + tp : "\u2014"}</td>
         </tr>`;
     }).join("");
+}
+
+// ══════════════════════════════════════════════════════════
+// TAB: LATENCY ARB REFRESH
+// ══════════════════════════════════════════════════════════
+async function refreshLatencyArb() {
+    const [data, hist] = await Promise.all([
+        api("/api/latency-arb"),
+        api(`/api/latency-arb/dislocations?symbol=${encodeURIComponent(laSelectedSymbol)}&n=50`)
+    ]);
+
+    if (!data) return;
+
+    // Status badge
+    const badge = document.getElementById("la-status-badge");
+    if (data.active && data.running) {
+        badge.textContent = data.measure_only ? "MEASURING" : "LIVE TRADING";
+        badge.style.background = data.measure_only ? "rgba(0,212,255,.08)" : "rgba(0,255,157,.08)";
+        badge.style.color = data.measure_only ? "var(--cyan)" : "var(--green)";
+        badge.style.borderColor = data.measure_only ? "rgba(0,212,255,.2)" : "rgba(0,255,157,.2)";
+    } else {
+        badge.textContent = data.active ? "PAUSED" : "OFFLINE";
+        badge.style.background = "rgba(90,112,144,.08)";
+        badge.style.color = "var(--text-muted)";
+        badge.style.borderColor = "rgba(90,112,144,.15)";
+    }
+
+    // Uptime
+    const up = data.uptime_s || 0;
+    const um = Math.floor(up / 60), us = Math.floor(up % 60);
+    document.getElementById("la-uptime").textContent = `Uptime: ${um}m ${us}s`;
+
+    // Global stats
+    document.getElementById("la-binance-msgs").textContent = (data.binance_msgs || 0).toLocaleString();
+    document.getElementById("la-delta-msgs").textContent = (data.delta_msgs || 0).toLocaleString();
+    document.getElementById("la-dislocations").textContent = (data.dislocations_detected || 0).toLocaleString();
+    document.getElementById("la-signals").textContent = (data.signals_generated || 0).toLocaleString();
+
+    // Per-symbol cards
+    const symbols = data.symbols || [];
+    const cardsWrap = document.getElementById("la-symbol-cards");
+    if (symbols.length === 0) {
+        cardsWrap.innerHTML = '<div class="empty">No exchange data yet — engine starting...</div>';
+    } else {
+        cardsWrap.innerHTML = symbols.map(s => {
+            const disl = s.dislocation_pct || 0;
+            const absDisl = Math.abs(disl);
+            const dir = s.direction || "FLAT";
+            const dirColor = dir === "LONG" ? "var(--green)" : dir === "SHORT" ? "var(--red)" : "var(--text-muted)";
+            const edgeBg = absDisl >= 0.20 ? "rgba(0,255,157,.06)" : absDisl >= 0.10 ? "rgba(255,215,0,.05)" : "rgba(255,255,255,.02)";
+            const edgeBorder = absDisl >= 0.20 ? "rgba(0,255,157,.25)" : absDisl >= 0.10 ? "rgba(255,215,0,.2)" : "var(--border)";
+            const shortSym = (s.symbol || "").replace("/USDT", "");
+
+            const costPct = data.cost_rt_pct || 0.14;
+            const netEdge = absDisl - costPct;
+            const netColor = netEdge > 0 ? "var(--green)" : "var(--red)";
+
+            return `<div style="background:${edgeBg};border:1px solid ${edgeBorder};border-radius:var(--radius-lg);padding:14px;transition:all .3s">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font-size:1.1rem;font-weight:900;color:var(--text)">${esc(shortSym)}</span>
+                        <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${dirColor};background:${dir==='LONG'?'rgba(0,255,157,.08)':dir==='SHORT'?'rgba(255,59,92,.08)':'rgba(90,112,144,.06)'}">${dir}</span>
+                    </div>
+                    <div style="text-align:right">
+                        <div style="font-size:1.3rem;font-weight:900;font-family:var(--font-mono);color:${absDisl>=0.20?'var(--green)':absDisl>=0.10?'var(--yellow)':'var(--text-muted)'}">${disl>=0?'+':''}${disl.toFixed(4)}%</div>
+                        <div style="font-size:.62rem;color:var(--text-muted);letter-spacing:.5px">DISLOCATION</div>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.73rem;font-family:var(--font-mono)">
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Binance</span>
+                        <span style="color:var(--cyan);font-weight:600">$${num(s.binance_mid)}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Delta</span>
+                        <span style="color:var(--purple);font-weight:600">$${num(s.delta_mid)}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Δ USD</span>
+                        <span style="font-weight:600;color:${dirColor}">$${num(s.dislocation_usd)}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Net Edge</span>
+                        <span style="font-weight:700;color:${netColor}">${netEdge>=0?'+':''}${netEdge.toFixed(3)}%</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Spread</span>
+                        <span>${num(s.spread_delta_pct,3)}%</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                        <span style="color:var(--text-muted)">Latency</span>
+                        <span>${num(s.avg_latency_ms,0)}ms</span>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;font-size:.65rem;text-align:center">
+                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                        <div style="font-weight:700;font-family:var(--font-mono);color:var(--yellow)">${num(s.avg_disl,3)}%</div>
+                        <div style="color:var(--text-muted)">AVG</div>
+                    </div>
+                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                        <div style="font-weight:700;font-family:var(--font-mono);color:var(--orange)">${num(s.p95_disl,3)}%</div>
+                        <div style="color:var(--text-muted)">P95</div>
+                    </div>
+                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                        <div style="font-weight:700;font-family:var(--font-mono);color:${(s.tradeable_pct||0)>=5?'var(--green)':'var(--red)'}">${num(s.tradeable_pct,1)}%</div>
+                        <div style="color:var(--text-muted)">TRADEABLE</div>
+                    </div>
+                </div>
+            </div>`;
+        }).join("");
+    }
+
+    // Symbol tabs for history
+    const tabsWrap = document.getElementById("la-sym-tabs");
+    tabsWrap.innerHTML = symbols.map(s => {
+        const sym = s.symbol || "";
+        const short = sym.replace("/USDT","");
+        const isActive = sym === laSelectedSymbol;
+        return `<button onclick="laSelectSymbol('${sym}')" style="padding:4px 12px;border-radius:4px;border:1px solid ${isActive?'var(--cyan)':'var(--border)'};background:${isActive?'rgba(0,212,255,.1)':'rgba(255,255,255,.02)'};color:${isActive?'var(--cyan)':'var(--text-muted)'};font-size:.72rem;font-weight:600;cursor:pointer;font-family:var(--font-sans)">${short}</button>`;
+    }).join("");
+    document.getElementById("la-history-sym").textContent = laSelectedSymbol.replace("/USDT","");
+
+    // History table
+    const tbody = document.getElementById("la-history-body");
+    const disls = hist?.dislocations || [];
+    if (disls.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty">No dislocation data yet</td></tr>';
+    } else {
+        tbody.innerHTML = disls.map(d => {
+            const absD = Math.abs(d.disl_pct);
+            const rowBg = absD >= 0.20 ? "rgba(0,255,157,.04)" : absD >= 0.10 ? "rgba(255,215,0,.02)" : "";
+            const dirCol = d.direction === "long" ? "var(--green)" : "var(--red)";
+            return `<tr style="background:${rowBg}">
+                <td>${esc(d.time)}</td>
+                <td style="color:var(--cyan)">$${num(d.binance)}</td>
+                <td style="color:var(--purple)">$${num(d.delta)}</td>
+                <td style="font-weight:700;color:${absD>=0.20?'var(--green)':absD>=0.10?'var(--yellow)':'var(--text-muted)'}">${d.disl_pct>=0?'+':''}${d.disl_pct.toFixed(4)}%</td>
+                <td style="color:${dirCol};font-weight:600">${d.direction.toUpperCase()}</td>
+                <td>${num(d.latency_ms,0)}ms</td>
+            </tr>`;
+        }).join("");
+    }
+
+    // Edge Analysis
+    const edgeWrap = document.getElementById("la-edge-analysis");
+    if (symbols.length > 0) {
+        const costPct = data.cost_rt_pct || 0.14;
+        let edgeHtml = '';
+        edgeHtml += makeKV("Round-trip Cost", costPct.toFixed(2) + "%", "var(--yellow)");
+        edgeHtml += makeKV("Min Dislocation", (data.min_threshold_pct || 0.20).toFixed(2) + "%", "var(--cyan)");
+        symbols.forEach(s => {
+            const short = (s.symbol||"").replace("/USDT","");
+            const avgEdge = (s.avg_disl || 0) - costPct;
+            const p95Edge = (s.p95_disl || 0) - costPct;
+            const dailySigs = ((s.tradeable_pct || 0) / 100) * (data.binance_msgs || 0) / Math.max(1, (data.uptime_s || 1) / 86400);
+            edgeHtml += `<div style="margin-top:10px;padding:8px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border)">
+                <div style="font-weight:700;font-size:.82rem;margin-bottom:6px;color:var(--text)">${short}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;font-family:var(--font-mono)">
+                    <span style="color:var(--text-muted)">Avg Net Edge:</span><span style="color:${avgEdge>0?'var(--green)':'var(--red)'}"> ${avgEdge>0?'+':''}${avgEdge.toFixed(3)}%</span>
+                    <span style="color:var(--text-muted)">P95 Net Edge:</span><span style="color:${p95Edge>0?'var(--green)':'var(--red)'}"> ${p95Edge>0?'+':''}${p95Edge.toFixed(3)}%</span>
+                    <span style="color:var(--text-muted)">Tradeable:</span><span>${num(s.tradeable_pct,1)}% of ticks</span>
+                    <span style="color:var(--text-muted)">Est. Sigs/Day:</span><span style="color:var(--cyan)">${num(dailySigs,0)}</span>
+                </div>
+            </div>`;
+        });
+        edgeWrap.innerHTML = edgeHtml;
+    }
+
+    // Distribution
+    const distWrap = document.getElementById("la-disl-distribution");
+    if (symbols.length > 0 && disls.length > 10) {
+        const allDisls = disls.map(d => Math.abs(d.disl_pct));
+        const buckets = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.00];
+        let distHtml = '<div style="font-size:.72rem">';
+        buckets.forEach(b => {
+            const count = allDisls.filter(d => d >= b).length;
+            const pct = (count / allDisls.length * 100);
+            const barW = Math.min(pct, 100);
+            const barColor = b >= 0.20 ? "var(--green)" : b >= 0.10 ? "var(--yellow)" : "var(--text-muted)";
+            distHtml += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span style="width:55px;text-align:right;color:var(--text-muted);font-family:var(--font-mono)">≥${b.toFixed(2)}%</span>
+                <div style="flex:1;height:18px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+                    <div style="height:100%;width:${barW}%;background:${barColor};border-radius:3px;transition:width .5s"></div>
+                </div>
+                <span style="width:50px;font-family:var(--font-mono);font-weight:600;color:${barColor}">${pct.toFixed(1)}%</span>
+            </div>`;
+        });
+        distHtml += '</div>';
+        distWrap.innerHTML = distHtml;
+    }
+}
+
+function laSelectSymbol(sym) {
+    laSelectedSymbol = sym;
+    refreshLatencyArb();
 }
 
 // ══════════════════════════════════════════════════════════

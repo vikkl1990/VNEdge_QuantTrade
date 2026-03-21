@@ -104,6 +104,7 @@ class DashboardServer:
         self._trade_monitor = None   # set externally by orchestrator
         self._strategy = None        # set externally by orchestrator
         self._decision_engine = None # set externally by orchestrator
+        self._latency_arb = None     # set externally by orchestrator
 
         self._daily_pnl: float = 0.0
         self._total_pnl: float = 0.0
@@ -324,6 +325,8 @@ class DashboardServer:
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
         app.router.add_get("/api/ping", self._handle_ping)
         app.router.add_get("/api/latency", self._handle_latency)
+        app.router.add_get("/api/latency-arb", self._handle_latency_arb)
+        app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -748,6 +751,71 @@ class DashboardServer:
             data["grid_uptime_sec"] = self._grid_bot.get_status().get("uptime_sec", 0)
 
         return web.json_response(data, dumps=_safe_dumps)
+
+    async def _handle_latency_arb(self, request: web.Request) -> web.Response:
+        """Return latency arb engine stats for all symbols."""
+        if self._latency_arb is None:
+            return web.json_response({
+                "active": False,
+                "stats": {},
+                "symbols": [],
+            }, dumps=_safe_dumps)
+
+        stats = self._latency_arb.get_stats()
+        # Add per-symbol price snapshots
+        symbol_data = []
+        for sym in self._latency_arb.symbols:
+            bp = self._latency_arb._binance_prices.get(sym)
+            dp = self._latency_arb._delta_prices.get(sym)
+            now = time.time()
+
+            entry = {"symbol": sym}
+            if bp:
+                entry["binance_bid"] = round(bp.bid, 2)
+                entry["binance_ask"] = round(bp.ask, 2)
+                entry["binance_mid"] = round(bp.mid, 2)
+                entry["binance_age_ms"] = round((now - bp.local_recv_ts) * 1000, 0)
+            if dp:
+                entry["delta_bid"] = round(dp.bid, 2)
+                entry["delta_ask"] = round(dp.ask, 2)
+                entry["delta_mid"] = round(dp.mid, 2)
+                entry["delta_age_ms"] = round((now - dp.local_recv_ts) * 1000, 0)
+            if bp and dp and dp.mid > 0:
+                disl = (bp.mid - dp.mid) / dp.mid * 100
+                entry["dislocation_pct"] = round(disl, 4)
+                entry["dislocation_usd"] = round(bp.mid - dp.mid, 2)
+                entry["direction"] = "LONG" if disl > 0 else "SHORT" if disl < 0 else "FLAT"
+                entry["spread_delta_pct"] = round((dp.ask - dp.bid) / dp.mid * 100, 4) if dp.mid else 0
+            # Stats from history
+            entry["avg_disl"] = stats.get("avg_dislocation_pct", {}).get(sym, 0)
+            entry["max_disl"] = stats.get("max_dislocation_pct", {}).get(sym, 0)
+            entry["p95_disl"] = stats.get(f"p95_dislocation_pct_{sym}", 0)
+            entry["tradeable_pct"] = stats.get(f"tradeable_pct_{sym}", 0)
+            entry["avg_latency_ms"] = stats.get("avg_latency_ms", {}).get(sym, 0)
+            symbol_data.append(entry)
+
+        return web.json_response({
+            "active": True,
+            "running": self._latency_arb._running,
+            "measure_only": self._latency_arb._measure_only,
+            "uptime_s": round(time.time() - (stats.get("started_at") or time.time()), 0),
+            "binance_msgs": stats.get("binance_msgs", 0),
+            "delta_msgs": stats.get("delta_msgs", 0),
+            "dislocations_detected": stats.get("dislocations_detected", 0),
+            "signals_generated": stats.get("signals_generated", 0),
+            "min_threshold_pct": self._latency_arb.MIN_DISLOCATION_PCT,
+            "cost_rt_pct": 0.14,
+            "symbols": symbol_data,
+        }, dumps=_safe_dumps)
+
+    async def _handle_latency_arb_dislocations(self, request: web.Request) -> web.Response:
+        """Return recent dislocation history for a symbol."""
+        if self._latency_arb is None:
+            return web.json_response({"dislocations": []})
+        sym = request.query.get("symbol", "BTC/USDT")
+        n = min(int(request.query.get("n", "50")), 200)
+        dislocations = self._latency_arb.get_recent_dislocations(sym, n)
+        return web.json_response({"symbol": sym, "dislocations": dislocations}, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

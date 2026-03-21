@@ -503,7 +503,7 @@ tr:hover{background:rgba(99,148,255,.02)}
   <!-- Edge Analysis -->
   <div class="grid-2">
     <div class="panel">
-      <div class="panel-title">💰 Edge Analysis</div>
+      <div class="panel-title">💰 Net Edge by Pair</div>
       <div id="la-edge-analysis">
         <div class="empty">Collecting data...</div>
       </div>
@@ -513,6 +513,29 @@ tr:hover{background:rgba(99,148,255,.02)}
       <div id="la-disl-distribution">
         <div class="empty">Collecting data...</div>
       </div>
+    </div>
+  </div>
+
+  <!-- Analysis Layers (Decay, Convergence, Simulation, Session) -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">⏱ Spike Decay Analysis <span class="badge">LAYER 2</span></div>
+      <div id="la-decay-analysis"><div class="empty">Waiting for spikes...</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">🎯 Convergence — Who Moves? <span class="badge">LAYER 3</span></div>
+      <div id="la-convergence"><div class="empty">Waiting for spikes...</div></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">💵 Simulated Trade Replay <span class="badge">LAYER 4</span></div>
+      <div id="la-simulation"><div class="empty">Waiting for resolved spikes...</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">🕐 Net Edge by Pair × Session (UTC Hour) <span class="badge">LAYER 5</span></div>
+      <div id="la-session-heatmap"><div class="empty">Collecting 24h data...</div></div>
     </div>
   </div>
 
@@ -1444,9 +1467,10 @@ function updateClosedTrades(closed) {
 // TAB: LATENCY ARB REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshLatencyArb() {
-    const [data, hist] = await Promise.all([
+    const [data, hist, analysis] = await Promise.all([
         api("/api/latency-arb"),
-        api(`/api/latency-arb/dislocations?symbol=${encodeURIComponent(laSelectedSymbol)}&n=50`)
+        api(`/api/latency-arb/dislocations?symbol=${encodeURIComponent(laSelectedSymbol)}&n=50`),
+        api("/api/latency-arb/analysis")
     ]);
 
     if (!data) return;
@@ -1581,24 +1605,29 @@ async function refreshLatencyArb() {
         }).join("");
     }
 
-    // Edge Analysis
+    // Net Edge Analysis (per-pair with classification)
     const edgeWrap = document.getElementById("la-edge-analysis");
     if (symbols.length > 0) {
-        const costPct = data.cost_rt_pct || 0.14;
         let edgeHtml = '';
-        edgeHtml += makeKV("Round-trip Cost", costPct.toFixed(2) + "%", "var(--yellow)");
-        edgeHtml += makeKV("Min Dislocation", (data.min_threshold_pct || 0.20).toFixed(2) + "%", "var(--cyan)");
         symbols.forEach(s => {
             const short = (s.symbol||"").replace("/USDT","");
-            const avgEdge = (s.avg_disl || 0) - costPct;
-            const p95Edge = (s.p95_disl || 0) - costPct;
+            const ne = s.net_edge || {};
+            const cls = ne.classification || "NO_TRADE";
+            const clsColor = cls === "EXECUTABLE" ? "var(--green)" : cls === "WATCH" ? "var(--yellow)" : "var(--text-muted)";
+            const clsBg = cls === "EXECUTABLE" ? "rgba(0,255,157,.06)" : cls === "WATCH" ? "rgba(255,215,0,.04)" : "rgba(255,255,255,.02)";
+            const netEdge = ne.net_edge_pct || 0;
             const dailySigs = ((s.tradeable_pct || 0) / 100) * (data.binance_msgs || 0) / Math.max(1, (data.uptime_s || 1) / 86400);
-            edgeHtml += `<div style="margin-top:10px;padding:8px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border)">
-                <div style="font-weight:700;font-size:.82rem;margin-bottom:6px;color:var(--text)">${short}</div>
+            edgeHtml += `<div style="margin-top:8px;padding:10px;background:${clsBg};border-radius:6px;border:1px solid var(--border);border-left:3px solid ${clsColor}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                    <span style="font-weight:700;font-size:.85rem">${short}</span>
+                    <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${clsColor};background:${cls==='EXECUTABLE'?'rgba(0,255,157,.1)':cls==='WATCH'?'rgba(255,215,0,.08)':'rgba(90,112,144,.08)'};border:1px solid ${clsColor}">${cls}</span>
+                </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;font-family:var(--font-mono)">
-                    <span style="color:var(--text-muted)">Avg Net Edge:</span><span style="color:${avgEdge>0?'var(--green)':'var(--red)'}"> ${avgEdge>0?'+':''}${avgEdge.toFixed(3)}%</span>
-                    <span style="color:var(--text-muted)">P95 Net Edge:</span><span style="color:${p95Edge>0?'var(--green)':'var(--red)'}"> ${p95Edge>0?'+':''}${p95Edge.toFixed(3)}%</span>
-                    <span style="color:var(--text-muted)">Tradeable:</span><span>${num(s.tradeable_pct,1)}% of ticks</span>
+                    <span style="color:var(--text-muted)">Gross Disl:</span><span>${num(ne.gross_disl_pct,4)}%</span>
+                    <span style="color:var(--text-muted)">Spread:</span><span style="color:var(--yellow)">${num(ne.spread_pct,4)}%</span>
+                    <span style="color:var(--text-muted)">Total Cost:</span><span style="color:var(--red)">${num(ne.total_cost_pct,4)}%</span>
+                    <span style="color:var(--text-muted)">Net Edge:</span><span style="font-weight:700;color:${netEdge>0?'var(--green)':'var(--red)'}"> ${netEdge>0?'+':''}${num(netEdge,4)}%</span>
+                    <span style="color:var(--text-muted)">Safety Buffer:</span><span>${num(ne.safety_buffer,2)}%</span>
                     <span style="color:var(--text-muted)">Est. Sigs/Day:</span><span style="color:var(--cyan)">${num(dailySigs,0)}</span>
                 </div>
             </div>`;
@@ -1627,6 +1656,171 @@ async function refreshLatencyArb() {
         });
         distHtml += '</div>';
         distWrap.innerHTML = distHtml;
+    }
+
+    // ── ANALYSIS LAYERS (from /api/latency-arb/analysis) ──
+    if (analysis && analysis.active) {
+        // Layer 2: Decay Analysis
+        const decayWrap = document.getElementById("la-decay-analysis");
+        const decay = analysis.decay || {};
+        const decaySymbols = Object.keys(decay);
+        if (decaySymbols.length > 0) {
+            let dh = '<table><thead><tr><th>Pair</th><th>Spikes</th><th>Avg Dur</th><th>1s</th><th>2s</th><th>5s</th><th>10s</th><th>Avg Peak</th></tr></thead><tbody>';
+            decaySymbols.forEach(sym => {
+                const d = decay[sym];
+                if (!d || !d.total_spikes) return;
+                const short = sym.replace("/USDT","");
+                const s1 = (d.survived_1s_pct||0).toFixed(0);
+                const s2 = (d.survived_2s_pct||0).toFixed(0);
+                const s5 = (d.survived_5s_pct||0).toFixed(0);
+                const s10 = (d.survived_10s_pct||0).toFixed(0);
+                dh += `<tr>
+                    <td style="font-weight:700">${short}</td>
+                    <td>${d.total_spikes}</td>
+                    <td>${num(d.avg_duration_s,1)}s</td>
+                    <td style="color:${s1>50?'var(--green)':'var(--red)'}">${s1}%</td>
+                    <td style="color:${s2>50?'var(--green)':'var(--red)'}">${s2}%</td>
+                    <td style="color:${s5>30?'var(--green)':'var(--red)'}">${s5}%</td>
+                    <td style="color:${s10>20?'var(--green)':'var(--yellow)'}">${s10}%</td>
+                    <td style="color:var(--cyan)">${num(d.avg_peak_disl_pct,3)}%</td>
+                </tr>`;
+            });
+            dh += '</tbody></table>';
+            dh += '<div style="font-size:.62rem;color:var(--text-muted);margin-top:6px">Survival rate = % of spikes still above threshold at N seconds. Higher = more time to act.</div>';
+            decayWrap.innerHTML = dh;
+        }
+
+        // Layer 3: Convergence
+        const convWrap = document.getElementById("la-convergence");
+        const conv = analysis.convergence || {};
+        const convSymbols = Object.keys(conv);
+        if (convSymbols.length > 0) {
+            let ch = '';
+            convSymbols.forEach(sym => {
+                const c = conv[sym];
+                if (!c || !c.total_resolved) return;
+                const short = sym.replace("/USDT","");
+                const dcPct = (c.delta_converged_pct||0);
+                const brPct = (c.binance_reverted_pct||0);
+                const mxPct = (c.mixed_pct||0);
+                const dcW = Math.min(dcPct, 100);
+                const brW = Math.min(brPct, 100);
+                ch += `<div style="margin-bottom:12px;padding:8px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border)">
+                    <div style="font-weight:700;font-size:.82rem;margin-bottom:6px">${short} <span style="color:var(--text-muted);font-weight:400">(${c.total_resolved} resolved)</span></div>
+                    <div style="margin-bottom:4px;display:flex;align-items:center;gap:8px;font-size:.72rem">
+                        <span style="width:90px;color:var(--green)">Delta→Binance</span>
+                        <div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+                            <div style="height:100%;width:${dcW}%;background:var(--green);border-radius:3px"></div>
+                        </div>
+                        <span style="width:40px;font-family:var(--font-mono);color:var(--green);font-weight:600">${dcPct.toFixed(0)}%</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;font-size:.72rem">
+                        <span style="width:90px;color:var(--red)">Binance←revert</span>
+                        <div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+                            <div style="height:100%;width:${brW}%;background:var(--red);border-radius:3px"></div>
+                        </div>
+                        <span style="width:40px;font-family:var(--font-mono);color:var(--red);font-weight:600">${brPct.toFixed(0)}%</span>
+                    </div>
+                    <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Avg convergence: ${num(c.avg_convergence_pct,1)}% of gap closed</div>
+                </div>`;
+            });
+            convWrap.innerHTML = ch || '<div class="empty">No resolved spikes yet</div>';
+        }
+
+        // Layer 4: Simulation
+        const simWrap = document.getElementById("la-simulation");
+        const sim = analysis.simulation || {};
+        const simSymbols = Object.keys(sim);
+        if (simSymbols.length > 0) {
+            let sh = '';
+            simSymbols.forEach(sym => {
+                const s = sim[sym];
+                if (!s || !s.total_trades) return;
+                const short = sym.replace("/USDT","");
+                const wr = s.win_rate || 0;
+                const netPnl = s.total_net_pnl || 0;
+                sh += `<div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border);border-left:3px solid ${netPnl>=0?'var(--green)':'var(--red)'}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                        <span style="font-weight:700;font-size:.85rem">${short}</span>
+                        <span style="font-size:.72rem;color:var(--text-muted)">${s.total_trades} simulated</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;font-size:.72rem">
+                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div style="color:var(--text-muted)">Win Rate</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${netPnl>=0?'var(--green)':'var(--red)'}">${netPnl>=0?'+':''}${netPnl.toFixed(3)}%</div><div style="color:var(--text-muted)">Total P&L</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_net_pnl,3)}%</div><div style="color:var(--text-muted)">Avg Trade</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_hold_time_s,1)}s</div><div style="color:var(--text-muted)">Avg Hold</div></div>
+                    </div>
+                </div>`;
+            });
+            simWrap.innerHTML = sh || '<div class="empty">No simulated trades yet</div>';
+        }
+
+        // Layer 5: Session Heatmap (Net Edge by Pair × UTC Hour)
+        const sessWrap = document.getElementById("la-session-heatmap");
+        const sess = analysis.session || {};
+        const sessSymbols = Object.keys(sess);
+        if (sessSymbols.length > 0) {
+            // Build heatmap: rows = pairs, cols = UTC hours 0-23
+            const hours = Array.from({length:24}, (_,i)=>i);
+            let hh = '<div style="overflow-x:auto"><table style="font-size:.65rem;min-width:700px"><thead><tr><th style="position:sticky;left:0;background:var(--bg);z-index:1">Pair</th>';
+            hours.forEach(h => {
+                hh += `<th style="text-align:center;min-width:28px;padding:2px 3px">${h}</th>`;
+            });
+            hh += '</tr></thead><tbody>';
+            sessSymbols.forEach(sym => {
+                const sd = sess[sym];
+                if (!sd || !sd.by_hour) return;
+                const short = sym.replace("/USDT","");
+                hh += `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg);z-index:1">${short}</td>`;
+                hours.forEach(h => {
+                    const hd = sd.by_hour[String(h)] || {};
+                    const avgD = hd.avg_disl || 0;
+                    const count = hd.count || 0;
+                    const tPct = hd.pct_tradeable || 0;
+                    // Color: green if avg_disl > cost (profitable), yellow if close, dim if no data
+                    let bg = "transparent";
+                    let color = "var(--text-muted)";
+                    if (count === 0) {
+                        bg = "rgba(255,255,255,.01)";
+                        color = "var(--text-muted)";
+                    } else if (avgD >= 0.15) {
+                        bg = `rgba(0,255,157,${Math.min(avgD/0.5,0.3).toFixed(2)})`;
+                        color = "var(--green)";
+                    } else if (avgD >= 0.08) {
+                        bg = `rgba(255,215,0,${Math.min(avgD/0.3,0.15).toFixed(2)})`;
+                        color = "var(--yellow)";
+                    } else {
+                        bg = "rgba(255,255,255,.02)";
+                    }
+                    const title = `${short} UTC ${h}:00\\nAvg: ${avgD.toFixed(3)}%\\nCount: ${count}\\nTradeable: ${tPct.toFixed(1)}%`;
+                    hh += `<td style="text-align:center;background:${bg};color:${color};font-family:var(--font-mono);font-weight:600;padding:4px 2px;border:1px solid rgba(255,255,255,.02)" title="${title}">${count>0?avgD.toFixed(2):'-'}</td>`;
+                });
+                hh += '</tr>';
+            });
+            hh += '</tbody></table></div>';
+            hh += '<div style="display:flex;gap:12px;margin-top:8px;font-size:.6rem;color:var(--text-muted)">';
+            hh += '<span>■ <span style="color:var(--green)">Green</span> = avg disl ≥ 0.15% (likely profitable)</span>';
+            hh += '<span>■ <span style="color:var(--yellow)">Yellow</span> = 0.08-0.15% (watch)</span>';
+            hh += '<span>■ Dim = < 0.08% (no edge)</span>';
+            hh += '</div>';
+
+            // Add active/quiet hour summary
+            sessSymbols.forEach(sym => {
+                const sd = sess[sym];
+                if (!sd) return;
+                const short = sym.replace("/USDT","");
+                const active = sd.active_hours || [];
+                const quiet = sd.quiet_hours || [];
+                if (active.length > 0 || quiet.length > 0) {
+                    hh += `<div style="margin-top:6px;font-size:.68rem">
+                        <span style="font-weight:600">${short}:</span>
+                        ${active.length > 0 ? `<span style="color:var(--green)"> Active: UTC ${active.join(', ')}</span>` : ''}
+                        ${quiet.length > 0 ? `<span style="color:var(--text-muted)"> | Quiet: UTC ${quiet.join(', ')}</span>` : ''}
+                    </div>`;
+                }
+            });
+            sessWrap.innerHTML = hh;
+        }
     }
 }
 

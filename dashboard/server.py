@@ -327,6 +327,7 @@ class DashboardServer:
         app.router.add_get("/api/latency", self._handle_latency)
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
+        app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)
@@ -786,6 +787,12 @@ class DashboardServer:
                 entry["dislocation_usd"] = round(bp.mid - dp.mid, 2)
                 entry["direction"] = "LONG" if disl > 0 else "SHORT" if disl < 0 else "FLAT"
                 entry["spread_delta_pct"] = round((dp.ask - dp.bid) / dp.mid * 100, 4) if dp.mid else 0
+                # Net edge calculation (Layer 1)
+                try:
+                    ne = self._latency_arb.compute_net_edge(sym, disl)
+                    entry["net_edge"] = ne
+                except Exception:
+                    entry["net_edge"] = {}
             # Stats from history
             entry["avg_disl"] = stats.get("avg_dislocation_pct", {}).get(sym, 0)
             entry["max_disl"] = stats.get("max_dislocation_pct", {}).get(sym, 0)
@@ -816,6 +823,38 @@ class DashboardServer:
         n = min(int(request.query.get("n", "50")), 200)
         dislocations = self._latency_arb.get_recent_dislocations(sym, n)
         return web.json_response({"symbol": sym, "dislocations": dislocations}, dumps=_safe_dumps)
+
+    async def _handle_latency_arb_analysis(self, request: web.Request) -> web.Response:
+        """Return full 5-layer analysis: decay, convergence, simulation, session stats."""
+        if self._latency_arb is None:
+            return web.json_response({"active": False}, dumps=_safe_dumps)
+
+        sym = request.query.get("symbol")  # None = all symbols
+        try:
+            decay = self._latency_arb.get_decay_analysis(sym)
+        except Exception:
+            decay = {}
+        try:
+            convergence = self._latency_arb.get_convergence_stats(sym)
+        except Exception:
+            convergence = {}
+        try:
+            simulation = self._latency_arb.get_simulation_results(sym)
+        except Exception:
+            simulation = {}
+        try:
+            session = self._latency_arb.get_session_stats(sym)
+        except Exception:
+            session = {}
+
+        return web.json_response({
+            "active": True,
+            "symbol_filter": sym,
+            "decay": decay,
+            "convergence": convergence,
+            "simulation": simulation,
+            "session": session,
+        }, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

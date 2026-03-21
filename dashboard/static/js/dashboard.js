@@ -131,6 +131,45 @@
         }
     }
 
+    // ── Update: Setup Lifecycle ─────────────────────────────────────────
+
+    function updateSetupLifecycle(status) {
+        const wrap = document.getElementById("setup-lifecycle-cards");
+        const countEl = document.getElementById("setup-lifecycle-count");
+        if (!wrap) return;
+
+        const candidates = (status && status.setup_candidates) || [];
+        if (countEl) countEl.textContent = candidates.length;
+
+        if (!candidates.length) {
+            wrap.innerHTML = '<div class="empty" style="font-size:11px">No forming setups</div>';
+            return;
+        }
+
+        // Max 6 cards
+        const items = candidates.slice(0, 6);
+        let html = "";
+        for (const c of items) {
+            const stateClass = (c.state || "").toLowerCase();
+            const sideClass = (c.side || "watch").toLowerCase();
+            const sym = c.symbol || "";
+            const shortSym = sym.replace("/USDT", "").replace("/USD", "");
+            const scannerLabel = (c.scanner || "").replace(/_/g, " ");
+            const price = c.price ? formatPrice(c.price) : "--";
+
+            html += '<div class="slc-card slc-' + stateClass + '">';
+            html += '<span class="slc-symbol">' + shortSym + '</span>';
+            html += '<span class="slc-side ' + sideClass + '">' + (c.side || "?") + '</span>';
+            html += '<div class="slc-info">';
+            html += '<span class="slc-scanner">' + scannerLabel + '</span>';
+            html += '<span class="slc-state ' + stateClass + '">' + (c.state || "?") + '</span>';
+            html += '</div>';
+            html += '<span class="slc-price">' + price + '</span>';
+            html += '</div>';
+        }
+        wrap.innerHTML = html;
+    }
+
     // ── Update: Status + Prices ───────────────────────────────────────
 
     function updateStatus(data) {
@@ -1769,6 +1808,7 @@
         if (status && status.prices) currentPrices = status.prices;
 
         updateStatus(status);
+        updateSetupLifecycle(status);
         updatePositions(positions);
         updateSignals(signals);
         updatePerformance(performance);

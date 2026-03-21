@@ -27,6 +27,19 @@ exchange:
   reconnect_attempts: 10
   reconnect_delay: 5
 
+ml:
+  # Pair-specific ML probability thresholds for the hard veto gate.
+  # Well-calibrated majors can use a slightly lower threshold;
+  # less liquid / meme pairs need higher conviction.
+  pair_thresholds:
+    BTC/USDT: 0.48
+    ETH/USDT: 0.48
+    SOL/USDT: 0.50
+    AVAX/USDT: 0.52
+    LINK/USDT: 0.52
+    DOGE/USDT: 0.55
+  default_threshold: 0.50
+
 timeframes:
   primary: "5m"
   higher: "15m"

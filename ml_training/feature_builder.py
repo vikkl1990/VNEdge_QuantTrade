@@ -240,6 +240,61 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["ema_slope_change"] = features["ema_slope_8"] - df["ema_8"].pct_change(3).shift(3)
 
     # ================================================================
+    # 9c. TRANSITION / DELTA FEATURES (state change > state)
+    # How things are changing matters more than where they are.
+    # ================================================================
+
+    # delta_vwap_dist: Change in VWAP distance over 3 and 5 bars
+    vwap_dist_now = (c - df["vwap"]) / atr.replace(0, np.nan)
+    vwap_dist_3ago = (c.shift(3) - df["vwap"].shift(3)) / atr.shift(3).replace(0, np.nan)
+    vwap_dist_5ago = (c.shift(5) - df["vwap"].shift(5)) / atr.shift(5).replace(0, np.nan)
+    features["delta_vwap_dist_3"] = vwap_dist_now - vwap_dist_3ago
+    features["delta_vwap_dist_5"] = vwap_dist_now - vwap_dist_5ago
+
+    # delta_trend_strength: Change in (EMA8-EMA21)/ATR over 3 and 5 bars
+    trend_now = (df["ema_8"] - df["ema_21"]) / atr.replace(0, np.nan)
+    trend_3ago = (df["ema_8"].shift(3) - df["ema_21"].shift(3)) / atr.shift(3).replace(0, np.nan)
+    trend_5ago = (df["ema_8"].shift(5) - df["ema_21"].shift(5)) / atr.shift(5).replace(0, np.nan)
+    features["delta_trend_strength_3"] = trend_now - trend_3ago
+    features["delta_trend_strength_5"] = trend_now - trend_5ago
+
+    # delta_atr_ratio: Change in ATR ratio (ATR / rolling ATR mean) over 3 and 5 bars
+    atr_rolling_mean = atr.rolling(100).mean().replace(0, np.nan)
+    atr_ratio_now = atr / atr_rolling_mean
+    atr_ratio_3ago = atr.shift(3) / atr.shift(3).rolling(100).mean().replace(0, np.nan)
+    atr_ratio_5ago = atr.shift(5) / atr.shift(5).rolling(100).mean().replace(0, np.nan)
+    features["delta_atr_ratio_3"] = atr_ratio_now - atr_ratio_3ago
+    features["delta_atr_ratio_5"] = atr_ratio_now - atr_ratio_5ago
+
+    # impulse_decay: Bars since last impulse candle (body > 0.8x ATR). Lower = recent impulse.
+    is_impulse_candle = (df["body"] > 0.8 * atr).astype(float)
+    bars_since_impulse = pd.Series(np.nan, index=df.index)
+    last_imp_idx = -999
+    for i in range(len(df)):
+        if is_impulse_candle.iloc[i] > 0:
+            last_imp_idx = i
+        bars_since_impulse.iloc[i] = float(i - last_imp_idx) if last_imp_idx >= 0 else 50.0
+    features["transition_impulse_decay"] = bars_since_impulse.clip(0, 50) / 50.0  # normalize 0-1
+
+    # vwap_reversion_speed: Rate of return toward VWAP over 3 bars
+    # Positive = reverting toward VWAP, negative = moving away
+    features["transition_vwap_reversion_speed"] = (vwap_dist_3ago.abs() - vwap_dist_now.abs()) / 3.0
+
+    # momentum_acceleration: Second derivative of price (return_5 - return_5_shifted_5)
+    return_5 = c.pct_change(5)
+    features["delta_momentum_acceleration"] = return_5 - return_5.shift(5)
+
+    # vol_regime_change: Difference between current vol z-score and 5-bar-ago vol z-score
+    vol_zscore_now = (v - df["vol_sma_20"]) / df["vol_std_20"].replace(0, np.nan)
+    vol_zscore_5ago = (v.shift(5) - df["vol_sma_20"].shift(5)) / df["vol_std_20"].shift(5).replace(0, np.nan)
+    features["delta_vol_regime_change"] = vol_zscore_now - vol_zscore_5ago
+
+    # slope_change_ema8: Change in EMA8 slope (current slope - previous slope)
+    ema8_slope_now = df["ema_8"].pct_change(3)
+    ema8_slope_prev = df["ema_8"].pct_change(3).shift(3)
+    features["delta_slope_change_ema8"] = ema8_slope_now - ema8_slope_prev
+
+    # ================================================================
     # 9b. RECENT BEHAVIOR MEMORY (short-term patterns)
     # ================================================================
     features["last_3_return"] = c.pct_change(3)
@@ -403,6 +458,11 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["vwap_x_trend"] = features["dist_from_vwap"] * features["trend_strength"]
     # Range position x volatility regime
     features["range_x_regime_vol"] = features["range_position"] * features["vol_regime"]
+
+    # ================================================================
+    # CLEANUP: Replace NaN/inf with 0.0 for all features
+    # ================================================================
+    features = features.replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
     return features
 

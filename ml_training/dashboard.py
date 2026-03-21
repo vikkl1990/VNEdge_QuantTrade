@@ -79,6 +79,8 @@ class MLDashboard:
         self._app.router.add_post("/api/score", self._handle_score)
         self._app.router.add_get("/api/health", self._handle_health)
         self._app.router.add_get("/api/live-feedback", self._handle_live_feedback)
+        self._app.router.add_get("/api/validation", self._handle_validation)
+        self._app.router.add_post("/api/validation/run", self._handle_run_validation)
         # Serve static files (logo) from main dashboard's static dir
         static_dir = PROJECT_ROOT / "dashboard" / "static"
         if static_dir.exists():
@@ -606,6 +608,36 @@ class MLDashboard:
         except Exception as e:
             logger.error("Live feedback error: %s", e)
             return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_validation(self, request):
+        """Return latest AUC validation results from saved file."""
+        validation_file = PROJECT_ROOT / "storage" / "ml_validation_results.json"
+        if validation_file.exists():
+            try:
+                data = json.loads(validation_file.read_text())
+                return web.json_response(
+                    _sanitize_json(data),
+                    dumps=lambda o: json.dumps(o, cls=_NumpyEncoder, default=str),
+                )
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": "No validation results yet. Run: python -m ml_training.validate_auc"})
+
+    async def _handle_run_validation(self, request):
+        """Trigger AUC validation in background."""
+        from ml_training.validate_auc import run_validation
+
+        body = await request.json() if request.content_length else {}
+        symbols = body.get("symbols")
+
+        async def _run():
+            try:
+                await run_validation(symbols=symbols, do_fetch=False)
+            except Exception as e:
+                logger.error("Validation run failed: %s", e)
+
+        asyncio.create_task(_run())
+        return web.json_response({"status": "started", "symbols": symbols or "all"})
 
     async def start(self):
         runner = web.AppRunner(self._app)

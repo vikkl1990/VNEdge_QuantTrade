@@ -221,6 +221,24 @@ tr:hover{background:rgba(99,148,255,.02)}
 .panel-accent-red{border-color:rgba(239,68,68,.12)}
 .panel-accent-blue{border-color:rgba(99,148,255,.12)}
 .panel-accent-yellow{border-color:rgba(234,179,8,.12)}
+
+/* Setup Lifecycle Cards */
+.slc-card{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;background:rgba(255,255,255,.03);border-left:3px solid var(--text-muted);font-size:.72rem;min-width:180px;max-width:260px}
+.slc-card.slc-forming{border-left-color:#eab308;background:rgba(234,179,8,.06)}
+.slc-card.slc-confirmed{border-left-color:#22d3ee;background:rgba(34,211,238,.06)}
+.slc-card.slc-executable{border-left-color:#22c55e;background:rgba(34,197,94,.08)}
+.slc-symbol{font-weight:700;font-size:.75rem;color:var(--text-main);min-width:42px}
+.slc-side{font-size:.6rem;font-weight:700;padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:.5px}
+.slc-side.long{background:rgba(34,197,94,.15);color:#22c55e}
+.slc-side.short{background:rgba(239,68,68,.15);color:#ef4444}
+.slc-side.watch{background:rgba(148,163,184,.15);color:#94a3b8}
+.slc-info{display:flex;flex-direction:column;gap:1px;overflow:hidden}
+.slc-scanner{color:var(--text-muted);font-size:.62rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.slc-state{font-size:.58rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.slc-state.forming{color:#eab308}
+.slc-state.confirmed{color:#22d3ee}
+.slc-state.executable{color:#22c55e}
+.slc-price{color:var(--text-muted);font-size:.65rem;font-family:var(--mono);margin-left:auto;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -309,6 +327,14 @@ tr:hover{background:rgba(99,148,255,.02)}
     </div>
   </div>
 
+  <!-- Setup Lifecycle -->
+  <div class="panel" id="setup-lifecycle-panel" style="margin-bottom:8px">
+    <div class="panel-title">Setup Lifecycle <span class="badge" id="setup-lifecycle-count">0</span></div>
+    <div id="setup-lifecycle-cards" style="display:flex;flex-wrap:wrap;gap:6px;min-height:32px">
+      <div class="empty" style="font-size:11px">No forming setups</div>
+    </div>
+  </div>
+
   <div class="live-grid">
 
     <!-- Active Trades -->
@@ -389,6 +415,30 @@ tr:hover{background:rgba(99,148,255,.02)}
       <div class="panel-title">Recent Alerts</div>
       <div id="alerts-list" style="max-height:240px;overflow-y:auto">
         <div class="empty">No alerts</div>
+      </div>
+    </div>
+
+    <!-- Recent Closed Trades -->
+    <div class="panel live-span-2">
+      <div class="panel-title">Recent Closed Trades <span class="badge">last 10</span></div>
+      <div class="tbl-wrap" style="max-height:320px;overflow-y:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Type</th>
+              <th>PnL $</th>
+              <th>R</th>
+              <th>Exit Reason</th>
+              <th>Duration</th>
+            </tr>
+          </thead>
+          <tbody id="recent-closed-body">
+            <tr><td colspan="8" class="empty">No closed trades</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -609,9 +659,10 @@ function switchTab(tab) {
 // TAB 1: LIVE TRADING REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshLive() {
-    const [status, decision, active, signals, funnel, alerts] = await Promise.all([
+    const [status, decision, active, signals, funnel, alerts, closed] = await Promise.all([
         api("/api/status"), api("/api/decision"), api("/api/tracker/active"),
-        api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts")
+        api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts"),
+        api("/api/tracker/closed")
     ]);
 
     // Update header status
@@ -669,6 +720,7 @@ async function refreshLive() {
     updateVetoStats(funnel);
     updateScalperCountdown(status);
     updatePerSymbolStatus(status, decision);
+    updateRecentClosed(closed);
 
     // Mini bar
     try {
@@ -965,6 +1017,40 @@ function updateFunnel(raw) {
     document.getElementById("fn-weak").textContent = f.weak || 0;
     const blocked = (f.blocked_regime || 0) + (f.blocked_cost || 0) + (f.blocked_ev || 0) + (f.blocked_htf || 0);
     document.getElementById("fn-blocked").textContent = blocked;
+}
+
+function updateRecentClosed(closed) {
+    const body = document.getElementById("recent-closed-body");
+    if (!body) return;
+    if (!closed || !Array.isArray(closed) || closed.length === 0) {
+        body.innerHTML = '<tr><td colspan="8" class="empty">No closed trades</td></tr>';
+        return;
+    }
+    const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
+    body.innerHTML = sorted.slice(0, 10).map(t => {
+        const pnlUsd = Number(t.pnl_usd || 0);
+        const r = Number(t.exit_r || t.r_multiple || t.r || 0);
+        const tradeType = t.trade_type || (t.metadata && t.metadata.trade_type) || '';
+        const typeColors = {SCALP:'#f59e0b', INTRADAY:'#6366f1', RUNNER:'#10b981'};
+        let dur = "--";
+        try {
+            const et = new Date(t.entry_time);
+            const xt = new Date(t.exit_time || t.closed_at);
+            const mins = Math.round((xt - et) / 60000);
+            dur = mins >= 60 ? Math.floor(mins/60) + "h" + (mins%60) + "m" : mins + "m";
+        } catch(e) {}
+        const rowBg = pnlUsd > 0 ? "rgba(34,197,94,.03)" : pnlUsd < 0 ? "rgba(239,68,68,.03)" : "";
+        return `<tr style="background:${rowBg}">
+            <td>${formatTime(t.closed_at || t.exit_time)}</td>
+            <td style="font-weight:600">${esc(t.symbol || "--")}</td>
+            <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
+            <td>${tradeType ? `<span style="color:${typeColors[tradeType]||'var(--text-muted)'};font-weight:600;font-size:.72rem">${tradeType}</span>` : '--'}</td>
+            <td class="${pnlUsd >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnlUsd >= 0 ? "+$" : "-$"}${Math.abs(pnlUsd).toFixed(2)}</td>
+            <td class="${r >= 0 ? 'pnl-pos' : 'pnl-neg'}">${r >= 0 ? "+" : ""}${r.toFixed(2)}R</td>
+            <td>${esc(t.exit_reason || "--")}</td>
+            <td style="color:var(--text-muted)">${dur}</td>
+        </tr>`;
+    }).join("");
 }
 
 function updatePerSymbolStatus(status, decision) {

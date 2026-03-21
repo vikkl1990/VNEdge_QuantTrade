@@ -164,6 +164,20 @@ class ScalpStrategy(BaseStrategy):
 
     name = "quick_scalp"
 
+    # --- Pair-specific ML probability thresholds ---
+    # Overrides the hard ML veto gate on a per-pair basis.
+    # Well-calibrated majors can use a slightly lower threshold;
+    # less liquid / meme pairs need higher conviction.
+    PAIR_ML_THRESHOLDS: Dict[str, float] = {
+        "BTC/USDT": 0.48,    # BTC models are well-calibrated, slightly lower threshold OK
+        "ETH/USDT": 0.48,    # Same for ETH
+        "SOL/USDT": 0.50,    # Default
+        "AVAX/USDT": 0.52,   # Less liquid, need higher confidence
+        "LINK/USDT": 0.52,   # Less liquid
+        "DOGE/USDT": 0.55,   # Meme coin, need high conviction
+    }
+    DEFAULT_ML_THRESHOLD: float = 0.50
+
     def __init__(self, config: Dict[str, Any]) -> None:
         bot_cfg = config.get("bot", {})
         strat_cfg = config.get("strategy", {})
@@ -171,6 +185,23 @@ class ScalpStrategy(BaseStrategy):
         filt_cfg = strat_cfg.get("filters", {})
         risk_cfg = config.get("risk", {})
         tf_cfg = config.get("timeframes", {})
+
+        # --- Pair-specific ML thresholds (from config, falling back to class defaults) ---
+        ml_cfg = config.get("ml", {})
+        if ml_cfg.get("pair_thresholds"):
+            self.pair_ml_thresholds = {
+                str(k): float(v) for k, v in ml_cfg["pair_thresholds"].items()
+            }
+        else:
+            self.pair_ml_thresholds = dict(self.PAIR_ML_THRESHOLDS)
+        self.default_ml_threshold = float(
+            ml_cfg.get("default_threshold", self.DEFAULT_ML_THRESHOLD)
+        )
+        logger.info(
+            "ML thresholds: default=%.2f, overrides=%s",
+            self.default_ml_threshold,
+            {k: f"{v:.2f}" for k, v in self.pair_ml_thresholds.items()},
+        )
 
         # --- Operating Mode (centralized via ModeManager) ---
         self._mode = get_mode_manager(config)
@@ -361,6 +392,11 @@ class ScalpStrategy(BaseStrategy):
 
         # --- Scan status (for dashboard "why no signal" display) ---
         self.last_scan_status: Dict[str, Dict[str, Any]] = {}
+
+        # --- Setup lifecycle tracking (for dashboard setup cards) ---
+        # {symbol: [{"scanner": name, "state": "FORMING|CONFIRMED|EXECUTABLE",
+        #            "side": "long/short", "price": float, "reason": str, "updated": iso_time}]}
+        self.setup_candidates: Dict[str, List[Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # Data-Driven SL/TP Calibration
@@ -1132,6 +1168,37 @@ class ScalpStrategy(BaseStrategy):
                     "scanner_status": scanner_status,
                 })
 
+        # ── Update setup lifecycle candidates for dashboard ──
+        _lifecycle_candidates: List[Dict[str, Any]] = []
+        for sr in scan_results:
+            if sr.setup_result is not None:
+                # Scanner triggered — CONFIRMED (passed scanner checks)
+                _lifecycle_candidates.append({
+                    "scanner": sr.scanner_name,
+                    "state": "CONFIRMED",
+                    "side": sr.side.value if sr.side else "unknown",
+                    "price": round(sr.entry_price, 2) if sr.entry_price else round(float(df.iloc[-1].get("close", 0)), 2),
+                    "score": round(sr.weighted_score, 1),
+                    "tier": sr.tier,
+                    "reason": ", ".join(sr.confirmations[:2]) if sr.confirmations else sr.scanner_name,
+                    "updated": now_iso,
+                })
+            elif sr.tier == TIER_NEAR_MISS:
+                # Near-miss — FORMING (pattern starting but not confirmed)
+                _lifecycle_candidates.append({
+                    "scanner": sr.scanner_name,
+                    "state": "FORMING",
+                    "side": sr.side.value if sr.side else "watch",
+                    "price": round(float(df.iloc[-1].get("close", 0)), 2),
+                    "score": round(sr.weighted_score, 1),
+                    "tier": sr.tier,
+                    "reason": sr.penalties[0][:60] if sr.penalties else "Approaching trigger",
+                    "updated": now_iso,
+                })
+        # Sort by score desc and keep top 3
+        _lifecycle_candidates.sort(key=lambda c: c["score"], reverse=True)
+        self.setup_candidates[symbol] = _lifecycle_candidates[:3]
+
         # ── Update funnel counters ──
         # Only count triggered scanners (setup_result not None) for strong/valid/weak
         # Non-triggered go to near_miss or rejected based on proximity
@@ -1832,27 +1899,29 @@ class ScalpStrategy(BaseStrategy):
                 getattr(self, '_current_session', ''),
             )
 
-            # ── ML HARD VETO GATE ──
-            # Data proves: every trade with ML < 50% loses money.
-            # ML is the final gatekeeper — if it says < 50%, NO TRADE.
+            # ── ML HARD VETO GATE (pair-specific thresholds) ──
+            # Data proves: trades below the ML threshold lose money.
+            # ML is the final gatekeeper — if prob < threshold, NO TRADE.
+            # Thresholds are pair-specific (config: ml.pair_thresholds).
             #
-            # probability < 0.50 → HARD BLOCK (never trade)
-            # probability 0.50-0.55 → proceed (SCALP tier)
+            # probability < threshold → HARD BLOCK (never trade)
+            # probability threshold-0.55 → proceed (SCALP tier)
             # probability 0.55-0.65 → proceed (INTRADAY tier)
             # probability > 0.65 → proceed + confidence bonus (RUNNER tier)
             if not self._is_learning:
                 _ml_conf_adj = 0
-                if ml_prob < 0.50:
+                ml_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
+                if ml_prob < ml_threshold:
                     # HARD BLOCK — ML says this trade has negative edge
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
                     logger.info(
-                        "ML HARD BLOCK: %s %s prob=%.3f < 0.50 (scanner=%s verdict=%s)",
+                        "ML HARD BLOCK: %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
                         best.side.value.upper() if best.side else "?",
-                        symbol, ml_prob, best_sr.scanner_name, ml_verdict,
+                        symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
                     )
                     self.last_scan_status[symbol] = {
                         "time": now_iso, "signal": False,
-                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < 0.50 ({ml_verdict})",
+                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < {ml_threshold:.2f} ({ml_verdict})",
                         "ml_result": ml_result,
                         "indicators": indicators, "setups_checked": setups_checked,
                         "funnel": dict(self._funnel),
@@ -2017,6 +2086,29 @@ class ScalpStrategy(BaseStrategy):
         except Exception as e:
             logger.debug("Training dataset write failed: %s", e)
 
+        # ── Mark winning candidate as EXECUTABLE in lifecycle ──
+        existing = self.setup_candidates.get(symbol, [])
+        for cand in existing:
+            if cand["scanner"] == best_sr.scanner_name and cand["state"] == "CONFIRMED":
+                cand["state"] = "EXECUTABLE"
+                cand["price"] = round(signal.entry_price, 2)
+                cand["reason"] = f"LIVE: {best.side.value.upper()} @ {signal.entry_price:.2f}"
+                cand["updated"] = now_iso
+                break
+        else:
+            # Insert executable entry if not already tracked
+            existing.insert(0, {
+                "scanner": best_sr.scanner_name,
+                "state": "EXECUTABLE",
+                "side": best.side.value if best.side else "unknown",
+                "price": round(signal.entry_price, 2),
+                "score": round(best_sr.weighted_score, 1),
+                "tier": best_sr.tier,
+                "reason": f"LIVE: {best.side.value.upper()} @ {signal.entry_price:.2f}",
+                "updated": now_iso,
+            })
+        self.setup_candidates[symbol] = existing[:3]
+
         return [signal]
 
     def _estimate_proximity_score(self, diag: str) -> int:
@@ -2044,6 +2136,25 @@ class ScalpStrategy(BaseStrategy):
         if "away" in diag_lower and any(c.isdigit() for c in diag):
             score += 5  # Quantified distance — close
         return min(score, 49)  # Never reach 50 (that's weak signal territory)
+
+    def get_setup_lifecycle(self, symbol: str = None) -> Dict:
+        """Return current setup lifecycle states for dashboard display.
+
+        If symbol is given, returns candidates for that symbol only.
+        Otherwise returns all symbols' candidates flattened and sorted by score.
+        """
+        if symbol:
+            return {"candidates": self.setup_candidates.get(symbol, [])}
+
+        # Flatten all symbols, add symbol key, sort by score desc
+        all_candidates = []
+        for sym, candidates in self.setup_candidates.items():
+            for c in candidates:
+                entry = dict(c)
+                entry["symbol"] = sym
+                all_candidates.append(entry)
+        all_candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+        return {"candidates": all_candidates[:6]}
 
     # ------------------------------------------------------------------
     # Indicator computation (lightweight for 1m data)

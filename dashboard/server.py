@@ -381,6 +381,17 @@ class DashboardServer:
                 "server_time": datetime.now(IST).isoformat(),
                 "fees": self._fees,
             }
+
+            # Setup lifecycle candidates from strategy
+            if self._strategy and hasattr(self._strategy, "get_setup_lifecycle"):
+                try:
+                    lifecycle = self._strategy.get_setup_lifecycle()
+                    data["setup_candidates"] = lifecycle.get("candidates", [])
+                except Exception:
+                    data["setup_candidates"] = []
+            else:
+                data["setup_candidates"] = []
+
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_positions(self, request: web.Request) -> web.Response:

@@ -80,6 +80,25 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
+    # Ichimoku Cloud components (for context features, NOT standalone signals)
+    # Tenkan-sen (conversion line): 9-period mid
+    tenkan_high = h.rolling(9).max()
+    tenkan_low = l.rolling(9).min()
+    df["ichimoku_tenkan"] = (tenkan_high + tenkan_low) / 2
+    # Kijun-sen (base line): 26-period mid
+    kijun_high = h.rolling(26).max()
+    kijun_low = l.rolling(26).min()
+    df["ichimoku_kijun"] = (kijun_high + kijun_low) / 2
+    # Senkou Span A (leading span A): midpoint of tenkan/kijun, shifted forward 26
+    df["ichimoku_span_a"] = ((df["ichimoku_tenkan"] + df["ichimoku_kijun"]) / 2).shift(26)
+    # Senkou Span B (leading span B): 52-period mid, shifted forward 26
+    span_b_high = h.rolling(52).max()
+    span_b_low = l.rolling(52).min()
+    df["ichimoku_span_b"] = ((span_b_high + span_b_low) / 2).shift(26)
+    # Cloud top/bottom
+    df["ichimoku_cloud_top"] = pd.concat([df["ichimoku_span_a"], df["ichimoku_span_b"]], axis=1).max(axis=1)
+    df["ichimoku_cloud_bottom"] = pd.concat([df["ichimoku_span_a"], df["ichimoku_span_b"]], axis=1).min(axis=1)
+
     # Candle components
     df["body"] = (c - o).abs()
     df["range"] = (h - l).replace(0, np.nan)
@@ -458,6 +477,39 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["vwap_x_trend"] = features["dist_from_vwap"] * features["trend_strength"]
     # Range position x volatility regime
     features["range_x_regime_vol"] = features["range_position"] * features["vol_regime"]
+
+    # ================================================================
+    # 21. ICHIMOKU CONTEXT FEATURES (trend/regime layer, NOT signals)
+    # Used as: trend confirmation, regime quality, runner qualification.
+    # NOT used as: standalone entry signals or crossover triggers.
+    # ================================================================
+    cloud_top = df["ichimoku_cloud_top"]
+    cloud_bottom = df["ichimoku_cloud_bottom"]
+    tenkan = df["ichimoku_tenkan"]
+    kijun = df["ichimoku_kijun"]
+
+    # Price vs cloud: +1 = above, -1 = below, 0 = inside cloud
+    features["ichi_price_vs_cloud"] = np.where(
+        c > cloud_top, 1.0,
+        np.where(c < cloud_bottom, -1.0, 0.0)
+    )
+    # Tenkan/Kijun alignment: 1 = bullish (tenkan > kijun), -1 = bearish
+    features["ichi_tk_alignment"] = np.sign(tenkan - kijun)
+    # Cloud thickness (normalized by ATR — thin = weak, thick = strong trend)
+    cloud_thickness = (cloud_top - cloud_bottom).abs()
+    features["ichi_cloud_thickness"] = cloud_thickness / atr.replace(0, np.nan)
+    # Cloud slope (is cloud rising or falling? — trend direction quality)
+    features["ichi_cloud_slope"] = (cloud_top.diff(3) + cloud_bottom.diff(3)) / (2 * atr.replace(0, np.nan))
+    # Distance from cloud edge (normalized by ATR)
+    dist_above = (c - cloud_top) / atr.replace(0, np.nan)
+    dist_below = (cloud_bottom - c) / atr.replace(0, np.nan)
+    features["ichi_dist_from_cloud"] = np.where(
+        c > cloud_top, dist_above,
+        np.where(c < cloud_bottom, -dist_below, 0.0)
+    )
+    # Chikou clearance: is current price clearly above price 26 bars ago?
+    # (simplified: just use return_26 normalized by ATR)
+    features["ichi_chikou_clearance"] = (c - c.shift(26)) / atr.replace(0, np.nan)
 
     # ================================================================
     # CLEANUP: Replace NaN/inf with 0.0 for all features

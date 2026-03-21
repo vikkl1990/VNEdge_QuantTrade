@@ -277,6 +277,24 @@ def _compute_gate_veto_features(
     # ── Side encoding ──
     features["side_long"] = 1.0 if side == "long" else 0.0
 
+    # ── Rule gates as continuous + binary features (ML learns thresholds) ──
+    # Thresholds are SOFTER than live hard rules so ML can learn the real cutoffs
+    features["rule_htf_pass"] = 1.0 if features.get("htf_alignment", 0) >= 0 else 0.0
+    features["rule_session_pass"] = 0.0 if features.get("session_asia_late", 0) > 0.5 else 1.0
+    features["rule_vol_pass"] = 1.0 if features.get("atr_ratio", 0) >= 0.7 else 0.0
+    features["rule_volume_pass"] = 1.0 if features.get("rel_vol", 0) >= 0.8 else 0.0
+    features["rule_candle_pass"] = 1.0 if features.get("body_ratio", 0) >= 0.3 else 0.0
+    features["rule_chase_pass"] = 1.0 if features.get("impulse_body_atr", 0) <= 1.5 else 0.0
+    features["rule_stretch_pass"] = 1.0 if features.get("dist_from_ema8", 0) <= 0.8 else 0.0
+    features["rule_regime_pass"] = 1.0 if features.get("regime_side_alignment", 0) >= -0.5 else 0.0
+    features["rules_passed_count"] = sum([
+        features["rule_htf_pass"], features["rule_session_pass"],
+        features["rule_vol_pass"], features["rule_volume_pass"],
+        features["rule_candle_pass"], features["rule_chase_pass"],
+        features["rule_stretch_pass"], features["rule_regime_pass"],
+    ])
+    features["rules_passed_pct"] = features["rules_passed_count"] / 8.0
+
     return features
 
 
@@ -627,6 +645,31 @@ class CandidateTrainer:
 
         return X, y, veto_blocked
 
+    def _select_top_features(self, X: pd.DataFrame, y: pd.Series,
+                              max_features: int = 40) -> List[str]:
+        """Select top N features by importance. Reduces overfitting."""
+        # Quick RF to get importances
+        quick_rf = RandomForestClassifier(
+            n_estimators=30, max_depth=4, random_state=42,
+            class_weight="balanced", n_jobs=1,
+        )
+        quick_rf.fit(X.fillna(0), y)
+
+        importances = dict(zip(X.columns, quick_rf.feature_importances_))
+        sorted_feats = sorted(importances.items(), key=lambda x: x[1], reverse=True)
+
+        # Always keep rule_* features (they encode domain knowledge)
+        rule_feats = [f for f in X.columns if f.startswith("rule_")]
+        top_feats = [f for f, _ in sorted_feats[:max_features]]
+
+        # Union: top N + all rule features
+        selected = list(set(top_feats + rule_feats))
+
+        logger.info("Feature selection: %d -> %d features (top %d + %d rule features)",
+                     len(X.columns), len(selected), max_features, len(rule_feats))
+
+        return selected
+
     def train(
         self,
         X: pd.DataFrame,
@@ -641,6 +684,12 @@ class CandidateTrainer:
         """
         if len(X) < 100:
             return {"error": f"insufficient data: {len(X)} candidates (need 100+)"}
+
+        # Feature selection: reduce overfitting by keeping top features + rule features
+        if len(X.columns) > 40:
+            selected_features = self._select_top_features(X, y, max_features=40)
+            X = X[selected_features]
+            self._feature_names = selected_features
 
         tscv = TimeSeriesSplit(n_splits=n_splits)
 
@@ -876,11 +925,31 @@ class CandidateTrainer:
         # Spread: difference between top and bottom bucket WR
         spread = actual_wrs[-1] - actual_wrs[0] if len(actual_wrs) >= 2 else 0.0
 
+        # Compute bucket lift for top-bucket-only enforcement
+        bucket_lift = {}
+        if buckets:
+            top_bucket_wr = buckets[-1]["actual_win_rate"]
+            bottom_bucket_wr = buckets[0]["actual_win_rate"]
+            avg_wr = sum(b["actual_win_rate"] for b in buckets) / len(buckets)
+
+            top_lift = top_bucket_wr - avg_wr
+            top_vs_bottom = top_bucket_wr - bottom_bucket_wr
+
+            bucket_lift = {
+                "top_bucket_wr": round(top_bucket_wr, 2),
+                "bottom_bucket_wr": round(bottom_bucket_wr, 2),
+                "avg_wr": round(avg_wr, 2),
+                "top_lift_pct": round(top_lift, 2),
+                "top_vs_bottom_pct": round(top_vs_bottom, 2),
+                "top_bucket_viable": top_lift > 3.0,  # top bucket must be >3% better than avg
+            }
+
         return {
             "buckets": buckets,
             "monotonic": monotonic,
             "rank_correlation": round(float(rank_corr), 3) if not np.isnan(rank_corr) else 0.0,
             "top_bottom_spread": round(spread, 1),
+            "bucket_lift": bucket_lift,
             "verdict": "USEFUL" if spread > 5 and rank_corr > 0.5 else
                        "MARGINAL" if spread > 2 else "NOT_USEFUL",
         }
@@ -967,6 +1036,11 @@ class CandidateTrainer:
         }
 
         self._save_results(result, scanner_name)
+
+        # Save per-scanner model to disk for live scoring
+        if self._model is not None:
+            self.save_model(scanner_name)
+            logger.info("Saved per-scanner model: %s", scanner_name)
 
         # Log summary
         logger.info("=== CandidateTrainer: Pipeline complete for %s / %s ===",
@@ -1163,6 +1237,41 @@ class CandidateTrainer:
             logger.info("Results saved to %s", path)
         except Exception as e:
             logger.warning("Failed to save results: %s", e)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Model persistence for live scoring API
+    # ──────────────────────────────────────────────────────────────────────
+
+    def save_model(self, scanner_name: str):
+        """Persist trained RandomForest model + feature names to disk for live scoring."""
+        if self._model is None:
+            logger.warning("No model to save for %s", scanner_name)
+            return
+        import joblib
+        model_path = RESULTS_DIR / f"model_{scanner_name}.joblib"
+        meta_path = RESULTS_DIR / f"model_{scanner_name}_features.json"
+
+        joblib.dump(self._model, model_path)
+        meta = {
+            "scanner": scanner_name,
+            "feature_names": self._feature_names,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "n_features": len(self._feature_names),
+        }
+        meta_path.write_text(json.dumps(meta, indent=2))
+        logger.info("Saved model for %s: %s (%d features)", scanner_name, model_path, len(self._feature_names))
+
+    @classmethod
+    def load_model(cls, scanner_name: str):
+        """Load a trained model from disk. Returns (model, feature_names) or (None, [])."""
+        import joblib
+        model_path = RESULTS_DIR / f"model_{scanner_name}.joblib"
+        meta_path = RESULTS_DIR / f"model_{scanner_name}_features.json"
+        if not model_path.exists():
+            return None, []
+        model = joblib.load(model_path)
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        return model, meta.get("feature_names", [])
 
 
 # ──────────────────────────────────────────────────────────────────────

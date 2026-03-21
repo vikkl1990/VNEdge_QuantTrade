@@ -244,6 +244,24 @@ class BotOrchestrator:
             self._dashboard._signal_learner = self._signal_learner
             self._dashboard._trade_monitor = self._trade_monitor
             self._dashboard._strategy = self._strategy
+
+            # Wire ML feedback: trade outcomes → training dataset
+            # MultiStrategy wraps ScalpStrategy, so traverse sub-strategies
+            td = getattr(self._strategy, '_training_dataset', None)
+            if td is None:
+                # Check sub-strategies (MultiStrategy has _scalp and _investment)
+                for attr in ('_scalp', '_investment'):
+                    sub = getattr(self._strategy, attr, None)
+                    if sub is not None:
+                        td = getattr(sub, '_training_dataset', None)
+                        if td:
+                            self._log.info("Found _training_dataset on %s sub-strategy", attr)
+                            break
+            if td:
+                self._signal_tracker.set_training_dataset(td)
+                self._log.info("ML feedback loop wired: signal_tracker → training_dataset")
+            else:
+                self._log.warning("ML feedback loop NOT wired: no _training_dataset found on strategy")
             self._dashboard._decision_engine = self._decision_engine
             self._dashboard._grid_bot = self._grid_bot
             dash_cfg = self._config.get("dashboard", {})

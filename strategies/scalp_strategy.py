@@ -33,6 +33,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # IST timezone
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -67,6 +68,7 @@ from strategies.scanner_weights import ScannerWeightManager, STATUS_ACTIVE, STAT
 from strategies.regime_filter import (
     RegimeFilter, calc_confidence_size_multiplier,
     is_scanner_allowed_in_regime, get_regime_scanner_boost,
+    detect_regime_transition,
 )
 from bot.ev_engine import EVEngine
 from bot.feature_logger import FeatureLogger
@@ -286,6 +288,10 @@ class ScalpStrategy(BaseStrategy):
         self._regime_filter = RegimeFilter()
         self._last_regime_info: Dict[str, Dict[str, Any]] = {}  # symbol → regime info
 
+        # --- Regime transition tracking (per-symbol) ---
+        self._prev_regime: Dict[str, str] = {}       # symbol → previous regime
+        self._regime_age: Dict[str, int] = {}         # symbol → bars held in current regime
+
         # --- EV Engine (expected value gating) ---
         self._ev_engine = EVEngine()
         self._last_ev_results: Dict[str, Any] = {}
@@ -334,6 +340,9 @@ class ScalpStrategy(BaseStrategy):
         # Override from config if provided
         self._scanner_sl_tp.update(ml_cfg.get("scanner_sl_tp", {}))
 
+        # --- Data-driven SL/TP calibration from backtest results ---
+        self._calibrated_sl_tp = self._load_calibrated_sl_tp()
+
         # --- Feature Logger (ML training data) ---
         self._feature_logger = FeatureLogger()
 
@@ -352,6 +361,219 @@ class ScalpStrategy(BaseStrategy):
 
         # --- Scan status (for dashboard "why no signal" display) ---
         self.last_scan_status: Dict[str, Dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------
+    # Data-Driven SL/TP Calibration
+    # ------------------------------------------------------------------
+
+    def _load_calibrated_sl_tp(self) -> Dict[str, Dict[str, float]]:
+        """Load scanner-specific SL/TP from backtest results if available.
+
+        Reads /storage/ml_models/candidate_all_scanners.json for optimal
+        TP/SL ratios derived from training data.  Falls back to the
+        hardcoded ``_scanner_sl_tp`` defaults when no data exists.
+        """
+        import json as _json
+        calibrated = dict(self._scanner_sl_tp)  # start from hardcoded defaults
+
+        cal_path = Path(__file__).resolve().parent.parent / "storage" / "ml_models" / "candidate_all_scanners.json"
+        if not cal_path.exists():
+            logger.info("SL/TP calibration: no backtest file at %s — using hardcoded defaults", cal_path)
+            return calibrated
+
+        try:
+            data = _json.loads(cal_path.read_text())
+        except Exception as exc:
+            logger.warning("SL/TP calibration: failed to parse %s — %s", cal_path, exc)
+            return calibrated
+
+        scanners_data = data if isinstance(data, dict) else {}
+        calibrated_count = 0
+
+        for scanner_name, defaults in self._scanner_sl_tp.items():
+            scanner_stats = scanners_data.get(scanner_name)
+            if not scanner_stats or not isinstance(scanner_stats, dict):
+                continue
+
+            # Extract optimal SL/TP from training results
+            # Expected keys: optimal_sl_atr, optimal_tp1_rr, optimal_tp2_rr, optimal_tp3_rr
+            # or: sl_atr, tp1_rr, tp2_rr, tp3_rr
+            new_vals = {}
+            for key, default_key in [("sl_atr", "sl_atr"), ("tp1_rr", "tp1_rr"),
+                                      ("tp2_rr", "tp2_rr"), ("tp3_rr", "tp3_rr")]:
+                # Check both "optimal_X" and plain "X" keys
+                val = scanner_stats.get(f"optimal_{key}") or scanner_stats.get(key)
+                if val is not None and isinstance(val, (int, float)) and val > 0:
+                    new_vals[default_key] = float(val)
+
+            if new_vals:
+                # Sanity bounds: SL ATR mult 0.3-3.0, RR ratios 0.5-8.0
+                if "sl_atr" in new_vals:
+                    new_vals["sl_atr"] = max(0.3, min(3.0, new_vals["sl_atr"]))
+                for rr_key in ("tp1_rr", "tp2_rr", "tp3_rr"):
+                    if rr_key in new_vals:
+                        new_vals[rr_key] = max(0.5, min(8.0, new_vals[rr_key]))
+
+                # Merge with defaults (calibrated values override)
+                merged = dict(defaults)
+                merged.update(new_vals)
+                calibrated[scanner_name] = merged
+                calibrated_count += 1
+                logger.info(
+                    "SL/TP calibrated [%s]: sl_atr=%.2f tp1=%.1fR tp2=%.1fR tp3=%.1fR (from backtest)",
+                    scanner_name,
+                    merged.get("sl_atr", 0), merged.get("tp1_rr", 0),
+                    merged.get("tp2_rr", 0), merged.get("tp3_rr", 0),
+                )
+
+        if calibrated_count > 0:
+            logger.info("SL/TP calibration: loaded %d/%d scanners from backtest data",
+                        calibrated_count, len(self._scanner_sl_tp))
+        else:
+            logger.info("SL/TP calibration: backtest file exists but no usable scanner data — using defaults")
+
+        return calibrated
+
+    # ------------------------------------------------------------------
+    # Structural Pre-Filter (runs BEFORE scanners)
+    # ------------------------------------------------------------------
+
+    def _structural_prefilter(self, df, htf_df, symbol, regime) -> dict:
+        """Light structural pre-filter. Soft gates, not hard blocks.
+
+        Runs BEFORE scanners to skip obviously bad market conditions.
+        Returns dict with:
+            - pass: bool (False = skip this cycle entirely)
+            - confidence_adj: int (-20 to +10, applied to any scanner result)
+            - reason: str (why blocked, if blocked)
+            - context: dict (regime, vwap_zone, atr_regime, mtf_aligned)
+        """
+        confidence_adj = 0
+        reasons = []
+        context = {"regime": regime, "vwap_zone": "normal", "atr_regime": "normal", "mtf_aligned": None}
+
+        # ── (a) ATR Tradable Band ──
+        # Use 5m ATR if available, else 1m ATR
+        confirm_atr = self._confirm_atr if self._confirm_atr > 0 else 0.0
+        if confirm_atr <= 0 and len(df) >= 50:
+            try:
+                confirm_atr = float(df["atr"].iloc[-1]) if "atr" in df.columns else 0.0
+            except Exception:
+                confirm_atr = 0.0
+
+        atr_ratio = 1.0
+        if confirm_atr > 0 and len(df) >= 50:
+            try:
+                atr_col = df["atr"] if "atr" in df.columns else None
+                if atr_col is not None:
+                    atr_sma50 = float(atr_col.rolling(50).mean().iloc[-1])
+                    if atr_sma50 > 0:
+                        atr_ratio = confirm_atr / atr_sma50
+            except Exception:
+                atr_ratio = 1.0
+
+        if atr_ratio < 0.4:
+            # Truly dead market — hard block
+            return {
+                "pass": False,
+                "confidence_adj": 0,
+                "reason": f"ATR PREFILTER: ratio {atr_ratio:.2f} < 0.4 — market dead",
+                "context": {**context, "atr_regime": "dead"},
+            }
+        elif atr_ratio < 0.7:
+            confidence_adj -= 10
+            reasons.append(f"ATR low ({atr_ratio:.2f})")
+            context["atr_regime"] = "low"
+        elif atr_ratio > 3.0:
+            # Extreme volatility — hard block
+            return {
+                "pass": False,
+                "confidence_adj": 0,
+                "reason": f"ATR PREFILTER: ratio {atr_ratio:.2f} > 3.0 — extreme volatility",
+                "context": {**context, "atr_regime": "extreme"},
+            }
+        elif atr_ratio > 2.0:
+            confidence_adj -= 5
+            reasons.append(f"ATR chaotic ({atr_ratio:.2f})")
+            context["atr_regime"] = "chaotic"
+        else:
+            context["atr_regime"] = "normal"
+
+        # ── (b) VWAP Noise Zone ──
+        try:
+            last_close = float(df.iloc[-1].get("close", 0))
+            last_vwap = float(df.iloc[-1].get("vwap", 0))
+            _atr_for_vwap = confirm_atr if confirm_atr > 0 else float(df.iloc[-1].get("atr", 1))
+            if last_vwap > 0 and _atr_for_vwap > 0:
+                vwap_dist = abs(last_close - last_vwap) / _atr_for_vwap
+                if vwap_dist < 0.3:
+                    confidence_adj -= 8
+                    reasons.append(f"VWAP noise zone ({vwap_dist:.2f})")
+                    context["vwap_zone"] = "noise"
+                else:
+                    context["vwap_zone"] = "clear"
+        except Exception:
+            pass
+
+        # ── (c) MTF Alignment ──
+        # Check if HTF EMA8 > EMA21 (bullish) or EMA8 < EMA21 (bearish)
+        mtf_direction = 0  # 0 = neutral, 1 = bullish, -1 = bearish
+        if htf_df is not None and len(htf_df) > 5:
+            try:
+                htf_ema8 = float(htf_df["ema_8"].iloc[-1]) if "ema_8" in htf_df.columns else 0
+                htf_ema21 = float(htf_df["ema_21"].iloc[-1]) if "ema_21" in htf_df.columns else 0
+                if htf_ema8 > 0 and htf_ema21 > 0:
+                    if htf_ema8 > htf_ema21:
+                        mtf_direction = 1  # bullish HTF
+                    elif htf_ema8 < htf_ema21:
+                        mtf_direction = -1  # bearish HTF
+            except Exception:
+                pass
+        context["mtf_aligned"] = mtf_direction
+        # Note: MTF alignment scoring is applied per-signal (needs signal side),
+        # so we store the direction in context for downstream use.
+
+        # ── (d) Regime Hard Blocks ──
+        if regime == "quiet" and atr_ratio < 0.4:
+            return {
+                "pass": False,
+                "confidence_adj": 0,
+                "reason": f"REGIME PREFILTER: quiet regime + ATR dead ({atr_ratio:.2f})",
+                "context": context,
+            }
+        if regime == "low_liquidity":
+            return {
+                "pass": False,
+                "confidence_adj": 0,
+                "reason": "REGIME PREFILTER: low_liquidity — no trading",
+                "context": context,
+            }
+
+        # ── Regime Transition Detection ──
+        prev_regime = self._prev_regime.get(symbol, "")
+        regime_age = self._regime_age.get(symbol, 0)
+
+        if regime == prev_regime:
+            self._regime_age[symbol] = regime_age + 1
+        else:
+            self._regime_age[symbol] = 1
+            self._prev_regime[symbol] = regime
+
+        transition = detect_regime_transition(
+            regime, prev_regime, self._regime_age[symbol]
+        )
+        if transition["confidence_adj"] != 0:
+            confidence_adj += transition["confidence_adj"]
+            if transition["in_transition"]:
+                reasons.append(f"regime transition ({transition['transition_type']})")
+
+        return {
+            "pass": True,
+            "confidence_adj": confidence_adj,
+            "reason": "; ".join(reasons) if reasons else "",
+            "context": context,
+            "regime_transition": transition,
+        }
 
     # ------------------------------------------------------------------
     # Interface
@@ -527,6 +749,24 @@ class ScalpStrategy(BaseStrategy):
                 "bb_bandwidth": float(last_row.get("bb_bandwidth", 0)) if not np.isnan(last_row.get("bb_bandwidth", 0)) else 0,
             },
         }
+
+        # ══════════════════════════════════════════════════════
+        # STRUCTURAL PRE-FILTER — runs BEFORE scanners
+        # Light structural checks: ATR band, VWAP noise, MTF, regime blocks
+        # ══════════════════════════════════════════════════════
+        prefilter = self._structural_prefilter(df, htf_df, symbol, regime)
+        if not prefilter["pass"] and not self._is_learning:
+            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": prefilter["reason"],
+                "indicators": indicators, "setups_checked": [],
+                "funnel": dict(self._funnel),
+            }
+            return []
+
+        # Store prefilter context for downstream use (confidence adjustments, MTF direction)
+        self._prefilter_result = prefilter
 
         # --- Run all setup scans ---
         setups: List[_SetupResult] = []
@@ -933,6 +1173,32 @@ class ScalpStrategy(BaseStrategy):
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
 
+        # ── Apply structural prefilter confidence adjustments ──
+        _pf_adj = getattr(self, '_prefilter_result', {}).get('confidence_adj', 0)
+        _pf_ctx = getattr(self, '_prefilter_result', {}).get('context', {})
+        # MTF alignment scoring: +5 if aligned with signal, -10 if opposed
+        _mtf_dir = _pf_ctx.get('mtf_aligned', 0)
+        if _mtf_dir != 0 and best.side is not None:
+            _signal_long = best.side == OrderSide.LONG
+            if (_signal_long and _mtf_dir > 0) or (not _signal_long and _mtf_dir < 0):
+                _pf_adj += 5   # aligned with HTF
+            elif (_signal_long and _mtf_dir < 0) or (not _signal_long and _mtf_dir > 0):
+                _pf_adj += -10  # opposed to HTF
+
+        if _pf_adj != 0 and not self._is_learning:
+            _new_conf = max(best.confidence + _pf_adj, 30)
+            _pf_notes = []
+            if _pf_adj < 0:
+                _pf_notes.append(f"[PREFILTER_PENALTY: {_pf_adj}]")
+            else:
+                _pf_notes.append(f"[PREFILTER_BONUS: +{_pf_adj}]")
+            best = _SetupResult(
+                name=best.name, side=best.side,
+                confidence=_new_conf,
+                confirmations=best.confirmations + _pf_notes,
+                entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+            )
+
         # ══════════════════════════════════════════════════════
         # TIER 2: SCANNER VETO + WEIGHT GATE
         # Shadow scanners only log for ML, no actual trade
@@ -1114,9 +1380,14 @@ class ScalpStrategy(BaseStrategy):
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
         elif regime in ("volatile", "high_volatility"):
-            if best_sr.scanner_name not in ("structure_bounce", "order_block_entry"):
+            if best_sr.scanner_name not in ("structure_bounce", "bb_squeeze", "liquidity_sweep"):
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
+        elif regime in ("quiet",):
+            # Quiet market: only structure_bounce allowed (high-confidence only)
+            if best_sr.scanner_name != "structure_bounce":
+                regime_scanner_ok = False
+                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} blocked in quiet market")
 
         # VETO 10: Regime-Side conflict — block shorts in uptrend, longs in downtrend
         # Data: SHORTS lost $35 while LONGS gained $6.49 in a bullish session
@@ -1124,6 +1395,56 @@ class ScalpStrategy(BaseStrategy):
             vetos.append(f"REGIME SIDE: SHORT blocked in {regime} — counter-trend")
         elif regime in ("trending_down",) and best.side == OrderSide.LONG:
             vetos.append(f"REGIME SIDE: LONG blocked in {regime} — counter-trend")
+
+        # VETO 11: VWAP Direction Filter — SOFTENED to confidence penalty (-15)
+        # Was: hard block. Now: -15 confidence penalty (lets good setups through)
+        # LONG: price > VWAP AND trend_strength > threshold
+        # SHORT: price < VWAP AND trend_strength < -threshold
+        last_close = float(df.iloc[-1].get("close", 0))
+        last_vwap = float(df.iloc[-1].get("vwap", 0))
+        _ema8_v = float(df.iloc[-1].get("ema_8", 0))
+        _ema21_v = float(df.iloc[-1].get("ema_21", 0))
+        _atr_v = self._confirm_atr if self._confirm_atr > 0 else best.atr
+        _trend_str = (_ema8_v - _ema21_v) / _atr_v if _atr_v > 0 else 0.0
+        _vwap_threshold = 0.3  # ATR-normalized trend strength threshold
+
+        _vwap_penalty = 0
+        if last_vwap > 0:
+            if best.side == OrderSide.LONG:
+                if last_close < last_vwap and _trend_str < _vwap_threshold:
+                    _vwap_penalty = -15
+            elif best.side == OrderSide.SHORT:
+                if last_close > last_vwap and _trend_str > -_vwap_threshold:
+                    _vwap_penalty = -15
+        if _vwap_penalty != 0 and not self._is_learning:
+            best = _SetupResult(
+                name=best.name, side=best.side,
+                confidence=max(best.confidence + _vwap_penalty, 30),
+                confirmations=best.confirmations + [f"[VWAP_DIR_PENALTY: {_vwap_penalty}]"],
+                entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+            )
+
+        # VETO 12: ATR Quiet Market — no trade if market is too quiet
+        if atr_ratio < 0.5:
+            vetos.append(f"ATR DEAD: ratio {atr_ratio:.2f} < 0.50 — market too quiet for any setup")
+
+        # VETO 13: ATR Chaotic — SOFTENED to confidence penalty (-10)
+        # Was: hard block. Now: -10 confidence penalty (lets strong setups through)
+        if atr_ratio > 1.5:
+            # Check body ratio average — if candles are mostly wicks, it's choppy
+            _recent_bodies = df.iloc[-5:].apply(
+                lambda r: abs(r.get("close", 0) - r.get("open", 0)) /
+                          max(r.get("high", 0) - r.get("low", 0), 1e-8), axis=1
+            )
+            _avg_body = float(_recent_bodies.mean())
+            if _avg_body < 0.35 and not self._is_learning:
+                _chaotic_penalty = -10
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=max(best.confidence + _chaotic_penalty, 30),
+                    confirmations=best.confirmations + [f"[ATR_CHAOTIC_PENALTY: {_chaotic_penalty}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
 
         # Separate hard vs soft vetos for structure_bounce
         # structure_bounce is our best scanner (73% WR, +35% PnL) — don't kill it easily.
@@ -1357,9 +1678,18 @@ class ScalpStrategy(BaseStrategy):
         ml_result = {"probability": 0.5, "verdict": "SKIPPED"}
         try:
             # Build feature vector matching training features
+            # Compute HTF trend strength for ML features
+            _htf_ts = 0.0
+            if htf_df is not None and len(htf_df) > 5:
+                _ema8_htf = float(htf_df["ema_8"].iloc[-1]) if "ema_8" in htf_df.columns else 0
+                _ema21_htf = float(htf_df["ema_21"].iloc[-1]) if "ema_21" in htf_df.columns else 0
+                _atr_htf = float(htf_df.get("atr_14", htf_df.get("atr", pd.Series([1]))).iloc[-1])
+                _htf_ts = (_ema8_htf - _ema21_htf) / _atr_htf if _atr_htf > 0 else 0.0
             ml_features = build_scoring_features(
                 df, idx=-1, side=best.side.value if best.side else "long",
                 symbol=symbol,
+                htf_bias=float(htf_bias),
+                htf_trend_strength=_htf_ts,
             )
             # Add context features not in candle data
             ml_features["confidence"] = float(best.confidence)
@@ -1387,21 +1717,29 @@ class ScalpStrategy(BaseStrategy):
                 getattr(self, '_current_session', ''),
             )
 
-            # Get per-symbol threshold
-            ml_threshold = self._ml_thresholds.get(symbol, 0.65)
-
-            # ML VETO — only if NOT in shadow mode and NOT in learning mode
-            if not self._ml_shadow_mode and not self._is_learning:
-                if ml_prob < ml_threshold:
+            # ── GRADUATED ML ENFORCEMENT ──
+            # Shadow mode stays True on MLScorer (never returns False from should_take_trade).
+            # Instead, we apply graduated confidence adjustments here in strategy code.
+            # This lets ML influence trade quality without being a binary gate.
+            #
+            # probability < 0.35 → HARD BLOCK (never trade)
+            # probability 0.35-0.45 → -15 confidence penalty
+            # probability 0.45-0.55 → -5 confidence penalty
+            # probability 0.55-0.65 → no adjustment
+            # probability > 0.65 → +5 confidence bonus
+            if not self._is_learning:
+                _ml_conf_adj = 0
+                if ml_prob < 0.35:
+                    # HARD BLOCK — ML says this is a bad trade
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
                     logger.info(
-                        "ML VETO: %s %s prob=%.3f < threshold=%.2f (scanner=%s)",
+                        "ML HARD BLOCK: %s %s prob=%.3f < 0.35 (scanner=%s)",
                         best.side.value.upper() if best.side else "?",
-                        symbol, ml_prob, ml_threshold, best_sr.scanner_name,
+                        symbol, ml_prob, best_sr.scanner_name,
                     )
                     self.last_scan_status[symbol] = {
                         "time": now_iso, "signal": False,
-                        "reason": f"ML VETO: prob={ml_prob:.3f} < {ml_threshold:.2f} ({ml_verdict})",
+                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < 0.35 ({ml_verdict})",
                         "ml_result": ml_result,
                         "indicators": indicators, "setups_checked": setups_checked,
                         "funnel": dict(self._funnel),
@@ -1418,14 +1756,34 @@ class ScalpStrategy(BaseStrategy):
                         scanner_expectancy=0, ev=0,
                     )
                     return []
+                elif ml_prob < 0.45:
+                    _ml_conf_adj = -15
+                elif ml_prob < 0.55:
+                    _ml_conf_adj = -5
+                elif ml_prob >= 0.65:
+                    _ml_conf_adj = +5
+
+                if _ml_conf_adj != 0:
+                    _adj_label = f"ML_{'PENALTY' if _ml_conf_adj < 0 else 'BONUS'}: {_ml_conf_adj:+d} (prob={ml_prob:.3f})"
+                    best = _SetupResult(
+                        name=best.name, side=best.side,
+                        confidence=max(best.confidence + _ml_conf_adj, 30),
+                        confirmations=best.confirmations + [f"[{_adj_label}]"],
+                        entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                    )
+                    logger.info(
+                        "ML GRADUATED: %s %s prob=%.3f → conf_adj=%+d (new_conf=%d)",
+                        best.side.value.upper() if best.side else "?",
+                        symbol, ml_prob, _ml_conf_adj, best.confidence,
+                    )
 
         except Exception as e:
             # Fail-open: if ML scoring fails, proceed with the trade
             logger.warning("ML scoring failed for %s (fail-open): %s", symbol, e)
             ml_result = {"probability": 0.5, "verdict": "ERROR", "error": str(e)}
 
-        # ── Apply per-scanner SL/TP overrides ──
-        scanner_exits = self._scanner_sl_tp.get(best_sr.scanner_name, {})
+        # ── Apply per-scanner SL/TP overrides (prefer calibrated, fall back to hardcoded) ──
+        scanner_exits = self._calibrated_sl_tp.get(best_sr.scanner_name, {})
         if scanner_exits:
             # Store for _build_signal to use
             self._active_scanner_exits = scanner_exits
@@ -3935,6 +4293,7 @@ class ScalpStrategy(BaseStrategy):
                 "would_block_rr": actual_rr < self.min_rr_ratio,
                 "would_block_liq": liq_buffer_pct < self.liq_min_buffer_pct,
                 "session": getattr(self, '_current_session', 'unknown'),
+                "vwap_zone": getattr(self, '_prefilter_result', {}).get("context", {}).get("vwap_zone", "normal"),
                 "operating_mode": self.operating_mode,
             },
         )

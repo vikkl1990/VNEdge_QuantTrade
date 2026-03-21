@@ -7,77 +7,69 @@
 <link rel="icon" href="/static/logo-dark.jpg" type="image/jpeg">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-:root{--bg:#0a1429;--bg-card:rgba(255,255,255,.04);--bg-card-hover:rgba(255,255,255,.06);--border:rgba(0,255,157,.08);--border-active:rgba(0,255,157,.25);--accent:#00ff9d;--accent-dim:rgba(0,255,157,.08);--green:#00ff9d;--green-dim:rgba(0,255,157,.08);--green-glow:rgba(0,255,157,.3);--red:#ff3b5c;--red-dim:rgba(255,59,92,.08);--red-glow:rgba(255,59,92,.3);--yellow:#ffd700;--yellow-dim:rgba(255,215,0,.08);--cyan:#00d4ff;--purple:#a78bfa;--orange:#f97316;--text:#e8ecf4;--text-dim:#9ba3b5;--text-muted:#5a7090;--navy:#0a1429;--navy-light:#0f1d38;--radius:8px;--radius-lg:12px;--neon-glow:0 0 15px rgba(0,255,157,.2),0 0 40px rgba(0,255,157,.08);--font-mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;--font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Roboto,sans-serif;--shadow-sm:0 1px 2px rgba(0,0,0,.4);--shadow-md:0 4px 16px rgba(0,0,0,.35)}
-*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-body{background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;overflow-x:hidden;background-image:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(0,255,157,.02),transparent),radial-gradient(ellipse 60% 40% at 80% 100%,rgba(0,212,255,.015),transparent)}
+:root{--bg:#0a1429;--bg-card:rgba(255,255,255,.04);--border:rgba(0,255,157,.08);--border-active:rgba(0,255,157,.25);--accent:#00ff9d;--accent-dim:rgba(0,255,157,.08);--green:#00ff9d;--red:#ff3b5c;--yellow:#ffd700;--cyan:#00d4ff;--purple:#a78bfa;--orange:#f97316;--text:#e8ecf4;--text-dim:#9ba3b5;--text-muted:#5a7090;--radius:8px;--font-mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;--font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Roboto,sans-serif;--neon-glow:0 0 15px rgba(0,255,157,.2),0 0 40px rgba(0,255,157,.08)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--font-mono);font-size:13px;background-image:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(0,255,157,.02),transparent)}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:rgba(0,255,157,.15);border-radius:2px}
-::-webkit-scrollbar-thumb:hover{background:rgba(0,255,157,.25)}
 ::selection{background:rgba(0,255,157,.2)}
 .header{display:flex;align-items:center;justify-content:space-between;padding:0 28px;height:60px;background:#0a1429;border-bottom:1px solid rgba(0,255,157,.12);position:sticky;top:0;z-index:200;box-shadow:0 2px 30px rgba(0,0,0,.5)}
 .header-brand{display:flex;align-items:center;gap:16px}
-.header-brand img{height:44px;border-radius:8px;object-fit:contain;filter:drop-shadow(0 0 15px rgba(0,255,157,.12));box-shadow:0 3px 12px rgba(0,0,0,.4)}
-.header-brand-text{display:flex;flex-direction:column;gap:0}
-.header-brand-name{font-size:1.3rem;font-weight:900;letter-spacing:3px;color:#fff;line-height:1.2;text-shadow:0 0 20px rgba(255,255,255,.1);font-family:var(--font-sans)}
+.header-brand img{height:44px;border-radius:8px;filter:drop-shadow(0 0 15px rgba(0,255,157,.12))}
+.header-brand-text{display:flex;flex-direction:column}
+.header-brand-name{font-size:1.3rem;font-weight:900;letter-spacing:3px;color:#fff;font-family:var(--font-sans)}
 .header-brand-tagline{font-size:.55rem;letter-spacing:3.5px;color:var(--green);font-weight:600;text-transform:uppercase;text-shadow:0 0 12px rgba(0,255,157,.3)}
 .header-right{display:flex;align-items:center;gap:16px}
-.header .phase-pill{padding:5px 14px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase;display:flex;align-items:center;gap:6px}
-.header-version{padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.04);color:var(--text-muted);font-size:.65rem;font-weight:600;letter-spacing:.5px;border:1px solid rgba(255,255,255,.04)}
+.phase-pill{padding:5px 14px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase;display:flex;align-items:center;gap:6px}
 .phase-idle{background:rgba(122,139,163,.15);color:var(--text-dim);border:1px solid rgba(122,139,163,.3)}
-.phase-collecting{background:rgba(0,212,255,.12);color:var(--cyan);border:1px solid rgba(0,212,255,.3);animation:pulse 2s infinite}
-.phase-backtesting{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3);animation:pulse 2s infinite}
-.phase-training_ml{background:rgba(0,255,157,.12);color:var(--accent);border:1px solid rgba(0,255,157,.3);animation:pulse 2s infinite}
+.phase-collecting,.phase-backtesting,.phase-candidate_training{animation:pulse 2s infinite}
+.phase-collecting{background:rgba(0,212,255,.12);color:var(--cyan);border:1px solid rgba(0,212,255,.3)}
+.phase-backtesting{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.phase-candidate_training{background:rgba(167,139,250,.12);color:var(--purple);border:1px solid rgba(167,139,250,.3)}
 .phase-complete{background:rgba(0,255,157,.15);color:var(--accent);border:1px solid var(--accent)}
 .phase-error{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
-.tabs{display:flex;gap:0;background:rgba(10,20,41,.95);backdrop-filter:blur(12px);border-bottom:1px solid rgba(0,255,157,.06);position:sticky;top:60px;z-index:100}
-.tab{flex:0 1 auto;padding:12px 20px;cursor:pointer;color:var(--text-muted);border-bottom:2px solid transparent;transition:all .2s;font-size:.82rem;font-weight:600;letter-spacing:.5px;font-family:var(--font-sans)}
+.tabs{display:flex;gap:0;background:rgba(10,20,41,.95);border-bottom:1px solid rgba(0,255,157,.06);position:sticky;top:60px;z-index:100;overflow-x:auto}
+.tab{flex:0 1 auto;padding:12px 16px;cursor:pointer;color:var(--text-muted);border-bottom:2px solid transparent;transition:all .2s;font-size:.78rem;font-weight:600;letter-spacing:.5px;font-family:var(--font-sans);white-space:nowrap}
 .tab:hover{color:var(--green);background:rgba(0,255,157,.03)}
 .tab.active{color:var(--green);border-bottom-color:var(--green);background:rgba(0,255,157,.04)}
-.content{padding:20px 24px;max-width:1400px;margin:0 auto}
-.tab-content{display:none}
-.tab-content.active{display:block}
-.grid{display:grid;gap:16px}
-.grid-2{grid-template-columns:1fr 1fr}
-.grid-3{grid-template-columns:1fr 1fr 1fr}
+.content{padding:20px 24px;max-width:1500px;margin:0 auto}
+.tab-content{display:none}.tab-content.active{display:block}
+.grid{display:grid;gap:16px}.grid-2{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr 1fr}
 .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px;backdrop-filter:blur(20px)}
 .card h3{color:var(--accent);font-size:.85rem;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
-.metric{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
-.metric:last-child{border:none}
-.metric .label{color:var(--text-dim)}
-.metric .value{font-weight:600}
-.positive{color:var(--green)}
-.negative{color:var(--red)}
-.neutral{color:var(--yellow)}
+.metric{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}.metric:last-child{border:none}
+.metric .label{color:var(--text-dim)}.metric .value{font-weight:600}
+.positive{color:var(--green)}.negative{color:var(--red)}.neutral{color:var(--yellow)}
 table{width:100%;border-collapse:collapse;font-size:.8rem}
-th{text-align:left;color:var(--accent);padding:8px 12px;border-bottom:1px solid var(--border-active);font-size:.7rem;text-transform:uppercase;letter-spacing:1px}
-td{padding:8px 12px;border-bottom:1px solid var(--border)}
+th{text-align:left;color:var(--accent);padding:8px 10px;border-bottom:1px solid var(--border-active);font-size:.68rem;text-transform:uppercase;letter-spacing:1px}
+td{padding:7px 10px;border-bottom:1px solid var(--border)}
 tr:hover{background:var(--accent-dim)}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:600}
 .badge-valid{background:rgba(0,255,157,.15);color:var(--green);border:1px solid rgba(0,255,157,.3)}
 .badge-invalid{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
-.badge-learning{background:rgba(0,212,255,.12);color:var(--cyan);border:1px solid rgba(0,212,255,.3)}
-.progress-bar{background:rgba(255,255,255,.06);border-radius:4px;height:8px;overflow:hidden;margin-top:4px}
-.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--cyan));border-radius:4px;transition:width .5s}
+.badge-useful{background:rgba(0,255,157,.15);color:var(--green);border:1px solid rgba(0,255,157,.3)}
+.badge-marginal{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
 .feature-bar{display:flex;align-items:center;gap:8px;margin:4px 0}
-.feature-name{width:140px;font-size:.75rem;color:var(--text-dim);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.feature-name{width:160px;font-size:.72rem;color:var(--text-dim);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .feature-fill{height:14px;background:linear-gradient(90deg,var(--accent),var(--cyan));border-radius:3px;min-width:2px;transition:width .5s}
 .feature-val{font-size:.7rem;color:var(--text);min-width:40px}
 .btn{padding:8px 20px;border:1px solid var(--accent);background:rgba(0,255,157,.08);color:var(--accent);border-radius:8px;cursor:pointer;font-family:inherit;font-size:.8rem;transition:.2s}
 .btn:hover{background:rgba(0,255,157,.2);box-shadow:var(--neon-glow)}
-.btn:disabled{opacity:.4;cursor:not-allowed}
 .flow-diagram{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:16px 0}
 .flow-step{padding:8px 14px;border:1px solid var(--border-active);border-radius:8px;background:var(--bg-card);font-size:.75rem}
 .flow-step.active-step{border-color:var(--accent);color:var(--accent);box-shadow:var(--neon-glow)}
 .flow-arrow{color:var(--accent);font-size:1.2rem}
-.calibration-row{display:flex;align-items:center;gap:8px;padding:4px 0}
-.calibration-predicted{width:80px;text-align:right;font-size:.75rem;color:var(--text-dim)}
-.calibration-bar-bg{flex:1;height:10px;background:rgba(255,255,255,.06);border-radius:3px;position:relative}
-.calibration-bar-predicted{position:absolute;height:100%;background:rgba(0,212,255,.4);border-radius:3px}
-.calibration-bar-actual{position:absolute;height:100%;background:var(--accent);border-radius:3px;opacity:.8}
-.calibration-actual{width:60px;font-size:.75rem}
+.bucket-row{display:flex;align-items:center;gap:8px;padding:4px 0}
+.bucket-label{width:90px;text-align:right;font-size:.72rem;color:var(--text-dim)}
+.bucket-bar-bg{flex:1;height:20px;background:rgba(255,255,255,.04);border-radius:4px;position:relative;overflow:hidden}
+.bucket-bar-pred{position:absolute;height:50%;top:0;background:rgba(0,212,255,.4);border-radius:4px 4px 0 0}
+.bucket-bar-actual{position:absolute;height:50%;bottom:0;background:var(--accent);border-radius:0 0 4px 4px;opacity:.8}
+.bucket-val{width:120px;font-size:.72rem;display:flex;gap:8px}
+.stat-box{text-align:center;padding:12px;border-radius:8px;background:rgba(255,255,255,.03);border:1px solid var(--border)}
+.stat-box .stat-value{font-size:1.4rem;font-weight:800;margin-bottom:4px}
+.stat-box .stat-label{font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px}
 @media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr}}
 </style>
 </head>
@@ -93,167 +85,177 @@ tr:hover{background:var(--accent-dim)}
   </div>
   <div class="header-right">
     <span class="phase-pill phase-idle" id="phase-pill">IDLE</span>
-    <span class="header-version">v2.0</span>
+    <span style="padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.04);color:var(--text-muted);font-size:.65rem;border:1px solid rgba(255,255,255,.04)">v2.1</span>
   </div>
 </header>
 
 <div class="tabs">
   <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="candidates">Candidates (ML)</div>
   <div class="tab" data-tab="scanners">Scanner Results</div>
-  <div class="tab" data-tab="ml-models">ML Models</div>
-  <div class="tab" data-tab="features">Feature Importance</div>
+  <div class="tab" data-tab="calibration">Calibration</div>
+  <div class="tab" data-tab="features">Features</div>
   <div class="tab" data-tab="comparison">TF Comparison</div>
   <div class="tab" data-tab="walk-forward">Walk-Forward</div>
-  <div class="tab" data-tab="calibration">Calibration</div>
+  <div class="tab" data-tab="live-feedback">Live Feedback</div>
 </div>
 
 <div class="content">
 
-<!-- OVERVIEW TAB -->
+<!-- OVERVIEW -->
 <div class="tab-content active" id="tab-overview">
   <div class="flow-diagram" id="pipeline-flow"></div>
-
   <div class="grid grid-3" style="margin-top:16px">
-    <div class="card">
-      <h3>Pipeline Status</h3>
-      <div id="pipeline-status">Loading...</div>
-    </div>
-    <div class="card">
-      <h3>Data Collection</h3>
-      <div id="collector-status">Loading...</div>
-    </div>
+    <div class="card"><h3>Pipeline Status</h3><div id="pipeline-status">Loading...</div></div>
+    <div class="card"><h3>Training Config</h3><div id="training-config">Loading...</div></div>
     <div class="card">
       <h3>Quick Actions</h3>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        <button class="btn" onclick="startTraining(['BTC/USDT','ETH/USDT','AVAX/USDT'],['1m','5m','15m'])">Train Top 3 Coins</button>
-        <button class="btn" onclick="startTraining(['BTC/USDT','ETH/USDT','SOL/USDT','AVAX/USDT','LINK/USDT','DOGE/USDT'],['5m','15m'])">Train 6 Coins (5m+15m)</button>
-        <button class="btn" onclick="startTraining(null,['1m','5m','15m','1h'])">Full Training (All)</button>
+        <button class="btn" onclick="startTraining(['BTC/USDT','ETH/USDT','SOL/USDT'],['1m','5m','15m'])">Train Top 3</button>
+        <button class="btn" onclick="startTraining(null,['1m','5m','15m'])">Full Training (All)</button>
       </div>
     </div>
   </div>
-
-  <div class="card" style="margin-top:16px">
-    <h3>ML Pipeline Flow</h3>
-    <p style="color:var(--text-dim);font-size:.8rem;line-height:1.6;margin-top:8px">
-      Market → Strategy generates candidates → <span style="color:var(--accent)">ML scores probability</span> → Filter + size → Execute → Track → Feed back into dataset<br><br>
-      ML answers ONE question: <span style="color:var(--accent)">"Given current market conditions, what is the probability this trade will reach TP before SL within X minutes?"</span><br><br>
-      <strong>output:</strong> prob = model.predict_proba(X)[1] → e.g. 0.72 = 72% chance TP hits before SL
-    </p>
-  </div>
-
   <div class="grid grid-2" style="margin-top:16px">
     <div class="card">
-      <h3>Best Setups Found</h3>
-      <table>
-        <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
-        <tbody id="best-setups"></tbody>
-      </table>
+      <h3>Best Setups</h3>
+      <table><tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
+      <tbody id="best-setups"></tbody></table>
     </div>
     <div class="card">
-      <h3>Worst Setups (Avoid)</h3>
-      <table>
-        <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
-        <tbody id="worst-setups"></tbody>
-      </table>
+      <h3>Worst Setups</h3>
+      <table><tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>WR%</th><th>Exp(R)</th><th>Edge</th></tr>
+      <tbody id="worst-setups"></tbody></table>
     </div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>ML Summary</h3>
+    <div id="ml-summary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px"></div>
   </div>
 </div>
 
-<!-- SCANNER RESULTS TAB -->
+<!-- CANDIDATES (ML) -->
+<div class="tab-content" id="tab-candidates">
+  <div class="card">
+    <h3>Candidate Training Results — TP vs SL Labels (All Symbols x Scanners)</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      ML ranks scanner candidates. Raw WR = unfiltered. ML Q75 = top 25% by ML score. ML D90 = top 10%.
+    </p>
+    <table>
+      <tr><th>Symbol</th><th>Scanner</th><th>Cands</th><th>Raw WR</th><th>Rule WR</th><th>ML Q75</th><th>ML D90</th><th>AUC</th><th>Spread</th><th>Calib</th></tr>
+      <tbody id="candidates-table"></tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Per-Scanner Aggregate</h3>
+    <table>
+      <tr><th>Scanner</th><th>Avg Cands</th><th>Avg Raw WR</th><th>Avg ML Q75</th><th>Avg ML D90</th><th>Avg AUC</th><th>Avg Spread</th></tr>
+      <tbody id="candidates-agg"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SCANNER RESULTS -->
 <div class="tab-content" id="tab-scanners">
   <div class="card">
-    <h3>Scanner Backtest Results (Live-Identical Criteria)</h3>
+    <h3>Scanner Backtest Results</h3>
     <table>
-      <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th><th>MFE</th><th>MAE</th><th>WF Verdict</th></tr>
+      <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th></tr>
       <tbody id="scanner-results"></tbody>
     </table>
   </div>
 </div>
 
-<!-- ML MODELS TAB -->
-<div class="tab-content" id="tab-ml-models">
+<!-- CALIBRATION -->
+<div class="tab-content" id="tab-calibration">
   <div class="card">
-    <h3>Trained Probability Models</h3>
-    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
-      Each model predicts: P(TP hit before SL | current market state)
+    <h3>Probability Calibration — Bucket Analysis</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:16px">
+      Predictions split into 5 buckets. <span style="color:var(--cyan)">Blue = predicted</span>, <span style="color:var(--green)">Green = actual win rate</span>.
+      If higher buckets have higher actual WR, the model is a useful ranker.
     </p>
+    <div id="calibration-charts"></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Calibration Summary</h3>
     <table>
-      <tr><th>Model</th><th>Symbol</th><th>Side</th><th>TF</th><th>Samples</th><th>Accuracy</th><th>AUC-ROC</th><th>Precision</th><th>Recall</th><th>+Rate</th></tr>
-      <tbody id="ml-models-table"></tbody>
+      <tr><th>Scanner</th><th>Symbol</th><th>Verdict</th><th>Spread</th><th>Rank Corr</th><th>Monotonic</th></tr>
+      <tbody id="calibration-summary"></tbody>
     </table>
   </div>
-
-  <div class="card" style="margin-top:16px">
-    <h3>Model Usage</h3>
-    <pre style="color:var(--accent);font-size:.75rem;line-height:1.5;background:rgba(0,0,0,.3);padding:12px;border-radius:8px">
-# Signal Filter (replace confidence scoring)
-prob = model.predict_proba(features)[1]
-if prob &lt; 0.55:
-    skip_trade()  # No edge
-
-# Position Sizing (scale with probability)
-size = base_size * prob
-
-# Confidence Replacement
-confidence = int(prob * 100)  # Real calibrated probability
-    </pre>
-  </div>
 </div>
 
-<!-- FEATURE IMPORTANCE TAB -->
+<!-- FEATURES -->
 <div class="tab-content" id="tab-features">
   <div class="grid grid-2">
-    <div class="card">
-      <h3>Top Features (What Matters)</h3>
-      <div id="feature-bars">Loading...</div>
-    </div>
-    <div class="card">
-      <h3>Feature Categories</h3>
-      <div id="feature-categories">Loading...</div>
-    </div>
+    <div class="card"><h3>Top Features (What Matters)</h3><div id="feature-bars">Loading...</div></div>
+    <div class="card"><h3>Feature Categories</h3><div id="feature-categories">Loading...</div></div>
   </div>
 </div>
 
-<!-- TF COMPARISON TAB -->
+<!-- TF COMPARISON -->
 <div class="tab-content" id="tab-comparison">
   <div class="card">
     <h3>Timeframe Comparison (1m vs 5m vs 15m)</h3>
-    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
-      Which timeframe gives the best edge per scanner?
-    </p>
     <table>
-      <tr><th>TF</th><th>Scanner</th><th>Symbol</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>WF Verdict</th></tr>
+      <tr><th>TF</th><th>Scanner</th><th>Symbol</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th></tr>
       <tbody id="tf-comparison"></tbody>
     </table>
   </div>
 </div>
 
-<!-- WALK-FORWARD TAB -->
+<!-- WALK-FORWARD -->
 <div class="tab-content" id="tab-walk-forward">
   <div class="card">
     <h3>Walk-Forward Validation</h3>
     <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
-      Train months 1-2 → Test month 3. If edge doesn't hold out-of-sample, it's fake.
+      Train on early data, test on later data. Edge must hold out-of-sample.
     </p>
     <div id="walk-forward-results">Loading...</div>
   </div>
 </div>
 
-<!-- CALIBRATION TAB -->
-<div class="tab-content" id="tab-calibration">
-  <div class="card">
-    <h3>Probability Calibration</h3>
-    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
-      If model says 70% probability → historically ~70% of those trades should win. If not → model is lying.
-    </p>
-    <div id="calibration-chart">Train models first to see calibration data.</div>
+<!-- LIVE FEEDBACK -->
+<div class="tab-content" id="tab-live-feedback">
+  <div class="grid grid-3" style="margin-bottom:16px">
+    <div class="card">
+      <h3>Feedback Summary</h3>
+      <div id="fb-summary">Loading...</div>
+    </div>
+    <div class="card">
+      <h3>ML Accuracy</h3>
+      <div id="fb-ml-accuracy">Loading...</div>
+    </div>
+    <div class="card">
+      <h3>By Trade Type</h3>
+      <div id="fb-by-type">Loading...</div>
+    </div>
   </div>
-
-  <div class="card" style="margin-top:16px">
-    <h3>Calibrated Probabilities per Setup</h3>
+  <div class="grid grid-2" style="margin-bottom:16px">
+    <div class="card">
+      <h3>By Pair</h3>
+      <table>
+        <tr><th>Pair</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg PnL</th></tr>
+        <tbody id="fb-by-pair"></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>By Scanner</h3>
+      <table>
+        <tr><th>Scanner</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg PnL</th></tr>
+        <tbody id="fb-by-scanner"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <h3>Pair × Scanner Matrix</h3>
+    <div id="fb-matrix" style="overflow-x:auto">Loading...</div>
+  </div>
+  <div class="card">
+    <h3>Recent Trades</h3>
     <table>
-      <tr><th>Setup Key</th><th>Win Rate</th><th>Trades</th><th>Exp(R)</th><th>Data OK?</th></tr>
-      <tbody id="calibrated-probs"></tbody>
+      <tr><th>Time</th><th>Pair</th><th>Side</th><th>Type</th><th>Scanner</th><th>ML Prob</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Duration</th></tr>
+      <tbody id="fb-recent"></tbody>
     </table>
   </div>
 </div>
@@ -261,10 +263,6 @@ confidence = int(prob * 100)  # Real calibrated probability
 </div>
 
 <script>
-const API = '';
-let refreshInterval;
-
-// Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -276,9 +274,11 @@ document.querySelectorAll('.tab').forEach(tab => {
 
 async function fetchJSON(url) {
   try {
-    const r = await fetch(API + url);
-    return await r.json();
-  } catch(e) { return null; }
+    const r = await fetch(url);
+    if (!r.ok) { console.error('Fetch failed:', url, r.status); return null; }
+    const data = await r.json();
+    return data;
+  } catch(e) { console.error('Fetch error:', url, e.message); return null; }
 }
 
 function pct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
@@ -286,216 +286,246 @@ function rval(v) { return v != null ? v.toFixed(3) + 'R' : '—'; }
 function cls(v) { return v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral'; }
 
 async function refreshAll() {
-  const [status, results, models, comparison] = await Promise.all([
+  try {
+  const [status, results, models, comparison, calibration, candidates] = await Promise.all([
     fetchJSON('/api/status'),
     fetchJSON('/api/results'),
     fetchJSON('/api/models'),
     fetchJSON('/api/comparison'),
+    fetchJSON('/api/calibration'),
+    fetchJSON('/api/candidates'),
   ]);
+  console.log('Data loaded:', {status:!!status, results:!!results, models:!!models, comparison:!!comparison, calibration:!!calibration, candidates:!!candidates});
 
   // Phase pill
   if (status) {
     const pill = document.getElementById('phase-pill');
-    pill.textContent = (status.phase || 'idle').toUpperCase();
-    pill.className = 'phase-pill phase-' + (status.phase || 'idle');
+    const phase = status.phase || 'idle';
+    pill.textContent = phase.toUpperCase().replace('_',' ');
+    pill.className = 'phase-pill phase-' + phase;
 
     // Pipeline flow
-    const phases = ['collecting','backtesting','training_ml','complete'];
-    const labels = ['Collect Data','Backtest Scanners','Train ML','Complete'];
+    const phases = ['collecting','backtesting','candidate_training','complete'];
+    const labels = ['Collect','Backtest','ML Train','Complete'];
     let flowHTML = '';
     phases.forEach((p, i) => {
-      const isActive = status.phase === p;
-      const isDone = phases.indexOf(status.phase) > i || status.phase === 'complete';
-      flowHTML += `<div class="flow-step ${isActive ? 'active-step' : ''}" style="${isDone ? 'border-color:var(--accent);opacity:.5' : ''}">${isDone ? '✓ ' : ''}${labels[i]}</div>`;
+      const isActive = phase === p;
+      const isDone = phases.indexOf(phase) > i || phase === 'complete';
+      flowHTML += '<div class="flow-step ' + (isActive ? 'active-step' : '') + '" style="' + (isDone ? 'border-color:var(--accent);opacity:.5' : '') + '">' + (isDone ? '✓ ' : '') + labels[i] + '</div>';
       if (i < phases.length - 1) flowHTML += '<span class="flow-arrow">→</span>';
     });
     document.getElementById('pipeline-flow').innerHTML = flowHTML;
 
     // Pipeline status
-    let statusHTML = '';
-    statusHTML += `<div class="metric"><span class="label">Phase</span><span class="value">${status.phase}</span></div>`;
-    if (status.started_at) statusHTML += `<div class="metric"><span class="label">Started</span><span class="value">${new Date(status.started_at).toLocaleTimeString()}</span></div>`;
-    if (status.completed_at) statusHTML += `<div class="metric"><span class="label">Completed</span><span class="value">${new Date(status.completed_at).toLocaleTimeString()}</span></div>`;
-    document.getElementById('pipeline-status').innerHTML = statusHTML;
+    let sHTML = '';
+    sHTML += '<div class="metric"><span class="label">Phase</span><span class="value">' + phase + '</span></div>';
+    if (status.started_at) sHTML += '<div class="metric"><span class="label">Started</span><span class="value">' + new Date(status.started_at).toLocaleTimeString() + '</span></div>';
+    if (status.completed_at) sHTML += '<div class="metric"><span class="label">Completed</span><span class="value">' + new Date(status.completed_at).toLocaleTimeString() + '</span></div>';
+    document.getElementById('pipeline-status').innerHTML = sHTML;
 
-    // Collector
-    let collHTML = '';
-    const cp = status.collector_progress || {};
-    Object.entries(cp).forEach(([sym, tfs]) => {
-      Object.entries(tfs).forEach(([tf, info]) => {
-        collHTML += `<div style="margin:4px 0"><span style="color:var(--text-dim)">${sym} ${tf}:</span> `;
-        if (info.status === 'complete' || info.status === 'cached') {
-          collHTML += `<span class="positive">${info.downloaded} candles ✓</span>`;
-        } else {
-          collHTML += `<span class="neutral">${info.pct}%</span>`;
-          collHTML += `<div class="progress-bar"><div class="progress-fill" style="width:${info.pct}%"></div></div>`;
-        }
-        collHTML += '</div>';
-      });
-    });
-    document.getElementById('collector-status').innerHTML = collHTML || '<span style="color:var(--text-dim)">No collection in progress</span>';
+    // Training config
+    let cfgHTML = '<div class="metric"><span class="label">Label Mode</span><span class="value" style="color:var(--cyan)">TP vs SL</span></div>';
+    cfgHTML += '<div class="metric"><span class="label">TP</span><span class="value">1.5R</span></div>';
+    cfgHTML += '<div class="metric"><span class="label">SL</span><span class="value">1.0R</span></div>';
+    cfgHTML += '<div class="metric"><span class="label">Candidate TF</span><span class="value">5m</span></div>';
+    document.getElementById('training-config').innerHTML = cfgHTML;
 
-    // Best/Worst setups
+    // Best/worst
     const comp = status.results?.comparison || comparison || {};
     if (comp.best_setups) {
-      let bestHTML = '';
-      comp.best_setups.slice(0, 8).forEach(s => {
-        bestHTML += `<tr>
-          <td>${s.scanner}</td><td>${s.symbol}</td><td>${s.tf}</td>
-          <td class="${cls(s.win_rate - 50)}">${pct(s.win_rate)}</td>
-          <td class="${cls(s.expectancy_r)}">${rval(s.expectancy_r)}</td>
-          <td><span class="badge ${s.wf_verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid'}">${s.wf_verdict || '?'}</span></td>
-        </tr>`;
+      let h = '';
+      comp.best_setups.slice(0,8).forEach(s => {
+        h += '<tr><td>' + s.scanner + '</td><td>' + s.symbol + '</td><td>' + s.tf + '</td><td class="' + cls(s.win_rate-50) + '">' + pct(s.win_rate) + '</td><td class="' + cls(s.expectancy_r) + '">' + rval(s.expectancy_r) + '</td><td><span class="badge ' + (s.wf_verdict==='VALID EDGE'?'badge-valid':'badge-invalid') + '">' + (s.wf_verdict||'?') + '</span></td></tr>';
       });
-      document.getElementById('best-setups').innerHTML = bestHTML;
+      document.getElementById('best-setups').innerHTML = h;
     }
     if (comp.worst_setups) {
-      let worstHTML = '';
-      comp.worst_setups.slice(0, 8).forEach(s => {
-        worstHTML += `<tr>
-          <td>${s.scanner}</td><td>${s.symbol}</td><td>${s.tf}</td>
-          <td class="${cls(s.win_rate - 50)}">${pct(s.win_rate)}</td>
-          <td class="${cls(s.expectancy_r)}">${rval(s.expectancy_r)}</td>
-          <td><span class="badge ${s.wf_verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid'}">${s.wf_verdict || '?'}</span></td>
-        </tr>`;
+      let h = '';
+      comp.worst_setups.slice(0,8).forEach(s => {
+        h += '<tr><td>' + s.scanner + '</td><td>' + s.symbol + '</td><td>' + s.tf + '</td><td class="' + cls(s.win_rate-50) + '">' + pct(s.win_rate) + '</td><td class="' + cls(s.expectancy_r) + '">' + rval(s.expectancy_r) + '</td><td><span class="badge badge-invalid">' + (s.wf_verdict||'?') + '</span></td></tr>';
       });
-      document.getElementById('worst-setups').innerHTML = worstHTML;
+      document.getElementById('worst-setups').innerHTML = h;
     }
   }
 
-  // Scanner results
+  // ML Summary stats
+  if (candidates) {
+    let totalCands = 0, totalSymbols = 0, avgAUC = 0, aucCount = 0;
+    Object.entries(candidates).forEach(([sym, data]) => {
+      if (!data || !data.comparison) return;
+      totalSymbols++;
+      data.comparison.forEach(row => {
+        if (row.candidates > 0) {
+          totalCands += row.candidates;
+          if (row.oos_auc > 0) { avgAUC += row.oos_auc; aucCount++; }
+        }
+      });
+    });
+    avgAUC = aucCount > 0 ? avgAUC / aucCount : 0;
+    let sumHTML = '';
+    sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--cyan)">' + totalSymbols + '</div><div class="stat-label">Symbols</div></div>';
+    sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--accent)">' + totalCands.toLocaleString() + '</div><div class="stat-label">Total Candidates</div></div>';
+    sumHTML += '<div class="stat-box"><div class="stat-value" style="color:' + (avgAUC > 0.55 ? 'var(--green)' : 'var(--yellow)') + '">' + avgAUC.toFixed(4) + '</div><div class="stat-label">Avg AUC</div></div>';
+    sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--green)">' + aucCount + '</div><div class="stat-label">Models Trained</div></div>';
+    document.getElementById('ml-summary').innerHTML = sumHTML;
+  }
+
+  // CANDIDATES TAB
+  if (candidates) {
+    let cHTML = '';
+    let scannerAgg = {};
+    Object.entries(candidates).sort().forEach(([sym, data]) => {
+      if (!data || !data.comparison) return;
+      data.comparison.forEach(row => {
+        if (row.candidates === 0) return;
+        const aucCls = row.oos_auc > 0.55 ? 'positive' : row.oos_auc > 0.50 ? 'neutral' : 'negative';
+        cHTML += '<tr><td>' + sym.split('/')[0] + '</td><td>' + row.scanner + '</td><td>' + row.candidates + '</td>';
+        cHTML += '<td>' + pct(row.raw_wr) + '</td>';
+        cHTML += '<td>' + (row.rule_filtered_count > 0 ? pct(row.rule_filtered_wr) : '<span style="color:var(--text-muted)">0</span>') + '</td>';
+        cHTML += '<td class="positive">' + pct(row.ml_top_quartile_wr) + '</td>';
+        cHTML += '<td class="positive">' + pct(row.ml_top_decile_wr) + '</td>';
+        cHTML += '<td class="' + aucCls + '">' + row.oos_auc.toFixed(4) + '</td>';
+        cHTML += '<td>' + (row.bucket_spread||0).toFixed(1) + '%</td>';
+        cHTML += '<td><span class="badge badge-' + (row.calibration==='USEFUL'?'useful':'marginal') + '">' + row.calibration + '</span></td></tr>';
+
+        // Aggregate
+        if (!scannerAgg[row.scanner]) scannerAgg[row.scanner] = {cands:0,raw:0,q75:0,d90:0,auc:0,spread:0,n:0};
+        let a = scannerAgg[row.scanner];
+        a.cands += row.candidates; a.raw += row.raw_wr; a.q75 += row.ml_top_quartile_wr;
+        a.d90 += row.ml_top_decile_wr; a.auc += row.oos_auc; a.spread += (row.bucket_spread||0); a.n++;
+      });
+    });
+    document.getElementById('candidates-table').innerHTML = cHTML || '<tr><td colspan="10" style="color:var(--text-dim)">No candidate training data yet</td></tr>';
+
+    let aggHTML = '';
+    Object.entries(scannerAgg).sort((a,b) => b[1].auc/b[1].n - a[1].auc/a[1].n).forEach(([scanner, a]) => {
+      const n = a.n;
+      aggHTML += '<tr><td style="color:var(--accent)">' + scanner + '</td>';
+      aggHTML += '<td>' + Math.round(a.cands/n) + '</td>';
+      aggHTML += '<td>' + (a.raw/n).toFixed(1) + '%</td>';
+      aggHTML += '<td class="positive">' + (a.q75/n).toFixed(1) + '%</td>';
+      aggHTML += '<td class="positive">' + (a.d90/n).toFixed(1) + '%</td>';
+      aggHTML += '<td class="' + (a.auc/n > 0.55 ? 'positive' : 'neutral') + '">' + (a.auc/n).toFixed(4) + '</td>';
+      aggHTML += '<td>' + (a.spread/n).toFixed(1) + '%</td></tr>';
+    });
+    document.getElementById('candidates-agg').innerHTML = aggHTML;
+  }
+
+  // SCANNER RESULTS
   if (results) {
     let srHTML = '';
     Object.entries(results).sort((a,b) => (b[1].metrics?.expectancy_r||0) - (a[1].metrics?.expectancy_r||0)).forEach(([key, data]) => {
       const m = data.metrics || {};
-      srHTML += `<tr>
-        <td>${data.scanner}</td><td>${data.symbol}</td><td>${key.split('_').pop()}</td>
-        <td>${m.trades||0}</td>
-        <td class="${cls((m.win_rate||0)-50)}">${pct(m.win_rate)}</td>
-        <td class="${cls(m.expectancy_r)}">${rval(m.expectancy_r)}</td>
-        <td>${m.profit_factor||'—'}</td>
-        <td class="positive">${rval(m.avg_win_r)}</td>
-        <td class="negative">${rval(m.avg_loss_r)}</td>
-        <td>${rval(m.avg_mfe_r)}</td>
-        <td>${rval(m.avg_mae_r)}</td>
-        <td>—</td>
-      </tr>`;
+      srHTML += '<tr><td>' + data.scanner + '</td><td>' + (data.symbol||'?') + '</td><td>' + (data.timeframe||'?') + '</td>';
+      srHTML += '<td>' + (m.trades||0) + '</td>';
+      srHTML += '<td class="' + cls((m.win_rate||0)-50) + '">' + pct(m.win_rate) + '</td>';
+      srHTML += '<td class="' + cls(m.expectancy_r) + '">' + rval(m.expectancy_r) + '</td>';
+      srHTML += '<td>' + (m.profit_factor||'—') + '</td>';
+      srHTML += '<td class="positive">' + rval(m.avg_win_r) + '</td>';
+      srHTML += '<td class="negative">' + rval(m.avg_loss_r) + '</td></tr>';
     });
     document.getElementById('scanner-results').innerHTML = srHTML;
   }
 
-  // ML Models
-  if (models) {
-    let mlHTML = '';
-    Object.entries(models).forEach(([key, data]) => {
-      const m = data.training_metrics || data.metrics || {};
-      if (!m.accuracy) return;
-      const auc = m.auc_roc || 0;
-      mlHTML += `<tr>
-        <td style="color:var(--accent)">${key}</td>
-        <td>${m.symbol||'—'}</td><td>${m.side||'—'}</td><td>${m.timeframe||'—'}</td>
-        <td>${m.samples||0}</td>
-        <td class="${auc > 0.6 ? 'positive' : 'negative'}">${pct(m.accuracy)}</td>
-        <td class="${auc > 0.6 ? 'positive' : auc > 0.55 ? 'neutral' : 'negative'}">${(auc).toFixed(4)}</td>
-        <td>${pct(m.precision)}</td>
-        <td>${pct(m.recall)}</td>
-        <td>${pct(m.positive_rate)}</td>
-      </tr>`;
-    });
-    document.getElementById('ml-models-table').innerHTML = mlHTML || '<tr><td colspan="10" style="color:var(--text-dim)">No models trained yet</td></tr>';
+  // CALIBRATION
+  if (calibration) {
+    let chartsHTML = '';
+    let summaryHTML = '';
+    Object.entries(calibration).forEach(([key, data]) => {
+      if (key === '_comparison' || !data.buckets || data.buckets.length === 0) return;
+      chartsHTML += '<div style="margin-bottom:24px"><div style="color:var(--accent);font-size:.85rem;margin-bottom:8px;font-weight:700">' + key + ' <span style="color:var(--text-dim);font-size:.7rem">(' + (data.symbol||'?') + ' | ' + (data.label_mode||'?') + ')</span> <span class="badge badge-' + (data.verdict==='USEFUL'?'useful':'marginal') + '">' + data.verdict + '</span></div>';
+      data.buckets.forEach(b => {
+        const maxW = 100;
+        const predW = Math.min(b.avg_predicted, maxW);
+        const actW = Math.min(b.actual_win_rate, maxW);
+        chartsHTML += '<div class="bucket-row">';
+        chartsHTML += '<span class="bucket-label">B' + b.bucket + ' (' + b.count + ')</span>';
+        chartsHTML += '<div class="bucket-bar-bg"><div class="bucket-bar-pred" style="width:' + predW + '%"></div><div class="bucket-bar-actual" style="width:' + actW + '%"></div></div>';
+        chartsHTML += '<span class="bucket-val"><span style="color:var(--cyan)">' + b.avg_predicted.toFixed(1) + '%</span> <span style="color:var(--green)">' + b.actual_win_rate.toFixed(1) + '%</span></span>';
+        chartsHTML += '</div>';
+      });
+      chartsHTML += '</div>';
 
-    // Feature importance
-    let featHTML = '';
+      summaryHTML += '<tr><td style="color:var(--accent)">' + key + '</td>';
+      summaryHTML += '<td>' + (data.symbol||'?') + '</td>';
+      summaryHTML += '<td><span class="badge badge-' + (data.verdict==='USEFUL'?'useful':'marginal') + '">' + data.verdict + '</span></td>';
+      summaryHTML += '<td>' + (data.top_bottom_spread||0).toFixed(1) + '%</td>';
+      summaryHTML += '<td>' + (data.rank_correlation||0).toFixed(3) + '</td>';
+      summaryHTML += '<td>' + (data.is_monotonic ? '<span class="positive">Yes</span>' : '<span class="negative">No</span>') + '</td></tr>';
+    });
+    document.getElementById('calibration-charts').innerHTML = chartsHTML || '<span style="color:var(--text-dim)">No calibration data yet</span>';
+    document.getElementById('calibration-summary').innerHTML = summaryHTML;
+  }
+
+  // FEATURES
+  if (models) {
     let allFeatures = {};
     Object.entries(models).forEach(([key, data]) => {
-      const fi = data.feature_importances || (data.training_metrics?.top_features) || {};
+      const fi = data.feature_importances || {};
       Object.entries(fi).forEach(([fname, imp]) => {
         allFeatures[fname] = (allFeatures[fname] || 0) + imp;
       });
     });
-    const sortedFeatures = Object.entries(allFeatures).sort((a,b) => b[1] - a[1]).slice(0, 25);
-    const maxImp = sortedFeatures.length > 0 ? sortedFeatures[0][1] : 1;
-    sortedFeatures.forEach(([name, imp]) => {
-      const pctWidth = (imp / maxImp * 100).toFixed(0);
-      featHTML += `<div class="feature-bar">
-        <span class="feature-name">${name}</span>
-        <div style="flex:1"><div class="feature-fill" style="width:${pctWidth}%"></div></div>
-        <span class="feature-val">${(imp*100).toFixed(1)}%</span>
-      </div>`;
+    const sorted = Object.entries(allFeatures).sort((a,b) => b[1] - a[1]).slice(0, 25);
+    const maxImp = sorted.length > 0 ? sorted[0][1] : 1;
+    let featHTML = '';
+    sorted.forEach(([name, imp]) => {
+      const w = (imp / maxImp * 100).toFixed(0);
+      featHTML += '<div class="feature-bar"><span class="feature-name">' + name + '</span><div style="flex:1"><div class="feature-fill" style="width:' + w + '%"></div></div><span class="feature-val">' + (imp*100).toFixed(1) + '%</span></div>';
     });
-    document.getElementById('feature-bars').innerHTML = featHTML || '<span style="color:var(--text-dim)">Train models to see feature importance</span>';
+    document.getElementById('feature-bars').innerHTML = featHTML || '<span style="color:var(--text-dim)">No features yet</span>';
 
-    // Feature categories
-    const cats = {momentum:0,mean_rev:0,volatility:0,volume:0,structure:0,time:0,htf:0,candle:0};
-    sortedFeatures.forEach(([name, imp]) => {
-      if (name.match(/ret_|ema.*slope|alignment/)) cats.momentum += imp;
-      else if (name.match(/rsi|bb_pct|vwap/)) cats.mean_rev += imp;
-      else if (name.match(/atr|bb_width|squeeze|volatility|range/)) cats.volatility += imp;
+    // Categories
+    const cats = {momentum:0,mean_rev:0,volatility:0,volume:0,structure:0,time:0,trend:0,candle:0,regime:0,transition:0};
+    sorted.forEach(([name, imp]) => {
+      if (name.match(/change|decay|reversion/)) cats.transition += imp;
+      else if (name.match(/trend|ema.*slope|alignment/)) cats.trend += imp;
+      else if (name.match(/ret|return|momentum/)) cats.momentum += imp;
+      else if (name.match(/rsi|bb_p|vwap/)) cats.mean_rev += imp;
+      else if (name.match(/atr|vol_regime|range|squeeze/)) cats.volatility += imp;
       else if (name.match(/vol|cvd/)) cats.volume += imp;
-      else if (name.match(/dist_high|dist_low|breakout/)) cats.structure += imp;
-      else if (name.match(/hour|dow/)) cats.time += imp;
-      else if (name.match(/htf/)) cats.htf += imp;
-      else if (name.match(/body|wick|candle|macd/)) cats.candle += imp;
+      else if (name.match(/dist|swing|breakout/)) cats.structure += imp;
+      else if (name.match(/hour|dow|session/)) cats.time += imp;
+      else if (name.match(/regime/)) cats.regime += imp;
+      else if (name.match(/body|wick|candle/)) cats.candle += imp;
     });
     const totalCat = Object.values(cats).reduce((a,b)=>a+b, 0.001);
     let catHTML = '';
     Object.entries(cats).sort((a,b)=>b[1]-a[1]).forEach(([cat, imp]) => {
       const p = (imp/totalCat*100).toFixed(1);
-      catHTML += `<div class="feature-bar">
-        <span class="feature-name">${cat}</span>
-        <div style="flex:1"><div class="feature-fill" style="width:${p}%"></div></div>
-        <span class="feature-val">${p}%</span>
-      </div>`;
+      catHTML += '<div class="feature-bar"><span class="feature-name">' + cat + '</span><div style="flex:1"><div class="feature-fill" style="width:' + p + '%"></div></div><span class="feature-val">' + p + '%</span></div>';
     });
-    document.getElementById('feature-categories').innerHTML = catHTML || '—';
+    document.getElementById('feature-categories').innerHTML = catHTML;
   }
 
-  // TF Comparison
+  // TF COMPARISON
   if (comparison && comparison.by_timeframe) {
     let tfHTML = '';
     Object.entries(comparison.by_timeframe).forEach(([tf, setups]) => {
       setups.sort((a,b) => (b.expectancy_r||0) - (a.expectancy_r||0));
       setups.forEach(s => {
-        tfHTML += `<tr>
-          <td style="color:var(--cyan)">${tf}</td>
-          <td>${s.scanner}</td><td>${s.symbol}</td>
-          <td>${s.trades||0}</td>
-          <td class="${cls((s.win_rate||0)-50)}">${pct(s.win_rate)}</td>
-          <td class="${cls(s.expectancy_r)}">${rval(s.expectancy_r)}</td>
-          <td>${s.profit_factor||'—'}</td>
-          <td><span class="badge ${s.wf_verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid'}">${s.wf_verdict||'?'}</span></td>
-        </tr>`;
+        tfHTML += '<tr><td style="color:var(--cyan)">' + tf + '</td><td>' + s.scanner + '</td><td>' + s.symbol + '</td><td>' + (s.trades||0) + '</td><td class="' + cls((s.win_rate||0)-50) + '">' + pct(s.win_rate) + '</td><td class="' + cls(s.expectancy_r) + '">' + rval(s.expectancy_r) + '</td><td>' + (s.profit_factor||'—') + '</td></tr>';
       });
     });
     document.getElementById('tf-comparison').innerHTML = tfHTML;
   }
 
-  // Walk-forward
+  // WALK-FORWARD
   if (status?.results?.backtest) {
     let wfHTML = '';
     Object.entries(status.results.backtest).forEach(([key, data]) => {
       const wf = data.walk_forward || {};
-      if (!wf.windows) return;
-      wfHTML += `<div style="margin-bottom:20px">
-        <div style="color:var(--accent);font-size:.85rem;margin-bottom:8px">${data.scanner} — ${data.symbol} — ${data.timeframe}
-          <span class="badge ${wf.verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid'}" style="margin-left:8px">${wf.verdict} (${wf.edge_holds_pct}%)</span>
-        </div>
-        <table><tr><th>Train</th><th>Test</th><th>Train WR</th><th>Test WR</th><th>Train Exp</th><th>Test Exp</th><th>Holds?</th></tr>`;
+      if (!wf.windows || wf.windows.length === 0) return;
+      wfHTML += '<div style="margin-bottom:20px"><div style="color:var(--accent);font-size:.85rem;margin-bottom:8px">' + data.scanner + ' — ' + data.symbol + ' — ' + data.timeframe + ' <span class="badge ' + (wf.verdict==='VALID EDGE'?'badge-valid':'badge-invalid') + '">' + wf.verdict + ' (' + wf.edge_holds_pct + '%)</span></div>';
+      wfHTML += '<table><tr><th>Train</th><th>Test</th><th>Train WR</th><th>Test WR</th><th>Train Exp</th><th>Test Exp</th><th>Holds?</th></tr>';
       wf.windows.forEach(w => {
-        wfHTML += `<tr>
-          <td style="font-size:.7rem">${w.train_start}→${w.train_end}</td>
-          <td style="font-size:.7rem">${w.test_start}→${w.test_end}</td>
-          <td>${pct(w.train?.win_rate)}</td>
-          <td class="${cls((w.test?.win_rate||0)-50)}">${pct(w.test?.win_rate)}</td>
-          <td>${rval(w.train?.expectancy_r)}</td>
-          <td class="${cls(w.test?.expectancy_r)}">${rval(w.test?.expectancy_r)}</td>
-          <td>${w.edge_holds ? '<span class="positive">✓</span>' : '<span class="negative">✗</span>'}</td>
-        </tr>`;
+        wfHTML += '<tr><td style="font-size:.68rem">' + w.train_start + '→' + w.train_end + '</td><td style="font-size:.68rem">' + w.test_start + '→' + w.test_end + '</td><td>' + pct(w.train?.win_rate) + '</td><td class="' + cls((w.test?.win_rate||0)-50) + '">' + pct(w.test?.win_rate) + '</td><td>' + rval(w.train?.expectancy_r) + '</td><td class="' + cls(w.test?.expectancy_r) + '">' + rval(w.test?.expectancy_r) + '</td><td>' + (w.edge_holds ? '<span class="positive">✓</span>' : '<span class="negative">✗</span>') + '</td></tr>';
       });
       wfHTML += '</table></div>';
     });
-    document.getElementById('walk-forward-results').innerHTML = wfHTML || '<span style="color:var(--text-dim)">Run backtest to see walk-forward results</span>';
+    document.getElementById('walk-forward-results').innerHTML = wfHTML || '<span style="color:var(--text-dim)">No walk-forward data</span>';
   }
+  } catch(err) { console.error('refreshAll error:', err); document.getElementById('pipeline-status').innerHTML = '<div style="color:var(--red)">JS Error: ' + err.message + '</div>'; }
 }
 
 async function startTraining(symbols, timeframes) {
@@ -503,20 +533,132 @@ async function startTraining(symbols, timeframes) {
   if (symbols) body.symbols = symbols;
   if (timeframes) body.timeframes = timeframes;
   try {
-    await fetch(API + '/api/train/start', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
-    });
+    await fetch('/api/train/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
     alert('Training started!');
-  } catch(e) {
-    alert('Failed to start: ' + e.message);
-  }
+  } catch(e) { alert('Failed: ' + e.message); }
 }
 
-// Initial load + auto-refresh
+async function refreshLiveFeedback() {
+  const fb = await fetchJSON('/api/live-feedback');
+  if (!fb) return;
+
+  // Summary
+  const total = fb.total_trades || 0;
+  const acc = fb.ml_accuracy || {};
+  let sumHTML = '';
+  sumHTML += '<div class="metric"><span class="label">Total Trades</span><span class="value">' + total + '</span></div>';
+  sumHTML += '<div class="metric"><span class="label">Feedback File</span><span class="value" style="color:var(--cyan)">' + (total > 0 ? 'Active' : 'Empty') + '</span></div>';
+  document.getElementById('fb-summary').innerHTML = sumHTML;
+
+  // ML Accuracy
+  let accHTML = '';
+  accHTML += '<div class="metric"><span class="label">Total w/ ML</span><span class="value">' + (acc.total || 0) + '</span></div>';
+  accHTML += '<div class="metric"><span class="label">Correct</span><span class="value positive">' + (acc.ml_correct || 0) + '</span></div>';
+  accHTML += '<div class="metric"><span class="label">Wrong</span><span class="value negative">' + (acc.ml_wrong || 0) + '</span></div>';
+  accHTML += '<div class="metric"><span class="label">Accuracy</span><span class="value ' + ((acc.accuracy_pct||0) > 50 ? 'positive' : 'negative') + '">' + (acc.accuracy_pct ? acc.accuracy_pct.toFixed(1) + '%' : '—') + '</span></div>';
+  // By ML verdict
+  const byVerdict = acc.by_verdict || {};
+  Object.entries(byVerdict).forEach(([v, d]) => {
+    accHTML += '<div class="metric"><span class="label" style="font-size:.7rem">' + v + '</span><span class="value" style="font-size:.7rem">' + d.n + 't ' + (d.win_rate||0) + '% $' + (d.pnl_sum||0).toFixed(2) + '</span></div>';
+  });
+  document.getElementById('fb-ml-accuracy').innerHTML = accHTML;
+
+  // By Trade Type
+  const byType = fb.by_trade_type || {};
+  let typeHTML = '';
+  Object.entries(byType).forEach(([tt, d]) => {
+    const wr = d.trades > 0 ? (d.wins / d.trades * 100) : 0;
+    const color = tt === 'SCALP' ? 'var(--yellow)' : tt === 'INTRADAY' ? 'var(--purple)' : 'var(--green)';
+    typeHTML += '<div class="metric"><span class="label" style="color:' + color + '">' + tt + '</span><span class="value">' + d.trades + ' trades | <span class="' + cls(wr-50) + '">' + wr.toFixed(1) + '% WR</span> | <span class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</span></span></div>';
+  });
+  document.getElementById('fb-by-type').innerHTML = typeHTML || '<span style="color:var(--text-dim)">No trades yet</span>';
+
+  // By Pair
+  const byPair = fb.by_pair || {};
+  let pairHTML = '';
+  Object.entries(byPair).sort((a,b) => (b[1].pnl_usd||0)-(a[1].pnl_usd||0)).forEach(([pair, d]) => {
+    const wr = d.win_rate || 0;
+    const losses = d.trades - d.wins;
+    const avgPnl = d.trades > 0 ? d.pnl_usd / d.trades : 0;
+    pairHTML += '<tr><td style="color:var(--cyan)">' + pair + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(avgPnl) + '">$' + avgPnl.toFixed(2) + '</td></tr>';
+  });
+  document.getElementById('fb-by-pair').innerHTML = pairHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No data</td></tr>';
+
+  // By Scanner
+  const byScanner = fb.by_scanner || {};
+  let scanHTML = '';
+  Object.entries(byScanner).sort((a,b) => (b[1].pnl_usd||0)-(a[1].pnl_usd||0)).forEach(([scanner, d]) => {
+    const wr = d.win_rate || 0;
+    const losses = d.trades - d.wins;
+    const avgPnl = d.trades > 0 ? d.pnl_usd / d.trades : 0;
+    scanHTML += '<tr><td style="color:var(--accent)">' + scanner + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(avgPnl) + '">$' + avgPnl.toFixed(2) + '</td></tr>';
+  });
+  document.getElementById('fb-by-scanner').innerHTML = scanHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No data</td></tr>';
+
+  // Pair × Scanner Matrix (API returns a list of {symbol, scanner, trades, wins, pnl_usd, ...})
+  const matrixList = fb.by_pair_scanner || [];
+  if (matrixList.length > 0) {
+    // Build nested dict: pair → scanner → data
+    const matrixMap = {};
+    const allScanners = new Set();
+    matrixList.forEach(d => {
+      const pair = d.symbol || '?';
+      const scanner = d.scanner || '?';
+      allScanners.add(scanner);
+      if (!matrixMap[pair]) matrixMap[pair] = {};
+      matrixMap[pair][scanner] = d;
+    });
+    const scannerList = [...allScanners].sort();
+    let mHTML = '<table><tr><th>Pair</th>';
+    scannerList.forEach(s => mHTML += '<th style="font-size:.6rem">' + s.replace(/_/g,' ') + '</th>');
+    mHTML += '</tr>';
+    Object.entries(matrixMap).sort().forEach(([pair, scanners]) => {
+      mHTML += '<tr><td style="color:var(--cyan)">' + pair + '</td>';
+      scannerList.forEach(s => {
+        const d = scanners[s];
+        if (d) {
+          const wr = d.win_rate || 0;
+          mHTML += '<td class="' + cls(d.pnl_usd) + '" style="font-size:.7rem">' + d.trades + 't ' + wr.toFixed(0) + '% $' + (d.pnl_usd||0).toFixed(1) + '</td>';
+        } else {
+          mHTML += '<td style="color:var(--text-muted)">—</td>';
+        }
+      });
+      mHTML += '</tr>';
+    });
+    mHTML += '</table>';
+    document.getElementById('fb-matrix').innerHTML = mHTML;
+  } else {
+    document.getElementById('fb-matrix').innerHTML = '<span style="color:var(--text-dim)">No matrix data yet</span>';
+  }
+
+  // Recent Trades
+  const recent = fb.recent || [];
+  let recHTML = '';
+  recent.forEach(t => {
+    const side = t.side || '?';
+    const sideColor = side.toLowerCase() === 'long' ? 'var(--green)' : 'var(--red)';
+    const ttColor = t.trade_type === 'SCALP' ? 'var(--yellow)' : t.trade_type === 'INTRADAY' ? 'var(--purple)' : 'var(--green)';
+    const dur = t.duration_sec ? (t.duration_sec < 60 ? t.duration_sec + 's' : Math.floor(t.duration_sec/60) + 'm') : '—';
+    recHTML += '<tr>';
+    recHTML += '<td style="font-size:.68rem">' + (t.closed_at ? new Date(t.closed_at).toLocaleString() : '—') + '</td>';
+    recHTML += '<td style="color:var(--cyan)">' + (t.symbol || '?') + '</td>';
+    recHTML += '<td style="color:' + sideColor + '">' + side.toUpperCase() + '</td>';
+    recHTML += '<td style="color:' + ttColor + '">' + (t.trade_type || '?') + '</td>';
+    recHTML += '<td>' + (t.scanner || '?') + '</td>';
+    recHTML += '<td>' + (t.ml_prob != null ? (t.ml_prob*100).toFixed(1) + '%' : '—') + '</td>';
+    recHTML += '<td>$' + (t.entry_price ? t.entry_price.toFixed(2) : '—') + '</td>';
+    recHTML += '<td>$' + (t.exit_price ? t.exit_price.toFixed(2) : '—') + '</td>';
+    recHTML += '<td class="' + cls(t.pnl_usd) + '">$' + (t.pnl_usd != null ? t.pnl_usd.toFixed(2) : '—') + '</td>';
+    recHTML += '<td>' + dur + '</td>';
+    recHTML += '</tr>';
+  });
+  document.getElementById('fb-recent').innerHTML = recHTML || '<tr><td colspan="10" style="color:var(--text-dim)">No recent trades</td></tr>';
+}
+
 refreshAll();
-refreshInterval = setInterval(refreshAll, 5000);
+refreshLiveFeedback();
+setInterval(refreshAll, 5000);
+setInterval(refreshLiveFeedback, 10000);
 </script>
 </body>
 </html>

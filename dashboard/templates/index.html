@@ -487,7 +487,7 @@ tr:hover{background:rgba(99,148,255,.02)}
     <div class="tbl-wrap" style="max-height:400px;overflow-y:auto">
       <table>
         <thead>
-          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>ML</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
+          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Type</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>ML</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
         </thead>
         <tbody id="closed-trades-body">
           <tr><td colspan="14" class="empty">No closed trades</td></tr>
@@ -857,6 +857,14 @@ function updateActiveTrades(trades) {
                     <span class="sig-side ${side}" style="font-size:.78rem">${side}</span>
                     <span style="color:var(--yellow);font-weight:700;font-size:.85rem">${lev}x</span>
                     <span style="color:var(--text-muted);font-size:.73rem">${esc(t.setup_type || '')}</span>
+                    ${(function(){
+                        const tt = t.trade_type || (t.metadata && t.metadata.trade_type) || '';
+                        if (!tt) return '';
+                        const ttColors = {SCALP:'#f59e0b',INTRADAY:'#6366f1',RUNNER:'#10b981'};
+                        const ttBg = {SCALP:'rgba(245,158,11,.12)',INTRADAY:'rgba(99,102,241,.12)',RUNNER:'rgba(16,185,129,.12)'};
+                        const ttIcon = {SCALP:'\u26A1',INTRADAY:'\uD83C\uDFAF',RUNNER:'\uD83C\uDFF9'};
+                        return `<span style="font-size:.68rem;padding:2px 7px;border-radius:4px;background:${ttBg[tt]||'var(--border)'};color:${ttColors[tt]||'var(--text-muted)'};font-weight:700;letter-spacing:.3px;border:1px solid ${ttColors[tt]||'var(--border)'}30">${ttIcon[tt]||''} ${tt}</span>`;
+                    })()}
                     ${statusBadges}
                     ${t.metadata && t.metadata.ml_probability != null ? `<span style="font-size:.62rem;padding:2px 6px;border-radius:3px;background:${t.metadata.ml_probability >= 0.6 ? 'var(--green-dim)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow-dim)' : 'var(--red-dim)'};color:${t.metadata.ml_probability >= 0.6 ? 'var(--green)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow)' : 'var(--red)'};font-weight:600">ML ${(t.metadata.ml_probability * 100).toFixed(0)}% ${t.metadata.ml_verdict || ''}</span>` : ''}
                 </div>
@@ -922,6 +930,7 @@ function updateSignals(signals) {
             <span class="sig-side ${side}">${side}</span>
             <span class="sig-symbol">${esc(s.symbol || "--")}</span>
             <span class="sig-setup">${esc(setup)}</span>
+            ${(function(){const tt=(s.metadata&&s.metadata.trade_type)||'';const c={SCALP:'#f59e0b',INTRADAY:'#6366f1',RUNNER:'#10b981'};return tt?`<span style="font-size:.6rem;padding:1px 5px;border-radius:3px;color:${c[tt]||'#888'};font-weight:700">${tt}</span>`:'';})()}
             <span class="sig-detail">E:${num(entry, 2)} SL:${num(sl, 2)} TP:${num(tp1, 2)}</span>
             <span class="sig-conf">${conf > 0 ? num(conf, 0) + "%" : "--"}</span>
             <span class="cmd-grade" style="font-size:.68rem;padding:2px 6px">${s.grade || "--"}</span>
@@ -1214,7 +1223,7 @@ function updatePaperBalance(report) {
 function updateClosedTrades(closed) {
     const body = document.getElementById("closed-trades-body");
     if (!closed || !Array.isArray(closed) || closed.length === 0) {
-        body.innerHTML = '<tr><td colspan="14" class="empty">No closed trades</td></tr>';
+        body.innerHTML = '<tr><td colspan="16" class="empty">No closed trades</td></tr>';
         return;
     }
     const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
@@ -1237,6 +1246,7 @@ function updateClosedTrades(closed) {
             <td>${formatTime(t.closed_at || t.exit_time)}</td>
             <td style="font-weight:600">${esc(t.symbol || "--")}</td>
             <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
+            <td>${(function(){const tt=t.trade_type||(t.metadata&&t.metadata.trade_type)||'';const c={SCALP:'#f59e0b',INTRADAY:'#6366f1',RUNNER:'#10b981'};return tt?`<span style="color:${c[tt]||'var(--text-muted)'};font-weight:600;font-size:.72rem">${tt}</span>`:'--';})()}</td>
             <td>${esc(t.setup_type || t.scanner || "--")}</td>
             <td style="color:var(--yellow)">${lev}x</td>
             <td>${num(t.entry_price || t.entry, t.entry_price > 100 ? 2 : 4)}</td>

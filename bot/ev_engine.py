@@ -68,7 +68,7 @@ class EVEngine:
     - Choppy/volatile: EV threshold raised (more noise)
     """
 
-    MIN_SAMPLES = 8              # Need at least 8 trades before gating
+    MIN_SAMPLES = 5              # Need at least 5 trades before gating
     TRADE_EV_THRESHOLD = 0.10    # EV > 0.1R = full trade
     REDUCED_EV_THRESHOLD = 0.0   # EV > 0.0R = reduced size
     MAX_EV_SIZE_MULT = 1.3       # Max size multiplier for high EV
@@ -113,12 +113,11 @@ class EVEngine:
         Returns:
             EVResult with verdict and size multiplier
         """
-        # Calibrated lookup: try most specific key first, fall back to coarser
+        # Calibrated lookup: regime is the primary context, side/session are optional
+        # Changed from over-granular scanner_side_regime_session to scanner_regime primary
         lookup_keys = [
-            f"{scanner_name}_{side}_{regime}_{session}",  # most specific
-            f"{scanner_name}_{side}_{regime}",
-            f"{scanner_name}_{side}",
-            scanner_name,  # coarsest — original behavior
+            f"{scanner_name}_{regime}",   # primary: scanner + regime
+            scanner_name,                  # fallback: scanner only
         ]
 
         setup_data = {}

@@ -373,6 +373,72 @@ class RegimeFilter:
         )
 
 
+def detect_regime_transition(current_regime: str, previous_regime: str, regime_age_bars: int) -> dict:
+    """Detect if we're in a regime transition.
+
+    Args:
+        current_regime: The current detected regime
+        previous_regime: The previous regime (from last cycle)
+        regime_age_bars: How many bars the current regime has held
+
+    Returns:
+        dict with:
+            - in_transition: bool
+            - transition_type: str ("trend_to_range", "range_to_trend", etc.)
+            - confidence_adj: int (-10 for unstable transitions, +5 for confirmed new regime)
+    """
+    TREND_REGIMES = {"trending_up", "trending_down", "breakout"}
+    RANGE_REGIMES = {"ranging", "sideways", "mean_reversion", "quiet"}
+    VOL_REGIMES = {"volatile", "high_volatility"}
+
+    changed = current_regime != previous_regime and previous_regime != ""
+
+    # Determine transition type
+    transition_type = "none"
+    if changed:
+        prev_group = (
+            "trend" if previous_regime in TREND_REGIMES else
+            "range" if previous_regime in RANGE_REGIMES else
+            "vol" if previous_regime in VOL_REGIMES else "other"
+        )
+        curr_group = (
+            "trend" if current_regime in TREND_REGIMES else
+            "range" if current_regime in RANGE_REGIMES else
+            "vol" if current_regime in VOL_REGIMES else "other"
+        )
+        transition_type = f"{prev_group}_to_{curr_group}"
+
+    # Confidence adjustment based on regime age
+    if regime_age_bars <= 3:
+        # Just changed — unstable, penalize
+        return {
+            "in_transition": True,
+            "transition_type": transition_type,
+            "confidence_adj": -10,
+        }
+    elif regime_age_bars >= 30:
+        # Strong hold — high confidence in regime
+        return {
+            "in_transition": False,
+            "transition_type": "none",
+            "confidence_adj": +5,
+        }
+    elif regime_age_bars >= 10:
+        # Confirmed regime
+        return {
+            "in_transition": False,
+            "transition_type": "none",
+            "confidence_adj": +3,
+        }
+    else:
+        # 4-9 bars — still settling
+        return {
+            "in_transition": False,
+            "transition_type": transition_type if changed else "none",
+            "confidence_adj": 0,
+        }
+
+
 def calc_confidence_size_multiplier(confidence: int, tier: str) -> float:
     """Scale position size based on signal confidence and tier.
 

@@ -13,6 +13,8 @@ symbols:
   - "BTC/USDT"
   - "ETH/USDT"
   - "AVAX/USDT"
+  - "SOL/USDT"
+  - "DOGE/USDT"
 
 exchange:
   name: "delta"            # binance | bybit | okx | delta
@@ -77,13 +79,13 @@ strategy:
 
 risk:
   risk_per_trade_pct: 1.0
-  max_position_size_usd: 10000
+  max_position_size_usd: 100
   max_daily_loss_pct: 3.0
   max_open_positions: 3
   max_exposure_per_symbol_pct: 50.0
   max_correlated_exposure_pct: 100.0
   default_leverage: 5
-  max_leverage: 20
+  max_leverage: 75
 
   stop_loss:
     type: "atr"  # fixed | atr | structure
@@ -114,7 +116,7 @@ risk:
     cooloff_after_sl: 180
 
 paper_trading:
-  initial_balance: 10000
+  initial_balance: 1000
   # SCALPER OFFER FEES (zero closing fee!)
   maker_fee_rate: 0.0002        # Scalper maker: 0.02% (entry only, no close)
   taker_fee_rate: 0.0005        # Scalper taker: 0.05% (entry only, no close)

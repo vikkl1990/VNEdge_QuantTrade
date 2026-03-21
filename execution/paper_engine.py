@@ -58,6 +58,68 @@ class PaperExecutionEngine:
         self._open_trades: Dict[str, Trade] = {}  # trade_id -> Trade
         self._closed_trades: List[Trade] = []
 
+        # Liquidity tiers for realistic slippage model
+        self._liquidity_tier: Dict[str, float] = {
+            "BTC": 1.0, "ETH": 1.0,
+            "SOL": 1.5, "AVAX": 1.5, "LINK": 1.5, "XRP": 1.5, "ADA": 1.5,
+            "DOGE": 2.5, "SHIB": 2.5, "PEPE": 2.5, "WIF": 2.5, "BONK": 2.5,
+            "FLOKI": 2.5, "MEME": 2.5,
+        }
+        # Rolling ATR tracker for volatility-adjusted slippage
+        self._avg_atr: Dict[str, float] = {}  # symbol -> rolling average ATR
+
+    # ------------------------------------------------------------------
+    # Realistic slippage model
+    # ------------------------------------------------------------------
+
+    def _calculate_realistic_slippage(
+        self,
+        symbol: str,
+        side: str,
+        position_usd: float,
+        is_maker: bool = False,
+        current_atr: float = 0.0,
+    ) -> float:
+        """Realistic slippage model based on position size and symbol liquidity.
+
+        Returns slippage_pct (always positive, represents cost).
+
+        Components:
+        - Base: 0.02% maker / 0.05% taker
+        - Size impact: +0.01% per $1000 beyond $500
+        - Liquidity factor: BTC/ETH=1.0x, alts=1.5x, memes=2.5x
+        - Volatility factor: scaled by current_atr / avg_atr
+        - Capped at 0.15%
+        """
+        # 1. Base slippage
+        base_slip = 0.02 if is_maker else 0.05
+
+        # 2. Size impact: larger positions move the book more
+        excess_usd = max(0, position_usd - 500.0)
+        size_impact = (excess_usd / 1000.0) * 0.01  # +0.01% per $1000 above $500
+
+        # 3. Liquidity factor from symbol
+        coin = symbol.split("/")[0].upper() if "/" in symbol else symbol[:3].upper()
+        liq_factor = self._liquidity_tier.get(coin, 1.5)  # default to alt-tier
+
+        # 4. Volatility factor (high vol = more slippage)
+        vol_factor = 1.0
+        if current_atr > 0:
+            avg_atr = self._avg_atr.get(symbol, current_atr)
+            if avg_atr > 0:
+                atr_ratio = current_atr / avg_atr
+                vol_factor = min(atr_ratio, 2.0)  # cap at 2x
+            # Update rolling average (EMA with alpha=0.1)
+            self._avg_atr[symbol] = avg_atr * 0.9 + current_atr * 0.1
+
+        # Combine all factors
+        slip_pct = (base_slip + size_impact) * liq_factor * vol_factor
+
+        # Cap at 0.15% max
+        slip_pct = min(slip_pct, 0.15)
+
+        return slip_pct
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -141,8 +203,11 @@ class PaperExecutionEngine:
         # In paper: simulate with maker fee + reduced slippage
         use_maker = True  # Always maker for entry (Scalper optimization)
 
-        # Apply reduced slippage for maker (limit orders have less slippage)
-        slip_pct = self.slippage_pct * 0.3 if use_maker else self.slippage_pct  # 70% less slip
+        # Realistic slippage model (position-size and liquidity aware)
+        est_position_usd = (position_size * entry_price / lev) if position_size else 500.0
+        slip_pct = self._calculate_realistic_slippage(
+            symbol, side, est_position_usd, is_maker=use_maker,
+        )
         slip = entry_price * (slip_pct / 100.0)
         if side == "long":
             fill_price = entry_price + slip
@@ -228,7 +293,12 @@ class PaperExecutionEngine:
             logger.warning("Paper exit: trade %s not found", trade_id)
             return None
 
-        slip = current_price * (self.slippage_pct / 100.0)
+        # Realistic exit slippage (taker for market exits)
+        exit_position_usd = current_price * trade.remaining_size * close_pct / trade.leverage
+        exit_slip_pct = self._calculate_realistic_slippage(
+            trade.symbol, "exit", exit_position_usd, is_maker=False,
+        )
+        slip = current_price * (exit_slip_pct / 100.0)
         if trade.side == TradeSide.LONG:
             fill_price = current_price - slip
         else:

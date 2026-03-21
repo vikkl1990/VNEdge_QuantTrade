@@ -37,6 +37,127 @@ MAX_SIGNAL_AGE = 4 * 3600  # 4 hours hard backstop
 SCALPER_WINDOW_BTC = 27 * 60   # 27 minutes — BTC Scalper (leave 3min buffer)
 SCALPER_WINDOW_OTHER = 12 * 60  # 12 minutes — ETH/AVAX/others (leave 3min buffer)
 
+# ══════════════════════════════════════════════════════════════
+# TRADE TYPE CLASSIFICATION — 3 tiers with different exit logic
+# ══════════════════════════════════════════════════════════════
+TRADE_TYPE_SCALP = "SCALP"         # Fast in/out, tight SL/TP, hard time stop
+TRADE_TYPE_INTRADAY = "INTRADAY"   # Directional move, moderate SL/TP, soft time stop
+TRADE_TYPE_RUNNER = "RUNNER"        # High conviction trend, wide SL/TP, no time stop
+
+# Per-type exit parameters
+TRADE_TYPE_CONFIG = {
+    TRADE_TYPE_SCALP: {
+        "sl_atr_mult": 0.9,       # tight SL
+        "tp1_rr": 0.8,            # quick TP1
+        "tp2_rr": 1.2,            # small TP2
+        "tp3_rr": 0.0,            # NO TP3 for scalps
+        "time_stop_bars": 5,      # 5 bars (25 min on 5m) hard time stop
+        "time_stop_type": "hard", # kill if not moving
+        "early_kill_sec": 180,    # 3 min early kill (was 5 min)
+        "early_kill_mfe": 0.10,   # lower MFE threshold
+        "trail_atr_mult": 0.6,   # tight trail
+        "max_age_sec": 30 * 60,   # 30 min absolute max
+    },
+    TRADE_TYPE_INTRADAY: {
+        "sl_atr_mult": 1.15,      # moderate SL
+        "tp1_rr": 1.2,            # TP1 at 1.2R
+        "tp2_rr": 2.0,            # TP2 at 2R
+        "tp3_rr": 3.0,            # small TP3
+        "time_stop_bars": 15,     # 15 bars (~75 min) soft time stop
+        "time_stop_type": "soft", # only exit if losing AND no progress
+        "early_kill_sec": 600,    # 10 min early kill
+        "early_kill_mfe": 0.15,   # standard MFE threshold
+        "trail_atr_mult": 1.0,   # standard trail
+        "max_age_sec": 2 * 3600,  # 2 hours max
+    },
+    TRADE_TYPE_RUNNER: {
+        "sl_atr_mult": 1.5,       # wide SL — give room
+        "tp1_rr": 1.5,            # TP1 at 1.5R
+        "tp2_rr": 3.0,            # TP2 at 3R
+        "tp3_rr": 5.0,            # TP3 at 5R — let it run
+        "time_stop_bars": 0,      # NO time stop
+        "time_stop_type": "none", # only exit on structure/trailing
+        "early_kill_sec": 0,      # no early kill
+        "early_kill_mfe": 0.0,    # disabled
+        "trail_atr_mult": 1.5,   # wide trail — trend-following
+        "max_age_sec": 8 * 3600,  # 8 hours max
+    },
+}
+
+
+def classify_trade(signal_dict: dict) -> str:
+    """Classify a trade into SCALP / INTRADAY / RUNNER before execution.
+
+    Primary classifier: ML probability
+    Context boosters: trend_strength, vwap_distance, atr_ratio, regime, HTF alignment
+    """
+    meta = signal_dict.get("metadata", {})
+
+    # Primary: ML probability
+    ml_prob = float(meta.get("ml_probability", 0.5))
+
+    # Context factors
+    regime = str(meta.get("regime", "")).lower()
+    htf_bias = int(meta.get("htf_bias", 0))
+    side = signal_dict.get("side", "")
+    if hasattr(side, 'value'):
+        side = side.value
+    atr = float(meta.get("atr", 0))
+    vwap_zone = meta.get("vwap_zone", "clear")
+
+    # HTF alignment check
+    htf_aligned = (
+        (htf_bias > 0 and side == "long") or
+        (htf_bias < 0 and side == "short")
+    )
+
+    # Trend regime check
+    is_trending = regime in ("trending_up", "trending_down", "breakout")
+    is_ranging = regime in ("ranging", "sideways", "quiet")
+
+    # ── Base classification from ML probability ──
+    if ml_prob >= 0.65:
+        trade_type = TRADE_TYPE_RUNNER
+    elif ml_prob >= 0.50:
+        trade_type = TRADE_TYPE_INTRADAY
+    else:
+        trade_type = TRADE_TYPE_SCALP
+
+    # ── Context boosters: upgrade/downgrade ──
+
+    # UPGRADE to RUNNER: strong trend + HTF aligned + away from VWAP
+    if trade_type == TRADE_TYPE_INTRADAY and is_trending and htf_aligned and vwap_zone == "clear":
+        trade_type = TRADE_TYPE_RUNNER
+        logger.info("Trade type UPGRADE → RUNNER: trending + HTF aligned + clear VWAP")
+
+    # UPGRADE to INTRADAY: moderate probability but trending with HTF
+    if trade_type == TRADE_TYPE_SCALP and is_trending and htf_aligned:
+        trade_type = TRADE_TYPE_INTRADAY
+        logger.info("Trade type UPGRADE → INTRADAY: trending + HTF aligned")
+
+    # DOWNGRADE to SCALP: ranging regime + near VWAP noise
+    if trade_type == TRADE_TYPE_INTRADAY and is_ranging and vwap_zone == "noise":
+        trade_type = TRADE_TYPE_SCALP
+        logger.info("Trade type DOWNGRADE → SCALP: ranging + VWAP noise zone")
+
+    # DOWNGRADE to INTRADAY: runner in ranging regime
+    if trade_type == TRADE_TYPE_RUNNER and is_ranging:
+        trade_type = TRADE_TYPE_INTRADAY
+        logger.info("Trade type DOWNGRADE → INTRADAY: RUNNER not valid in ranging regime")
+
+    # High confidence override: 95+ confidence always eligible for INTRADAY minimum
+    confidence = int(signal_dict.get("confidence", 0))
+    if confidence >= 95 and trade_type == TRADE_TYPE_SCALP:
+        trade_type = TRADE_TYPE_INTRADAY
+
+    logger.info(
+        "TRADE TYPE: %s %s → %s | ml_prob=%.2f regime=%s htf_aligned=%s vwap=%s conf=%d",
+        signal_dict.get("symbol", ""), side, trade_type,
+        ml_prob, regime, htf_aligned, vwap_zone, confidence,
+    )
+
+    return trade_type
+
 
 @dataclass
 class TrackedSignal:
@@ -54,6 +175,7 @@ class TrackedSignal:
     grade: str = ""
     setup_type: str = ""
     strategy_type: str = "scalp"  # "scalp" or "investment"
+    trade_type: str = "SCALP"      # SCALP / INTRADAY / RUNNER (classified before execution)
     reason: str = ""
 
     # Paper trading: position sizing (fixed fractional risk model)
@@ -119,6 +241,9 @@ class TrackedSignal:
     tp2_pnl_locked: float = 0.0         # PnL% locked when TP2 partial close fires
     position_remaining_pct: float = 1.0  # fraction of position still open (1.0 → 0.40 → 0.15)
 
+    # Signal metadata (ML scores, scanner config, etc.)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
     # Timestamps
     entry_time: str = ""
     tp1_time: str = ""
@@ -137,7 +262,16 @@ class TrackedSignal:
         # Backfill contract sizing for signals created before this feature
         if ts.contracts == 0 and ts.entry_price > 0 and ts.position_size_usd > 0:
             sym = ts.symbol.upper()
-            cs = 0.001 if "BTC" in sym else 0.01
+            if "BTC" in sym:
+                cs = 0.001
+            elif "ETH" in sym:
+                cs = 0.01
+            elif "SOL" in sym or "AVAX" in sym:
+                cs = 0.1
+            elif "DOGE" in sym:
+                cs = 1.0
+            else:
+                cs = 0.001
             raw = ts.position_size_usd / (ts.entry_price * cs)
             ts.contract_size = cs
             ts.contracts = max(1, int(raw))
@@ -171,6 +305,7 @@ class TrackedSignal:
         # Risk 0.75% of account per trade (constant dollar risk)
         # This automatically sizes positions based on SL distance
         ACCOUNT_SIZE = 1000.0  # paper account base
+        MAX_MARGIN_PER_TRADE = 100.0  # max $100 margin (stake) per trade
         RISK_PCT = 0.75        # risk 0.75% per trade
         risk_amount = ACCOUNT_SIZE * RISK_PCT / 100  # $7.50 risk per trade
 
@@ -182,37 +317,29 @@ class TrackedSignal:
         else:
             position_usd = risk_amount * 100  # fallback
 
-        # ── SUPER SCALP LEVERAGE (20x-100x, $50-$100 margin) ──
-        # Aggressive leverage for high-confidence scalps
+        # ── SUPER SCALP LEVERAGE (10x-50x, $100-$200 margin) ──
+        # Minimum $200 position to survive fee drag. Fewer but larger trades.
         # Liquidation safety checked separately in strategy
-        if confidence >= 95:
-            max_lev = 100
-            paper_stake = 100.0
-            lev_cap_source = "super_scalp_95+_100x"
-        elif confidence >= 90:
+        if confidence >= 90:
             max_lev = 75
             paper_stake = 100.0
             lev_cap_source = "super_scalp_90+_75x"
-        elif confidence >= 85:
-            max_lev = 50
-            paper_stake = 75.0
-            lev_cap_source = "super_scalp_85+_50x"
         elif confidence >= 80:
-            max_lev = 40
-            paper_stake = 75.0
-            lev_cap_source = "super_scalp_80+_40x"
-        elif confidence >= 75:
+            max_lev = 50
+            paper_stake = 100.0
+            lev_cap_source = "super_scalp_80+_50x"
+        elif confidence >= 70:
             max_lev = 30
-            paper_stake = 50.0
-            lev_cap_source = "super_scalp_75+_30x"
-        elif confidence >= 65:
-            max_lev = 25
-            paper_stake = 50.0
-            lev_cap_source = "super_scalp_65+_25x"
-        else:
+            paper_stake = 80.0
+            lev_cap_source = "super_scalp_70+_30x"
+        elif confidence >= 60:
             max_lev = 20
+            paper_stake = 60.0
+            lev_cap_source = "super_scalp_60+_20x"
+        else:
+            max_lev = 10
             paper_stake = 50.0
-            lev_cap_source = "super_scalp_base_20x"
+            lev_cap_source = "super_scalp_base_10x"
 
         # Derive effective leverage from position size
         derived_lev = position_usd / paper_stake
@@ -224,6 +351,18 @@ class TrackedSignal:
             position_usd = paper_stake * max_lev
             risk_amount = position_usd * sl_dist_pct / 100
             lev_cap_source = f"lev_capped_{max_lev}x"
+
+        # ── HARD MARGIN CAP: max $100 margin per trade ──
+        margin_used = position_usd / max(lev, 1)
+        if margin_used > MAX_MARGIN_PER_TRADE:
+            position_usd = MAX_MARGIN_PER_TRADE * lev
+            risk_amount = position_usd * sl_dist_pct / 100
+            lev_cap_source = f"margin_capped_{int(MAX_MARGIN_PER_TRADE)}"
+            logger.info(
+                "MARGIN CAP: %s margin=$%.0f > $%d max → pos=$%.0f @ %dx",
+                sig.get("symbol", ""), margin_used, int(MAX_MARGIN_PER_TRADE),
+                position_usd, lev,
+            )
 
         # ── Regime-based position sizing ──
         regime_size_mult = float(meta.get("regime_size_mult", 1.0))
@@ -261,10 +400,17 @@ class TrackedSignal:
 
         # Calculate actual contract sizing (Delta India contract specs)
         symbol = sig.get("symbol", "")
-        if "BTC" in symbol.upper():
+        sym_upper = symbol.upper()
+        if "BTC" in sym_upper:
             contract_sz = 0.001   # 1 contract = 0.001 BTC
-        elif "ETH" in symbol.upper():
+        elif "ETH" in sym_upper:
             contract_sz = 0.01    # 1 contract = 0.01 ETH
+        elif "SOL" in sym_upper:
+            contract_sz = 0.1     # 1 contract = 0.1 SOL
+        elif "AVAX" in sym_upper:
+            contract_sz = 0.1     # 1 contract = 0.1 AVAX
+        elif "DOGE" in sym_upper:
+            contract_sz = 1.0     # 1 contract = 1 DOGE
         else:
             contract_sz = 0.001   # default
 
@@ -282,19 +428,124 @@ class TrackedSignal:
         # Extract ATR from signal metadata for trailing stop
         signal_atr = float(meta.get("atr", 0))
 
+        # ── MINIMUM POSITION SIZE ENFORCEMENT ──
+        # Positions below $50 have fee ratios too high for any edge to survive
+        MIN_POSITION_USD = 50.0
+        if position_usd < MIN_POSITION_USD:
+            logger.warning(
+                "FEE DEATH: %s %s pos=$%.0f < $%d min — fee ratio too high, blocking trade",
+                sig.get("symbol", ""), sig.get("side", ""), position_usd, int(MIN_POSITION_USD),
+            )
+            # Bump position to minimum viable size
+            position_usd = MIN_POSITION_USD
+            if entry > 0 and contract_sz > 0:
+                raw_contracts = position_usd / (entry * contract_sz)
+                num_contracts = max(1, int(raw_contracts))
+                quantity = num_contracts * contract_sz
+                position_usd = round(quantity * entry, 2)
+            risk_amount = position_usd * sl_dist_pct / 100
+            # Recalculate leverage
+            if paper_stake > 0:
+                lev = min(int(position_usd / paper_stake), max_lev)
+                lev = max(1, lev)
+            lev_cap_source = f"min_position_{int(MIN_POSITION_USD)}"
+
+        # ── FEE VIABILITY CHECK ──
+        # Compute fee drag and penalize/block fee-dominated trades
+        within_scalper = True  # assume scalper for entry (optimistic)
+        fee_check = SignalTracker.get_min_viable_move(
+            symbol=sig.get("symbol", ""),
+            position_usd=position_usd,
+            leverage=float(lev),
+            sl_distance_pct=sl_dist_pct,
+            within_scalper=within_scalper,
+        )
+
+        if fee_check["fee_drag_r"] > 0.5:
+            # Fees > 50% of risk = negative EV by definition — hard block
+            logger.warning(
+                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.5) | min_move=%.3f%% | "
+                "pos=$%.0f sl=%.3f%% — fees consume >50%% of risk, trade blocked",
+                sig.get("symbol", ""), sig.get("side", ""),
+                fee_check["fee_drag_r"], fee_check["min_move_pct"],
+                position_usd, sl_dist_pct,
+            )
+            # Return a signal with confidence=0 to signal rejection upstream
+            confidence = 0
+        elif not fee_check["viable"]:
+            # fee_drag > 0.3 but <= 0.5: apply -10 confidence penalty
+            logger.warning(
+                "FEE WARNING: %s %s | fee_drag=%.2fR (>0.3) | min_move=%.3f%% | "
+                "pos=$%.0f sl=%.3f%% — applying -10 confidence penalty",
+                sig.get("symbol", ""), sig.get("side", ""),
+                fee_check["fee_drag_r"], fee_check["min_move_pct"],
+                position_usd, sl_dist_pct,
+            )
+            confidence = max(0, confidence - 10)
+
+        # Store fee analysis in metadata
+        meta["fee_drag_r"] = fee_check["fee_drag_r"]
+        meta["fee_viable"] = fee_check["viable"]
+        meta["min_move_pct"] = fee_check["min_move_pct"]
+
+        # ── CLASSIFY TRADE TYPE: SCALP / INTRADAY / RUNNER ──
+        trade_type = classify_trade(sig)
+        meta["trade_type"] = trade_type
+        type_cfg = TRADE_TYPE_CONFIG.get(trade_type, TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP])
+
+        # Override TP levels based on trade type
+        raw_tps = tps[:]  # copy original
+        risk_dist = abs(entry - sl) if entry > 0 and sl > 0 else 0.0
+        if risk_dist > 0 and trade_type != TRADE_TYPE_SCALP:
+            # Recalculate TPs from trade type config
+            side_val = sig.get("side", "long")
+            if hasattr(side_val, 'value'):
+                side_val = side_val.value
+            if side_val == "long":
+                tp1_new = entry + risk_dist * type_cfg["tp1_rr"] if type_cfg["tp1_rr"] > 0 else 0.0
+                tp2_new = entry + risk_dist * type_cfg["tp2_rr"] if type_cfg["tp2_rr"] > 0 else 0.0
+                tp3_new = entry + risk_dist * type_cfg["tp3_rr"] if type_cfg["tp3_rr"] > 0 else 0.0
+            else:
+                tp1_new = entry - risk_dist * type_cfg["tp1_rr"] if type_cfg["tp1_rr"] > 0 else 0.0
+                tp2_new = entry - risk_dist * type_cfg["tp2_rr"] if type_cfg["tp2_rr"] > 0 else 0.0
+                tp3_new = entry - risk_dist * type_cfg["tp3_rr"] if type_cfg["tp3_rr"] > 0 else 0.0
+            raw_tps = [tp1_new, tp2_new, tp3_new]
+            logger.info(
+                "TRADE TYPE %s TPs: TP1=%.2f (%.1fR) TP2=%.2f (%.1fR) TP3=%.2f (%.1fR)",
+                trade_type, tp1_new, type_cfg["tp1_rr"], tp2_new, type_cfg["tp2_rr"],
+                tp3_new, type_cfg["tp3_rr"],
+            )
+        elif risk_dist > 0 and trade_type == TRADE_TYPE_SCALP:
+            # Scalp: override TPs to tight values, kill TP3
+            side_val = sig.get("side", "long")
+            if hasattr(side_val, 'value'):
+                side_val = side_val.value
+            if side_val == "long":
+                tp1_new = entry + risk_dist * type_cfg["tp1_rr"]
+                tp2_new = entry + risk_dist * type_cfg["tp2_rr"] if type_cfg["tp2_rr"] > 0 else 0.0
+            else:
+                tp1_new = entry - risk_dist * type_cfg["tp1_rr"]
+                tp2_new = entry - risk_dist * type_cfg["tp2_rr"] if type_cfg["tp2_rr"] > 0 else 0.0
+            raw_tps = [tp1_new, tp2_new, 0.0]  # NO TP3 for scalps
+            logger.info(
+                "SCALP TPs: TP1=%.2f (%.1fR) TP2=%.2f (%.1fR) NO TP3",
+                tp1_new, type_cfg["tp1_rr"], tp2_new, type_cfg["tp2_rr"],
+            )
+
         return cls(
             trade_id=sig.get("trade_id", ""),
             symbol=sig.get("symbol", ""),
             side=sig.get("side", "long"),
             entry_price=entry,
             stop_loss=sl,
-            tp1=float(tps[0]) if len(tps) > 0 else 0.0,
-            tp2=float(tps[1]) if len(tps) > 1 else 0.0,
-            tp3=float(tps[2]) if len(tps) > 2 else 0.0,
+            tp1=float(raw_tps[0]) if len(raw_tps) > 0 else 0.0,
+            tp2=float(raw_tps[1]) if len(raw_tps) > 1 else 0.0,
+            tp3=float(raw_tps[2]) if len(raw_tps) > 2 else 0.0,
             confidence=confidence,
             grade=str(sig.get("grade", "")),
             setup_type=meta.get("setup_type", ""),
             strategy_type=meta.get("strategy_type", "scalp"),
+            trade_type=trade_type,
             reason=sig.get("reason", ""),
             paper_stake=paper_stake,
             leverage=lev,
@@ -306,6 +557,7 @@ class TrackedSignal:
             quantity=round(quantity, 6),
             leverage_cap_source=lev_cap_source,
             initial_risk=abs(entry - sl) if entry > 0 and sl > 0 else 0.0,
+            metadata=meta,  # preserve full metadata (ML scores, scanner config, etc.)
             entry_time=sig.get("timestamp", datetime.now(timezone.utc).isoformat()),
             highest_price=entry,
             lowest_price=entry,
@@ -322,6 +574,8 @@ class SignalTracker:
         self._stats: Dict[str, Any] = {}
         self._lock = asyncio.Lock()  # protects _active/_closed state mutations
         self._exchange_balance: Optional[float] = None  # real exchange purse balance
+        self._training_dataset = None  # set by orchestrator for ML feedback
+        self._live_feedback_file = _STORAGE_DIR / "ml_live_feedback.jsonl"
         self._load()
 
     def set_exchange_balance(self, balance: float) -> None:
@@ -342,6 +596,14 @@ class SignalTracker:
         if not ts.entry_price or not ts.stop_loss:
             logger.warning("Cannot track signal %s: missing entry/SL", ts.trade_id)
             return
+
+        # Inject computed sizing back into signal_dict so paper engine uses it
+        # (paper engine reads position_size/leverage from the same dict)
+        if ts.quantity > 0:
+            signal_dict["position_size"] = ts.quantity
+        if ts.leverage > 0:
+            signal_dict["leverage"] = ts.leverage
+
         if ts.trade_id in self._active:
             return  # already tracking
 
@@ -643,8 +905,12 @@ class SignalTracker:
                     ts.tp1_pnl_locked = round(0.35 * tp1_pnl, 4)  # 35% at TP1
                     ts.position_remaining_pct = 0.65
 
-                    # Start trailing at 1.0× ATR (earlier than waiting for TP2)
-                    atr_trail_dist = ts.signal_atr * 1.0 if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
+                    # Regime-aware trailing: adjust trail distance based on market regime
+                    _regime = ts.metadata.get("regime", "") if ts.metadata else ""
+                    _scanner = ts.setup_type or ""
+                    _trail_params = self._get_trail_params(_regime, _scanner, getattr(ts, 'trade_type', ''))
+                    _trail_mult = _trail_params["trail_atr_mult"]
+                    atr_trail_dist = ts.signal_atr * _trail_mult if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
                     if is_long:
                         trail_sl = price - atr_trail_dist
                         # Trail must be at least at breakeven+fees
@@ -684,8 +950,12 @@ class SignalTracker:
                     ts.tp2_pnl_locked = round(0.35 * tp2_pnl, 4)  # 35% at TP2
                     ts.position_remaining_pct = 0.30  # 30% runner left
 
-                    # Tighten ATR trail to 0.8× ATR (runner protection)
-                    atr_trail_dist = ts.signal_atr * 0.8 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
+                    # Tighten ATR trail (regime-aware, runner protection)
+                    _regime = ts.metadata.get("regime", "") if ts.metadata else ""
+                    _scanner = ts.setup_type or ""
+                    _trail_params = self._get_trail_params(_regime, _scanner, getattr(ts, 'trade_type', ''))
+                    _tp2_mult = _trail_params["trail_atr_mult"] * 0.8  # tighter than TP1 trail
+                    atr_trail_dist = ts.signal_atr * _tp2_mult if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
                     if is_long:
                         ts.atr_trail_price = price - atr_trail_dist
                         # Floor at TP1 (lock TP1 profit for runner)
@@ -723,14 +993,16 @@ class SignalTracker:
                     })
 
             # -- ATR TRAILING STOP RATCHET (after TP1 or TP2) --
-            # Trail distance tightens as TPs are hit:
-            #   After TP1: 1.0× ATR (protecting 40% remaining)
-            #   After TP2: 0.8× ATR (protecting 15% runner)
+            # Trail distance is regime-aware and tightens as TPs are hit
             if ts.atr_trail_active and ts.tp1_hit and not ts.tp3_hit:
+                _regime = ts.metadata.get("regime", "") if ts.metadata else ""
+                _scanner = ts.setup_type or ""
+                _trail_params = self._get_trail_params(_regime, _scanner)
+                _base_mult = _trail_params["trail_atr_mult"]
                 if ts.tp2_hit:
-                    atr_trail_dist = ts.signal_atr * 0.8 if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
+                    atr_trail_dist = ts.signal_atr * (_base_mult * 0.8) if ts.signal_atr > 0 else abs(ts.tp2 - ts.tp1) * 0.3
                 else:
-                    atr_trail_dist = ts.signal_atr * 1.0 if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
+                    atr_trail_dist = ts.signal_atr * _base_mult if ts.signal_atr > 0 else abs(ts.tp1 - ts.entry_price) * 0.5
                 if is_long:
                     new_trail = price - atr_trail_dist
                     # Only ratchet UP (tighter), never down
@@ -802,8 +1074,10 @@ class SignalTracker:
                         })
                         continue
 
-            # -- PATCH 4: Dead-trade time stop --
-            # Exit stale trades that haven't reached +0.3R within time limit
+            # -- TRADE-TYPE-AWARE TIME STOP --
+            # SCALP: hard time stop (3-5 bars), aggressive early kill
+            # INTRADAY: soft time stop (15 bars), only if losing + no progress
+            # RUNNER: NO time stop — only exit on structure/trailing
             if ts.status == "active" and not ts.tp1_hit:
                 try:
                     entry_dt = datetime.fromisoformat(ts.entry_time)
@@ -819,99 +1093,95 @@ class SignalTracker:
                     else:
                         max_fav_r = 0
 
-                    # ADAPTIVE TIME STOP — adapts to setup, confidence, volatility, and trade progress
                     if is_long:
                         current_r = (price - ts.entry_price) / risk if risk > 0 else 0
                     else:
                         current_r = (ts.entry_price - price) / risk if risk > 0 else 0
 
-                    # Base time limit adapts to setup type
-                    setup = getattr(ts, 'setup_type', '')
-                    conf = getattr(ts, 'confidence', 0)
-
-                    if setup == 'bb_squeeze':
-                        base_time = 45 * 60    # squeeze breakouts need more time
-                    elif setup == 'rsi_divergence':
-                        base_time = 40 * 60    # divergences take time to play out
-                    elif setup == 'trend_continuation':
-                        base_time = 25 * 60    # trends should move quickly
-                    else:
-                        base_time = 20 * 60    # default (ema_momentum etc)
-
-                    # High confidence → give more time (quality setups deserve patience)
-                    if conf >= 85:
-                        base_time = int(base_time * 1.5)  # 50% more time
-                    elif conf >= 75:
-                        base_time = int(base_time * 1.25)  # 25% more time
-                    elif conf < 60:
-                        base_time = int(base_time * 0.75)  # cut time for low-conf
-
-                    # If trade is making progress (MFE > 0.3R), extend time
-                    if max_fav_r >= 0.3:
-                        base_time = int(base_time * 1.5)  # trade showed life, give it room
-
-                    # If trade went positive but is now retreating, tighter time
-                    if max_fav_r >= 0.2 and current_r < 0:
-                        base_time = int(base_time * 0.7)  # was working, now failing
-
-                    # Adaptive thresholds: higher MFE threshold for longer times
-                    mfe_threshold = 0.15 + (base_time / (60 * 60))  # scales with time
-                    current_threshold = mfe_threshold * 0.8
+                    # Get trade type config
+                    tt = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
+                    tt_cfg = TRADE_TYPE_CONFIG.get(tt, TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP])
+                    time_stop_type = tt_cfg["time_stop_type"]
+                    max_age = tt_cfg["max_age_sec"]
+                    early_kill_sec = tt_cfg["early_kill_sec"]
+                    early_kill_mfe = tt_cfg["early_kill_mfe"]
 
                     dead_trade = False
 
-                    # EARLY KILL: If after 5 min MFE < 0.15R and losing, signal was wrong
-                    # Data: 16 trades with MFE < 0.15R lost $49 — they never moved right
-                    if age_sec >= 300 and max_fav_r < 0.15 and current_r < -0.15:
-                        dead_trade = True
-                        logger.info(
-                            "EARLY KILL: %s %s | 5min+ with MFE %.2fR < 0.15R, current %.2fR",
-                            ts.symbol, ts.side, max_fav_r, current_r,
-                        )
+                    # ── EARLY KILL (SCALP + INTRADAY only, not RUNNER) ──
+                    if early_kill_sec > 0 and age_sec >= early_kill_sec:
+                        if max_fav_r < early_kill_mfe and current_r < -0.15:
+                            dead_trade = True
+                            logger.info(
+                                "EARLY KILL [%s]: %s %s | %ds with MFE %.2fR < %.2fR, current %.2fR",
+                                tt, ts.symbol, ts.side, int(age_sec),
+                                max_fav_r, early_kill_mfe, current_r,
+                            )
 
-                    # SMART TIME STOP: Never close if price is above entry
-                    # If we're not losing, there's no reason to exit
-                    # Only time-stop trades that are LOSING and going nowhere
-                    if not dead_trade and current_r >= 0:
-                        dead_trade = False  # above entry → HOLD, never time-stop
-                    elif not dead_trade and age_sec >= base_time and max_fav_r < mfe_threshold and current_r < -0.2:
-                        dead_trade = True  # below entry, never moved, losing → close
-                    # Hard backstop: 4 hours max for any trade below entry
-                    elif not dead_trade and age_sec >= 4 * 3600 and current_r < 0:
-                        dead_trade = True
+                    # ── TIME STOP LOGIC per trade type ──
+                    if not dead_trade and time_stop_type == "hard":
+                        # SCALP: Hard time stop — kill if not moving after N bars
+                        base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
+                        if age_sec >= base_time and current_r < 0.1:
+                            dead_trade = True  # not meaningfully profitable → kill
+                        elif age_sec >= max_age:
+                            dead_trade = True  # absolute max
+
+                    elif not dead_trade and time_stop_type == "soft":
+                        # INTRADAY: Soft time stop — only if losing AND no progress
+                        base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
+
+                        # Never time-stop if above entry
+                        if current_r >= 0:
+                            dead_trade = False
+                        # If losing and never showed life
+                        elif age_sec >= base_time and max_fav_r < 0.20 and current_r < -0.2:
+                            dead_trade = True
+                        # If trade went positive but now retreating hard
+                        elif age_sec >= base_time * 0.7 and max_fav_r >= 0.3 and current_r < -0.3:
+                            dead_trade = True
+                        # Hard backstop
+                        elif age_sec >= max_age and current_r < 0:
+                            dead_trade = True
+
+                    elif not dead_trade and time_stop_type == "none":
+                        # RUNNER: No time stop — only hard backstop for safety
+                        if age_sec >= max_age and current_r < -1.0:
+                            dead_trade = True  # only kill if deeply losing after 8h
 
                     if dead_trade:
-                            ts.exit_price = price
-                            ts.exit_reason = "time_stop_dead_trade"
-                            ts.exit_time = now_iso
-                            ts.pnl_pct = self._calc_pnl(ts, price)
-                            ts.time_stop_triggered = True
-                            ts.exit_reason_detailed = "time_stop_dead_trade"
-                            ts.status = "expired"
-                            to_close.append(tid)
-                            logger.info(
-                                "TIME STOP: %s %s | age=%dm | max_fav=%.2fR | current=%.2fR | PnL: %+.2f%%",
-                                ts.symbol, ts.side, int(age_sec / 60),
-                                max_fav_r, current_r, ts.pnl_pct,
-                            )
-                            events.append({
-                                "type": "time_stop",
-                                "signal": ts.to_dict(),
-                                "message": (
-                                    f"TIME STOP: {ts.symbol} {ts.side} @ {price:.2f} | "
-                                    f"Dead {int(age_sec/60)}min, max {max_fav_r:.2f}R | "
-                                    f"PnL: {ts.pnl_pct:+.2f}%"
-                                ),
-                            })
-                            continue
+                        ts.exit_price = price
+                        ts.exit_reason = f"time_stop_{tt.lower()}"
+                        ts.exit_time = now_iso
+                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.time_stop_triggered = True
+                        ts.exit_reason_detailed = f"time_stop_{tt.lower()}_{int(age_sec/60)}m"
+                        ts.status = "expired"
+                        to_close.append(tid)
+                        logger.info(
+                            "TIME STOP [%s]: %s %s | age=%dm | max_fav=%.2fR | current=%.2fR | PnL: %+.2f%%",
+                            tt, ts.symbol, ts.side, int(age_sec / 60),
+                            max_fav_r, current_r, ts.pnl_pct,
+                        )
+                        events.append({
+                            "type": "time_stop",
+                            "signal": ts.to_dict(),
+                            "message": (
+                                f"TIME STOP [{tt}]: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                f"{int(age_sec/60)}min, max {max_fav_r:.2f}R | "
+                                f"PnL: {ts.pnl_pct:+.2f}%"
+                            ),
+                        })
+                        continue
                 except (ValueError, TypeError):
                     pass
 
-            # -- Scalper timer: 75% partial close before window + full close at window --
+            # -- Scalper timer: SCALP trades only (INTRADAY/RUNNER exempt) --
             # BTC: 27 min window, others: 12 min (tighter than initial 30/15)
-            # 2 min before window: close 75% if profitable (lock free exit)
-            # At window: close remaining 100% (still gets free exit)
-            try:
+            # INTRADAY/RUNNER trades pay closing fee but get more time to capture bigger moves
+            _tt = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
+            if _tt == TRADE_TYPE_SCALP:
+              try:
                 entry_dt_sc = datetime.fromisoformat(ts.entry_time)
                 age_sc = (datetime.now(timezone.utc) - entry_dt_sc).total_seconds()
                 scalper_window = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
@@ -986,19 +1256,21 @@ class SignalTracker:
                         "message": f"SCALPER TIMEOUT: {ts.symbol} {ts.side} | {int(scalper_window/60)}m window | PnL: {ts.pnl_pct:+.2f}%",
                     })
                     continue
-            except (ValueError, TypeError):
+              except (ValueError, TypeError):
                 pass
 
-            # -- Check expiry (4 hours) — applies to ALL non-closed statuses --
+            # -- Check expiry — trade-type-aware max age --
             try:
                 entry_dt = datetime.fromisoformat(ts.entry_time)
                 age = (datetime.now(timezone.utc) - entry_dt).total_seconds()
-                if age > MAX_SIGNAL_AGE and ts.status in ("active", "tp1_hit", "tp2_hit"):
+                _tt_expiry = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
+                _tt_max = TRADE_TYPE_CONFIG.get(_tt_expiry, {}).get("max_age_sec", MAX_SIGNAL_AGE)
+                if age > _tt_max and ts.status in ("active", "tp1_hit", "tp2_hit"):
                     ts.exit_price = price
                     ts.exit_reason = "expired"
                     ts.exit_time = now_iso
                     ts.pnl_pct = self._calc_pnl(ts, price)
-                    ts.exit_reason_detailed = "expired_4h"
+                    ts.exit_reason_detailed = f"expired_{_tt_expiry.lower()}_{int(age/60)}m"
                     ts.status = "expired"
                     to_close.append(tid)
                     events.append({
@@ -1009,10 +1281,14 @@ class SignalTracker:
             except (ValueError, TypeError):
                 pass
 
-        # Close completed signals
+        # Close completed signals + feed outcomes to ML
         for tid in to_close:
             ts = self._active.pop(tid)
-            self._closed.append(ts.to_dict())
+            closed_dict = ts.to_dict()
+            self._closed.append(closed_dict)
+
+            # ── ML FEEDBACK: update training dataset with outcome ──
+            self._send_ml_feedback(ts)
 
         # Persist if anything changed
         if events or to_close:
@@ -1040,6 +1316,173 @@ class SignalTracker:
     @property
     def active_count(self) -> int:
         return len(self._active)
+
+    def set_training_dataset(self, training_dataset) -> None:
+        """Wire the training dataset for ML outcome feedback."""
+        self._training_dataset = training_dataset
+        logger.info("ML feedback wired: trade outcomes → training dataset")
+
+    def _send_ml_feedback(self, ts: TrackedSignal) -> None:
+        """Feed trade outcome to ML training dataset + live feedback file.
+
+        Called when every signal closes. Two outputs:
+        1. training_dataset.update_outcome() — updates the JSONL entry record
+        2. ml_live_feedback.jsonl — append-only per-trade outcomes for ML dashboard
+        """
+        try:
+            # Compute duration
+            duration_sec = 0
+            try:
+                entry_dt = datetime.fromisoformat(ts.entry_time)
+                exit_dt = datetime.fromisoformat(ts.exit_time) if ts.exit_time else datetime.now(timezone.utc)
+                duration_sec = int((exit_dt - entry_dt).total_seconds())
+            except (ValueError, TypeError):
+                pass
+
+            # 1. Update training dataset (closes the loop: entry record → outcome)
+            if self._training_dataset is not None:
+                try:
+                    self._training_dataset.update_outcome(
+                        trade_id=ts.trade_id,
+                        exit_price=ts.exit_price,
+                        exit_reason=ts.exit_reason or ts.exit_reason_detailed or "",
+                        pnl_pct=ts.pnl_pct,
+                        pnl_usd=ts.pnl_usd,
+                        r_multiple=ts.exit_r,
+                        mae_r=ts.mae_r,
+                        mfe_r=ts.mfe_r,
+                        tp1_hit=ts.tp1_hit,
+                        tp2_hit=ts.tp2_hit,
+                        tp3_hit=ts.tp3_hit,
+                        breakeven_set=ts.breakeven_set,
+                        duration_sec=duration_sec,
+                    )
+                    logger.debug("ML feedback: updated training record %s", ts.trade_id[:8])
+                except Exception as e:
+                    logger.warning("ML feedback: training dataset update failed: %s", e)
+
+            # 2. Append to live feedback file (per-pair, per-scanner, per-model)
+            meta = ts.metadata if isinstance(ts.metadata, dict) else {}
+            feedback = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "trade_id": ts.trade_id,
+                "symbol": ts.symbol,
+                "side": ts.side,
+                "setup_type": ts.setup_type,
+                "trade_type": getattr(ts, 'trade_type', 'SCALP'),
+                "regime": meta.get("regime", ""),
+                "session": meta.get("session", ""),
+                "confidence": ts.confidence,
+                "grade": ts.grade,
+                # ML metadata
+                "ml_probability": meta.get("ml_probability", 0.0),
+                "ml_verdict": meta.get("ml_verdict", ""),
+                "ml_model_version": meta.get("ml_model_version", ""),
+                # Entry/exit
+                "entry_price": ts.entry_price,
+                "exit_price": ts.exit_price,
+                "stop_loss": ts.stop_loss,
+                "tp1": ts.tp1,
+                "tp2": ts.tp2,
+                "tp3": ts.tp3,
+                # Outcomes
+                "exit_reason": ts.exit_reason or ts.exit_reason_detailed or "",
+                "pnl_pct": round(ts.pnl_pct, 4),
+                "pnl_usd": round(ts.pnl_usd, 4),
+                "exit_r": round(ts.exit_r, 4),
+                "mae_r": round(ts.mae_r, 4),
+                "mfe_r": round(ts.mfe_r, 4),
+                "tp1_hit": ts.tp1_hit,
+                "tp2_hit": ts.tp2_hit,
+                "tp3_hit": ts.tp3_hit,
+                "breakeven_set": ts.breakeven_set,
+                "duration_sec": duration_sec,
+                # Sizing
+                "position_size_usd": ts.position_size_usd,
+                "leverage": ts.leverage,
+                "paper_stake": ts.paper_stake,
+                # Fee tracking
+                "total_fees_usd": ts.total_fees_usd,
+                "within_scalper": ts.within_scalper,
+            }
+            with open(self._live_feedback_file, "a") as f:
+                f.write(json.dumps(feedback, default=str) + "\n")
+
+            logger.info(
+                "ML FEEDBACK: %s %s %s | %s | pnl=%+.2f%% r=%+.2fR mfe=%.2fR | ml=%.2f %s | %s %dm",
+                ts.symbol, ts.side, ts.setup_type,
+                getattr(ts, 'trade_type', '?'),
+                ts.pnl_pct, ts.exit_r, ts.mfe_r,
+                meta.get("ml_probability", 0), meta.get("ml_verdict", ""),
+                ts.exit_reason or "", duration_sec // 60,
+            )
+
+        except Exception as e:
+            logger.error("ML feedback failed for %s: %s", ts.trade_id[:8], e)
+
+    # ------------------------------------------------------------------
+    # Regime-Aware Trailing Stops
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_trail_params(regime: str, scanner: str = "", trade_type: str = "") -> dict:
+        """Get trailing stop parameters based on regime, scanner, and trade type.
+
+        Returns:
+            - trail_atr_mult: ATR multiplier for trail distance
+            - tighten_after_bars: bars after TP1 before tightening
+            - min_trail_floor_pct: minimum trail as % above breakeven
+        """
+        # ── Trade type override: use trade_type config as base ──
+        tt_cfg = TRADE_TYPE_CONFIG.get(trade_type, {})
+        if tt_cfg and trade_type:
+            base_trail = tt_cfg.get("trail_atr_mult", 1.0)
+        else:
+            base_trail = 1.0
+
+        # Regime adjustments (multiplicative on trade type base)
+        regime_lower = regime.lower() if regime else ""
+        if regime_lower in ("trending_up", "trending_down", "breakout"):
+            regime_mult = 1.3   # wider — let it run in trends
+            tighten_after_bars = 8
+            min_trail_floor_pct = 0.15
+        elif regime_lower in ("ranging", "sideways"):
+            regime_mult = 0.7   # tighter — take profit quickly in ranges
+            tighten_after_bars = 4
+            min_trail_floor_pct = 0.10
+        elif regime_lower in ("volatile", "high_volatility"):
+            regime_mult = 1.3   # needs room in volatile markets
+            tighten_after_bars = 10
+            min_trail_floor_pct = 0.20
+        elif regime_lower in ("quiet", "low_volatility"):
+            regime_mult = 0.7   # minimal moves — take what you can get
+            tighten_after_bars = 3
+            min_trail_floor_pct = 0.08
+        else:
+            regime_mult = 1.0   # default
+            tighten_after_bars = 6
+            min_trail_floor_pct = 0.12
+
+        # Combine: trade_type_base × regime_adjustment
+        trail_atr_mult = base_trail * regime_mult
+
+        # Scanner-specific fine-tuning
+        if scanner in ("bb_squeeze", "trend_continuation"):
+            trail_atr_mult *= 1.1  # these setups tend to have bigger moves
+        elif scanner in ("vwap_mean_revert", "structure_bounce"):
+            trail_atr_mult *= 0.9  # mean-reversion setups: take profit faster
+
+        # Trade type adjustments to tighten_after_bars
+        if trade_type == TRADE_TYPE_SCALP:
+            tighten_after_bars = max(2, tighten_after_bars - 3)  # tighten faster
+        elif trade_type == TRADE_TYPE_RUNNER:
+            tighten_after_bars = tighten_after_bars + 4  # more patience
+
+        return {
+            "trail_atr_mult": round(trail_atr_mult, 2),
+            "tighten_after_bars": tighten_after_bars,
+            "min_trail_floor_pct": min_trail_floor_pct,
+        }
 
     # ------------------------------------------------------------------
     # P&L calculation
@@ -1177,6 +1620,90 @@ class SignalTracker:
             ts.exit_r = 0.0
 
         return net_pct
+
+    # ------------------------------------------------------------------
+    # Fee Stress Testing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_min_viable_move(
+        symbol: str,
+        position_usd: float,
+        leverage: float,
+        sl_distance_pct: float = 0.5,
+        within_scalper: bool = True,
+    ) -> dict:
+        """Calculate minimum price move needed to break even after all costs.
+
+        Args:
+            symbol: Trading pair (e.g. "BTC/USDT")
+            position_usd: Notional position size in USD
+            leverage: Effective leverage
+            sl_distance_pct: Stop-loss distance as % of entry price
+            within_scalper: Whether trade will close within Scalper window
+
+        Returns:
+            dict with:
+            - min_move_pct: minimum % move to break even
+            - min_move_usd: dollar equivalent of that move
+            - fee_drag_r: fees expressed as R-multiple (fraction of risk going to fees)
+            - viable: bool (True if fee_drag_r < 0.3)
+            - breakdown: dict of individual cost components
+        """
+        # Slippage estimate (simplified: base + size impact + liquidity)
+        coin = symbol.split("/")[0].upper() if "/" in symbol else symbol[:3].upper()
+        liq_factors = {
+            "BTC": 1.0, "ETH": 1.0,
+            "SOL": 1.5, "AVAX": 1.5, "LINK": 1.5, "XRP": 1.5, "ADA": 1.5,
+            "DOGE": 2.5, "SHIB": 2.5, "PEPE": 2.5, "WIF": 2.5, "BONK": 2.5,
+        }
+        liq = liq_factors.get(coin, 1.5)
+
+        # Entry slippage (maker for scalper)
+        entry_base_slip = 0.02 if within_scalper else 0.05
+        excess = max(0, position_usd - 500.0)
+        entry_slip = (entry_base_slip + (excess / 1000.0) * 0.01) * liq
+        entry_slip = min(entry_slip, 0.15)
+
+        # Exit slippage (taker/market)
+        exit_slip = (0.05 + (excess / 1000.0) * 0.01) * liq
+        exit_slip = min(exit_slip, 0.15)
+
+        if within_scalper:
+            # Scalper: 0.02% entry + 0% exit + 0.06% settlement + slippage both sides
+            entry_fee = 0.02
+            exit_fee = 0.00
+            settlement = 0.06
+        else:
+            # Standard: 0.06% entry + 0.06% exit + 0.06% settlement + slippage
+            entry_fee = 0.06
+            exit_fee = 0.06
+            settlement = 0.06
+
+        total_fees_pct = entry_fee + exit_fee + settlement + entry_slip + exit_slip
+        min_move_pct = total_fees_pct
+        min_move_usd = position_usd * min_move_pct / 100.0
+
+        # Fee drag in R-multiples: what fraction of 1R goes to fees
+        fee_drag_r = (min_move_pct / sl_distance_pct) if sl_distance_pct > 0 else 999.0
+
+        # Viable if fees < 30% of risk
+        viable = fee_drag_r < 0.3
+
+        return {
+            "min_move_pct": round(min_move_pct, 4),
+            "min_move_usd": round(min_move_usd, 2),
+            "fee_drag_r": round(fee_drag_r, 4),
+            "viable": viable,
+            "breakdown": {
+                "entry_fee_pct": entry_fee,
+                "exit_fee_pct": exit_fee,
+                "settlement_pct": settlement,
+                "entry_slip_pct": round(entry_slip, 4),
+                "exit_slip_pct": round(exit_slip, 4),
+                "total_pct": round(total_fees_pct, 4),
+            },
+        }
 
     # ------------------------------------------------------------------
     # Statistics
@@ -1370,7 +1897,7 @@ class SignalTracker:
             "paper_gross_pnl_usd": round(total_gross_pnl_usd, 2),  # GROSS PnL (before fees)
             "paper_total_fees_usd": round(total_fees_usd, 2),  # Total fees paid
             "active_positions_usd": round(active_positions_usd, 2),
-            "paper_stake_per_trade": 25.0,
+            "paper_stake_per_trade": 100.0,  # max $100, min $50 (fee-viable sizing)
             "fee_schedule": {
                 "taker_pct": self.TAKER_FEE_PCT,
                 "settlement_pct": self.SETTLEMENT_FEE_PCT,
@@ -1444,17 +1971,35 @@ class SignalTracker:
         """Load active and closed signals from disk."""
         try:
             if _ACTIVE_FILE.exists():
-                data = json.loads(_ACTIVE_FILE.read_text())
+                raw = json.loads(_ACTIVE_FILE.read_text())
+                # Handle both list format and dict format (legacy/corrupted)
+                if isinstance(raw, dict):
+                    # Dict format: {trade_id: signal_dict, ...}
+                    data = list(raw.values()) if raw else []
+                    logger.warning("Active signals file was dict format — converting to list (%d entries)", len(data))
+                elif isinstance(raw, list):
+                    data = raw
+                else:
+                    data = []
                 for d in data:
-                    ts = TrackedSignal.from_dict(d)
-                    self._active[ts.trade_id] = ts
+                    if isinstance(d, dict):
+                        ts = TrackedSignal.from_dict(d)
+                        self._active[ts.trade_id] = ts
                 logger.info("Loaded %d active tracked signals", len(self._active))
         except Exception as exc:
             logger.warning("Failed to load active signals: %s", exc)
 
         try:
             if _CLOSED_FILE.exists():
-                self._closed = json.loads(_CLOSED_FILE.read_text())
+                raw_closed = json.loads(_CLOSED_FILE.read_text())
+                # Handle corrupted format: if dict, convert to list
+                if isinstance(raw_closed, dict):
+                    self._closed = list(raw_closed.values()) if raw_closed else []
+                    logger.warning("Closed signals file was dict format — converting to list (%d entries)", len(self._closed))
+                elif isinstance(raw_closed, list):
+                    self._closed = raw_closed
+                else:
+                    self._closed = []
                 # Auto-fix exit reasons on load: reclassify profitable "stop_loss" as trail_profit
                 fixed = 0
                 for t in self._closed:

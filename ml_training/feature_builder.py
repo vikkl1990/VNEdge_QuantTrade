@@ -264,6 +264,146 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         np.sign(ema_fast - ema_med) + np.sign(ema_med - ema_slow)
     ) / 2.0  # -1 = aligned bearish, +1 = aligned bullish, 0 = mixed
 
+
+    # ================================================================
+    # 11. FVG (Fair Value Gap) — Structural Imbalance Detection
+    # Markets revisit price inefficiencies. FVGs measure gap between
+    # candle[i] low and candle[i-2] high (bullish) or vice versa.
+    # ================================================================
+    # Bullish FVG: low[i] > high[i-2] (gap up, price skipped a zone)
+    fvg_bull = (l > h.shift(2)).astype(float)
+    fvg_bull_size = (l - h.shift(2)).clip(lower=0) / atr.replace(0, np.nan)
+    features["fvg_bullish"] = fvg_bull
+    features["fvg_bull_size"] = fvg_bull_size
+    
+    # Bearish FVG: high[i] < low[i-2] (gap down)
+    fvg_bear = (h < l.shift(2)).astype(float)
+    fvg_bear_size = (l.shift(2) - h).clip(lower=0) / atr.replace(0, np.nan)
+    features["fvg_bearish"] = fvg_bear
+    features["fvg_bear_size"] = fvg_bear_size
+    
+    # Any FVG present (directional agnostic)
+    features["fvg_present"] = ((fvg_bull + fvg_bear) > 0).astype(float)
+    
+    # FVG within recent N bars (is there an unfilled gap nearby?)
+    features["fvg_bull_recent_5"] = fvg_bull.rolling(5).max().fillna(0)
+    features["fvg_bear_recent_5"] = fvg_bear.rolling(5).max().fillna(0)
+    features["fvg_bull_recent_10"] = fvg_bull.rolling(10).max().fillna(0)
+    features["fvg_bear_recent_10"] = fvg_bear.rolling(10).max().fillna(0)
+    
+    # Largest recent FVG size (strength of imbalance)
+    features["fvg_max_bull_size_10"] = fvg_bull_size.rolling(10).max().fillna(0)
+    features["fvg_max_bear_size_10"] = fvg_bear_size.rolling(10).max().fillna(0)
+    
+    # FVG alignment with trend (FVG in trend direction = stronger signal)
+    features["fvg_trend_aligned"] = (
+        fvg_bull * (features["trend_strength"] > 0).astype(float) +
+        fvg_bear * (features["trend_strength"] < 0).astype(float)
+    )
+
+    # ================================================================
+    # 12. VOLUME INTELLIGENCE (buy/sell imbalance, CVD proxy)
+    # ================================================================
+    # Buy/sell imbalance: close position * normalized volume
+    features["buy_sell_imbalance"] = (features["close_position"] - 0.5) * 2.0 * (v / df["vol_sma_20"].replace(0, np.nan))
+    # CVD proxy: cumulative buy/sell pressure over 10 bars
+    cvd_raw = ((c - l) / df["range"].replace(0, np.nan) - 0.5) * v
+    features["cvd_proxy_10"] = cvd_raw.rolling(10).sum() / (df["vol_sma_20"] * 10).replace(0, np.nan)
+    features["cvd_proxy_10"] = features["cvd_proxy_10"].clip(-5, 5)
+    # Volume spike ratio (3-bar)
+    features["vol_spike_ratio_3"] = v / v.rolling(3).mean().replace(0, np.nan)
+
+    # ================================================================
+    # 13. VWAP BANDS (normalized distance)
+    # ================================================================
+    vwap_dev = (c - df["vwap"]).rolling(20).std()
+    features["vwap_band_distance"] = (c - df["vwap"]) / vwap_dev.replace(0, np.nan)
+    features["vwap_upper_band"] = (df["vwap"] + 2 * vwap_dev - c) / atr.replace(0, np.nan)
+    features["vwap_lower_band"] = (c - df["vwap"] + 2 * vwap_dev) / atr.replace(0, np.nan)
+
+    # ================================================================
+    # 14. ATR EXPANSION RATIO (10-bar lookback)
+    # ================================================================
+    features["atr_expansion_10"] = atr / atr.shift(10).replace(0, np.nan)
+    # ATR regime flags
+    features["atr_quiet"] = (features["vol_regime"] < 0.5).astype(float)
+    features["atr_expanding"] = (features["atr_expansion_10"] > 1.2).astype(float)
+    # Chaotic: high ATR + poor body structure
+    body_avg_5 = df["body_ratio"].rolling(5).mean()
+    features["atr_chaotic"] = ((features["vol_regime"] > 1.5) & (body_avg_5 < 0.4)).astype(float)
+
+    # ================================================================
+    # 15. EMA SLOPE ACCELERATION (second derivative)
+    # ================================================================
+    features["ema_slope_accel"] = features["ema_slope_8"] - df["ema_8"].pct_change(3).shift(3)
+
+    # ================================================================
+    # 16. MTF ALIGNMENT
+    # ================================================================
+    ema200 = df["ema_200"]
+    # EMA alignment score: how many EMAs agree
+    bull_ema = (
+        (c > df["ema_8"]).astype(int) +
+        (df["ema_8"] > df["ema_21"]).astype(int) +
+        (df["ema_21"] > df["ema_50"]).astype(int) +
+        (df["ema_50"] > ema200).astype(int)
+    )
+    features["ema_alignment"] = (bull_ema - 2) / 2.0  # -1 to +1
+    # Distance from EMA 200
+    features["dist_from_ema200"] = (c - ema200) / atr.replace(0, np.nan)
+    # HTF bias placeholder (filled at scoring time)
+    features["htf_bias"] = 0.0
+    features["htf_trend_strength"] = 0.0
+
+    # ================================================================
+    # 17. FVG ENHANCED (distance + alignment)
+    # ================================================================
+    # FVG size in ATR (max of bull/bear)
+    features["fvg_size_atr"] = pd.concat([fvg_bull_size, fvg_bear_size], axis=1).max(axis=1)
+    # FVG distance placeholder (computed per-bar in live scorer)
+    features["fvg_distance"] = 10.0  # default far
+    features["fvg_alignment_score"] = 0.0  # computed live
+
+    # ================================================================
+    # 18. ORDER BLOCK PROXY
+    # ================================================================
+    # Impulse detection: body > 1.5 ATR
+    is_impulse = (df["body"] > 1.5 * atr).astype(float)
+    # Distance to last impulse bar
+    impulse_bars_ago = pd.Series(0.0, index=df.index)
+    last_impulse = -999
+    for i in range(len(df)):
+        if is_impulse.iloc[i] > 0:
+            last_impulse = i
+        impulse_bars_ago.iloc[i] = (i - last_impulse) / 10.0 if last_impulse >= 0 else 10.0
+    features["ob_distance"] = impulse_bars_ago.clip(0, 10)
+    features["ob_impulse_strength"] = (df["body"] / atr.replace(0, np.nan)).clip(0, 5)
+    # Consolidation size before impulse (5-bar range / ATR)
+    features["ob_consolidation_size"] = (
+        (h.rolling(5).max() - l.rolling(5).min()) / atr.replace(0, np.nan)
+    ).clip(0, 5)
+
+    # ================================================================
+    # 19. REGIME FEATURES (continuous, for ML)
+    # ================================================================
+    features["regime_trend_score"] = features["ema_alignment"]
+    features["regime_vol_score"] = features["vol_regime"]
+    features["regime_range_score"] = features["range_position"]
+
+    # ================================================================
+    # 20. REGIME INTERACTION FEATURES
+    # Let ML learn which features matter in which regime
+    # ================================================================
+    # Trend x momentum interaction
+    features["trend_x_return5"] = features["trend_strength"] * features["return_5"]
+    features["trend_x_ema_slope"] = features["trend_strength"] * features["ema_slope_8"]
+    # Volatility x volume interaction
+    features["vol_x_volume"] = features["atr_expansion"] * features["volume_zscore"]
+    # VWAP x trend interaction
+    features["vwap_x_trend"] = features["dist_from_vwap"] * features["trend_strength"]
+    # Range position x volatility regime
+    features["range_x_regime_vol"] = features["range_position"] * features["vol_regime"]
+
     return features
 
 
@@ -473,3 +613,129 @@ def build_mfe_regression_labels(df: pd.DataFrame, side: str,
             mfe_values[i] = max(0, (entry - best_price) / risk)
 
     return pd.Series(mfe_values, index=df.index, name="mfe_r").clip(0, 10)
+
+
+def build_tp_vs_sl_labels(df: pd.DataFrame, side: str, tp_r: float = 1.5,
+                           sl_r: float = 1.0, max_bars: int = 60) -> pd.Series:
+    """Build TP vs SL label: did TP1 hit before SL?
+
+    This is the BEST label for trading ML because:
+    - Reflects actual trade outcome
+    - Incorporates risk/reward naturally
+    - Includes failure cases (SL hit, timeout)
+    - Usually produces balanced classes (40-60%)
+
+    Parameters
+    ----------
+    df : DataFrame with OHLCV + atr_14
+    side : "long" or "short"
+    tp_r : take-profit in R-multiples of ATR (default 1.5)
+    sl_r : stop-loss in R-multiples of ATR (default 1.0)
+    max_bars : max bars to look forward (default 60)
+
+    Returns
+    -------
+    Series of 0/1 labels (1 = TP hit first, 0 = SL hit or timeout)
+    """
+    if "atr_14" not in df.columns:
+        df = compute_indicators(df)
+
+    c = df["close"].astype(float).values
+    h = df["high"].astype(float).values
+    l = df["low"].astype(float).values
+    atr = df["atr_14"].astype(float).values
+
+    labels = np.full(len(df), -1, dtype=int)  # -1 = not computed
+
+    for i in range(len(df) - max_bars):
+        entry = c[i]
+        risk = atr[i]
+        if risk <= 0 or np.isnan(risk):
+            labels[i] = 0
+            continue
+
+        if side == "long":
+            tp_price = entry + tp_r * risk
+            sl_price = entry - sl_r * risk
+            for j in range(i + 1, min(i + max_bars + 1, len(df))):
+                if l[j] <= sl_price:
+                    labels[i] = 0
+                    break
+                if h[j] >= tp_price:
+                    labels[i] = 1
+                    break
+            else:
+                # Timeout — neither TP nor SL hit
+                labels[i] = 0
+        else:
+            tp_price = entry - tp_r * risk
+            sl_price = entry + sl_r * risk
+            for j in range(i + 1, min(i + max_bars + 1, len(df))):
+                if h[j] >= sl_price:
+                    labels[i] = 0
+                    break
+                if l[j] <= tp_price:
+                    labels[i] = 1
+                    break
+            else:
+                labels[i] = 0
+
+    # Replace -1 with 0 for tail rows
+    labels[labels == -1] = 0
+    return pd.Series(labels, index=df.index, name="label")
+
+
+def build_relative_performance_labels(df: pd.DataFrame, side: str,
+                                       forward_bars: int = 12,
+                                       top_pct: float = 0.30) -> pd.Series:
+    """Build relative performance label: top N% of moves → positive.
+
+    label = future_return / ATR, then:
+    - top 30% → 1 (positive)
+    - bottom 70% → 0 (negative)
+
+    This creates:
+    - Stable distribution (always ~30% positive regardless of regime)
+    - Adaptive threshold (per market conditions)
+    - No dependency on fixed price levels
+
+    Parameters
+    ----------
+    df : DataFrame with OHLCV + atr_14
+    side : "long" or "short"
+    forward_bars : bars to look forward (default 12)
+    top_pct : fraction considered "positive" (default 0.30 = top 30%)
+
+    Returns
+    -------
+    Series of 0/1 labels
+    """
+    if "atr_14" not in df.columns:
+        df = compute_indicators(df)
+
+    c = df["close"].astype(float)
+    atr = df["atr_14"].astype(float)
+
+    future_close = c.shift(-forward_bars)
+    future_return = future_close - c
+
+    if side == "short":
+        future_return = -future_return
+
+    # Normalize by ATR
+    normalized = future_return / atr.replace(0, np.nan)
+    normalized = normalized.clip(-5, 5)
+
+    # Use rolling percentile for adaptive threshold (250-bar window)
+    # This makes the threshold adapt to current market conditions
+    threshold = normalized.rolling(250, min_periods=50).quantile(1.0 - top_pct)
+
+    # Fallback: use global percentile where rolling isn't available
+    global_threshold = normalized.quantile(1.0 - top_pct)
+    threshold = threshold.fillna(global_threshold)
+
+    labels = (normalized >= threshold).astype(int)
+    # NaN rows (no future data) → 0
+    labels = labels.fillna(0).astype(int)
+
+    return labels.rename("label")

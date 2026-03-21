@@ -18,7 +18,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # VM2 ML server
-ML_SERVER_URL = "http://129.80.31.92:8081/api/score"
+ML_SERVER_URL = "http://10.0.2.4:8081/api/score"
 SCORE_TIMEOUT = 2.0  # seconds — scalp signals are time-sensitive
 
 
@@ -73,12 +73,23 @@ class MLScorer:
                 result["latency_ms"] = round(latency_ms, 1)
                 self._last_error = None
 
+                # Top-bucket enforcement metadata
+                prob = result.get("probability", 0.5)
+                rank_bucket = result.get("rank_bucket", "Q50")
+                result["in_top_bucket"] = rank_bucket in ("D90", "Q75")
+                result["bucket_action"] = (
+                    "TAKE" if rank_bucket in ("D90", "Q75")
+                    else "CAUTION" if rank_bucket == "Q50"
+                    else "SKIP"
+                )
+
                 # Log for analysis
                 self._scores_log.append({
                     "time": time.time(),
                     "scanner": scanner_name,
-                    "probability": result.get("probability", 0.5),
+                    "probability": prob,
                     "verdict": result.get("verdict", "?"),
+                    "bucket_action": result["bucket_action"],
                 })
                 # Keep last 100
                 if len(self._scores_log) > 100:
@@ -124,6 +135,8 @@ def build_scoring_features(
     idx: int,
     side: str,
     symbol: str,
+    htf_bias: float = 0.0,
+    htf_trend_strength: float = 0.0,
 ) -> Dict[str, float]:
     """Build the feature dict for ML scoring from live candle data.
 
@@ -136,6 +149,8 @@ def build_scoring_features(
         idx: Current bar index (-1 for last bar)
         side: "long" or "short"
         symbol: Trading symbol
+        htf_bias: +1 (bullish), -1 (bearish), 0 (neutral) from 15m analysis
+        htf_trend_strength: EMA trend strength from 15m TF
     """
     # No dependency on ml_training — all features computed inline
 
@@ -280,17 +295,22 @@ def build_scoring_features(
     # Computed inline — no dependency on ml_training module.
     # These are pure candle math features from build_features().
     try:
-        features.update(_compute_mkt_features(df, idx, atr, avg_atr))
+        features.update(_compute_mkt_features(df, idx, atr, avg_atr,
+                                               htf_bias=htf_bias,
+                                               htf_trend_strength=htf_trend_strength))
     except Exception as e:
         logger.warning("Failed to build mkt_ features: %s", e)
 
     return features
 
 
-def _compute_mkt_features(df: pd.DataFrame, idx: int, atr: float, avg_atr: float) -> Dict[str, float]:
-    """Compute all 62 mkt_* features inline (mirrors build_features() from ml_training).
+def _compute_mkt_features(df: pd.DataFrame, idx: int, atr: float, avg_atr: float,
+                          htf_bias: float = 0.0, htf_trend_strength: float = 0.0) -> Dict[str, float]:
+    """Compute all mkt_* features inline (mirrors build_features() from ml_training).
 
     Pure candle math — no external dependencies. Works on VM1 without ml_training.
+    Includes: momentum, volatility, candle structure, trend, volume intelligence,
+    market context, compression, time, state transitions, FVG, OB proxy, MTF alignment.
     """
     mkt = {}
 
@@ -590,6 +610,133 @@ def _compute_mkt_features(df: pd.DataFrame, idx: int, atr: float, avg_atr: float
         fvg_bull * (1.0 if mkt["mkt_trend_strength"] > 0 else 0.0) +
         fvg_bear * (1.0 if mkt["mkt_trend_strength"] < 0 else 0.0)
     )
+
+    # ── 12. VOLUME INTELLIGENCE (buy/sell imbalance, CVD proxy) ──
+    # Buy/sell imbalance: close_position * normalized volume
+    mkt["mkt_buy_sell_imbalance"] = (mkt["mkt_close_position"] - 0.5) * 2.0 * (vol_val / vs20 if vs20 > 0 else 1.0)
+    # CVD proxy: cumulative (close_position - 0.5) * volume over last N bars
+    if idx >= 10:
+        cvd_raw = sum(
+            ((_g(c, k) - _g(l, k)) / max(_g(h, k) - _g(l, k), 1e-8) - 0.5) * _g(v, k)
+            for k in range(max(0, idx - 10), idx + 1)
+        )
+        cvd_norm = cvd_raw / (vs20 * 10) if vs20 > 0 else 0.0
+        mkt["mkt_cvd_proxy_10"] = max(min(cvd_norm, 5.0), -5.0)
+    else:
+        mkt["mkt_cvd_proxy_10"] = 0.0
+    # Volume spike ratio (already exists as mkt_volume_spike, add z-score variant)
+    mkt["mkt_vol_spike_ratio_3"] = vol_val / (float(v.iloc[max(0, idx - 3):idx + 1].mean()) if idx >= 3 else vol_val + 1e-8)
+
+    # ── 13. VWAP BANDS (normalized distance) ──
+    vwap_val = _g(vwap)
+    if vwap_val > 0 and idx >= 20:
+        vwap_dev = float((c - vwap).iloc[max(0, idx - 20):idx + 1].std())
+        if vwap_dev > 0:
+            mkt["mkt_vwap_band_distance"] = (c_val - vwap_val) / vwap_dev
+            mkt["mkt_vwap_upper_band"] = (vwap_val + 2 * vwap_dev - c_val) / atr_val
+            mkt["mkt_vwap_lower_band"] = (c_val - vwap_val + 2 * vwap_dev) / atr_val
+        else:
+            mkt["mkt_vwap_band_distance"] = 0.0
+            mkt["mkt_vwap_upper_band"] = 0.0
+            mkt["mkt_vwap_lower_band"] = 0.0
+    else:
+        mkt["mkt_vwap_band_distance"] = 0.0
+        mkt["mkt_vwap_upper_band"] = 0.0
+        mkt["mkt_vwap_lower_band"] = 0.0
+
+    # ── 14. ATR EXPANSION RATIO (10-bar lookback) ──
+    if idx >= 10:
+        atr_10ago = _g(atr_s, idx - 10)
+        mkt["mkt_atr_expansion_10"] = atr_val / atr_10ago if atr_10ago > 0 else 1.0
+    else:
+        mkt["mkt_atr_expansion_10"] = 1.0
+    # ATR regime: quiet / normal / expanding / chaotic
+    atr_r = mkt.get("mkt_vol_regime", 1.0)
+    body_avg_5 = float(body_ratio.iloc[max(0, idx - 5):idx + 1].mean()) if idx >= 5 else _g(body_ratio)
+    mkt["mkt_atr_quiet"] = 1.0 if atr_r < 0.5 else 0.0
+    mkt["mkt_atr_expanding"] = 1.0 if mkt.get("mkt_atr_expansion_10", 1.0) > 1.2 else 0.0
+    mkt["mkt_atr_chaotic"] = 1.0 if atr_r > 1.5 and body_avg_5 < 0.4 else 0.0
+
+    # ── 15. EMA SLOPE ACCELERATION (second derivative) ──
+    if idx >= 6:
+        slope_now = mkt["mkt_ema_slope_8"]
+        slope_3ago = float(ema8.pct_change(3).iloc[idx - 3]) if idx >= 6 else slope_now
+        mkt["mkt_ema_slope_accel"] = slope_now - slope_3ago
+    else:
+        mkt["mkt_ema_slope_accel"] = 0.0
+
+    # ── 16. MTF ALIGNMENT (passed from caller or computed) ──
+    mkt["mkt_htf_bias"] = htf_bias  # +1 bullish, -1 bearish, 0 neutral
+    mkt["mkt_htf_trend_strength"] = htf_trend_strength
+    # EMA alignment score: how many EMAs agree on direction
+    ema8_v, ema21_v, ema50_v = _g(ema8), _g(ema21), _g(ema50)
+    ema200 = df["ema_200"].astype(float) if "ema_200" in df.columns else c.ewm(span=200, adjust=False).mean()
+    ema200_v = _g(ema200)
+    bull_count_ema = sum([
+        1 if c_val > ema8_v else -1,
+        1 if ema8_v > ema21_v else -1,
+        1 if ema21_v > ema50_v else -1,
+        1 if ema50_v > ema200_v else -1,
+    ])
+    mkt["mkt_ema_alignment"] = bull_count_ema / 4.0  # -1.0 to +1.0
+    # Distance from EMA 200 (normalized by ATR)
+    mkt["mkt_dist_from_ema200"] = (c_val - ema200_v) / atr_val if ema200_v > 0 else 0.0
+
+    # ── 17. FVG FEATURES (enhanced) ──
+    # Distance to nearest unfilled FVG
+    nearest_fvg_dist = 999.0
+    fvg_alignment = 0.0
+    for k in range(max(2, idx - 20), idx + 1):
+        lk, hk = _g(l, k), _g(h, k)
+        hk2, lk2 = _g(h, k - 2), _g(l, k - 2)
+        if lk > hk2:  # bullish FVG
+            fvg_mid = (lk + hk2) / 2
+            dist = abs(c_val - fvg_mid) / atr_val
+            if dist < nearest_fvg_dist:
+                nearest_fvg_dist = dist
+                fvg_alignment = 1.0 if mkt["mkt_trend_strength"] > 0 else -0.5
+        if hk < lk2:  # bearish FVG
+            fvg_mid = (hk + lk2) / 2
+            dist = abs(c_val - fvg_mid) / atr_val
+            if dist < nearest_fvg_dist:
+                nearest_fvg_dist = dist
+                fvg_alignment = 1.0 if mkt["mkt_trend_strength"] < 0 else -0.5
+    mkt["mkt_fvg_distance"] = min(nearest_fvg_dist, 10.0)
+    mkt["mkt_fvg_alignment_score"] = fvg_alignment
+    mkt["mkt_fvg_size_atr"] = max(fvg_bull_size, fvg_bear_size)
+
+    # ── 18. ORDER BLOCK PROXY ──
+    # Last strong move origin: find last candle with body > 1.5 ATR
+    ob_distance = 10.0  # default far
+    impulse_strength = 0.0
+    consolidation_size = 0.0
+    for k in range(idx - 1, max(0, idx - 20) - 1, -1):
+        body_k = abs(_g(c, k) - _g(o, k))
+        if body_k > 1.5 * _g(atr_s, k):
+            ob_distance = (idx - k) / 10.0
+            impulse_strength = body_k / _g(atr_s, k)
+            # Consolidation before impulse
+            if k >= 5:
+                cons_range = max(_g(h, j) for j in range(k - 5, k)) - min(_g(l, j) for j in range(k - 5, k))
+                consolidation_size = cons_range / _g(atr_s, k)
+            break
+    mkt["mkt_ob_distance"] = ob_distance
+    mkt["mkt_ob_impulse_strength"] = min(impulse_strength, 5.0)
+    mkt["mkt_ob_consolidation_size"] = min(consolidation_size, 5.0)
+
+    # ── 19. REGIME FEATURES (for ML regime awareness) ──
+    # Regime encoded as continuous features (not one-hot — ML handles better)
+    mkt["mkt_regime_trend_score"] = mkt["mkt_ema_alignment"]
+    mkt["mkt_regime_vol_score"] = atr_r
+    mkt["mkt_regime_range_score"] = mkt["mkt_range_position"]
+
+    # ── 20. REGIME INTERACTION FEATURES ──
+    # Let ML learn which features matter in which regime
+    mkt["mkt_trend_x_return5"] = mkt["mkt_trend_strength"] * mkt["mkt_return_5"]
+    mkt["mkt_trend_x_ema_slope"] = mkt["mkt_trend_strength"] * mkt["mkt_ema_slope_8"]
+    mkt["mkt_vol_x_volume"] = mkt["mkt_atr_expansion"] * mkt["mkt_volume_zscore"]
+    mkt["mkt_vwap_x_trend"] = mkt["mkt_dist_from_vwap"] * mkt["mkt_trend_strength"]
+    mkt["mkt_range_x_regime_vol"] = mkt["mkt_range_position"] * atr_r
 
     # Clean NaN/inf values
     for k, val in mkt.items():

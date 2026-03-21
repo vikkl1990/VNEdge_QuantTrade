@@ -627,16 +627,17 @@ def build_directional_labels(df: pd.DataFrame, forward_bars: int = 12,
 
 
 def build_mfe_labels(df: pd.DataFrame, side: str, max_bars: int = 30,
-                     threshold_r: float = 0.2) -> pd.Series:
-    """Build MFE-based label: will Max Favorable Excursion exceed threshold_r?
+                     threshold_r: float = 0.2,
+                     fee_pct: float = 0.00055) -> pd.Series:
+    """Build MFE-based label: will fee-adjusted MFE exceed threshold_r?
 
     Instead of asking "did the whole trade work?", asks:
-    "will price move at least +0.2R in my direction within N bars?"
+    "will price move at least +threshold_r in my direction within N bars,
+    AFTER accounting for round-trip trading fees?"
 
-    This generalizes better because:
-    - Captures edge even when trade management (SL/TP/trail) is imperfect
-    - Less sensitive to exact exit timing
-    - More aligned with "is there directional edge here?"
+    Fee adjustment: subtracts round-trip fees (2 × fee_pct × entry_price)
+    from MFE before comparing to threshold. This prevents labeling
+    trades as "good" that would be negative EV after costs.
 
     Parameters
     ----------
@@ -644,10 +645,11 @@ def build_mfe_labels(df: pd.DataFrame, side: str, max_bars: int = 30,
     side : "long" or "short"
     max_bars : bars to look forward (default 30)
     threshold_r : MFE threshold in R-multiples (default 0.2)
+    fee_pct : one-side fee as decimal (default 0.00055 = 0.055% taker)
 
     Returns
     -------
-    Series of 0/1 labels (1 = MFE exceeded threshold)
+    Series of 0/1 labels (1 = fee-adjusted MFE exceeded threshold)
     """
     if "atr_14" not in df.columns:
         df = compute_indicators(df)
@@ -665,7 +667,9 @@ def build_mfe_labels(df: pd.DataFrame, side: str, max_bars: int = 30,
         if risk <= 0 or np.isnan(risk):
             continue
 
-        threshold_price = threshold_r * risk
+        # Fee-adjusted threshold: MFE must exceed threshold + round-trip fees
+        fee_cost = 2 * fee_pct * entry
+        threshold_price = threshold_r * risk + fee_cost
 
         # Track max favorable excursion over next max_bars
         if side == "long":

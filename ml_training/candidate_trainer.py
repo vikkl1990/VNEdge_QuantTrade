@@ -685,13 +685,14 @@ class CandidateTrainer:
         if len(X) < 100:
             return {"error": f"insufficient data: {len(X)} candidates (need 100+)"}
 
-        # Feature selection: reduce overfitting by keeping top features + rule features
-        if len(X.columns) > 40:
-            selected_features = self._select_top_features(X, y, max_features=40)
-            X = X[selected_features]
-            self._feature_names = selected_features
+        # Store all feature names for reference
+        all_feature_names = list(X.columns)
 
         tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        # Purge gap: remove last N training samples to prevent lookahead leakage
+        # MFE labels look forward 30 bars, so candidates near fold boundary leak info
+        purge_gap = 5
 
         fold_results = []
         all_probs = np.zeros(len(X))
@@ -699,11 +700,25 @@ class CandidateTrainer:
         all_mask = np.zeros(len(X), dtype=bool)
 
         for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
-            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            # Purge: remove last `purge_gap` samples from training set
+            if purge_gap > 0 and len(train_idx) > purge_gap:
+                train_idx = train_idx[:-purge_gap]
+
+            X_train_full, X_test_full = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
             if len(y_train.unique()) < 2 or len(y_test) < 10:
                 continue
+
+            # In-fold feature selection: select features using ONLY training data
+            # This prevents info leakage from test fold into feature selection
+            if len(X_train_full.columns) > 40:
+                fold_features = self._select_top_features(X_train_full, y_train, max_features=40)
+                X_train = X_train_full[fold_features]
+                X_test = X_test_full[fold_features]
+            else:
+                X_train = X_train_full
+                X_test = X_test_full
 
             clf = RandomForestClassifier(
                 n_estimators=n_estimators,
@@ -741,6 +756,14 @@ class CandidateTrainer:
 
         if not fold_results:
             return {"error": "no valid folds"}
+
+        # Feature selection for final model (on full dataset — acceptable for production model)
+        if len(X.columns) > 40:
+            selected_features = self._select_top_features(X, y, max_features=40)
+            X = X[selected_features]
+            self._feature_names = selected_features
+        else:
+            self._feature_names = list(X.columns)
 
         # Train final model on all data
         self._model = RandomForestClassifier(
@@ -1009,6 +1032,10 @@ class CandidateTrainer:
             train_result["scanner"] = scanner_name
             self._save_results(train_result, scanner_name)
             return train_result
+
+        # After training, X must match model's feature set (feature selection may have reduced it)
+        if hasattr(self, '_feature_names') and self._feature_names is not None:
+            X = X[[f for f in self._feature_names if f in X.columns]]
 
         # Step 3: Stratified win rates
         wr_comparison = self.compute_stratified_win_rates(X, y, veto_blocked)

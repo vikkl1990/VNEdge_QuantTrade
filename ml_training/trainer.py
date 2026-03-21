@@ -408,10 +408,11 @@ class TrainingOrchestrator:
 
             candidate_results = {}
             for symbol in symbols:
-                logger.info("Loading 5m data for candidate training: %s", symbol)
-                collector = CandleCollector(self._exchange, [symbol], ["5m"])
+                logger.info("Loading 5m + 15m data for candidate training: %s", symbol)
+                collector = CandleCollector(self._exchange, [symbol], ["5m", "15m"])
                 sym_data = await collector.collect_all()
                 df = sym_data.get(symbol, {}).get("5m")
+                htf_df = sym_data.get(symbol, {}).get("15m")
                 del sym_data, collector
 
                 if df is None or len(df) < 500:
@@ -433,11 +434,12 @@ class TrainingOrchestrator:
                     label_mode="mfe",
                     mfe_threshold_r=0.8,
                     mfe_max_bars=15,
+                    htf_df=htf_df,
                 )
                 candidate_results[symbol] = result
 
                 # Free memory
-                del df, ct
+                del df, htf_df, ct
                 gc.collect()
 
             self._status["results"]["candidate_training"] = candidate_results

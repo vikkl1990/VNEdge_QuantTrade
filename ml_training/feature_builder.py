@@ -512,6 +512,152 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["ichi_chikou_clearance"] = (c - c.shift(26)) / atr.replace(0, np.nan)
 
     # ================================================================
+    # 22. FAIR VALUE GAP (FVG) FEATURES
+    # Detect imbalances in price — where candle N+1's low > candle N-1's high
+    # (bullish FVG) or candle N+1's high < candle N-1's low (bearish FVG).
+    # Used as: context feature for candidate quality, NOT hard filter.
+    # ================================================================
+    # Bullish FVG: gap between candle[i-2] high and candle[i] low
+    bull_fvg_gap = l - h.shift(2)  # positive = bullish FVG exists
+    bear_fvg_gap = l.shift(2) - h  # positive = bearish FVG exists
+
+    # Nearest bullish FVG within last 20 bars (normalized by ATR)
+    bull_fvg_exists = (bull_fvg_gap > 0).astype(float)
+    bear_fvg_exists = (bear_fvg_gap > 0).astype(float)
+
+    # Recent FVG count (how many FVGs in last 20 bars — more = stronger imbalance)
+    features["fvg_bull_count_20"] = bull_fvg_exists.rolling(20).sum()
+    features["fvg_bear_count_20"] = bear_fvg_exists.rolling(20).sum()
+
+    # FVG imbalance ratio (bull - bear, normalized)
+    total_fvg = features["fvg_bull_count_20"] + features["fvg_bear_count_20"]
+    features["fvg_imbalance"] = np.where(
+        total_fvg > 0,
+        (features["fvg_bull_count_20"] - features["fvg_bear_count_20"]) / total_fvg,
+        0.0
+    )
+
+    # Is price currently inside a recent FVG? (within last 10 bars)
+    # Track the midpoint of most recent bullish FVG
+    bull_fvg_mid = np.where(bull_fvg_gap > 0, (h.shift(2) + l) / 2, np.nan)
+    bull_fvg_mid = pd.Series(bull_fvg_mid, index=df.index).ffill(limit=10)
+    bear_fvg_mid = np.where(bear_fvg_gap > 0, (l.shift(2) + h) / 2, np.nan)
+    bear_fvg_mid = pd.Series(bear_fvg_mid, index=df.index).ffill(limit=10)
+
+    # Distance from nearest FVG midpoint (normalized by ATR)
+    features["dist_from_bull_fvg"] = (c - bull_fvg_mid) / atr.replace(0, np.nan)
+    features["dist_from_bear_fvg"] = (bear_fvg_mid - c) / atr.replace(0, np.nan)
+
+    # FVG freshness: how many bars since last FVG (recent = more relevant)
+    bull_fvg_bars_ago = bull_fvg_exists.groupby(
+        (bull_fvg_exists != bull_fvg_exists.shift()).cumsum()
+    ).cumcount()
+    features["fvg_recency"] = np.where(
+        features["fvg_bull_count_20"] + features["fvg_bear_count_20"] > 0,
+        1.0 / (bull_fvg_bars_ago.clip(lower=1)),
+        0.0
+    )
+
+    # ================================================================
+    # 23. ORDER BLOCK PROXIMITY FEATURES
+    # Order block = last bullish candle before a bearish move (or vice versa)
+    # Approximated as: large body candle followed by reversal
+    # ================================================================
+    body_size = (c - o).abs()
+    body_atr_ratio = body_size / atr.replace(0, np.nan)
+    is_large_body = body_atr_ratio > 1.0  # body > 1 ATR = significant candle
+
+    # Bullish OB: large bearish candle at the bottom of a down move
+    is_bearish = c < o
+    is_bullish_candle = c > o
+    bull_ob = is_large_body & is_bearish & is_bullish_candle.shift(-1)  # reversal after
+    bear_ob = is_large_body & is_bullish_candle & is_bearish.shift(-1)
+
+    # Track OB levels (use the midpoint of the OB candle)
+    bull_ob_level = np.where(bull_ob, (h + l) / 2, np.nan)
+    bull_ob_level = pd.Series(bull_ob_level, index=df.index).ffill(limit=30)
+    bear_ob_level = np.where(bear_ob, (h + l) / 2, np.nan)
+    bear_ob_level = pd.Series(bear_ob_level, index=df.index).ffill(limit=30)
+
+    # Distance from nearest OB (normalized by ATR)
+    features["dist_from_bull_ob"] = (c - bull_ob_level) / atr.replace(0, np.nan)
+    features["dist_from_bear_ob"] = (bear_ob_level - c) / atr.replace(0, np.nan)
+
+    # Is price retesting an OB? (within 0.3 ATR of OB level)
+    features["at_bull_ob"] = (features["dist_from_bull_ob"].abs() < 0.3).astype(float)
+    features["at_bear_ob"] = (features["dist_from_bear_ob"].abs() < 0.3).astype(float)
+
+    # OB count in last 20 bars (market structure activity)
+    features["ob_count_20"] = bull_ob.astype(float).rolling(20).sum() + bear_ob.astype(float).rolling(20).sum()
+
+    # ================================================================
+    # 24. EMA 200 + VWAP CONTEXT (trend quality features, NOT hard gates)
+    # These capture what the "SMC pre-filter" suggestion wanted,
+    # but as continuous features that ML can weight, not binary gates.
+    # ================================================================
+    ema200 = df["ema_200"]
+    vwap = df["vwap"]
+
+    # Price position relative to key levels (continuous, -1 to +1 range)
+    features["price_vs_ema200"] = (c - ema200) / atr.replace(0, np.nan)
+    features["price_vs_ema200_sign"] = np.sign(c - ema200)
+    features["ema200_slope"] = ema200.diff(5) / atr.replace(0, np.nan)
+
+    # VWAP + EMA200 agreement (both bullish = strong trend context)
+    above_vwap = (c > vwap).astype(float)
+    above_ema200 = (c > ema200).astype(float)
+    features["vwap_ema200_agreement"] = above_vwap + above_ema200 - 1  # -1, 0, or +1
+
+    # Structural alignment: price vs EMA200 vs VWAP (all aligned = strong)
+    # +1 = price > VWAP > EMA200 (strong bullish), -1 = price < VWAP < EMA200 (strong bearish)
+    features["structural_alignment"] = np.where(
+        (c > vwap) & (vwap > ema200), 1.0,
+        np.where((c < vwap) & (vwap < ema200), -1.0, 0.0)
+    )
+
+    # ================================================================
+    # 25. MULTI-TIMEFRAME ALIGNMENT (when htf_df is provided)
+    # Each component is a separate feature — let ML learn the weights,
+    # NOT hardcoded 0.4/0.3/0.3.
+    # ================================================================
+    if htf_df is not None and len(htf_df) > 0:
+        htf_df = compute_indicators(htf_df)
+        htf_c = htf_df["close"].astype(float)
+        htf_atr = htf_df["atr_14"]
+
+        # HTF trend bias: EMA alignment on higher timeframe
+        htf_ema8 = htf_df["ema_8"]
+        htf_ema21 = htf_df["ema_21"]
+        htf_ema50 = htf_df["ema_50"]
+        htf_trend = np.where(
+            (htf_ema8 > htf_ema21) & (htf_ema21 > htf_ema50), 1.0,
+            np.where((htf_ema8 < htf_ema21) & (htf_ema21 < htf_ema50), -1.0, 0.0)
+        )
+        htf_trend_series = pd.Series(htf_trend, index=htf_df.index)
+
+        # HTF momentum (recent returns on higher TF)
+        htf_return5 = htf_c.pct_change(5)
+        htf_atr_ratio = htf_df["atr_7"] / htf_atr.replace(0, np.nan)
+
+        # Resample HTF features to match LTF index (forward-fill to avoid lookahead)
+        htf_trend_resampled = htf_trend_series.reindex(df.index, method="ffill")
+        htf_return_resampled = htf_return5.reindex(df.index, method="ffill")
+        htf_atr_resampled = htf_atr_ratio.reindex(df.index, method="ffill")
+
+        features["htf_trend_bias"] = htf_trend_resampled.fillna(0.0)
+        features["htf_momentum"] = htf_return_resampled.fillna(0.0)
+        features["htf_vol_ratio"] = htf_atr_resampled.fillna(1.0)
+
+        # LTF-HTF agreement: are lower and higher timeframe aligned?
+        features["tf_alignment"] = features["htf_trend_bias"] * features["trend_strength"]
+    else:
+        # No HTF data — fill with neutral values
+        features["htf_trend_bias"] = 0.0
+        features["htf_momentum"] = 0.0
+        features["htf_vol_ratio"] = 1.0
+        features["tf_alignment"] = 0.0
+
+    # ================================================================
     # CLEANUP: Replace NaN/inf with 0.0 for all features
     # ================================================================
     features = features.replace([np.inf, -np.inf], 0.0).fillna(0.0)

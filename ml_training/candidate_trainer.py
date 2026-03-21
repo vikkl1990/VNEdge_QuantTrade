@@ -563,6 +563,7 @@ class CandidateTrainer:
         label_mode: str = "mfe",
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
+        htf_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
         """Build candidate dataset with veto labels.
 
@@ -577,7 +578,7 @@ class CandidateTrainer:
             raise ValueError("scanner_func is required")
 
         df = compute_indicators(df)
-        market_features = build_features(df)
+        market_features = build_features(df, htf_df=htf_df)
 
         # Pre-compute MFE labels for both sides if using MFE mode
         mfe_labels_long = None
@@ -989,6 +990,7 @@ class CandidateTrainer:
         label_mode: str = "mfe",
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
+        htf_df: Optional[pd.DataFrame] = None,
     ) -> Dict:
         """Run the complete candidate training pipeline end-to-end.
 
@@ -1007,6 +1009,7 @@ class CandidateTrainer:
         X, y, veto_blocked = self.build_dataset_with_veto_labels(
             df, symbol, scanner_func=scanner_func,
             label_mode=label_mode,
+            htf_df=htf_df,
             mfe_threshold_r=mfe_threshold_r,
             mfe_max_bars=mfe_max_bars,
         )
@@ -1130,20 +1133,24 @@ class CandidateTrainer:
         label_mode: str = "mfe",
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
+        htf_df: Optional[pd.DataFrame] = None,
     ) -> Dict:
         """Run candidate training for ALL scanners and produce comparison.
 
         Args:
-            df: OHLCV DataFrame
+            df: OHLCV DataFrame (5m)
             symbol: e.g. "BTC/USDT"
             scanners: dict of {name: func} from trainer.py SCANNERS
             label_mode: "mfe" (default) or "trade"
             mfe_threshold_r: MFE threshold in R (default 0.2)
+            htf_df: Optional higher-timeframe DataFrame (15m) for multi-TF features
 
         Returns dict with per-scanner results and comparison table.
         """
         logger.info("=== Running candidate trainer for ALL %d scanners on %s (labels=%s) ===",
                      len(scanners), symbol, label_mode)
+        if htf_df is not None:
+            logger.info("  Multi-TF enabled: %d HTF candles for alignment features", len(htf_df))
 
         all_results = {}
         comparison_rows = []
@@ -1162,6 +1169,7 @@ class CandidateTrainer:
                 label_mode=label_mode,
                 mfe_threshold_r=mfe_threshold_r,
                 mfe_max_bars=mfe_max_bars,
+                htf_df=htf_df,
             )
             all_results[scanner_name] = result
 

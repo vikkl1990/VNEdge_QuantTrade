@@ -36,7 +36,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font-mono);font-si
 .tab.active{color:var(--green);border-bottom-color:var(--green);background:rgba(0,255,157,.04)}
 .content{padding:20px 24px;max-width:1500px;margin:0 auto}
 .tab-content{display:none}.tab-content.active{display:block}
-.grid{display:grid;gap:16px}.grid-2{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr 1fr}
+.grid{display:grid;gap:16px}.grid-2{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr 1fr}.grid-4{grid-template-columns:1fr 1fr 1fr 1fr}
 .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px;backdrop-filter:blur(20px)}
 .card h3{color:var(--accent);font-size:.85rem;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
 .metric{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}.metric:last-child{border:none}
@@ -51,6 +51,11 @@ tr:hover{background:var(--accent-dim)}
 .badge-invalid{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
 .badge-useful{background:rgba(0,255,157,.15);color:var(--green);border:1px solid rgba(0,255,157,.3)}
 .badge-marginal{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.badge-warn{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.badge-block{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
+.badge-green{background:rgba(0,255,157,.15);color:var(--green);border:1px solid rgba(0,255,157,.3)}
+.badge-yellow{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.badge-red{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
 .feature-bar{display:flex;align-items:center;gap:8px;margin:4px 0}
 .feature-name{width:160px;font-size:.72rem;color:var(--text-dim);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .feature-fill{height:14px;background:linear-gradient(90deg,var(--accent),var(--cyan));border-radius:3px;min-width:2px;transition:width .5s}
@@ -70,7 +75,21 @@ tr:hover{background:var(--accent-dim)}
 .stat-box{text-align:center;padding:12px;border-radius:8px;background:rgba(255,255,255,.03);border:1px solid var(--border)}
 .stat-box .stat-value{font-size:1.4rem;font-weight:800;margin-bottom:4px}
 .stat-box .stat-label{font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px}
-@media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr}}
+.error-banner{background:rgba(255,59,92,.1);border:1px solid rgba(255,59,92,.3);border-radius:8px;padding:12px 16px;color:var(--red);font-size:.8rem;margin-bottom:16px;display:none}
+.error-banner.visible{display:block}
+.freshness-bar{display:flex;align-items:center;gap:12px;padding:8px 16px;background:rgba(255,255,255,.02);border-bottom:1px solid var(--border);font-size:.68rem;color:var(--text-muted)}
+.freshness-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block}
+.freshness-dot.stale{background:var(--yellow)}
+.freshness-dot.dead{background:var(--red)}
+.health-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.health-GREEN{background:var(--green);box-shadow:0 0 6px rgba(0,255,157,.4)}
+.health-YELLOW{background:var(--yellow);box-shadow:0 0 6px rgba(255,215,0,.4)}
+.health-RED{background:var(--red);box-shadow:0 0 6px rgba(255,59,92,.4)}
+.drift-up{color:var(--green)}
+.drift-down{color:var(--red)}
+.warn-row{background:rgba(255,215,0,.05) !important}
+.block-row{background:rgba(255,59,92,.05) !important}
+@media(max-width:900px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -85,9 +104,20 @@ tr:hover{background:var(--accent-dim)}
   </div>
   <div class="header-right">
     <span class="phase-pill phase-idle" id="phase-pill">IDLE</span>
-    <span style="padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.04);color:var(--text-muted);font-size:.65rem;border:1px solid rgba(255,255,255,.04)">v2.1</span>
+    <span id="health-indicator" style="padding:3px 8px;border-radius:4px;font-size:.65rem;border:1px solid rgba(255,255,255,.04)"></span>
+    <span style="padding:3px 8px;border-radius:4px;background:rgba(255,255,255,.04);color:var(--text-muted);font-size:.65rem;border:1px solid rgba(255,255,255,.04)">v3.0</span>
   </div>
 </header>
+
+<!-- Freshness bar -->
+<div class="freshness-bar" id="freshness-bar">
+  <span class="freshness-dot" id="freshness-dot"></span>
+  <span id="freshness-text">Connecting...</span>
+  <span style="margin-left:auto" id="freshness-records"></span>
+</div>
+
+<!-- Global error banner -->
+<div class="error-banner" id="global-error"></div>
 
 <div class="tabs">
   <div class="tab active" data-tab="overview">Overview</div>
@@ -97,6 +127,7 @@ tr:hover{background:var(--accent-dim)}
   <div class="tab" data-tab="features">Features</div>
   <div class="tab" data-tab="comparison">TF Comparison</div>
   <div class="tab" data-tab="walk-forward">Walk-Forward</div>
+  <div class="tab" data-tab="model-health">Model Health</div>
   <div class="tab" data-tab="live-feedback">Live Feedback</div>
 </div>
 
@@ -113,6 +144,7 @@ tr:hover{background:var(--accent-dim)}
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
         <button class="btn" onclick="startTraining(['BTC/USDT','ETH/USDT','SOL/USDT'],['1m','5m','15m'])">Train Top 3</button>
         <button class="btn" onclick="startTraining(null,['1m','5m','15m'])">Full Training (All)</button>
+        <button class="btn" onclick="runValidation()">Run AUC Validation</button>
       </div>
     </div>
   </div>
@@ -132,10 +164,17 @@ tr:hover{background:var(--accent-dim)}
     <h3>ML Summary</h3>
     <div id="ml-summary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:8px"></div>
   </div>
+  <!-- Model Health Summary on Overview -->
+  <div class="card" style="margin-top:16px">
+    <h3>Model Health Overview</h3>
+    <div id="overview-health" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:8px"></div>
+  </div>
 </div>
 
 <!-- CANDIDATES (ML) -->
 <div class="tab-content" id="tab-candidates">
+  <!-- Data sufficiency warnings -->
+  <div id="sufficiency-warnings" style="margin-bottom:16px"></div>
   <div class="card">
     <h3>Candidate Training Results — TP vs SL Labels (All Symbols x Scanners)</h3>
     <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
@@ -191,6 +230,18 @@ tr:hover{background:var(--accent-dim)}
     <div class="card"><h3>Top Features (What Matters)</h3><div id="feature-bars">Loading...</div></div>
     <div class="card"><h3>Feature Categories</h3><div id="feature-categories">Loading...</div></div>
   </div>
+  <!-- Feature Drift -->
+  <div class="card" style="margin-top:16px">
+    <h3>Feature Importance Drift</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Features that changed rank by 3+ positions between training runs. Signals market structure shifts.
+    </p>
+    <div id="feature-drift">
+      <span style="color:var(--text-dim)">Select a scanner to view drift...</span>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap" id="drift-scanner-btns"></div>
+      <div id="drift-table" style="margin-top:12px"></div>
+    </div>
+  </div>
 </div>
 
 <!-- TF COMPARISON -->
@@ -215,6 +266,31 @@ tr:hover{background:var(--accent-dim)}
   </div>
 </div>
 
+<!-- MODEL HEALTH (NEW TAB) -->
+<div class="tab-content" id="tab-model-health">
+  <div class="card">
+    <h3>Model Health — AUC Drift Monitoring</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Per-scanner health status based on AUC trend. GREEN = AUC >= 0.58, YELLOW = 0.53-0.58, RED = &lt;0.53 or drift detected.
+    </p>
+    <div id="model-health-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-top:12px"></div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Scanner Leaderboard Trend</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Scanner AUC rankings across training batches. Shows which scanners are consistently top/bottom.
+    </p>
+    <div id="scanner-rankings">Loading...</div>
+  </div>
+  <div class="card" style="margin-top:16px">
+    <h3>AUC Trend Over Time</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Per-scanner AUC across all training runs.
+    </p>
+    <div id="auc-trend-table">Loading...</div>
+  </div>
+</div>
+
 <!-- LIVE FEEDBACK -->
 <div class="tab-content" id="tab-live-feedback">
   <div class="grid grid-3" style="margin-bottom:16px">
@@ -223,7 +299,7 @@ tr:hover{background:var(--accent-dim)}
       <div id="fb-summary">Loading...</div>
     </div>
     <div class="card">
-      <h3>ML Accuracy</h3>
+      <h3>ML Accuracy (Global)</h3>
       <div id="fb-ml-accuracy">Loading...</div>
     </div>
     <div class="card">
@@ -231,24 +307,40 @@ tr:hover{background:var(--accent-dim)}
       <div id="fb-by-type">Loading...</div>
     </div>
   </div>
+  <!-- Per-Pair ML Accuracy (NEW) -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>ML Accuracy by Pair</h3>
+    <table>
+      <tr><th>Pair</th><th>Predictions</th><th>Correct</th><th>Wrong</th><th>Accuracy</th><th>Net PnL</th><th>Status</th></tr>
+      <tbody id="fb-ml-by-pair"></tbody>
+    </table>
+  </div>
   <div class="grid grid-2" style="margin-bottom:16px">
     <div class="card">
       <h3>By Pair</h3>
       <table>
-        <tr><th>Pair</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg PnL</th></tr>
+        <tr><th>Pair</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg R</th></tr>
         <tbody id="fb-by-pair"></tbody>
       </table>
     </div>
     <div class="card">
       <h3>By Scanner</h3>
       <table>
-        <tr><th>Scanner</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg PnL</th></tr>
+        <tr><th>Scanner</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>Net PnL</th><th>Avg R</th></tr>
         <tbody id="fb-by-scanner"></tbody>
       </table>
     </div>
   </div>
+  <!-- Session Performance (NEW) -->
   <div class="card" style="margin-bottom:16px">
-    <h3>Pair × Scanner Matrix</h3>
+    <h3>Performance by Session</h3>
+    <table>
+      <tr><th>Session</th><th>UTC Hours</th><th>Trades</th><th>Win Rate</th><th>Net PnL</th><th>Avg R</th></tr>
+      <tbody id="fb-by-session"></tbody>
+    </table>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <h3>Pair x Scanner Matrix</h3>
     <div id="fb-matrix" style="overflow-x:auto">Loading...</div>
   </div>
   <div class="card">
@@ -263,6 +355,7 @@ tr:hover{background:var(--accent-dim)}
 </div>
 
 <script>
+// Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -272,19 +365,80 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
+// Helpers
 async function fetchJSON(url) {
   try {
     const r = await fetch(url);
-    if (!r.ok) { console.error('Fetch failed:', url, r.status); return null; }
+    if (!r.ok) {
+      console.error('Fetch failed:', url, r.status);
+      showError('API error: ' + url + ' returned ' + r.status);
+      return null;
+    }
     const data = await r.json();
+    if (data && data.error && !data.results && !data.total_trades && data.total_trades !== 0) {
+      showError('API error (' + url.split('/api/')[1] + '): ' + data.error);
+      return null;
+    }
+    clearError();
     return data;
-  } catch(e) { console.error('Fetch error:', url, e.message); return null; }
+  } catch(e) {
+    console.error('Fetch error:', url, e.message);
+    showError('Network error: ' + e.message);
+    return null;
+  }
 }
 
-function pct(v) { return v != null ? v.toFixed(1) + '%' : '—'; }
-function rval(v) { return v != null ? v.toFixed(3) + 'R' : '—'; }
+function showError(msg) {
+  const el = document.getElementById('global-error');
+  el.textContent = msg;
+  el.classList.add('visible');
+  // Auto-hide after 15s
+  setTimeout(() => el.classList.remove('visible'), 15000);
+}
+function clearError() {
+  document.getElementById('global-error').classList.remove('visible');
+}
+
+function pct(v) { return v != null ? v.toFixed(1) + '%' : '\u2014'; }
+function rval(v) { return v != null ? v.toFixed(3) + 'R' : '\u2014'; }
 function cls(v) { return v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral'; }
 
+function updateFreshness(data) {
+  if (!data || !data._freshness) return;
+  const f = data._freshness;
+  const dot = document.getElementById('freshness-dot');
+  const text = document.getElementById('freshness-text');
+  const records = document.getElementById('freshness-records');
+
+  const genAt = f.generated_at ? new Date(f.generated_at) : null;
+  const ageSec = genAt ? Math.round((Date.now() - genAt.getTime()) / 1000) : null;
+
+  if (ageSec !== null) {
+    if (ageSec < 30) {
+      dot.className = 'freshness-dot';
+      text.textContent = 'Live \u2014 updated ' + ageSec + 's ago';
+    } else if (ageSec < 120) {
+      dot.className = 'freshness-dot stale';
+      text.textContent = 'Stale \u2014 ' + ageSec + 's ago';
+    } else {
+      dot.className = 'freshness-dot dead';
+      text.textContent = 'Stale \u2014 ' + Math.round(ageSec/60) + 'm ago';
+    }
+  }
+
+  if (f.feedback_records_count != null) {
+    records.textContent = f.feedback_records_count + ' feedback records';
+  }
+  if (f.data_through) {
+    records.textContent = (records.textContent ? records.textContent + ' | ' : '') + 'data through: ' + new Date(f.data_through).toLocaleString();
+  }
+}
+
+const SESSION_HOURS = {asia: '0-8 UTC', europe: '8-14 UTC', us: '14-21 UTC', late_us: '21-24 UTC'};
+
+// -------------------------------------------------------------------
+//  MAIN REFRESH
+// -------------------------------------------------------------------
 async function refreshAll() {
   try {
   const [status, results, models, comparison, calibration, candidates] = await Promise.all([
@@ -295,7 +449,9 @@ async function refreshAll() {
     fetchJSON('/api/calibration'),
     fetchJSON('/api/candidates'),
   ]);
-  console.log('Data loaded:', {status:!!status, results:!!results, models:!!models, comparison:!!comparison, calibration:!!calibration, candidates:!!candidates});
+
+  // Update freshness from status
+  if (status) updateFreshness(status);
 
   // Phase pill
   if (status) {
@@ -311,8 +467,8 @@ async function refreshAll() {
     phases.forEach((p, i) => {
       const isActive = phase === p;
       const isDone = phases.indexOf(phase) > i || phase === 'complete';
-      flowHTML += '<div class="flow-step ' + (isActive ? 'active-step' : '') + '" style="' + (isDone ? 'border-color:var(--accent);opacity:.5' : '') + '">' + (isDone ? '✓ ' : '') + labels[i] + '</div>';
-      if (i < phases.length - 1) flowHTML += '<span class="flow-arrow">→</span>';
+      flowHTML += '<div class="flow-step ' + (isActive ? 'active-step' : '') + '" style="' + (isDone ? 'border-color:var(--accent);opacity:.5' : '') + '">' + (isDone ? '\u2713 ' : '') + labels[i] + '</div>';
+      if (i < phases.length - 1) flowHTML += '<span class="flow-arrow">\u2192</span>';
     });
     document.getElementById('pipeline-flow').innerHTML = flowHTML;
 
@@ -321,6 +477,9 @@ async function refreshAll() {
     sHTML += '<div class="metric"><span class="label">Phase</span><span class="value">' + phase + '</span></div>';
     if (status.started_at) sHTML += '<div class="metric"><span class="label">Started</span><span class="value">' + new Date(status.started_at).toLocaleTimeString() + '</span></div>';
     if (status.completed_at) sHTML += '<div class="metric"><span class="label">Completed</span><span class="value">' + new Date(status.completed_at).toLocaleTimeString() + '</span></div>';
+    // Show file age if available
+    const fileAge = status._freshness?.file_age_sec;
+    if (fileAge != null) sHTML += '<div class="metric"><span class="label">Data Age</span><span class="value" style="color:' + (fileAge < 3600 ? 'var(--green)' : 'var(--yellow)') + '">' + (fileAge < 60 ? fileAge + 's' : Math.round(fileAge/60) + 'm') + '</span></div>';
     document.getElementById('pipeline-status').innerHTML = sHTML;
 
     // Training config
@@ -352,7 +511,7 @@ async function refreshAll() {
   if (candidates) {
     let totalCands = 0, totalSymbols = 0, avgAUC = 0, aucCount = 0;
     Object.entries(candidates).forEach(([sym, data]) => {
-      if (!data || !data.comparison) return;
+      if (!data || !data.comparison || sym.startsWith('_')) return;
       totalSymbols++;
       data.comparison.forEach(row => {
         if (row.candidates > 0) {
@@ -368,6 +527,19 @@ async function refreshAll() {
     sumHTML += '<div class="stat-box"><div class="stat-value" style="color:' + (avgAUC > 0.55 ? 'var(--green)' : 'var(--yellow)') + '">' + avgAUC.toFixed(4) + '</div><div class="stat-label">Avg AUC</div></div>';
     sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--green)">' + aucCount + '</div><div class="stat-label">Models Trained</div></div>';
     document.getElementById('ml-summary').innerHTML = sumHTML;
+
+    // Data sufficiency warnings (P1)
+    const warnings = candidates._sufficiency_warnings || [];
+    if (warnings.length > 0) {
+      let wHTML = '';
+      warnings.forEach(w => {
+        const cls = w.severity === 'BLOCK' ? 'badge-block' : 'badge-warn';
+        wHTML += '<div style="display:inline-block;margin:4px 6px 4px 0"><span class="badge ' + cls + '">' + w.severity + '</span> <span style="font-size:.75rem;color:var(--text-dim)">' + w.message + '</span></div>';
+      });
+      document.getElementById('sufficiency-warnings').innerHTML = '<div class="card" style="border-color:rgba(255,215,0,.3)"><h3 style="color:var(--yellow)">Data Sufficiency Warnings</h3>' + wHTML + '</div>';
+    } else {
+      document.getElementById('sufficiency-warnings').innerHTML = '';
+    }
   }
 
   // CANDIDATES TAB
@@ -375,11 +547,13 @@ async function refreshAll() {
     let cHTML = '';
     let scannerAgg = {};
     Object.entries(candidates).sort().forEach(([sym, data]) => {
-      if (!data || !data.comparison) return;
+      if (!data || !data.comparison || sym.startsWith('_')) return;
       data.comparison.forEach(row => {
         if (row.candidates === 0) return;
         const aucCls = row.oos_auc > 0.55 ? 'positive' : row.oos_auc > 0.50 ? 'neutral' : 'negative';
-        cHTML += '<tr><td>' + sym.split('/')[0] + '</td><td>' + row.scanner + '</td><td>' + row.candidates + '</td>';
+        // Highlight insufficient data rows
+        const rowCls = row.candidates < 50 ? ' class="block-row"' : row.candidates < 200 ? ' class="warn-row"' : '';
+        cHTML += '<tr' + rowCls + '><td>' + sym.split('/')[0] + '</td><td>' + row.scanner + '</td><td>' + row.candidates + '</td>';
         cHTML += '<td>' + pct(row.raw_wr) + '</td>';
         cHTML += '<td>' + (row.rule_filtered_count > 0 ? pct(row.rule_filtered_wr) : '<span style="color:var(--text-muted)">0</span>') + '</td>';
         cHTML += '<td class="positive">' + pct(row.ml_top_quartile_wr) + '</td>';
@@ -388,7 +562,6 @@ async function refreshAll() {
         cHTML += '<td>' + (row.bucket_spread||0).toFixed(1) + '%</td>';
         cHTML += '<td><span class="badge badge-' + (row.calibration==='USEFUL'?'useful':'marginal') + '">' + row.calibration + '</span></td></tr>';
 
-        // Aggregate
         if (!scannerAgg[row.scanner]) scannerAgg[row.scanner] = {cands:0,raw:0,q75:0,d90:0,auc:0,spread:0,n:0};
         let a = scannerAgg[row.scanner];
         a.cands += row.candidates; a.raw += row.raw_wr; a.q75 += row.ml_top_quartile_wr;
@@ -412,19 +585,21 @@ async function refreshAll() {
   }
 
   // SCANNER RESULTS
-  if (results) {
+  const resultsData = results?.results || results || {};
+  if (resultsData && typeof resultsData === 'object') {
     let srHTML = '';
-    Object.entries(results).sort((a,b) => (b[1].metrics?.expectancy_r||0) - (a[1].metrics?.expectancy_r||0)).forEach(([key, data]) => {
+    Object.entries(resultsData).filter(([k]) => !k.startsWith('_')).sort((a,b) => (b[1].metrics?.expectancy_r||0) - (a[1].metrics?.expectancy_r||0)).forEach(([key, data]) => {
+      if (!data || !data.metrics) return;
       const m = data.metrics || {};
       srHTML += '<tr><td>' + data.scanner + '</td><td>' + (data.symbol||'?') + '</td><td>' + (data.timeframe||'?') + '</td>';
       srHTML += '<td>' + (m.trades||0) + '</td>';
       srHTML += '<td class="' + cls((m.win_rate||0)-50) + '">' + pct(m.win_rate) + '</td>';
       srHTML += '<td class="' + cls(m.expectancy_r) + '">' + rval(m.expectancy_r) + '</td>';
-      srHTML += '<td>' + (m.profit_factor||'—') + '</td>';
+      srHTML += '<td>' + (m.profit_factor||'\u2014') + '</td>';
       srHTML += '<td class="positive">' + rval(m.avg_win_r) + '</td>';
       srHTML += '<td class="negative">' + rval(m.avg_loss_r) + '</td></tr>';
     });
-    document.getElementById('scanner-results').innerHTML = srHTML;
+    document.getElementById('scanner-results').innerHTML = srHTML || '<tr><td colspan="9" style="color:var(--text-dim)">No results</td></tr>';
   }
 
   // CALIBRATION
@@ -432,26 +607,17 @@ async function refreshAll() {
     let chartsHTML = '';
     let summaryHTML = '';
     Object.entries(calibration).forEach(([key, data]) => {
-      if (key === '_comparison' || !data.buckets || data.buckets.length === 0) return;
+      if (key.startsWith('_') || !data.buckets || data.buckets.length === 0) return;
       chartsHTML += '<div style="margin-bottom:24px"><div style="color:var(--accent);font-size:.85rem;margin-bottom:8px;font-weight:700">' + key + ' <span style="color:var(--text-dim);font-size:.7rem">(' + (data.symbol||'?') + ' | ' + (data.label_mode||'?') + ')</span> <span class="badge badge-' + (data.verdict==='USEFUL'?'useful':'marginal') + '">' + data.verdict + '</span></div>';
       data.buckets.forEach(b => {
-        const maxW = 100;
-        const predW = Math.min(b.avg_predicted, maxW);
-        const actW = Math.min(b.actual_win_rate, maxW);
-        chartsHTML += '<div class="bucket-row">';
-        chartsHTML += '<span class="bucket-label">B' + b.bucket + ' (' + b.count + ')</span>';
+        const predW = Math.min(b.avg_predicted, 100);
+        const actW = Math.min(b.actual_win_rate, 100);
+        chartsHTML += '<div class="bucket-row"><span class="bucket-label">B' + b.bucket + ' (' + b.count + ')</span>';
         chartsHTML += '<div class="bucket-bar-bg"><div class="bucket-bar-pred" style="width:' + predW + '%"></div><div class="bucket-bar-actual" style="width:' + actW + '%"></div></div>';
-        chartsHTML += '<span class="bucket-val"><span style="color:var(--cyan)">' + b.avg_predicted.toFixed(1) + '%</span> <span style="color:var(--green)">' + b.actual_win_rate.toFixed(1) + '%</span></span>';
-        chartsHTML += '</div>';
+        chartsHTML += '<span class="bucket-val"><span style="color:var(--cyan)">' + b.avg_predicted.toFixed(1) + '%</span> <span style="color:var(--green)">' + b.actual_win_rate.toFixed(1) + '%</span></span></div>';
       });
       chartsHTML += '</div>';
-
-      summaryHTML += '<tr><td style="color:var(--accent)">' + key + '</td>';
-      summaryHTML += '<td>' + (data.symbol||'?') + '</td>';
-      summaryHTML += '<td><span class="badge badge-' + (data.verdict==='USEFUL'?'useful':'marginal') + '">' + data.verdict + '</span></td>';
-      summaryHTML += '<td>' + (data.top_bottom_spread||0).toFixed(1) + '%</td>';
-      summaryHTML += '<td>' + (data.rank_correlation||0).toFixed(3) + '</td>';
-      summaryHTML += '<td>' + (data.is_monotonic ? '<span class="positive">Yes</span>' : '<span class="negative">No</span>') + '</td></tr>';
+      summaryHTML += '<tr><td style="color:var(--accent)">' + key + '</td><td>' + (data.symbol||'?') + '</td><td><span class="badge badge-' + (data.verdict==='USEFUL'?'useful':'marginal') + '">' + data.verdict + '</span></td><td>' + (data.top_bottom_spread||0).toFixed(1) + '%</td><td>' + (data.rank_correlation||0).toFixed(3) + '</td><td>' + (data.is_monotonic ? '<span class="positive">Yes</span>' : '<span class="negative">No</span>') + '</td></tr>';
     });
     document.getElementById('calibration-charts').innerHTML = chartsHTML || '<span style="color:var(--text-dim)">No calibration data yet</span>';
     document.getElementById('calibration-summary').innerHTML = summaryHTML;
@@ -460,8 +626,14 @@ async function refreshAll() {
   // FEATURES
   if (models) {
     let allFeatures = {};
+    let scannerList = [];
     Object.entries(models).forEach(([key, data]) => {
+      if (key.startsWith('_')) return;
       const fi = data.feature_importances || {};
+      if (Object.keys(fi).length > 0) {
+        const scannerName = data.scanner || key.replace('candidate_', '');
+        if (!scannerList.includes(scannerName)) scannerList.push(scannerName);
+      }
       Object.entries(fi).forEach(([fname, imp]) => {
         allFeatures[fname] = (allFeatures[fname] || 0) + imp;
       });
@@ -496,6 +668,13 @@ async function refreshAll() {
       catHTML += '<div class="feature-bar"><span class="feature-name">' + cat + '</span><div style="flex:1"><div class="feature-fill" style="width:' + p + '%"></div></div><span class="feature-val">' + p + '%</span></div>';
     });
     document.getElementById('feature-categories').innerHTML = catHTML;
+
+    // Drift scanner buttons
+    let btnHTML = '';
+    scannerList.forEach(s => {
+      btnHTML += '<button class="btn" style="padding:4px 12px;font-size:.7rem" onclick="loadFeatureDrift(\'' + s + '\')">' + s + '</button>';
+    });
+    document.getElementById('drift-scanner-btns').innerHTML = btnHTML;
   }
 
   // TF COMPARISON
@@ -504,7 +683,7 @@ async function refreshAll() {
     Object.entries(comparison.by_timeframe).forEach(([tf, setups]) => {
       setups.sort((a,b) => (b.expectancy_r||0) - (a.expectancy_r||0));
       setups.forEach(s => {
-        tfHTML += '<tr><td style="color:var(--cyan)">' + tf + '</td><td>' + s.scanner + '</td><td>' + s.symbol + '</td><td>' + (s.trades||0) + '</td><td class="' + cls((s.win_rate||0)-50) + '">' + pct(s.win_rate) + '</td><td class="' + cls(s.expectancy_r) + '">' + rval(s.expectancy_r) + '</td><td>' + (s.profit_factor||'—') + '</td></tr>';
+        tfHTML += '<tr><td style="color:var(--cyan)">' + tf + '</td><td>' + s.scanner + '</td><td>' + s.symbol + '</td><td>' + (s.trades||0) + '</td><td class="' + cls((s.win_rate||0)-50) + '">' + pct(s.win_rate) + '</td><td class="' + cls(s.expectancy_r) + '">' + rval(s.expectancy_r) + '</td><td>' + (s.profit_factor||'\u2014') + '</td></tr>';
       });
     });
     document.getElementById('tf-comparison').innerHTML = tfHTML;
@@ -516,52 +695,189 @@ async function refreshAll() {
     Object.entries(status.results.backtest).forEach(([key, data]) => {
       const wf = data.walk_forward || {};
       if (!wf.windows || wf.windows.length === 0) return;
-      wfHTML += '<div style="margin-bottom:20px"><div style="color:var(--accent);font-size:.85rem;margin-bottom:8px">' + data.scanner + ' — ' + data.symbol + ' — ' + data.timeframe + ' <span class="badge ' + (wf.verdict==='VALID EDGE'?'badge-valid':'badge-invalid') + '">' + wf.verdict + ' (' + wf.edge_holds_pct + '%)</span></div>';
+      wfHTML += '<div style="margin-bottom:20px"><div style="color:var(--accent);font-size:.85rem;margin-bottom:8px">' + data.scanner + ' \u2014 ' + data.symbol + ' \u2014 ' + data.timeframe + ' <span class="badge ' + (wf.verdict==='VALID EDGE'?'badge-valid':'badge-invalid') + '">' + wf.verdict + ' (' + wf.edge_holds_pct + '%)</span></div>';
       wfHTML += '<table><tr><th>Train</th><th>Test</th><th>Train WR</th><th>Test WR</th><th>Train Exp</th><th>Test Exp</th><th>Holds?</th></tr>';
       wf.windows.forEach(w => {
-        wfHTML += '<tr><td style="font-size:.68rem">' + w.train_start + '→' + w.train_end + '</td><td style="font-size:.68rem">' + w.test_start + '→' + w.test_end + '</td><td>' + pct(w.train?.win_rate) + '</td><td class="' + cls((w.test?.win_rate||0)-50) + '">' + pct(w.test?.win_rate) + '</td><td>' + rval(w.train?.expectancy_r) + '</td><td class="' + cls(w.test?.expectancy_r) + '">' + rval(w.test?.expectancy_r) + '</td><td>' + (w.edge_holds ? '<span class="positive">✓</span>' : '<span class="negative">✗</span>') + '</td></tr>';
+        wfHTML += '<tr><td style="font-size:.68rem">' + w.train_start + '\u2192' + w.train_end + '</td><td style="font-size:.68rem">' + w.test_start + '\u2192' + w.test_end + '</td><td>' + pct(w.train?.win_rate) + '</td><td class="' + cls((w.test?.win_rate||0)-50) + '">' + pct(w.test?.win_rate) + '</td><td>' + rval(w.train?.expectancy_r) + '</td><td class="' + cls(w.test?.expectancy_r) + '">' + rval(w.test?.expectancy_r) + '</td><td>' + (w.edge_holds ? '<span class="positive">\u2713</span>' : '<span class="negative">\u2717</span>') + '</td></tr>';
       });
       wfHTML += '</table></div>';
     });
     document.getElementById('walk-forward-results').innerHTML = wfHTML || '<span style="color:var(--text-dim)">No walk-forward data</span>';
   }
-  } catch(err) { console.error('refreshAll error:', err); document.getElementById('pipeline-status').innerHTML = '<div style="color:var(--red)">JS Error: ' + err.message + '</div>'; }
+  } catch(err) { console.error('refreshAll error:', err); showError('JS Error: ' + err.message); }
 }
 
-async function startTraining(symbols, timeframes) {
-  const body = {};
-  if (symbols) body.symbols = symbols;
-  if (timeframes) body.timeframes = timeframes;
-  try {
-    await fetch('/api/train/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
-    alert('Training started!');
-  } catch(e) { alert('Failed: ' + e.message); }
+// -------------------------------------------------------------------
+//  MODEL HEALTH TAB
+// -------------------------------------------------------------------
+async function refreshModelHealth() {
+  const [health, rankings, trend] = await Promise.all([
+    fetchJSON('/api/model-health'),
+    fetchJSON('/api/scanner-rankings'),
+    fetchJSON('/api/model-trend'),
+  ]);
+
+  // Health grid
+  if (health && health.scanners) {
+    let hHTML = '';
+    // Overview mini-cards too
+    let overviewHTML = '';
+    Object.entries(health.scanners).sort((a,b) => (b[1].latest_auc||0) - (a[1].latest_auc||0)).forEach(([scanner, h]) => {
+      const statusCls = h.status === 'GREEN' ? 'health-GREEN' : h.status === 'YELLOW' ? 'health-YELLOW' : 'health-RED';
+      const trendIcon = h.trend === 'improving' ? '\u2191' : h.trend === 'declining' ? '\u2193' : h.trend === 'drift_detected' ? '\u26A0' : '\u2192';
+      const trendCls = h.trend === 'improving' ? 'positive' : h.trend === 'declining' || h.trend === 'drift_detected' ? 'negative' : 'neutral';
+
+      hHTML += '<div class="card">';
+      hHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="health-dot ' + statusCls + '"></span><span style="color:var(--accent);font-weight:700">' + scanner + '</span><span class="badge badge-' + h.status.toLowerCase() + '">' + h.status + '</span></div>';
+      hHTML += '<div class="metric"><span class="label">Latest AUC</span><span class="value ' + (h.latest_auc > 0.55 ? 'positive' : 'negative') + '">' + (h.latest_auc||0).toFixed(4) + '</span></div>';
+      hHTML += '<div class="metric"><span class="label">4-Run Avg</span><span class="value">' + (h.avg_auc_4run||0).toFixed(4) + '</span></div>';
+      hHTML += '<div class="metric"><span class="label">Trend</span><span class="value ' + trendCls + '">' + trendIcon + ' ' + h.trend + '</span></div>';
+      hHTML += '<div class="metric"><span class="label">Runs</span><span class="value">' + (h.runs||0) + '</span></div>';
+      hHTML += '<div class="metric"><span class="label">Last Samples</span><span class="value">' + (h.latest_samples||0) + '</span></div>';
+      hHTML += '</div>';
+
+      // Mini overview card
+      overviewHTML += '<div class="stat-box" style="border-color:' + (h.status === 'GREEN' ? 'rgba(0,255,157,.3)' : h.status === 'YELLOW' ? 'rgba(255,215,0,.3)' : 'rgba(255,59,92,.3)') + '">';
+      overviewHTML += '<div style="display:flex;align-items:center;justify-content:center;gap:4px"><span class="health-dot ' + statusCls + '"></span><span class="stat-value" style="font-size:1rem;color:' + (h.latest_auc > 0.55 ? 'var(--green)' : 'var(--yellow)') + '">' + (h.latest_auc||0).toFixed(3) + '</span></div>';
+      overviewHTML += '<div class="stat-label">' + scanner + ' <span class="' + trendCls + '">' + trendIcon + '</span></div></div>';
+    });
+    document.getElementById('model-health-grid').innerHTML = hHTML || '<span style="color:var(--text-dim)">No model history yet. Train models first.</span>';
+    document.getElementById('overview-health').innerHTML = overviewHTML || '<span style="color:var(--text-dim)">No health data</span>';
+
+    // Update header health indicator
+    const hi = document.getElementById('health-indicator');
+    hi.textContent = health.overall || 'NO_DATA';
+    const oColor = health.overall === 'HEALTHY' ? 'var(--green)' : health.overall === 'DEGRADED' ? 'var(--red)' : health.overall === 'MIXED' ? 'var(--yellow)' : 'var(--text-muted)';
+    hi.style.color = oColor;
+    hi.style.borderColor = oColor;
+  }
+
+  // Scanner Rankings
+  if (rankings && rankings.rankings && rankings.rankings.length > 0) {
+    let rHTML = '<table><tr><th>Batch</th>';
+    // Find max scanners across all batches
+    let maxScanners = 0;
+    rankings.rankings.forEach(r => maxScanners = Math.max(maxScanners, r.ranking.length));
+    for (let i = 1; i <= maxScanners; i++) rHTML += '<th>#' + i + '</th>';
+    rHTML += '</tr>';
+    rankings.rankings.forEach(r => {
+      const ts = r.ts ? new Date(r.ts).toLocaleDateString() : '?';
+      rHTML += '<tr><td style="font-size:.68rem">' + ts + '</td>';
+      r.ranking.forEach((s, idx) => {
+        const color = idx === 0 ? 'var(--green)' : idx === r.ranking.length - 1 ? 'var(--red)' : 'var(--text)';
+        rHTML += '<td style="color:' + color + ';font-size:.72rem">' + s.scanner + ' <span style="color:var(--text-dim)">(' + s.auc.toFixed(3) + ')</span></td>';
+      });
+      // Pad
+      for (let i = r.ranking.length; i < maxScanners; i++) rHTML += '<td>\u2014</td>';
+      rHTML += '</tr>';
+    });
+    rHTML += '</table>';
+    document.getElementById('scanner-rankings').innerHTML = rHTML;
+  } else {
+    document.getElementById('scanner-rankings').innerHTML = '<span style="color:var(--text-dim)">No ranking history yet</span>';
+  }
+
+  // AUC Trend table
+  if (trend && trend.trend && trend.trend.length > 0) {
+    // Group by scanner
+    const byScanner = {};
+    trend.trend.forEach(r => {
+      const s = r.scanner || '?';
+      if (!byScanner[s]) byScanner[s] = [];
+      byScanner[s].push(r);
+    });
+    let tHTML = '<table><tr><th>Scanner</th><th>Run</th><th>AUC</th><th>Accuracy</th><th>Samples</th><th>Date</th></tr>';
+    Object.entries(byScanner).sort().forEach(([scanner, runs]) => {
+      runs.forEach((r, i) => {
+        const prevAuc = i > 0 ? runs[i-1].auc : r.auc;
+        const delta = r.auc - prevAuc;
+        const deltaCls = delta > 0.005 ? 'positive' : delta < -0.005 ? 'negative' : '';
+        tHTML += '<tr><td style="color:var(--accent)">' + (i === 0 ? scanner : '') + '</td>';
+        tHTML += '<td>' + (i+1) + '</td>';
+        tHTML += '<td class="' + deltaCls + '">' + (r.auc||0).toFixed(4) + (delta !== 0 && i > 0 ? ' (' + (delta > 0 ? '+' : '') + delta.toFixed(4) + ')' : '') + '</td>';
+        tHTML += '<td>' + ((r.accuracy||0)*100).toFixed(1) + '%</td>';
+        tHTML += '<td>' + (r.n_samples||0) + '</td>';
+        tHTML += '<td style="font-size:.68rem">' + (r.ts ? new Date(r.ts).toLocaleDateString() : '?') + '</td></tr>';
+      });
+    });
+    tHTML += '</table>';
+    document.getElementById('auc-trend-table').innerHTML = tHTML;
+  } else {
+    document.getElementById('auc-trend-table').innerHTML = '<span style="color:var(--text-dim)">No trend data yet</span>';
+  }
 }
 
+// -------------------------------------------------------------------
+//  FEATURE DRIFT
+// -------------------------------------------------------------------
+async function loadFeatureDrift(scanner) {
+  const data = await fetchJSON('/api/feature-drift?scanner=' + encodeURIComponent(scanner));
+  if (!data || !data.drift || data.drift.length === 0) {
+    document.getElementById('drift-table').innerHTML = '<span style="color:var(--text-dim)">No drift data for ' + scanner + ' (need 2+ training runs)</span>';
+    return;
+  }
+  let h = '<div style="font-size:.8rem;color:var(--accent);margin-bottom:8px">' + scanner + ' \u2014 ' + data.runs_compared + ' runs compared</div>';
+  h += '<table><tr><th>Feature</th><th>Old Rank</th><th>New Rank</th><th>Shift</th><th>Old Imp</th><th>New Imp</th></tr>';
+  data.drift.forEach(d => {
+    const shiftCls = d.shift > 0 ? 'drift-up' : 'drift-down';
+    const arrow = d.shift > 0 ? '\u2191' : '\u2193';
+    h += '<tr><td>' + d.feature + '</td>';
+    h += '<td>#' + d.old_rank + '</td><td>#' + d.new_rank + '</td>';
+    h += '<td class="' + shiftCls + '">' + arrow + ' ' + Math.abs(d.shift) + '</td>';
+    h += '<td>' + (d.old_importance * 100).toFixed(1) + '%</td>';
+    h += '<td>' + (d.new_importance * 100).toFixed(1) + '%</td></tr>';
+  });
+  h += '</table>';
+  document.getElementById('drift-table').innerHTML = h;
+}
+
+// -------------------------------------------------------------------
+//  LIVE FEEDBACK
+// -------------------------------------------------------------------
 async function refreshLiveFeedback() {
   const fb = await fetchJSON('/api/live-feedback');
   if (!fb) return;
 
-  // Summary
+  // Update freshness
+  updateFreshness(fb);
+
   const total = fb.total_trades || 0;
   const acc = fb.ml_accuracy || {};
+
+  // Summary
   let sumHTML = '';
   sumHTML += '<div class="metric"><span class="label">Total Trades</span><span class="value">' + total + '</span></div>';
   sumHTML += '<div class="metric"><span class="label">Feedback File</span><span class="value" style="color:var(--cyan)">' + (total > 0 ? 'Active' : 'Empty') + '</span></div>';
   document.getElementById('fb-summary').innerHTML = sumHTML;
 
-  // ML Accuracy
+  // ML Accuracy (global)
   let accHTML = '';
   accHTML += '<div class="metric"><span class="label">Total w/ ML</span><span class="value">' + (acc.total || 0) + '</span></div>';
   accHTML += '<div class="metric"><span class="label">Correct</span><span class="value positive">' + (acc.ml_correct || 0) + '</span></div>';
   accHTML += '<div class="metric"><span class="label">Wrong</span><span class="value negative">' + (acc.ml_wrong || 0) + '</span></div>';
-  accHTML += '<div class="metric"><span class="label">Accuracy</span><span class="value ' + ((acc.accuracy_pct||0) > 50 ? 'positive' : 'negative') + '">' + (acc.accuracy_pct ? acc.accuracy_pct.toFixed(1) + '%' : '—') + '</span></div>';
-  // By ML verdict
+  accHTML += '<div class="metric"><span class="label">Accuracy</span><span class="value ' + ((acc.accuracy_pct||0) > 50 ? 'positive' : 'negative') + '">' + (acc.accuracy_pct ? acc.accuracy_pct.toFixed(1) + '%' : '\u2014') + '</span></div>';
   const byVerdict = acc.by_verdict || {};
   Object.entries(byVerdict).forEach(([v, d]) => {
     accHTML += '<div class="metric"><span class="label" style="font-size:.7rem">' + v + '</span><span class="value" style="font-size:.7rem">' + d.n + 't ' + (d.win_rate||0) + '% $' + (d.pnl_sum||0).toFixed(2) + '</span></div>';
   });
   document.getElementById('fb-ml-accuracy').innerHTML = accHTML;
+
+  // ML Accuracy by Pair (NEW - P1)
+  const mlByPair = fb.ml_accuracy_by_pair || {};
+  let mlPairHTML = '';
+  Object.entries(mlByPair).sort((a,b) => (b[1].accuracy_pct||0) - (a[1].accuracy_pct||0)).forEach(([pair, d]) => {
+    const accPct = d.accuracy_pct || 0;
+    const statusBadge = accPct >= 60 ? 'badge-green' : accPct >= 50 ? 'badge-yellow' : 'badge-red';
+    const statusText = accPct >= 60 ? 'GOOD' : accPct >= 50 ? 'OK' : 'POOR';
+    mlPairHTML += '<tr><td style="color:var(--cyan)">' + pair + '</td>';
+    mlPairHTML += '<td>' + (d.total||0) + '</td>';
+    mlPairHTML += '<td class="positive">' + (d.correct||0) + '</td>';
+    mlPairHTML += '<td class="negative">' + (d.wrong||0) + '</td>';
+    mlPairHTML += '<td class="' + cls(accPct - 50) + '">' + accPct.toFixed(1) + '%</td>';
+    mlPairHTML += '<td class="' + cls(d.pnl_sum) + '">$' + (d.pnl_sum||0).toFixed(2) + '</td>';
+    mlPairHTML += '<td><span class="badge ' + statusBadge + '">' + statusText + '</span></td></tr>';
+  });
+  document.getElementById('fb-ml-by-pair').innerHTML = mlPairHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No ML accuracy data yet</td></tr>';
 
   // By Trade Type
   const byType = fb.by_trade_type || {};
@@ -579,8 +895,7 @@ async function refreshLiveFeedback() {
   Object.entries(byPair).sort((a,b) => (b[1].pnl_usd||0)-(a[1].pnl_usd||0)).forEach(([pair, d]) => {
     const wr = d.win_rate || 0;
     const losses = d.trades - d.wins;
-    const avgPnl = d.trades > 0 ? d.pnl_usd / d.trades : 0;
-    pairHTML += '<tr><td style="color:var(--cyan)">' + pair + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(avgPnl) + '">$' + avgPnl.toFixed(2) + '</td></tr>';
+    pairHTML += '<tr><td style="color:var(--cyan)">' + pair + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(d.avg_r) + '">' + (d.avg_r||0).toFixed(3) + 'R</td></tr>';
   });
   document.getElementById('fb-by-pair').innerHTML = pairHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No data</td></tr>';
 
@@ -590,15 +905,37 @@ async function refreshLiveFeedback() {
   Object.entries(byScanner).sort((a,b) => (b[1].pnl_usd||0)-(a[1].pnl_usd||0)).forEach(([scanner, d]) => {
     const wr = d.win_rate || 0;
     const losses = d.trades - d.wins;
-    const avgPnl = d.trades > 0 ? d.pnl_usd / d.trades : 0;
-    scanHTML += '<tr><td style="color:var(--accent)">' + scanner + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(avgPnl) + '">$' + avgPnl.toFixed(2) + '</td></tr>';
+    scanHTML += '<tr><td style="color:var(--accent)">' + scanner + '</td><td>' + d.trades + '</td><td class="positive">' + d.wins + '</td><td class="negative">' + losses + '</td><td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td><td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td><td class="' + cls(d.avg_r) + '">' + (d.avg_r||0).toFixed(3) + 'R</td></tr>';
   });
   document.getElementById('fb-by-scanner').innerHTML = scanHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No data</td></tr>';
 
-  // Pair × Scanner Matrix (API returns a list of {symbol, scanner, trades, wins, pnl_usd, ...})
+  // By Session (NEW - P3)
+  const bySession = fb.by_session || {};
+  let sessHTML = '';
+  ['asia', 'europe', 'us', 'late_us'].forEach(session => {
+    const d = bySession[session];
+    if (!d) {
+      sessHTML += '<tr><td style="color:var(--text-dim)">' + session + '</td><td style="color:var(--text-dim)">' + (SESSION_HOURS[session]||'?') + '</td><td colspan="4" style="color:var(--text-dim)">\u2014</td></tr>';
+      return;
+    }
+    const wr = d.win_rate || 0;
+    sessHTML += '<tr><td style="color:var(--cyan);text-transform:uppercase">' + session + '</td>';
+    sessHTML += '<td>' + (SESSION_HOURS[session]||'?') + '</td>';
+    sessHTML += '<td>' + d.trades + '</td>';
+    sessHTML += '<td class="' + cls(wr-50) + '">' + wr.toFixed(1) + '%</td>';
+    sessHTML += '<td class="' + cls(d.pnl_usd) + '">$' + (d.pnl_usd||0).toFixed(2) + '</td>';
+    sessHTML += '<td class="' + cls(d.avg_r) + '">' + (d.avg_r||0).toFixed(3) + 'R</td></tr>';
+  });
+  // Add unknown if present
+  if (bySession.unknown && bySession.unknown.trades > 0) {
+    const d = bySession.unknown;
+    sessHTML += '<tr><td style="color:var(--text-dim)">unknown</td><td>?</td><td>' + d.trades + '</td><td>' + (d.win_rate||0).toFixed(1) + '%</td><td>$' + (d.pnl_usd||0).toFixed(2) + '</td><td>' + (d.avg_r||0).toFixed(3) + 'R</td></tr>';
+  }
+  document.getElementById('fb-by-session').innerHTML = sessHTML;
+
+  // Pair x Scanner Matrix
   const matrixList = fb.by_pair_scanner || [];
   if (matrixList.length > 0) {
-    // Build nested dict: pair → scanner → data
     const matrixMap = {};
     const allScanners = new Set();
     matrixList.forEach(d => {
@@ -617,10 +954,9 @@ async function refreshLiveFeedback() {
       scannerList.forEach(s => {
         const d = scanners[s];
         if (d) {
-          const wr = d.win_rate || 0;
-          mHTML += '<td class="' + cls(d.pnl_usd) + '" style="font-size:.7rem">' + d.trades + 't ' + wr.toFixed(0) + '% $' + (d.pnl_usd||0).toFixed(1) + '</td>';
+          mHTML += '<td class="' + cls(d.pnl_usd) + '" style="font-size:.7rem">' + d.trades + 't ' + (d.win_rate||0).toFixed(0) + '% $' + (d.pnl_usd||0).toFixed(1) + '</td>';
         } else {
-          mHTML += '<td style="color:var(--text-muted)">—</td>';
+          mHTML += '<td style="color:var(--text-muted)">\u2014</td>';
         }
       });
       mHTML += '</tr>';
@@ -638,27 +974,52 @@ async function refreshLiveFeedback() {
     const side = t.side || '?';
     const sideColor = side.toLowerCase() === 'long' ? 'var(--green)' : 'var(--red)';
     const ttColor = t.trade_type === 'SCALP' ? 'var(--yellow)' : t.trade_type === 'INTRADAY' ? 'var(--purple)' : 'var(--green)';
-    const dur = t.duration_sec ? (t.duration_sec < 60 ? t.duration_sec + 's' : Math.floor(t.duration_sec/60) + 'm') : '—';
+    const dur = t.duration_sec ? (t.duration_sec < 60 ? t.duration_sec + 's' : Math.floor(t.duration_sec/60) + 'm') : '\u2014';
     recHTML += '<tr>';
-    recHTML += '<td style="font-size:.68rem">' + (t.closed_at ? new Date(t.closed_at).toLocaleString() : '—') + '</td>';
+    recHTML += '<td style="font-size:.68rem">' + (t.closed_at ? new Date(t.closed_at).toLocaleString() : '\u2014') + '</td>';
     recHTML += '<td style="color:var(--cyan)">' + (t.symbol || '?') + '</td>';
     recHTML += '<td style="color:' + sideColor + '">' + side.toUpperCase() + '</td>';
     recHTML += '<td style="color:' + ttColor + '">' + (t.trade_type || '?') + '</td>';
-    recHTML += '<td>' + (t.scanner || '?') + '</td>';
-    recHTML += '<td>' + (t.ml_prob != null ? (t.ml_prob*100).toFixed(1) + '%' : '—') + '</td>';
-    recHTML += '<td>$' + (t.entry_price ? t.entry_price.toFixed(2) : '—') + '</td>';
-    recHTML += '<td>$' + (t.exit_price ? t.exit_price.toFixed(2) : '—') + '</td>';
-    recHTML += '<td class="' + cls(t.pnl_usd) + '">$' + (t.pnl_usd != null ? t.pnl_usd.toFixed(2) : '—') + '</td>';
+    recHTML += '<td>' + (t.scanner || t.setup_type || '?') + '</td>';
+    recHTML += '<td>' + (t.ml_probability != null ? (t.ml_probability*100).toFixed(1) + '%' : '\u2014') + '</td>';
+    recHTML += '<td>$' + (t.entry_price ? t.entry_price.toFixed(2) : '\u2014') + '</td>';
+    recHTML += '<td>$' + (t.exit_price ? t.exit_price.toFixed(2) : '\u2014') + '</td>';
+    recHTML += '<td class="' + cls(t.pnl_usd) + '">$' + (t.pnl_usd != null ? t.pnl_usd.toFixed(2) : '\u2014') + '</td>';
     recHTML += '<td>' + dur + '</td>';
     recHTML += '</tr>';
   });
   document.getElementById('fb-recent').innerHTML = recHTML || '<tr><td colspan="10" style="color:var(--text-dim)">No recent trades</td></tr>';
 }
 
+// -------------------------------------------------------------------
+//  ACTIONS
+// -------------------------------------------------------------------
+async function startTraining(symbols, timeframes) {
+  const body = {};
+  if (symbols) body.symbols = symbols;
+  if (timeframes) body.timeframes = timeframes;
+  try {
+    await fetch('/api/train/start', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+    alert('Training started!');
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+async function runValidation() {
+  try {
+    await fetch('/api/validation/run', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    alert('AUC Validation started! Check Walk-Forward tab.');
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+// -------------------------------------------------------------------
+//  INIT
+// -------------------------------------------------------------------
 refreshAll();
 refreshLiveFeedback();
+refreshModelHealth();
 setInterval(refreshAll, 5000);
 setInterval(refreshLiveFeedback, 10000);
+setInterval(refreshModelHealth, 30000);
 </script>
 </body>
 </html>

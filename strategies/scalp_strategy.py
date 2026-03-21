@@ -815,7 +815,7 @@ class ScalpStrategy(BaseStrategy):
         # Light structural checks: ATR band, VWAP noise, MTF, regime blocks
         # ══════════════════════════════════════════════════════
         prefilter = self._structural_prefilter(df, htf_df, symbol, regime)
-        if not prefilter["pass"] and not self._is_learning:
+        if not prefilter["pass"]:  # ALWAYS enforce — no learning bypass
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1052,19 +1052,18 @@ class ScalpStrategy(BaseStrategy):
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
 
-        # In paper_learning mode: run most scanners but still exclude proven losers
-        if self._is_learning:
-            allowed_scanners = [
-                self._scan_ema_momentum,
-                self._scan_trend_continuation,
-                self._scan_rsi_divergence,
-                # bb_squeeze DISABLED — 36% ML, 0% MFE, pure noise
-                self._scan_structure_bounce,
-                self._scan_order_block_entry,
-                self._scan_vwap_mean_revert,
-                self._scan_liquidity_sweep,
-                self._scan_simple_bias,
-            ]
+        # In paper_learning mode: STILL respect regime routing, but add
+        # liquidity_sweep to all regimes for data collection.
+        # DO NOT override regime routing — that's what caused garbage trades.
+        if self._is_learning and allowed_scanners:
+            # Add data-collection scanners to regime-routed list (not override it)
+            learning_extras = [self._scan_liquidity_sweep, self._scan_simple_bias]
+            for extra in learning_extras:
+                if extra not in allowed_scanners:
+                    allowed_scanners.append(extra)
+        elif self._is_learning and not allowed_scanners:
+            # Quiet/low_liquidity regime: still NO TRADING even in learning mode
+            pass
 
         if not allowed_scanners:
             self.last_scan_status[symbol] = {
@@ -1633,8 +1632,10 @@ class ScalpStrategy(BaseStrategy):
             veto_type = v.split(":")[0].strip()
             self._veto_stats[veto_type] = self._veto_stats.get(veto_type, 0) + 1
 
-        # Apply hard vetos (in learning mode: log but don't block)
-        if hard_vetos and not self._is_learning:
+        # Apply hard vetos — ALWAYS enforced, even in learning mode
+        # These exist for a reason: HTF mismatch, dead session, regime conflict, CHOCH conflict
+        # Letting garbage through in learning mode corrupts the training data
+        if hard_vetos:
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1646,18 +1647,14 @@ class ScalpStrategy(BaseStrategy):
             }
             return []
 
-        # Apply soft veto confidence penalty (structure_bounce only)
-        if soft_vetos and not self._is_learning:
+        # Apply soft veto confidence penalty (always — learning mode included)
+        if soft_vetos:
             best = _SetupResult(
                 name=best.name, side=best.side,
                 confidence=max(best.confidence - conf_penalty, 40),
                 confirmations=best.confirmations + [f"[SOFT_PENALTY: -{conf_penalty} from {len(soft_vetos)} vetos]"],
                 entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
             )
-
-        # In learning mode, tag the signal with would-block info
-        if vetos and self._is_learning:
-            best.confirmations.append(f"[WOULD_BLOCK: {len(vetos)} vetos]")
 
         # ── Apply confidence modifiers ──
 
@@ -1741,8 +1738,8 @@ class ScalpStrategy(BaseStrategy):
         self._last_ev_results[setup_name_ev] = ev_result.to_dict()
         ev_size_mult = ev_result.size_multiplier
 
-        # HARD EV VETO — reject negative EV trades
-        if ev_result.verdict == "REJECT" and not self._is_learning:
+        # HARD EV VETO — reject negative EV trades (ALWAYS enforced)
+        if ev_result.verdict == "REJECT":
             self._funnel["blocked_ev"] = self._funnel.get("blocked_ev", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -4494,7 +4491,7 @@ class ScalpStrategy(BaseStrategy):
             grade=grade,
             risk_reward=eff_rr,
             reason=f"SCALP {setup.name}: {', '.join(setup.confirmations[:4])}",
-            regime=regime or MarketRegime.SIDEWAYS,  # Use detected regime, not hardcoded
+            regime=regime if regime else MarketRegime.SIDEWAYS,  # Fix: empty string is falsy, use explicit check
             metadata={
                 "setup_type": setup.name,
                 "confirmations": setup.confirmations,

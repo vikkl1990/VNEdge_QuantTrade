@@ -70,13 +70,32 @@ class ModeManager:
         return f"ModeManager(mode={self._mode})"
 
 
-def get_mode_manager(config: dict = None) -> ModeManager:
+def get_mode_manager(config=None) -> ModeManager:
     """Get or create the singleton ModeManager."""
     global _instance
     if _instance is None:
-        mode = "paper_learning"
+        # Default to paper_enforced (safe) — NOT paper_learning (everything bypassed)
+        mode = "paper_enforced"
         if config:
-            mode = config.get("bot", {}).get("operating_mode", "paper_learning")
+            try:
+                # Handle dict-style config
+                if isinstance(config, dict):
+                    mode = config.get("bot", {}).get("operating_mode", "paper_enforced")
+                # Handle object-style config (dataclass, namespace, etc.)
+                elif hasattr(config, "get"):
+                    mode = config.get("bot", {}).get("operating_mode", "paper_enforced")
+                elif hasattr(config, "bot"):
+                    bot_cfg = getattr(config, "bot", {})
+                    if isinstance(bot_cfg, dict):
+                        mode = bot_cfg.get("operating_mode", "paper_enforced")
+                    elif hasattr(bot_cfg, "get"):
+                        mode = bot_cfg.get("operating_mode", "paper_enforced")
+                    elif hasattr(bot_cfg, "operating_mode"):
+                        mode = getattr(bot_cfg, "operating_mode", "paper_enforced")
+            except Exception as e:
+                logger.warning("Failed to read operating_mode from config (%s: %s), using paper_enforced", type(e).__name__, e)
+                mode = "paper_enforced"
+            logger.info("ModeManager: config_type=%s, resolved_mode=%s", type(config).__name__, mode)
         _instance = ModeManager(mode)
     return _instance
 

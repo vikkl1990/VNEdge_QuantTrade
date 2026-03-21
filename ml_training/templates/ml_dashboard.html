@@ -123,6 +123,7 @@ tr:hover{background:var(--accent-dim)}
   <div class="tab active" data-tab="overview">Overview</div>
   <div class="tab" data-tab="candidates">Candidates (ML)</div>
   <div class="tab" data-tab="scanners">Scanner Results</div>
+  <div class="tab" data-tab="backtest-all">Backtest Results</div>
   <div class="tab" data-tab="calibration">Calibration</div>
   <div class="tab" data-tab="features">Features</div>
   <div class="tab" data-tab="comparison">TF Comparison</div>
@@ -201,6 +202,60 @@ tr:hover{background:var(--accent-dim)}
     <table>
       <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th></tr>
       <tbody id="scanner-results"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- BACKTEST RESULTS (ALL PAIRS) -->
+<div class="tab-content" id="tab-backtest-all">
+  <!-- Summary stats -->
+  <div class="grid grid-4" style="margin-bottom:16px" id="bt-summary-grid"></div>
+  <!-- Per-pair filter buttons -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>Filter by Pair</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <button class="btn" style="padding:4px 14px;font-size:.72rem" onclick="btFilterPair('ALL')">ALL</button>
+      <span id="bt-pair-btns"></span>
+    </div>
+  </div>
+  <!-- Per-pair cards -->
+  <div id="bt-pair-cards"></div>
+  <!-- Full results table -->
+  <div class="card" style="margin-top:16px">
+    <h3>All Backtest Results</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Every scanner x pair x timeframe combination. Sorted by expectancy. Click column headers to re-sort.
+    </p>
+    <table>
+      <tr>
+        <th style="cursor:pointer" onclick="btSort('symbol')">Symbol</th>
+        <th style="cursor:pointer" onclick="btSort('scanner')">Scanner</th>
+        <th style="cursor:pointer" onclick="btSort('timeframe')">TF</th>
+        <th style="cursor:pointer" onclick="btSort('trades')">Trades</th>
+        <th style="cursor:pointer" onclick="btSort('win_rate')">WR%</th>
+        <th style="cursor:pointer" onclick="btSort('expectancy_r')">Exp(R)</th>
+        <th style="cursor:pointer" onclick="btSort('profit_factor')">PF</th>
+        <th>Avg Win</th>
+        <th>Avg Loss</th>
+        <th>WF Verdict</th>
+      </tr>
+      <tbody id="bt-all-table"></tbody>
+    </table>
+  </div>
+  <!-- Pair x Scanner heatmap -->
+  <div class="card" style="margin-top:16px">
+    <h3>Pair x Scanner Heatmap (5m Expectancy)</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Cell color: <span class="positive">Green = positive expectancy</span>, <span class="negative">Red = negative</span>. 5m timeframe shown (most stable).
+    </p>
+    <div id="bt-heatmap" style="overflow-x:auto"></div>
+  </div>
+  <!-- Scanner aggregate -->
+  <div class="card" style="margin-top:16px">
+    <h3>Scanner Performance Across All Pairs</h3>
+    <table>
+      <tr><th>Scanner</th><th>Pairs</th><th>Total Trades</th><th>Avg WR</th><th>Avg Exp(R)</th><th>Valid Edges</th><th>Setups</th></tr>
+      <tbody id="bt-scanner-agg"></tbody>
     </table>
   </div>
 </div>
@@ -1012,14 +1067,166 @@ async function runValidation() {
 }
 
 // -------------------------------------------------------------------
+//  BACKTEST RESULTS TAB
+// -------------------------------------------------------------------
+let btData = null;
+let btSortKey = 'expectancy_r';
+let btSortAsc = false;
+let btFilterSymbol = 'ALL';
+
+async function refreshBacktestAll() {
+  const data = await fetchJSON('/api/backtest-all');
+  if (!data) return;
+  btData = data;
+  renderBacktest();
+}
+
+function btFilterPair(sym) {
+  btFilterSymbol = sym;
+  renderBacktest();
+}
+
+function btSort(key) {
+  if (btSortKey === key) btSortAsc = !btSortAsc;
+  else { btSortKey = key; btSortAsc = false; }
+  renderBacktest();
+}
+
+function renderBacktest() {
+  if (!btData) return;
+  const summary = btData.summary || {};
+  const byPair = btData.by_pair || {};
+  const byScanner = btData.by_scanner || {};
+  let allResults = btData.all_results || [];
+  const heatmap = btData.heatmap || [];
+  const scanners = btData.scanners || [];
+
+  // Summary cards
+  let sumHTML = '';
+  sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--cyan)">' + (summary.total_pairs||0) + '</div><div class="stat-label">Pairs Tested</div></div>';
+  sumHTML += '<div class="stat-box"><div class="stat-value" style="color:var(--accent)">' + (summary.total_setups||0) + '</div><div class="stat-label">Total Setups</div></div>';
+  sumHTML += '<div class="stat-box"><div class="stat-value" style="color:' + ((summary.avg_expectancy||0) > 0 ? 'var(--green)' : 'var(--red)') + '">' + (summary.avg_expectancy||0).toFixed(3) + 'R</div><div class="stat-label">Avg Expectancy</div></div>';
+  sumHTML += '<div class="stat-box"><div class="stat-value" style="color:' + ((summary.valid_edge_pct||0) > 30 ? 'var(--green)' : 'var(--yellow)') + '">' + (summary.valid_edge_pct||0).toFixed(0) + '%</div><div class="stat-label">Valid Edges</div></div>';
+  document.getElementById('bt-summary-grid').innerHTML = sumHTML;
+
+  // Pair filter buttons
+  let btnHTML = '';
+  Object.keys(byPair).sort().forEach(sym => {
+    const active = btFilterSymbol === sym ? 'background:rgba(0,255,157,.2);border-color:var(--accent)' : '';
+    btnHTML += '<button class="btn" style="padding:4px 14px;font-size:.72rem;' + active + '" onclick="btFilterPair(\'' + sym + '\')">' + sym.split('/')[0] + '</button>';
+  });
+  document.getElementById('bt-pair-btns').innerHTML = btnHTML;
+
+  // Per-pair summary cards
+  let pairHTML = '';
+  const pairsToShow = btFilterSymbol === 'ALL' ? Object.keys(byPair).sort() : [btFilterSymbol];
+  pairsToShow.forEach(sym => {
+    const p = byPair[sym];
+    if (!p) return;
+    const expCls = p.avg_exp > 0 ? 'positive' : 'negative';
+    pairHTML += '<div class="card" style="margin-bottom:12px">';
+    pairHTML += '<h3 style="display:flex;justify-content:space-between;align-items:center">' + sym + '<span style="font-size:.72rem;color:var(--text-dim)">' + p.total_setups + ' setups | ' + p.total_trades + ' trades</span></h3>';
+    pairHTML += '<div class="grid grid-4" style="margin-bottom:8px">';
+    pairHTML += '<div class="metric"><span class="label">Avg WR</span><span class="value ' + cls(p.avg_wr-50) + '">' + p.avg_wr.toFixed(1) + '%</span></div>';
+    pairHTML += '<div class="metric"><span class="label">Avg Exp</span><span class="value ' + expCls + '">' + p.avg_exp.toFixed(3) + 'R</span></div>';
+    pairHTML += '<div class="metric"><span class="label">Valid Edges</span><span class="value ' + (p.valid_edges > 0 ? 'positive' : 'negative') + '">' + p.valid_edges + '/' + p.total_setups + '</span></div>';
+    pairHTML += '<div class="metric"><span class="label">Best</span><span class="value" style="font-size:.7rem;color:var(--cyan)">' + (p.best_setup||'\u2014') + '</span></div>';
+    pairHTML += '</div>';
+    // Mini table for this pair
+    const pairResults = (p.results || []).sort((a,b) => (b.expectancy_r||0) - (a.expectancy_r||0));
+    if (pairResults.length > 0) {
+      pairHTML += '<table style="font-size:.72rem"><tr><th>Scanner</th><th>TF</th><th>Trades</th><th>WR</th><th>Exp(R)</th><th>PF</th><th>WF</th></tr>';
+      pairResults.forEach(r => {
+        const wfBadge = r.wf_verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid';
+        pairHTML += '<tr><td style="color:var(--accent)">' + r.scanner + '</td><td>' + r.timeframe + '</td><td>' + r.trades + '</td>';
+        pairHTML += '<td class="' + cls(r.win_rate-50) + '">' + r.win_rate.toFixed(1) + '%</td>';
+        pairHTML += '<td class="' + cls(r.expectancy_r) + '">' + r.expectancy_r.toFixed(3) + 'R</td>';
+        pairHTML += '<td>' + (r.profit_factor||0).toFixed(2) + '</td>';
+        pairHTML += '<td><span class="badge ' + wfBadge + '" style="font-size:.6rem">' + (r.wf_verdict||'?') + '</span></td></tr>';
+      });
+      pairHTML += '</table>';
+    }
+    pairHTML += '</div>';
+  });
+  document.getElementById('bt-pair-cards').innerHTML = pairHTML || '<div class="card"><span style="color:var(--text-dim)">No backtest data yet. Run training first.</span></div>';
+
+  // Full results table (filtered + sorted)
+  let filtered = btFilterSymbol === 'ALL' ? [...allResults] : allResults.filter(r => r.symbol === btFilterSymbol);
+  filtered.sort((a, b) => {
+    const va = a[btSortKey] ?? 0;
+    const vb = b[btSortKey] ?? 0;
+    if (typeof va === 'string') return btSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return btSortAsc ? va - vb : vb - va;
+  });
+  let tHTML = '';
+  filtered.forEach(r => {
+    const wfBadge = r.wf_verdict === 'VALID EDGE' ? 'badge-valid' : 'badge-invalid';
+    tHTML += '<tr><td style="color:var(--cyan)">' + r.symbol + '</td>';
+    tHTML += '<td style="color:var(--accent)">' + r.scanner + '</td>';
+    tHTML += '<td>' + r.timeframe + '</td>';
+    tHTML += '<td>' + r.trades + '</td>';
+    tHTML += '<td class="' + cls(r.win_rate-50) + '">' + r.win_rate.toFixed(1) + '%</td>';
+    tHTML += '<td class="' + cls(r.expectancy_r) + '">' + r.expectancy_r.toFixed(3) + 'R</td>';
+    tHTML += '<td>' + (r.profit_factor||0).toFixed(2) + '</td>';
+    tHTML += '<td class="positive">' + (r.avg_win_r||0).toFixed(3) + 'R</td>';
+    tHTML += '<td class="negative">' + (r.avg_loss_r||0).toFixed(3) + 'R</td>';
+    tHTML += '<td><span class="badge ' + wfBadge + '">' + (r.wf_verdict||'?') + '</span></td></tr>';
+  });
+  document.getElementById('bt-all-table').innerHTML = tHTML || '<tr><td colspan="10" style="color:var(--text-dim)">No results</td></tr>';
+
+  // Heatmap (5m only)
+  const hm5m = heatmap.filter(h => h.timeframe === '5m');
+  if (hm5m.length > 0 && scanners.length > 0) {
+    const symbols = [...new Set(hm5m.map(h => h.symbol))].sort();
+    let hmHTML = '<table><tr><th>Pair</th>';
+    scanners.forEach(s => hmHTML += '<th style="font-size:.6rem;writing-mode:vertical-lr;transform:rotate(180deg);height:80px">' + s + '</th>');
+    hmHTML += '</tr>';
+    symbols.forEach(sym => {
+      hmHTML += '<tr><td style="color:var(--cyan)">' + sym.split('/')[0] + '</td>';
+      scanners.forEach(sc => {
+        const cell = hm5m.find(h => h.symbol === sym && h.scanner === sc);
+        if (cell) {
+          const exp = cell.expectancy_r || 0;
+          const bg = exp > 0.02 ? 'rgba(0,255,157,.2)' : exp > 0 ? 'rgba(0,255,157,.08)' : exp > -0.02 ? 'rgba(255,59,92,.08)' : 'rgba(255,59,92,.2)';
+          const isValid = cell.wf_verdict === 'VALID EDGE';
+          hmHTML += '<td style="background:' + bg + ';text-align:center;font-size:.68rem" class="' + cls(exp) + '">' + exp.toFixed(3) + (isValid ? ' \u2713' : '') + '</td>';
+        } else {
+          hmHTML += '<td style="color:var(--text-muted);text-align:center">\u2014</td>';
+        }
+      });
+      hmHTML += '</tr>';
+    });
+    hmHTML += '</table>';
+    document.getElementById('bt-heatmap').innerHTML = hmHTML;
+  } else {
+    document.getElementById('bt-heatmap').innerHTML = '<span style="color:var(--text-dim)">No 5m heatmap data</span>';
+  }
+
+  // Scanner aggregate
+  let scHTML = '';
+  Object.values(byScanner).sort((a,b) => (b.avg_exp||0) - (a.avg_exp||0)).forEach(s => {
+    scHTML += '<tr><td style="color:var(--accent)">' + s.scanner + '</td>';
+    scHTML += '<td>' + s.pairs_tested + '</td>';
+    scHTML += '<td>' + s.total_trades + '</td>';
+    scHTML += '<td class="' + cls(s.avg_wr-50) + '">' + (s.avg_wr||0).toFixed(1) + '%</td>';
+    scHTML += '<td class="' + cls(s.avg_exp) + '">' + (s.avg_exp||0).toFixed(3) + 'R</td>';
+    scHTML += '<td class="' + (s.valid_edges > 0 ? 'positive' : 'negative') + '">' + (s.valid_edges||0) + '</td>';
+    scHTML += '<td>' + s.count + '</td></tr>';
+  });
+  document.getElementById('bt-scanner-agg').innerHTML = scHTML || '<tr><td colspan="7" style="color:var(--text-dim)">No data</td></tr>';
+}
+
+// -------------------------------------------------------------------
 //  INIT
 // -------------------------------------------------------------------
 refreshAll();
 refreshLiveFeedback();
 refreshModelHealth();
+refreshBacktestAll();
 setInterval(refreshAll, 5000);
 setInterval(refreshLiveFeedback, 10000);
 setInterval(refreshModelHealth, 30000);
+setInterval(refreshBacktestAll, 15000);
 </script>
 </body>
 </html>

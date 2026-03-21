@@ -691,6 +691,7 @@ class MLDashboard:
         self._app.router.add_get("/api/model-health", self._handle_model_health)
         self._app.router.add_get("/api/feature-drift", self._handle_feature_drift)
         self._app.router.add_get("/api/scanner-rankings", self._handle_scanner_rankings)
+        self._app.router.add_get("/api/backtest-all", self._handle_backtest_all)
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
         if static_dir.exists():
@@ -1295,6 +1296,161 @@ class MLDashboard:
             }, dumps=_json_dumps)
         except Exception as e:
             return _error_response("scanner_rankings", str(e))
+
+    # -------------------------------------------------------------------
+    #  NEW: Backtest All — comprehensive per-pair results
+    # -------------------------------------------------------------------
+    async def _handle_backtest_all(self, request):
+        """Return structured backtest results for ALL pairs with per-pair aggregation.
+
+        Groups results by symbol, scanner, and timeframe with summary stats.
+        """
+        try:
+            # Load all backtest result files
+            all_results = []
+            errors = []
+            if RESULTS_DIR.exists():
+                for f in sorted(RESULTS_DIR.glob("*.json")):
+                    try:
+                        data = json.loads(f.read_text())
+                        symbol_raw = data.get("symbol", "")
+                        parts = symbol_raw.rsplit("_", 1)
+                        symbol = parts[0] if len(parts) > 1 else symbol_raw
+                        timeframe = parts[1] if len(parts) > 1 else "?"
+                        scanner = data.get("scanner", "?")
+                        metrics = data.get("metrics", {})
+                        wf = data.get("walk_forward", {})
+                        trades_list = data.get("trades", [])
+
+                        all_results.append({
+                            "key": f.stem,
+                            "scanner": scanner,
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "trades": metrics.get("trades", len(trades_list)),
+                            "win_rate": metrics.get("win_rate", 0),
+                            "expectancy_r": metrics.get("expectancy_r", 0),
+                            "profit_factor": metrics.get("profit_factor", 0),
+                            "avg_win_r": metrics.get("avg_win_r", 0),
+                            "avg_loss_r": metrics.get("avg_loss_r", 0),
+                            "max_drawdown_r": metrics.get("max_drawdown_r", 0),
+                            "sharpe": metrics.get("sharpe", 0),
+                            "wf_verdict": wf.get("verdict", "?") if wf else "?",
+                            "wf_edge_holds_pct": wf.get("edge_holds_pct", 0) if wf else 0,
+                        })
+                    except Exception as e:
+                        errors.append(f"{f.name}: {e}")
+
+            if not all_results:
+                return web.json_response({
+                    "by_pair": {},
+                    "by_scanner": {},
+                    "summary": {},
+                    "all_results": [],
+                    "_freshness": _freshness(),
+                    "_warnings": errors[:5] if errors else [],
+                })
+
+            # Group by symbol
+            by_pair = {}
+            for r in all_results:
+                sym = r["symbol"]
+                if sym not in by_pair:
+                    by_pair[sym] = {
+                        "symbol": sym,
+                        "results": [],
+                        "total_trades": 0,
+                        "avg_wr": 0,
+                        "avg_exp": 0,
+                        "best_setup": None,
+                        "worst_setup": None,
+                        "valid_edges": 0,
+                        "total_setups": 0,
+                    }
+                by_pair[sym]["results"].append(r)
+                by_pair[sym]["total_trades"] += r["trades"]
+                by_pair[sym]["total_setups"] += 1
+                if r["wf_verdict"] == "VALID EDGE":
+                    by_pair[sym]["valid_edges"] += 1
+
+            # Compute per-pair aggregates
+            for sym, pdata in by_pair.items():
+                results = pdata["results"]
+                n = len(results)
+                pdata["avg_wr"] = round(sum(r["win_rate"] for r in results) / n, 1) if n else 0
+                pdata["avg_exp"] = round(sum(r["expectancy_r"] for r in results) / n, 3) if n else 0
+                # Best & worst by expectancy
+                sorted_r = sorted(results, key=lambda x: x["expectancy_r"], reverse=True)
+                if sorted_r:
+                    best = sorted_r[0]
+                    pdata["best_setup"] = f"{best['scanner']} {best['timeframe']} ({best['expectancy_r']:.3f}R)"
+                    worst = sorted_r[-1]
+                    pdata["worst_setup"] = f"{worst['scanner']} {worst['timeframe']} ({worst['expectancy_r']:.3f}R)"
+
+            # Group by scanner
+            by_scanner = {}
+            for r in all_results:
+                s = r["scanner"]
+                if s not in by_scanner:
+                    by_scanner[s] = {"scanner": s, "pairs_tested": set(), "total_trades": 0,
+                                     "wr_sum": 0, "exp_sum": 0, "count": 0, "valid_edges": 0}
+                by_scanner[s]["pairs_tested"].add(r["symbol"])
+                by_scanner[s]["total_trades"] += r["trades"]
+                by_scanner[s]["wr_sum"] += r["win_rate"]
+                by_scanner[s]["exp_sum"] += r["expectancy_r"]
+                by_scanner[s]["count"] += 1
+                if r["wf_verdict"] == "VALID EDGE":
+                    by_scanner[s]["valid_edges"] += 1
+
+            for s, sdata in by_scanner.items():
+                n = sdata["count"]
+                sdata["pairs_tested"] = len(sdata["pairs_tested"])
+                sdata["avg_wr"] = round(sdata["wr_sum"] / n, 1) if n else 0
+                sdata["avg_exp"] = round(sdata["exp_sum"] / n, 3) if n else 0
+                del sdata["wr_sum"], sdata["exp_sum"]
+
+            # Global summary
+            n_total = len(all_results)
+            summary = {
+                "total_setups": n_total,
+                "total_pairs": len(by_pair),
+                "total_scanners": len(by_scanner),
+                "total_trades": sum(r["trades"] for r in all_results),
+                "avg_win_rate": round(sum(r["win_rate"] for r in all_results) / n_total, 1) if n_total else 0,
+                "avg_expectancy": round(sum(r["expectancy_r"] for r in all_results) / n_total, 3) if n_total else 0,
+                "valid_edges": sum(1 for r in all_results if r["wf_verdict"] == "VALID EDGE"),
+                "valid_edge_pct": round(sum(1 for r in all_results if r["wf_verdict"] == "VALID EDGE") / n_total * 100, 1) if n_total else 0,
+            }
+
+            # Build pair x scanner heatmap data
+            heatmap = {}
+            scanners_list = sorted(by_scanner.keys())
+            for r in all_results:
+                key = f"{r['symbol']}|{r['scanner']}|{r['timeframe']}"
+                heatmap[key] = {
+                    "symbol": r["symbol"],
+                    "scanner": r["scanner"],
+                    "timeframe": r["timeframe"],
+                    "expectancy_r": r["expectancy_r"],
+                    "win_rate": r["win_rate"],
+                    "trades": r["trades"],
+                    "wf_verdict": r["wf_verdict"],
+                }
+
+            return web.json_response(_sanitize_json({
+                "by_pair": {k: {**v, "results": v["results"]} for k, v in by_pair.items()},
+                "by_scanner": by_scanner,
+                "summary": summary,
+                "heatmap": list(heatmap.values()),
+                "scanners": scanners_list,
+                "all_results": all_results,
+                "_freshness": _freshness(extra={"result_count": n_total}),
+                "_warnings": errors[:5] if errors else [],
+            }), dumps=_json_dumps)
+
+        except Exception as e:
+            logger.exception("Backtest-all error: %s", e)
+            return _error_response("backtest_all", str(e))
 
     # -------------------------------------------------------------------
     #  Start server

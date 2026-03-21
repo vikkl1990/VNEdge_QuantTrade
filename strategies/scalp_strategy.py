@@ -499,19 +499,31 @@ class ScalpStrategy(BaseStrategy):
         else:
             context["atr_regime"] = "normal"
 
-        # ── (b) VWAP Noise Zone ──
+        # ── (b) VWAP Hybrid Veto ──
+        # < 0.25 ATR = HARD BLOCK (true noise zone)
+        # 0.25-0.4 ATR = STRONG PENALTY (-20) (preserves early breakouts)
+        # > 0.4 ATR = clear
         try:
             last_close = float(df.iloc[-1].get("close", 0))
             last_vwap = float(df.iloc[-1].get("vwap", 0))
             _atr_for_vwap = confirm_atr if confirm_atr > 0 else float(df.iloc[-1].get("atr", 1))
             if last_vwap > 0 and _atr_for_vwap > 0:
                 vwap_dist = abs(last_close - last_vwap) / _atr_for_vwap
-                if vwap_dist < 0.3:
-                    confidence_adj -= 8
-                    reasons.append(f"VWAP noise zone ({vwap_dist:.2f})")
+                if vwap_dist < 0.25:
+                    # True noise zone — hard block
                     context["vwap_zone"] = "noise"
+                    context["vwap_dist_atr"] = round(vwap_dist, 3)
+                    return {"pass": False, "confidence_adj": 0,
+                            "reasons": [f"VWAP HARD BLOCK: dist={vwap_dist:.3f} ATR < 0.25 (noise zone)"],
+                            "context": context}
+                elif vwap_dist < 0.4:
+                    confidence_adj -= 20
+                    reasons.append(f"VWAP penalty zone ({vwap_dist:.2f} ATR, -20)")
+                    context["vwap_zone"] = "penalty"
+                    context["vwap_dist_atr"] = round(vwap_dist, 3)
                 else:
                     context["vwap_zone"] = "clear"
+                    context["vwap_dist_atr"] = round(vwap_dist, 3)
         except Exception:
             pass
 
@@ -737,10 +749,22 @@ class ScalpStrategy(BaseStrategy):
         except Exception:
             pass
 
-        # --- Detect market regime ---
+        # --- Detect market regime + regime age tracking ---
         regime = self._regime_filter.detect_regime(indicators)
+
+        # Regime age: how many consecutive scans this regime has been active
+        if not hasattr(self, '_regime_history'):
+            self._regime_history = {}  # symbol → {"regime": str, "age": int}
+        prev_regime_info = self._regime_history.get(symbol, {"regime": "", "age": 0})
+        if prev_regime_info["regime"] == regime:
+            regime_age = prev_regime_info["age"] + 1
+        else:
+            regime_age = 1  # new regime
+        self._regime_history[symbol] = {"regime": regime, "age": regime_age}
+
         self._last_regime_info[symbol] = {
             "regime": regime,
+            "regime_age": regime_age,
             "action": {},
             "indicators_snapshot": {
                 "ema_8": indicators.get("ema_8", 0),
@@ -1310,18 +1334,24 @@ class ScalpStrategy(BaseStrategy):
             if htf_opposes:
                 vetos.append(f"HTF STRICT: HTF={'bearish' if htf_bias < 0 else 'bullish'} vs {best.side.value}")
 
-        # VETO 3: Session + Risk (Tier 2 upgrade)
-        # Asia Late: HARD veto (not just penalty)
-        # Dead UTC hours: HARD veto
+        # VETO 3: Session (architect-corrected)
+        # 2-5 UTC: HARD BLOCK (genuinely low liquidity)
+        # 10-11 UTC: SOFT PENALTY only (crypto is regime-dependent, sessions shift)
         ist_now_check = datetime.now(_IST)
         utc_hour = (ist_now_check.hour - 5) % 24
         if getattr(self, '_session_gate_enabled', True):
-            ist_hour_check = ist_now_check.hour + ist_now_check.minute / 60.0
-            if 2.5 <= ist_hour_check < 9.0:
-                vetos.append(f"ASIA LATE VETO: 02:30-09:00 IST (37% WR)")
-            dead_hours = {2, 3, 4, 5, 10, 11}
-            if utc_hour in dead_hours:
-                vetos.append(f"DEAD SESSION: UTC hour {utc_hour}")
+            dead_hours_hard = {2, 3, 4, 5}    # genuinely dead — hard block
+            dead_hours_soft = {10, 11}         # soft penalty only
+            if utc_hour in dead_hours_hard:
+                vetos.append(f"DEAD SESSION: UTC hour {utc_hour} (2-5 UTC low liquidity)")
+            elif utc_hour in dead_hours_soft and not self._is_learning:
+                _session_penalty = -10
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=max(best.confidence + _session_penalty, 30),
+                    confirmations=best.confirmations + [f"[SESSION_PENALTY: {_session_penalty}, UTC {utc_hour}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
 
         # VETO 4: Volatility STRICT (Tier 2 — ATR ≥ 0.88× avg, was 0.7)
         atr_ratio = getattr(self, '_atr_ratio', 1.0)
@@ -1347,14 +1377,71 @@ class ScalpStrategy(BaseStrategy):
                 if choch_opposes:
                     vetos.append(f"CHOCH CONFLICT: {choch_dir} vs {best.side.value}")
 
-        # VETO 7: Candle quality — body ratio must be meaningful
+        # VETO 7: Candle Quality SCORING (not hard filter)
+        # Score 0-4: body_ratio, close_in_direction, displacement, volume
+        # < 2 = BLOCK, == 2 = PENALTY (-15), >= 3 = pass
         trigger_candle = df.iloc[-1]
-        candle_body = abs(float(trigger_candle.get("close", 0)) - float(trigger_candle.get("open", 0)))
-        candle_range = float(trigger_candle.get("high", 0)) - float(trigger_candle.get("low", 0))
+        _cq_close = float(trigger_candle.get("close", 0))
+        _cq_open = float(trigger_candle.get("open", 0))
+        _cq_high = float(trigger_candle.get("high", 0))
+        _cq_low = float(trigger_candle.get("low", 0))
+        candle_body = abs(_cq_close - _cq_open)
+        candle_range = _cq_high - _cq_low
+        _cq_atr = self._confirm_atr if self._confirm_atr > 0 else best.atr
+
+        candle_score = 0
+        candle_score_details = []
+
+        # (1) Body ratio > 0.4
         if candle_range > 0:
             body_ratio = candle_body / candle_range
-            if body_ratio < 0.3:
-                vetos.append(f"WEAK CANDLE: body ratio {body_ratio:.2f} < 0.3")
+            if body_ratio > 0.4:
+                candle_score += 1
+                candle_score_details.append(f"body={body_ratio:.2f}>0.4")
+            else:
+                candle_score_details.append(f"body={body_ratio:.2f}<0.4")
+
+        # (2) Close in direction (long: upper 60%, short: lower 40%)
+        if candle_range > 0 and best.side is not None:
+            close_position = (_cq_close - _cq_low) / candle_range
+            if best.side == OrderSide.LONG and close_position > 0.4:
+                candle_score += 1
+                candle_score_details.append(f"close_pos={close_position:.2f}>0.4")
+            elif best.side == OrderSide.SHORT and close_position < 0.6:
+                candle_score += 1
+                candle_score_details.append(f"close_pos={close_position:.2f}<0.6")
+            else:
+                candle_score_details.append(f"close_pos={close_position:.2f} wrong dir")
+
+        # (3) Displacement > 0.3× ATR
+        if _cq_atr > 0:
+            displacement = candle_body / _cq_atr
+            if displacement > 0.3:
+                candle_score += 1
+                candle_score_details.append(f"disp={displacement:.2f}>0.3")
+            else:
+                candle_score_details.append(f"disp={displacement:.2f}<0.3")
+
+        # (4) Volume percentile > 50th
+        _cq_vol = float(trigger_candle.get("rel_vol", 1.0)) if not np.isnan(trigger_candle.get("rel_vol", 1.0)) else 0
+        if _cq_vol > 1.0:
+            candle_score += 1
+            candle_score_details.append(f"vol={_cq_vol:.1f}x>1.0")
+        else:
+            candle_score_details.append(f"vol={_cq_vol:.1f}x<1.0")
+
+        _cq_summary = f"candle_score={candle_score}/4 ({', '.join(candle_score_details)})"
+        if candle_score < 2:
+            vetos.append(f"WEAK CANDLE: {_cq_summary}")
+        elif candle_score == 2 and not self._is_learning:
+            # Marginal candle — penalty not block
+            _candle_penalty = -15
+            best = _SetupResult(
+                name=best.name, side=best.side,
+                confidence=max(best.confidence + _candle_penalty, 30),
+                confirmations=best.confirmations + [f"[CANDLE_QUALITY_PENALTY: {_candle_penalty}, {_cq_summary}]"],
+                entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+            )
 
         # VETO 8: No-Chase gate (Tier 2 — stricter impulse filter)
         _chase_atr = self._confirm_atr if self._confirm_atr > 0 else best.atr
@@ -1455,7 +1542,7 @@ class ScalpStrategy(BaseStrategy):
         # Everything else (ATR, Volume, No-Chase, Candle quality, Cooldown, Session) → soft penalty
         sb_hard_prefixes = ("HTF STRICT:", "CHOCH CONFLICT:", "REGIME MISMATCH:", "REGIME SIDE:")
         sb_soft_prefixes = ("LOW VOLATILITY:", "NO VOLUME:", "NO CHASE:", "WEAK CANDLE:",
-                            "COOLDOWN:", "ASIA LATE", "DEAD SESSION:")
+                            "COOLDOWN:")
 
         hard_vetos = []
         soft_vetos = []
@@ -1505,7 +1592,35 @@ class ScalpStrategy(BaseStrategy):
         if vetos and self._is_learning:
             best.confirmations.append(f"[WOULD_BLOCK: {len(vetos)} vetos]")
 
-        # ── Apply confidence modifiers (boosts only, no penalties) ──
+        # ── Apply confidence modifiers ──
+
+        # ── Regime Age modifier ──
+        # Fresh regime transitions are unreliable, mature regimes are trustworthy
+        if not self._is_learning:
+            if regime_age < 3:
+                _ra_adj = -10
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=max(best.confidence + _ra_adj, 30),
+                    confirmations=best.confirmations + [f"[REGIME_AGE_PENALTY: {_ra_adj}, age={regime_age}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
+            elif regime_age > 30:
+                _ra_adj = +8
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=min(best.confidence + _ra_adj, 100),
+                    confirmations=best.confirmations + [f"[REGIME_AGE_BOOST: +{_ra_adj}, age={regime_age}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
+            elif regime_age > 10:
+                _ra_adj = +3
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=min(best.confidence + _ra_adj, 100),
+                    confirmations=best.confirmations + [f"[REGIME_AGE_BOOST: +{_ra_adj}, age={regime_age}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
 
         # ── Fibonacci confidence modifier ──
         if fib_data.get("at_fib", False):
@@ -1803,6 +1918,7 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["impulse_penalty"] = 0  # no impulse blocking
         signal.metadata["penalties"] = best_sr.penalties
         signal.metadata["regime"] = regime
+        signal.metadata["regime_age"] = regime_age
         signal.metadata["regime_size_mult"] = 1.0  # no regime blocking
         signal.metadata["regime_sl_mult"] = 1.0
         signal.metadata["confidence_size_mult"] = confidence_size_mult

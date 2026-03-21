@@ -1042,6 +1042,32 @@ class CandidateTrainer:
             self.save_model(scanner_name)
             logger.info("Saved per-scanner model: %s", scanner_name)
 
+        # Record training metrics for trend/drift tracking
+        try:
+            from ml_training.dashboard import _ModelHistoryTracker
+            tracker = _ModelHistoryTracker()
+            folds = train_result.get("folds", [])
+            avg_auc = sum(f.get("auc_roc", 0) for f in folds) / len(folds) if folds else 0
+            avg_acc = sum(f.get("accuracy", 0) for f in folds) / len(folds) if folds else 0
+            avg_prec = sum(f.get("precision", 0) for f in folds) / len(folds) if folds else 0
+            avg_recall = sum(f.get("recall", 0) for f in folds) / len(folds) if folds else 0
+            tracker.record_training(
+                scanner=scanner_name,
+                metrics={
+                    "auc_roc": avg_auc,
+                    "accuracy": avg_acc,
+                    "precision": avg_prec,
+                    "recall": avg_recall,
+                    "samples": len(X),
+                    "n_features": len(X.columns),
+                    "positive_rate": round(y.mean() * 100, 1),
+                },
+                feature_importances=train_result.get("top_features", {}),
+            )
+            logger.info("Recorded training history for %s (AUC=%.4f)", scanner_name, avg_auc)
+        except Exception as e:
+            logger.warning("Failed to record training history: %s", e)
+
         # Log summary
         logger.info("=== CandidateTrainer: Pipeline complete for %s / %s ===",
                      scanner_name, symbol)

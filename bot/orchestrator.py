@@ -28,6 +28,13 @@ try:
 except ImportError:
     _HAS_DELTA_WS = False
 
+# Optional Latency Arb engine (Binance vs Delta price dislocation)
+try:
+    from strategies.latency_arb import LatencyArbEngine
+    _HAS_LATENCY_ARB = True
+except ImportError:
+    _HAS_LATENCY_ARB = False
+
 
 class BotOrchestrator:
     """Orchestrates all trading bot components in a single async event loop.
@@ -223,6 +230,28 @@ class BotOrchestrator:
                     self._log.warning("DeltaWebSocket failed to start: %s (falling back to REST)", exc)
                     self._delta_ws = None
 
+            # 3d. Start Latency Arb engine (Binance vs Delta price dislocation monitor)
+            self._latency_arb = None
+            if _HAS_LATENCY_ARB:
+                try:
+                    self._latency_arb = LatencyArbEngine(
+                        symbols=self._symbols,
+                        on_signal=None,  # measure-only for now
+                    )
+                    self._tasks.append(
+                        asyncio.create_task(
+                            self._latency_arb.start(measure_only=True),
+                            name="latency_arb",
+                        )
+                    )
+                    self._log.info(
+                        "LatencyArb engine started (measure_only) for %s",
+                        self._symbols,
+                    )
+                except Exception as exc:
+                    self._log.warning("LatencyArb failed to start: %s", exc)
+                    self._latency_arb = None
+
             # 4. Start heartbeat monitor
             await self._heartbeat.start()
 
@@ -264,6 +293,7 @@ class BotOrchestrator:
                 self._log.warning("ML feedback loop NOT wired: no _training_dataset found on strategy")
             self._dashboard._decision_engine = self._decision_engine
             self._dashboard._grid_bot = self._grid_bot
+            self._dashboard._latency_arb = self._latency_arb
             dash_cfg = self._config.get("dashboard", {})
             dash_host = dash_cfg.get("host", "0.0.0.0") if isinstance(dash_cfg, dict) else "0.0.0.0"
             dash_port = dash_cfg.get("port", 8080) if isinstance(dash_cfg, dict) else 8080
@@ -316,6 +346,13 @@ class BotOrchestrator:
         if self._delta_ws:
             try:
                 await self._delta_ws.close()
+            except Exception:
+                pass
+
+        # Stop Latency Arb engine
+        if self._latency_arb:
+            try:
+                await self._latency_arb.stop()
             except Exception:
                 pass
 

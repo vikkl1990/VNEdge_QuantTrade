@@ -6,8 +6,8 @@ bot:
   name: "VN Edge"
   version: "2.0.0"
   mode: "paper"  # signal_only | paper | live | backtest | forward_test
-  operating_mode: "paper_learning"  # paper_learning | paper_enforced | live
-  strict_mode: false  # Disabled in learning mode
+  operating_mode: "paper_enforced"  # paper_learning | paper_enforced | live
+  strict_mode: true  # Enforced: ML veto + regime routing active
 
 symbols:
   - "BTC/USDT"

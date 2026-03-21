@@ -850,9 +850,18 @@ function updateActiveTrades(trades) {
             `<span style="font-size:.62rem;padding:2px 5px;border-radius:3px;background:var(--green-dim);color:var(--green);font-weight:600">${b}</span>`
         ).join(" ");
 
+        const conf = Number(t.confidence || 0);
+        const grade = t.grade || (conf >= 80 ? 'A' : conf >= 60 ? 'B' : 'C');
+        const gradeColors = {A:'var(--green)',B:'var(--yellow)',C:'var(--orange)',D:'var(--red)'};
+        const reason = t.reason || (t.metadata && t.metadata.reason) || '';
+        const rr1 = risk > 0 && tp1 > 0 ? (Math.abs(tp1 - entry) / risk).toFixed(1) : '—';
+        const rr2 = risk > 0 && tp2 > 0 ? (Math.abs(tp2 - entry) / risk).toFixed(1) : '—';
+        const rr3 = risk > 0 && tp3 > 0 ? (Math.abs(tp3 - entry) / risk).toFixed(1) : '—';
+        const regime = (t.metadata && t.metadata.regime) || '';
+
         return `<div class="trade-card" style="border-color:${borderColor};border-left:3px solid ${borderColor}">
             <div class="tc-header">
-                <div style="display:flex;align-items:center;gap:10px">
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                     <span style="font-weight:800;font-size:1rem">${esc(sym)}</span>
                     <span class="sig-side ${side}" style="font-size:.78rem">${side}</span>
                     <span style="color:var(--yellow);font-weight:700;font-size:.85rem">${lev}x</span>
@@ -865,8 +874,10 @@ function updateActiveTrades(trades) {
                         const ttIcon = {SCALP:'\u26A1',INTRADAY:'\uD83C\uDFAF',RUNNER:'\uD83C\uDFF9'};
                         return `<span style="font-size:.68rem;padding:2px 7px;border-radius:4px;background:${ttBg[tt]||'var(--border)'};color:${ttColors[tt]||'var(--text-muted)'};font-weight:700;letter-spacing:.3px;border:1px solid ${ttColors[tt]||'var(--border)'}30">${ttIcon[tt]||''} ${tt}</span>`;
                     })()}
+                    <span style="font-size:.72rem;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.06);color:${gradeColors[grade]||'var(--text-dim)'};font-weight:800;border:1px solid ${gradeColors[grade]||'var(--border)'}40">${conf}/100 (${grade})</span>
                     ${statusBadges}
                     ${t.metadata && t.metadata.ml_probability != null ? `<span style="font-size:.62rem;padding:2px 6px;border-radius:3px;background:${t.metadata.ml_probability >= 0.6 ? 'var(--green-dim)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow-dim)' : 'var(--red-dim)'};color:${t.metadata.ml_probability >= 0.6 ? 'var(--green)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow)' : 'var(--red)'};font-weight:600">ML ${(t.metadata.ml_probability * 100).toFixed(0)}% ${t.metadata.ml_verdict || ''}</span>` : ''}
+                    ${regime ? `<span style="font-size:.58rem;padding:2px 5px;border-radius:3px;background:rgba(0,212,255,.08);color:var(--cyan);font-weight:600">${regime}</span>` : ''}
                 </div>
                 <div style="display:flex;align-items:center;gap:12px">
                     <span style="font-size:1.35rem;font-weight:800" class="${pnlClass(upnlUsd)}">${upnlUsd >= 0 ? '+' : ''}$${upnlUsd.toFixed(2)}</span>
@@ -876,26 +887,31 @@ function updateActiveTrades(trades) {
                 </div>
             </div>
 
-            <div><div class="tc-label">Margin</div><div class="tc-val">$${margin.toFixed(2)}</div></div>
-            <div><div class="tc-label">Position</div><div class="tc-val">$${posSize.toFixed(2)}</div></div>
-            <div><div class="tc-label">Contracts</div><div class="tc-val">${contracts} ct (${qty} ${sym.split('/')[0]})</div></div>
+            ${reason ? `<div style="padding:4px 8px;margin-bottom:4px;background:rgba(0,255,157,.03);border:1px solid var(--border);border-radius:6px;font-size:.7rem;color:var(--text-dim);line-height:1.4"><span style="color:var(--accent);font-weight:600">Setup:</span> ${esc(reason)}</div>` : ''}
+
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
+                <div><div class="tc-label">Margin</div><div class="tc-val">$${margin.toFixed(2)}</div></div>
+                <div><div class="tc-label">Position</div><div class="tc-val">$${posSize.toFixed(2)}</div></div>
+                <div><div class="tc-label">Contracts</div><div class="tc-val">${contracts} ct (${qty} ${sym.split('/')[0]})</div></div>
+            </div>
 
             <div><div class="tc-label">Entry</div><div class="tc-val">${num(entry, entry > 100 ? 2 : 4)}</div></div>
             <div><div class="tc-label">Current</div><div class="tc-val" style="font-size:1.02rem" class="${pnlClass(upnlPct)}">${num(current, current > 100 ? 2 : 4)}</div></div>
             <div><div class="tc-label">uPnL</div><div class="tc-val ${pnlClass(upnlPct)}">${pnlSign(upnlPct)}% | MFE: ${mfeR.toFixed(2)}R</div></div>
 
             <div style="border-top:1px solid var(--border);padding-top:6px">
-                <div class="tc-label" style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${slPnl >= 0 ? 'STOP (BE)' : 'STOP LOSS'}</div>
+                <div class="tc-label" style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${slPnl >= 0 ? 'STOP (BE)' : 'STOP LOSS'} <span style="color:var(--text-muted);font-size:.6rem">(${entry > 0 ? (Math.abs(entry - sl) / entry * 100).toFixed(2) : '?'}%)</span></div>
                 <div><span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${num(sl, sl > 100 ? 2 : 4)}</span>
                 <span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-size:.73rem"> ${slPnl >= 0 ? '+' : '-'}$${Math.abs(slPnl).toFixed(2)}</span></div>
             </div>
             <div style="border-top:1px solid var(--border);padding-top:6px">
-                <div class="tc-label" style="color:var(--green)">TP1 (35%)</div>
+                <div class="tc-label" style="color:var(--green)">TP1 (35%) <span style="color:var(--cyan);font-size:.62rem">R:R 1:${rr1}</span></div>
                 <div><span style="color:var(--green);font-weight:600">${num(tp1, tp1 > 100 ? 2 : 4)}</span>
-                <span style="color:var(--green);font-size:.73rem"> +$${tp1Pnl.toFixed(2)}</span></div>
+                <span style="color:var(--green);font-size:.73rem"> +$${tp1Pnl.toFixed(2)}</span>
+                <span style="color:var(--text-muted);font-size:.62rem"> (+${tp1 > 0 && entry > 0 ? (Math.abs(tp1 - entry) / entry * 100).toFixed(2) : '?'}%)</span></div>
             </div>
             <div style="border-top:1px solid var(--border);padding-top:6px">
-                <div class="tc-label" style="color:var(--green)">TP2 (35%) / TP3 (30%)</div>
+                <div class="tc-label" style="color:var(--green)">TP2 (35%) <span style="color:var(--cyan);font-size:.62rem">R:R 1:${rr2}</span> / TP3 (30%) <span style="color:var(--cyan);font-size:.62rem">1:${rr3}</span></div>
                 <div><span style="color:var(--green);font-weight:600">${num(tp2, tp2 > 100 ? 2 : 4)}</span>
                 <span style="color:var(--green);font-size:.73rem"> +$${tp2Pnl.toFixed(2)}</span>
                 <span style="color:var(--text-muted);font-size:.68rem"> | ${num(tp3, tp3 > 100 ? 2 : 4)} +$${tp3Pnl.toFixed(2)}</span></div>

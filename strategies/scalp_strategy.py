@@ -992,13 +992,13 @@ class ScalpStrategy(BaseStrategy):
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
 
-        # In paper_learning mode: ALL scanners run regardless of regime
+        # In paper_learning mode: run most scanners but still exclude proven losers
         if self._is_learning:
             allowed_scanners = [
                 self._scan_ema_momentum,
                 self._scan_trend_continuation,
                 self._scan_rsi_divergence,
-                self._scan_bb_squeeze,
+                # bb_squeeze DISABLED — 36% ML, 0% MFE, pure noise
                 self._scan_structure_bounce,
                 self._scan_order_block_entry,
                 self._scan_vwap_mean_revert,
@@ -1717,29 +1717,27 @@ class ScalpStrategy(BaseStrategy):
                 getattr(self, '_current_session', ''),
             )
 
-            # ── GRADUATED ML ENFORCEMENT ──
-            # Shadow mode stays True on MLScorer (never returns False from should_take_trade).
-            # Instead, we apply graduated confidence adjustments here in strategy code.
-            # This lets ML influence trade quality without being a binary gate.
+            # ── ML HARD VETO GATE ──
+            # Data proves: every trade with ML < 50% loses money.
+            # ML is the final gatekeeper — if it says < 50%, NO TRADE.
             #
-            # probability < 0.35 → HARD BLOCK (never trade)
-            # probability 0.35-0.45 → -15 confidence penalty
-            # probability 0.45-0.55 → -5 confidence penalty
-            # probability 0.55-0.65 → no adjustment
-            # probability > 0.65 → +5 confidence bonus
+            # probability < 0.50 → HARD BLOCK (never trade)
+            # probability 0.50-0.55 → proceed (SCALP tier)
+            # probability 0.55-0.65 → proceed (INTRADAY tier)
+            # probability > 0.65 → proceed + confidence bonus (RUNNER tier)
             if not self._is_learning:
                 _ml_conf_adj = 0
-                if ml_prob < 0.35:
-                    # HARD BLOCK — ML says this is a bad trade
+                if ml_prob < 0.50:
+                    # HARD BLOCK — ML says this trade has negative edge
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
                     logger.info(
-                        "ML HARD BLOCK: %s %s prob=%.3f < 0.35 (scanner=%s)",
+                        "ML HARD BLOCK: %s %s prob=%.3f < 0.50 (scanner=%s verdict=%s)",
                         best.side.value.upper() if best.side else "?",
-                        symbol, ml_prob, best_sr.scanner_name,
+                        symbol, ml_prob, best_sr.scanner_name, ml_verdict,
                     )
                     self.last_scan_status[symbol] = {
                         "time": now_iso, "signal": False,
-                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < 0.35 ({ml_verdict})",
+                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < 0.50 ({ml_verdict})",
                         "ml_result": ml_result,
                         "indicators": indicators, "setups_checked": setups_checked,
                         "funnel": dict(self._funnel),
@@ -1756,12 +1754,10 @@ class ScalpStrategy(BaseStrategy):
                         scanner_expectancy=0, ev=0,
                     )
                     return []
-                elif ml_prob < 0.45:
-                    _ml_conf_adj = -15
                 elif ml_prob < 0.55:
-                    _ml_conf_adj = -5
+                    _ml_conf_adj = 0    # baseline, no adjustment
                 elif ml_prob >= 0.65:
-                    _ml_conf_adj = +5
+                    _ml_conf_adj = +10  # high conviction bonus
 
                 if _ml_conf_adj != 0:
                     _adj_label = f"ML_{'PENALTY' if _ml_conf_adj < 0 else 'BONUS'}: {_ml_conf_adj:+d} (prob={ml_prob:.3f})"

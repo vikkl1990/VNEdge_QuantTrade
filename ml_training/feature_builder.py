@@ -707,7 +707,7 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     # Post-sweep displacement: body of reversal candle / ATR
     body_vals = (c - o).abs()
     post_sweep_disp = np.where(
-        (features["sweep_low_reversal"] > 0) | (features["sweep_high_reversal"] > 0),
+        (features["sweep_low_reversal"] > 0).astype(bool) | (features["sweep_high_reversal"] > 0).astype(bool),
         body_vals / atr.replace(0, np.nan),
         0.0
     )
@@ -760,7 +760,7 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     # Displacement: body size of the BOS candle (normalized by ATR)
     body_atr = (c - o).abs() / atr.replace(0, np.nan)
     features["bos_displacement"] = np.where(
-        bullish_bos | bearish_bos, body_atr, 0.0
+        bullish_bos.astype(bool) | bearish_bos.astype(bool), body_atr, 0.0
     )
 
     # Strong displacement flag (> 1.5 ATR body on BOS candle)
@@ -779,10 +779,9 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["recent_bos_bear"] = bearish_bos.astype(float).rolling(3).max()
 
     # BOS + FVG confluence (BOS that also created an FVG = strongest signal)
-    features["bos_with_fvg"] = np.where(
-        (bullish_bos | bearish_bos) & (bull_fvg_exists | bear_fvg_exists),
-        1.0, 0.0
-    )
+    _any_bos = (bullish_bos.astype(bool)) | (bearish_bos.astype(bool))
+    _any_fvg = (bull_fvg_exists.astype(bool)) | (bear_fvg_exists.astype(bool))
+    features["bos_with_fvg"] = np.where(_any_bos & _any_fvg, 1.0, 0.0)
 
     # Break distance from structure level (normalized by ATR)
     # For bullish BOS: how far past the recent swing high; for bearish: past swing low
@@ -806,11 +805,11 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     for lb in range(1, 4):
         prev_low = l.shift(-lb)  # future bars' low came back to test
         prev_high = h.shift(-lb)  # future bars' high came back to test
-        retest_bull = retest_bull | (
-            bullish_bos & ((prev_low - recent_swing_high.shift(1)).abs() < atr * 0.3)
+        retest_bull = retest_bull.astype(bool) | (
+            bullish_bos.astype(bool) & ((prev_low - recent_swing_high.shift(1)).abs() < atr * 0.3)
         )
-        retest_bear = retest_bear | (
-            bearish_bos & ((prev_high - recent_swing_low.shift(1)).abs() < atr * 0.3)
+        retest_bear = retest_bear.astype(bool) | (
+            bearish_bos.astype(bool) & ((prev_high - recent_swing_low.shift(1)).abs() < atr * 0.3)
         )
     # Shift forward so the flag appears on the retest bar, not the BOS bar
     features["retest_flag"] = (retest_bull.astype(float) + retest_bear.astype(float)).clip(upper=1.0)
@@ -830,11 +829,11 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     if "htf_trend_bias" in features.columns:
         htf_bias = features["htf_trend_bias"]
         htf_bos_align = np.where(
-            (bullish_bos) & (htf_bias > 0), 1.0,
+            bullish_bos.astype(bool) & (htf_bias > 0), 1.0,
             np.where(
-                (bearish_bos) & (htf_bias < 0), 1.0,
+                bearish_bos.astype(bool) & (htf_bias < 0), 1.0,
                 np.where(
-                    (features["choch_bull"] > 0) | (features["choch_bear"] > 0),
+                    (features["choch_bull"] > 0).astype(bool) | (features["choch_bear"] > 0).astype(bool),
                     -0.5, 0.0
                 )
             )

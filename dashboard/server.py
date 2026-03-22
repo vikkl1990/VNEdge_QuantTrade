@@ -691,6 +691,10 @@ class DashboardServer:
             r = stats.get("r_metrics", {})
             data["avg_mae_r"] = r.get("avg_mae_r", 0)
             data["avg_mfe_r"] = r.get("avg_mfe_r", 0)
+            # Frontend expects these field names:
+            data["avg_mae"] = r.get("avg_mae_r", 0)
+            data["avg_mfe"] = r.get("avg_mfe_r", 0)
+            data["exit_efficiency"] = r.get("exit_efficiency", 0)
             data["avg_win_r"] = r.get("avg_win_r", 0)
             data["avg_loss_r"] = r.get("avg_loss_r", 0)
             data["total"] = r.get("total", 0)

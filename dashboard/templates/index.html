@@ -1277,10 +1277,10 @@ function updateRMetrics(raw) {
 }
 
 function updateExitQuality(eq) {
-    if (!eq) return;
-    document.getElementById("eq-mae").textContent = num(eq.avg_mae || eq.mae, 2) + "%";
-    document.getElementById("eq-mfe").textContent = num(eq.avg_mfe || eq.mfe, 2) + "%";
-    document.getElementById("eq-efficiency").textContent = num(eq.exit_efficiency || eq.efficiency, 1) + "%";
+    if (!eq || !eq.total) return;
+    document.getElementById("eq-mae").textContent = num(eq.avg_mae_r || eq.avg_mae || 0, 3) + "R";
+    document.getElementById("eq-mfe").textContent = num(eq.avg_mfe_r || eq.avg_mfe || 0, 3) + "R";
+    document.getElementById("eq-efficiency").textContent = num(eq.exit_efficiency || 0, 1) + "%";
 }
 
 function updateScannerTable(data) {

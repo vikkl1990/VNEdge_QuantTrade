@@ -1949,7 +1949,11 @@ class SignalTracker:
         else:
             r_std = 0.0
 
+        # Exit efficiency: how much of MFE we actually captured
+        exit_efficiency = (avg_r / avg_mfe * 100) if avg_mfe > 0 else 0.0
+
         return {
+            "total": len(r_values),
             "avg_r": round(avg_r, 4),
             "total_r": round(sum(r_values), 4),
             "expectancy_r": round(expectancy, 4),
@@ -1959,6 +1963,7 @@ class SignalTracker:
             "worst_r": round(min(r_values), 4),
             "avg_mae_r": round(avg_mae, 4),
             "avg_mfe_r": round(avg_mfe, 4),
+            "exit_efficiency": round(exit_efficiency, 1),
             "edge_ratio": round(edge_ratio, 4),
             "r_std": round(r_std, 4),
         }

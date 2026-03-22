@@ -63,10 +63,10 @@ class TradeMonitorAgent:
             "max_loss_streak": 0,
             "rolling_20_wr": 0.0,        # Win rate of last 20 trades
             "rolling_20_pnl": 0.0,       # PnL of last 20 trades
-            "peak_balance": 1000.0,
+            "peak_balance": 100.0,
             "current_drawdown": 0.0,
             "max_drawdown": 0.0,
-            "paper_balance": 1000.0,
+            "paper_balance": 100.0,
         }
 
         # ── Loss cause counters ──

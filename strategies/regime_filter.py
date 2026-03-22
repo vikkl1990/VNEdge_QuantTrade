@@ -63,7 +63,7 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     "breakout": {
         "allowed": "*",
         "preferred": [
-            "bb_squeeze", "momentum_surge", "ema_momentum",
+            "bos_choch", "momentum_surge", "ema_momentum",
         ],
         "blocked": ["vwap_reclaim"],       # VWAP less reliable in breakouts
         "confidence_boost": 8,
@@ -73,9 +73,10 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "ranging": {
         "allowed": [                       # Only mean-reversion scanners
-            "vwap_reclaim", "rsi_divergence", "bb_squeeze",
+            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
+            "structure_bounce",
         ],
-        "preferred": ["vwap_reclaim", "rsi_divergence"],
+        "preferred": ["vwap_reclaim", "liquidity_sweep"],
         "blocked": [
             "ema_momentum", "momentum_ride", "momentum_surge",
             "post_impulse", "supertrend_flip",
@@ -87,9 +88,10 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "sideways": {
         "allowed": [
-            "vwap_reclaim", "rsi_divergence", "bb_squeeze",
+            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
+            "structure_bounce",
         ],
-        "preferred": ["vwap_reclaim", "rsi_divergence"],
+        "preferred": ["vwap_reclaim", "liquidity_sweep"],
         "blocked": [
             "ema_momentum", "momentum_ride", "momentum_surge",
             "post_impulse", "supertrend_flip",
@@ -101,7 +103,7 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "volatile": {
         "allowed": [                       # Only high-conviction scanners
-            "ema_momentum", "bb_squeeze",
+            "ema_momentum", "bos_choch",
         ],
         "preferred": [],
         "blocked": [
@@ -115,7 +117,7 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "high_volatility": {
         "allowed": [
-            "ema_momentum", "bb_squeeze",
+            "ema_momentum", "bos_choch",
         ],
         "preferred": [],
         "blocked": [
@@ -129,9 +131,10 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "mean_reversion": {
         "allowed": [
-            "vwap_reclaim", "rsi_divergence", "bb_squeeze",
+            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
+            "structure_bounce",
         ],
-        "preferred": ["rsi_divergence", "vwap_reclaim"],
+        "preferred": ["rsi_divergence", "liquidity_sweep"],
         "blocked": [
             "ema_momentum", "momentum_ride", "post_impulse",
             "supertrend_flip",
@@ -143,7 +146,7 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "quiet": {
         "allowed": "*",
-        "preferred": ["bb_squeeze"],       # Squeeze breakouts love quiet markets
+        "preferred": ["liquidity_sweep"],  # Sweep setups work well in quiet markets
         "blocked": [],
         "confidence_boost": 3,
         "size_mult": 0.8,

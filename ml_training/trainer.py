@@ -246,13 +246,113 @@ def _scan_trend_continuation(idx: int, df: pd.DataFrame, symbol: str) -> Optiona
     return None
 
 
+def _scan_liquidity_sweep(idx: int, df: pd.DataFrame, symbol: str) -> Optional[dict]:
+    """Liquidity sweep scanner — price raids equal highs/lows then reclaims."""
+    if idx < 30:
+        return None
+    row = df.iloc[idx]
+    c, h, l, o = float(row["close"]), float(row["high"]), float(row["low"]), float(row["open"])
+    atr = float(row.get("atr_14", 0))
+    if atr <= 0:
+        return None
+
+    lookback = min(50, idx)
+    window = df.iloc[max(0, idx - lookback):idx]
+    highs = window["high"].values
+    lows = window["low"].values
+    tolerance = atr * 0.15
+
+    # Find equal highs cluster (2+ touches)
+    eq_high_level = 0.0
+    for i in range(len(highs) - 1, max(-1, len(highs) - 30), -1):
+        touches = sum(1 for j in range(len(highs)) if j != i and abs(highs[j] - highs[i]) < tolerance)
+        if touches >= 2:
+            eq_high_level = highs[i]
+            break
+
+    # Find equal lows cluster
+    eq_low_level = 0.0
+    for i in range(len(lows) - 1, max(-1, len(lows) - 30), -1):
+        touches = sum(1 for j in range(len(lows)) if j != i and abs(lows[j] - lows[i]) < tolerance)
+        if touches >= 2:
+            eq_low_level = lows[i]
+            break
+
+    # Bullish sweep: price dips below equal lows, closes back above
+    if eq_low_level > 0 and l < eq_low_level and c > eq_low_level:
+        body = abs(c - o)
+        displacement = body / atr if atr > 0 else 0
+        if displacement > 0.3 and c > o:  # bullish close with real body
+            return {"side": "long", "entry_price": c, "confidence": 65, "grade": "B"}
+
+    # Bearish sweep: price spikes above equal highs, closes back below
+    if eq_high_level > 0 and h > eq_high_level and c < eq_high_level:
+        body = abs(c - o)
+        displacement = body / atr if atr > 0 else 0
+        if displacement > 0.3 and c < o:  # bearish close with real body
+            return {"side": "short", "entry_price": c, "confidence": 65, "grade": "B"}
+
+    return None
+
+
+def _scan_bos_choch(idx: int, df: pd.DataFrame, symbol: str) -> Optional[dict]:
+    """BOS/CHOCH scanner — break of structure with displacement."""
+    if idx < 30:
+        return None
+    row = df.iloc[idx]
+    prev = df.iloc[idx - 1]
+    c, h, l, o = float(row["close"]), float(row["high"]), float(row["low"]), float(row["open"])
+    prev_c = float(prev["close"])
+    atr = float(row.get("atr_14", 0))
+    if atr <= 0:
+        return None
+
+    lookback = min(30, idx - 5)
+    window = df.iloc[max(0, idx - lookback):idx]
+    highs_w = window["high"].values
+    lows_w = window["low"].values
+
+    # Find swing high (local max in 5-bar window)
+    swing_high = 0.0
+    for i in range(2, len(highs_w) - 2):
+        if highs_w[i] >= max(highs_w[max(0, i-2):i]) and highs_w[i] >= max(highs_w[i+1:min(len(highs_w), i+3)]):
+            if highs_w[i] > swing_high:
+                swing_high = highs_w[i]
+
+    # Find swing low
+    swing_low = float('inf')
+    for i in range(2, len(lows_w) - 2):
+        if lows_w[i] <= min(lows_w[max(0, i-2):i]) and lows_w[i] <= min(lows_w[i+1:min(len(lows_w), i+3)]):
+            if lows_w[i] < swing_low:
+                swing_low = lows_w[i]
+
+    body = abs(c - o)
+    displacement = body / atr if atr > 0 else 0
+
+    # Bullish BOS: close breaks above swing high with displacement
+    if swing_high > 0 and c > swing_high and prev_c <= swing_high and displacement > 0.5:
+        body_ratio = body / (h - l) if h > l else 0
+        if body_ratio > 0.4:  # clean break candle
+            return {"side": "long", "entry_price": c, "confidence": 60, "grade": "B"}
+
+    # Bearish BOS: close breaks below swing low with displacement
+    if swing_low < float('inf') and c < swing_low and prev_c >= swing_low and displacement > 0.5:
+        body_ratio = body / (h - l) if h > l else 0
+        if body_ratio > 0.4:
+            return {"side": "short", "entry_price": c, "confidence": 60, "grade": "B"}
+
+    return None
+
+
 SCANNERS = {
     "structure_bounce": _scan_structure_bounce,
     "ema_momentum": _scan_ema_momentum,
-    "bb_squeeze": _scan_bb_squeeze,
     "vwap_mean_revert": _scan_vwap_mean_revert,
     "rsi_divergence": _scan_rsi_divergence,
     "trend_continuation": _scan_trend_continuation,
+    "liquidity_sweep": _scan_liquidity_sweep,
+    "bos_choch": _scan_bos_choch,
+    # DROPPED: bb_squeeze (51% WR, -$16 EV, negative expectancy)
 }
 
 
@@ -443,6 +543,54 @@ class TrainingOrchestrator:
                 gc.collect()
 
             self._status["results"]["candidate_training"] = candidate_results
+            self._save_status()
+
+            # Phase 6: Pair-family training (shared model per family, not per symbol)
+            # Groups: liquid_majors (BTC/ETH/SOL), secondary (AVAX/LINK), high_beta (DOGE+)
+            logger.info("=== PHASE 6: Pair-family training (shared models per family) ===")
+            self._status["phase"] = "pair_family_training"
+            self._save_status()
+
+            try:
+                # Collect all symbol data for family training
+                symbol_data_all = {}
+                htf_data_all = {}
+                for symbol in symbols:
+                    logger.info("Loading 5m + 15m data for family training: %s", symbol)
+                    collector = CandleCollector(self._exchange, [symbol], ["5m", "15m"])
+                    sym_data = await collector.collect_all()
+                    df_sym = sym_data.get(symbol, {}).get("5m")
+                    htf_sym = sym_data.get(symbol, {}).get("15m")
+                    del sym_data, collector
+
+                    if df_sym is not None and len(df_sym) >= 500:
+                        if len(df_sym) > 15000:
+                            df_sym = df_sym.iloc[-15000:]
+                        symbol_data_all[symbol] = df_sym
+                        if htf_sym is not None:
+                            htf_data_all[symbol] = htf_sym
+                    await asyncio.sleep(0)
+
+                if len(symbol_data_all) >= 2:
+                    ct_family = CandidateTrainer()
+                    family_results = ct_family.run_pair_family(
+                        symbol_data_all, SCANNERS,
+                        n_splits=5, n_estimators=50, max_depth=6,
+                        label_mode="mfe",
+                        mfe_threshold_r=0.8,
+                        mfe_max_bars=15,
+                        htf_data=htf_data_all,
+                    )
+                    self._status["results"]["pair_family_training"] = family_results
+                    del ct_family
+                else:
+                    logger.warning("Skipping pair-family training: only %d symbols with data",
+                                   len(symbol_data_all))
+                del symbol_data_all, htf_data_all
+                gc.collect()
+            except Exception as e:
+                logger.error("Pair-family training failed: %s", e, exc_info=True)
+                self._status["results"]["pair_family_training"] = {"error": str(e)}
 
             self._status["phase"] = "complete"
             self._status["completed_at"] = datetime.now(timezone.utc).isoformat()

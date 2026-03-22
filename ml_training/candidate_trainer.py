@@ -1013,9 +1013,10 @@ class CandidateTrainer:
             mfe_threshold_r=mfe_threshold_r,
             mfe_max_bars=mfe_max_bars,
         )
-        if len(X) < 100:
+        MIN_CANDIDATES = 250  # Need enough samples for meaningful CV
+        if len(X) < MIN_CANDIDATES:
             result = {
-                "error": f"insufficient candidates: {len(X)} (need 100+)",
+                "error": f"insufficient candidates: {len(X)} (need {MIN_CANDIDATES}+)",
                 "symbol": symbol,
                 "scanner": scanner_name,
                 "candidates_found": len(X),
@@ -1349,6 +1350,18 @@ class CandidateTrainer:
 
                 logger.info("  Family '%s' scanner '%s': %d total candidates (from %d symbols)",
                             family_name, scanner_name, len(X_combined), len(all_X))
+
+                # Minimum sample threshold for meaningful training
+                MIN_FAMILY_CANDIDATES = 250
+                if len(X_combined) < MIN_FAMILY_CANDIDATES:
+                    logger.warning("  Family '%s' scanner '%s': only %d candidates (need %d+), skipping",
+                                    family_name, scanner_name, len(X_combined), MIN_FAMILY_CANDIDATES)
+                    family_results[scanner_name] = {
+                        "error": f"insufficient candidates: {len(X_combined)} (need {MIN_FAMILY_CANDIDATES}+)",
+                        "family": family_name, "symbols": family_symbols,
+                        "total_candidates": len(X_combined),
+                    }
+                    continue
 
                 # Train ONE shared model for the family
                 family_trainer = CandidateTrainer(self._config)

@@ -1033,10 +1033,10 @@ class ScalpStrategy(BaseStrategy):
         # ══════════════════════════════════════════════════════
         REGIME_SCANNER_ROUTING = {
             "trending_up": [
-                self._scan_trend_continuation,
+                self._scan_trend_continuation,      # trend + BOS/displacement
                 self._scan_ema_momentum,
                 self._scan_structure_bounce,
-                self._scan_bos_choch,
+                self._scan_bos_choch,               # BOS with displacement in trend
             ],
             "trending_down": [
                 self._scan_trend_continuation,
@@ -1045,37 +1045,41 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_bos_choch,
             ],
             "breakout": [
+                self._scan_bos_choch,               # BOS/CHOCH ideal for breakouts
                 self._scan_structure_bounce,
                 self._scan_order_block_entry,
                 self._scan_ema_momentum,
-                self._scan_bos_choch,
-                self._scan_liquidity_sweep,
+                self._scan_liquidity_sweep,          # sweep exhaustion after breakout
             ],
             "ranging": [
-                self._scan_vwap_mean_revert,
+                self._scan_liquidity_sweep,          # sweep + reclaim = best ranging setup
+                self._scan_vwap_mean_revert,         # VWAP mean revert in ranges
+                self._scan_structure_bounce,         # structure_bounce + sweep enhanced
                 self._scan_rsi_divergence,
-                self._scan_structure_bounce,
-                self._scan_liquidity_sweep,
             ],
             "sideways": [
+                self._scan_liquidity_sweep,          # equal H/L sweep in sideways
                 self._scan_vwap_mean_revert,
-                self._scan_rsi_divergence,
                 self._scan_structure_bounce,
-                self._scan_liquidity_sweep,
+                self._scan_rsi_divergence,
             ],
             "volatile": [
                 self._scan_structure_bounce,
+                self._scan_bos_choch,                # displacement in volatile = real
                 self._scan_order_block_entry,
                 self._scan_liquidity_sweep,
             ],
             "high_volatility": [
                 self._scan_structure_bounce,
+                self._scan_bos_choch,
                 self._scan_order_block_entry,
                 self._scan_liquidity_sweep,
             ],
             "mean_reversion": [
+                self._scan_liquidity_sweep,          # sweep exhaustion = reversal
                 self._scan_vwap_mean_revert,
                 self._scan_rsi_divergence,
+                self._scan_structure_bounce,
             ],
             "quiet": [],       # NO TRADING in dead markets
             "low_liquidity": [],  # NO TRADING

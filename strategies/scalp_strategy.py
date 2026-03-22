@@ -77,7 +77,7 @@ from bot.mode_manager import get_mode_manager
 from bot.training_dataset import TrainingDataset
 from data.structure import build_structure_map, StructureMap
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.strategy.scalp")
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +280,8 @@ class ScalpStrategy(BaseStrategy):
         self.structure_bounce_only: bool = True  # ← THE SWITCH
 
         # Overrides when structure_bounce_only is active:
-        self._sb_only_min_conf: int = 82       # higher bar for quality
+        # Was 82, now lowered to WEAK tier (50). Veto layer handles quality gating.
+        self._sb_only_min_conf: int = 50       # WEAK tier threshold (veto layer handles quality)
         self._sb_only_min_tp1_pct: float = 0.72  # wider TP to cover Scalper fees
         self._sb_only_lev_cap: int = 18        # slightly conservative leverage
 
@@ -293,7 +294,8 @@ class ScalpStrategy(BaseStrategy):
             "ema_momentum": 0.0,         # ❌ ML-only (-14% PnL)
             "trend_continuation": 0.0,   # ❌ ML-only (+0.4% marginal)
             "vwap_mean_revert": 0.0,     # ❌ ML-only (-10% PnL)
-            "liquidity_sweep": 0.0,      # ❌ ML-only
+            "liquidity_sweep": 0.8,      # ✅ Upgraded: EQL/EQH sweep + displacement
+            "bos_choch": 0.8,          # ✅ BOS/CHOCH with displacement
             "simple_bias": 0.0,          # ❌ ML training only
         }
         self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
@@ -545,14 +547,14 @@ class ScalpStrategy(BaseStrategy):
             _atr_for_vwap = confirm_atr if confirm_atr > 0 else float(df.iloc[-1].get("atr", 1))
             if last_vwap > 0 and _atr_for_vwap > 0:
                 vwap_dist = abs(last_close - last_vwap) / _atr_for_vwap
-                if vwap_dist < 0.25:
-                    # True noise zone — hard block
+                if vwap_dist < 0.12:
+                    # True noise zone — hard block (was 0.25, too aggressive)
                     context["vwap_zone"] = "noise"
                     context["vwap_dist_atr"] = round(vwap_dist, 3)
                     return {"pass": False, "confidence_adj": 0,
-                            "reasons": [f"VWAP HARD BLOCK: dist={vwap_dist:.3f} ATR < 0.25 (noise zone)"],
+                            "reason": f"VWAP HARD BLOCK: dist={vwap_dist:.3f} ATR < 0.12 (noise zone)",
                             "context": context}
-                elif vwap_dist < 0.4:
+                elif vwap_dist < 0.25:
                     confidence_adj -= 20
                     reasons.append(f"VWAP penalty zone ({vwap_dist:.2f} ATR, -20)")
                     context["vwap_zone"] = "penalty"
@@ -638,6 +640,14 @@ class ScalpStrategy(BaseStrategy):
         """Run all setup scans and emit signals for any that trigger."""
         now = time.time()
         now_iso = datetime.now(_IST).isoformat()
+
+        # DEBUG: confirm analyze() is being entered
+        _enter_key = f"_analyze_enter_{symbol}"
+        _enter_cnt = getattr(self, _enter_key, 0) + 1
+        setattr(self, _enter_key, _enter_cnt)
+        if _enter_cnt <= 3 or _enter_cnt % 100 == 0:
+            logger.info("DIAG %s | analyze() entered #%d | tfs=%s | primary_tf=%s",
+                       symbol, _enter_cnt, list(candles_dict.keys()), self.primary_tf)
 
         # Get primary (1m) data
         primary_df = candles_dict.get(self.primary_tf)
@@ -817,9 +827,16 @@ class ScalpStrategy(BaseStrategy):
         prefilter = self._structural_prefilter(df, htf_df, symbol, regime)
         if not prefilter["pass"]:  # ALWAYS enforce — no learning bypass
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            # Log every 10th block per symbol to avoid spam
+            block_key = f"_prefilter_block_count_{symbol}"
+            cnt = getattr(self, block_key, 0) + 1
+            setattr(self, block_key, cnt)
+            if cnt <= 3 or cnt % 50 == 0:
+                logger.info("FUNNEL %s | PREFILTER BLOCK #%d | regime=%s | reason=%s",
+                           symbol, cnt, regime, prefilter.get("reason", "?"))
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
-                "reason": prefilter["reason"],
+                "reason": prefilter.get("reason") or prefilter.get("reasons", "?"),
                 "indicators": indicators, "setups_checked": [],
                 "funnel": dict(self._funnel),
             }
@@ -844,6 +861,7 @@ class ScalpStrategy(BaseStrategy):
             "_scan_structure_bounce": "Structure Bounce",
             "_scan_liquidity_sweep": "Liquidity Sweep",
             "_scan_order_block_entry": "Order Block",
+            "_scan_bos_choch": "BOS/CHOCH",
             "_scan_vwap_mean_revert": "VWAP Mean Revert",
             "_scan_simple_bias": "Simple Bias (ML)",
         }
@@ -1001,6 +1019,12 @@ class ScalpStrategy(BaseStrategy):
         # Post-Impulse: needs recent impulse candle + current small candle + pullback
         scanner_diagnostics["Post-Impulse"] = f"Scanning last 3-8 candles for impulse (body > 0.8x ATR) + current small candle + shallow pullback"
 
+        # BOS/CHOCH: needs structural break with displacement
+        scanner_diagnostics["BOS/CHOCH"] = "Scanning for break of structure with displacement > 0.4x ATR"
+
+        # Liquidity Sweep: needs stop hunt at equal highs/lows with reclaim
+        scanner_diagnostics["Liquidity Sweep"] = "Scanning for stop hunt at equal highs/lows with reclaim"
+
         # (funnel reset moved to per-symbol init above)
 
         # ══════════════════════════════════════════════════════
@@ -1012,34 +1036,42 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_trend_continuation,
                 self._scan_ema_momentum,
                 self._scan_structure_bounce,
+                self._scan_bos_choch,
             ],
             "trending_down": [
                 self._scan_trend_continuation,
                 self._scan_ema_momentum,
                 self._scan_structure_bounce,
+                self._scan_bos_choch,
             ],
             "breakout": [
                 self._scan_structure_bounce,
                 self._scan_order_block_entry,
                 self._scan_ema_momentum,
+                self._scan_bos_choch,
+                self._scan_liquidity_sweep,
             ],
             "ranging": [
                 self._scan_vwap_mean_revert,
                 self._scan_rsi_divergence,
                 self._scan_structure_bounce,
+                self._scan_liquidity_sweep,
             ],
             "sideways": [
                 self._scan_vwap_mean_revert,
                 self._scan_rsi_divergence,
                 self._scan_structure_bounce,
+                self._scan_liquidity_sweep,
             ],
             "volatile": [
                 self._scan_structure_bounce,
                 self._scan_order_block_entry,
+                self._scan_liquidity_sweep,
             ],
             "high_volatility": [
                 self._scan_structure_bounce,
                 self._scan_order_block_entry,
+                self._scan_liquidity_sweep,
             ],
             "mean_reversion": [
                 self._scan_vwap_mean_revert,
@@ -1066,6 +1098,12 @@ class ScalpStrategy(BaseStrategy):
             pass
 
         if not allowed_scanners:
+            block_key = f"_regime_block_count_{symbol}"
+            cnt = getattr(self, block_key, 0) + 1
+            setattr(self, block_key, cnt)
+            if cnt <= 3 or cnt % 50 == 0:
+                logger.info("FUNNEL %s | REGIME BLOCK #%d | regime=%s — no scanners allowed",
+                           symbol, cnt, regime)
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"REGIME VETO: {regime} — no scanners allowed",
@@ -1075,6 +1113,15 @@ class ScalpStrategy(BaseStrategy):
             return []
 
         scan_results: List[ScanResult] = []
+
+        # Funnel diagnostic: log which scanners are being tried
+        pass_key = f"_scanner_pass_count_{symbol}"
+        pass_cnt = getattr(self, pass_key, 0) + 1
+        setattr(self, pass_key, pass_cnt)
+        if pass_cnt <= 3 or pass_cnt % 100 == 0:
+            scanner_list = [s.__name__.replace("_scan_", "") for s in allowed_scanners]
+            logger.info("FUNNEL %s | SCANNERS RUNNING #%d | regime=%s | scanners=%s | atr_ratio=%.2f",
+                       symbol, pass_cnt, regime, scanner_list, self._atr_ratio)
 
         for scanner in allowed_scanners:
             label = scanner_names.get(scanner.__name__, scanner.__name__)
@@ -1166,6 +1213,15 @@ class ScalpStrategy(BaseStrategy):
                     "error": str(exc), "reason": diag,
                     "scanner_status": scanner_status,
                 })
+
+        # Funnel diagnostic: summarize scanner results
+        triggered = [sr for sr in scan_results if sr.setup_result is not None]
+        not_triggered = [sr for sr in scan_results if sr.setup_result is None]
+        if pass_cnt <= 5 or pass_cnt % 100 == 0:
+            t_names = [f"{sr.scanner_name}({sr.weighted_score:.0f})" for sr in triggered]
+            nt_names = [sr.scanner_name for sr in not_triggered]
+            logger.info("FUNNEL %s | SCAN RESULT #%d | triggered=%s | no_trigger=%s",
+                       symbol, pass_cnt, t_names or "NONE", nt_names)
 
         # ── Update setup lifecycle candidates for dashboard ──
         _lifecycle_candidates: List[Dict[str, Any]] = []
@@ -1263,6 +1319,12 @@ class ScalpStrategy(BaseStrategy):
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
 
+        if pass_cnt <= 5 or pass_cnt % 100 == 0:
+            logger.info("FUNNEL %s | TRADEABLE #%d | scanner=%s side=%s score=%.0f tier=%s tradeable=%s",
+                       symbol, pass_cnt, best_sr.scanner_name,
+                       best.side.value if best.side else "?", best_sr.weighted_score,
+                       best_sr.tier, self._weight_manager.is_tradeable(best_sr.scanner_name))
+
         # ── Apply structural prefilter confidence adjustments ──
         _pf_adj = getattr(self, '_prefilter_result', {}).get('confidence_adj', 0)
         _pf_ctx = getattr(self, '_prefilter_result', {}).get('context', {})
@@ -1322,6 +1384,10 @@ class ScalpStrategy(BaseStrategy):
         #           (2) scanner is simple_bias/liquidity_sweep (always shadow, even learning)
         _force_shadow = best_sr.scanner_name in ("simple_bias", "liquidity_sweep")
         if scanner_size <= 0.0 and (not self._is_learning or _force_shadow):
+            if pass_cnt <= 5 or pass_cnt % 100 == 0:
+                logger.info("FUNNEL %s | SCANNER SHADOW #%d | scanner=%s conf=%d min_conf=%d size=%.1f",
+                           symbol, pass_cnt, best_sr.scanner_name, best.confidence,
+                           self._sb_only_min_conf, scanner_size)
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1365,6 +1431,9 @@ class ScalpStrategy(BaseStrategy):
         last_fire = self._scanner_cooldowns.get(cooldown_key, 0)
         if now - last_fire < self._scanner_cooldown_sec:
             elapsed = int(now - last_fire)
+            if pass_cnt <= 5 or pass_cnt % 100 == 0:
+                logger.info("FUNNEL %s | COOLDOWN BLOCK #%d | scanner=%s elapsed=%ds need=%ds",
+                           symbol, pass_cnt, best_sr.scanner_name, elapsed, self._scanner_cooldown_sec)
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"COOLDOWN: {best_sr.scanner_name} fired {elapsed}s ago (need {self._scanner_cooldown_sec}s)",
@@ -1636,6 +1705,9 @@ class ScalpStrategy(BaseStrategy):
         # These exist for a reason: HTF mismatch, dead session, regime conflict, CHOCH conflict
         # Letting garbage through in learning mode corrupts the training data
         if hard_vetos:
+            if pass_cnt <= 5 or pass_cnt % 100 == 0:
+                logger.info("FUNNEL %s | HARD VETO #%d | scanner=%s | vetos=%s | soft=%s",
+                           symbol, pass_cnt, best_sr.scanner_name, hard_vetos, soft_vetos)
             self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1740,6 +1812,9 @@ class ScalpStrategy(BaseStrategy):
 
         # HARD EV VETO — reject negative EV trades (ALWAYS enforced)
         if ev_result.verdict == "REJECT":
+            if pass_cnt <= 5 or pass_cnt % 100 == 0:
+                logger.info("FUNNEL %s | EV REJECT #%d | scanner=%s ev=%s reason=%s",
+                           symbol, pass_cnt, best_sr.scanner_name, ev_result.verdict, ev_result.reason)
             self._funnel["blocked_ev"] = self._funnel.get("blocked_ev", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
@@ -1898,32 +1973,23 @@ class ScalpStrategy(BaseStrategy):
 
             # ── ML HARD VETO GATE (pair-specific thresholds) ──
             # Data proves: trades below the ML threshold lose money.
-            # ML is the final gatekeeper — if prob < threshold, NO TRADE.
-            # Thresholds are pair-specific (config: ml.pair_thresholds).
-            #
-            # probability < threshold → HARD BLOCK (never trade)
-            # probability threshold-0.55 → proceed (SCALP tier)
-            # probability 0.55-0.65 → proceed (INTRADAY tier)
-            # probability > 0.65 → proceed + confidence bonus (RUNNER tier)
+            # ML GATE — SHADOW MODE until retrained on clean (enforced) data.
+            # ML was trained on paper_learning garbage — it has no real edge.
+            # Log the ML verdict but DO NOT hard-block.
+            # Re-enable hard-block after retraining on 500+ clean enforced-mode trades.
             if not self._is_learning:
                 _ml_conf_adj = 0
                 ml_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
                 if ml_prob < ml_threshold:
-                    # HARD BLOCK — ML says this trade has negative edge
+                    # SHADOW ONLY — log but don't block (ML trained on garbage data)
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
                     logger.info(
-                        "ML HARD BLOCK: %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
+                        "ML SHADOW (no block): %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
                         best.side.value.upper() if best.side else "?",
                         symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
                     )
-                    self.last_scan_status[symbol] = {
-                        "time": now_iso, "signal": False,
-                        "reason": f"ML HARD BLOCK: prob={ml_prob:.3f} < {ml_threshold:.2f} ({ml_verdict})",
-                        "ml_result": ml_result,
-                        "indicators": indicators, "setups_checked": setups_checked,
-                        "funnel": dict(self._funnel),
-                    }
-                    # Still log for ML analysis
+                    # DO NOT return [] — let the signal through
+                    # Log for ML retraining data collection
                     self._feature_logger.log_signal(
                         symbol=symbol, scanner=best_sr.scanner_name,
                         side=best.side.value if best.side else "",
@@ -1934,7 +2000,7 @@ class ScalpStrategy(BaseStrategy):
                         scanner_weight=best_sr.scanner_weight,
                         scanner_expectancy=0, ev=0,
                     )
-                    return []
+                    # Was: return [] — removed, ML is shadow-only until retrained
                 elif ml_prob < 0.55:
                     _ml_conf_adj = 0    # baseline, no adjustment
                 elif ml_prob >= 0.65:
@@ -2106,6 +2172,9 @@ class ScalpStrategy(BaseStrategy):
             })
         self.setup_candidates[symbol] = existing[:3]
 
+        logger.info("FUNNEL %s | SIGNAL EMITTED | scanner=%s side=%s conf=%d entry=%.2f sl=%.2f",
+                   symbol, best_sr.scanner_name, best.side.value if best.side else "?",
+                   best.confidence, signal.entry_price, signal.stop_loss)
         return [signal]
 
     def _estimate_proximity_score(self, diag: str) -> int:
@@ -3250,8 +3319,14 @@ class ScalpStrategy(BaseStrategy):
     def _scan_liquidity_sweep(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """Price sweeps below swing low (hunts stops) then reverses."""
-        if len(df) < 20:
+        """Liquidity sweep: price raids equal highs/lows, fails, snaps back with displacement.
+
+        Better than plain structure_bounce because it encodes:
+        - Trapped breakout traders (stop run)
+        - Reversal intent (reclaim + displacement)
+        - Structural confluence (sweep into FVG/OB)
+        """
+        if len(df) < 30:
             return None
 
         last = df.iloc[-1]
@@ -3264,83 +3339,363 @@ class ScalpStrategy(BaseStrategy):
         if atr <= 0 or np.isnan(atr):
             return None
 
-        # Find recent swing lows/highs in last 50 bars
-        from data.structure import find_swings
-        swing_highs, swing_lows = find_swings(df, lookback=50)
+        lookback = min(50, len(df) - 2)
+        window = df.iloc[-(lookback + 1):-1]  # exclude current bar
+
+        # ── Step 1: Find equal highs/lows clusters ──
+        # At least 2 touches within tolerance = liquidity pool
+        tolerance = atr * 0.15
+        highs = window["high"].values
+        lows = window["low"].values
+
+        # Equal highs: cluster of 2+ bars with highs within tolerance
+        eq_high_level = 0.0
+        eq_high_count = 0
+        for i in range(len(highs) - 1, -1, -1):
+            h = highs[i]
+            touches = sum(1 for j in range(len(highs)) if j != i and abs(highs[j] - h) < tolerance)
+            if touches >= 2 and h > eq_high_level:
+                eq_high_level = h
+                eq_high_count = touches + 1
+                break
+
+        # Equal lows: cluster of 2+ bars with lows within tolerance
+        eq_low_level = 0.0
+        eq_low_count = 0
+        for i in range(len(lows) - 1, -1, -1):
+            l_val = lows[i]
+            touches = sum(1 for j in range(len(lows)) if j != i and abs(lows[j] - l_val) < tolerance)
+            if touches >= 2 and (eq_low_level == 0 or l_val < eq_low_level):
+                eq_low_level = l_val
+                eq_low_count = touches + 1
+                break
 
         side = None
         confs = []
         score = 0
         sweep_level = 0.0
 
-        # LONG: Price wicked below a swing low but closed above it (stop hunt → reversal)
-        for idx, swing_price in reversed(swing_lows[-5:]):  # check last 5 swing lows
-            if idx >= len(df) - 2:
-                continue  # skip current/prev bar
-            if low < swing_price and close > swing_price:
-                # Sweep detected: wick went below, close came back above
-                side = OrderSide.LONG
-                sweep_level = swing_price
-                confs.append(f"Liquidity sweep below swing low ${swing_price:.0f}")
-                score += 35
-                # Quality of sweep
-                sweep_depth = (swing_price - low) / atr
-                if sweep_depth > 0.3:
-                    score += 10
-                    confs.append(f"Deep sweep ({sweep_depth:.1f}x ATR)")
-                break
+        # ── Step 2: Detect sweep ──
+        # LONG: Price raids below equal lows, closes back above
+        if eq_low_level > 0 and low < eq_low_level and close > eq_low_level:
+            side = OrderSide.LONG
+            sweep_level = eq_low_level
+            sweep_size = (eq_low_level - low) / atr
+            confs.append(f"Sweep below EQL ({eq_low_count} touches) at ${eq_low_level:.0f}")
+            score += 30
 
-        # SHORT: Price wicked above a swing high but closed below it
+            # Sweep depth scoring
+            if sweep_size > 0.5:
+                score += 15
+                confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
+            elif sweep_size > 0.2:
+                score += 8
+
+        # SHORT: Price raids above equal highs, closes back below
+        if side is None and eq_high_level > 0 and high > eq_high_level and close < eq_high_level:
+            side = OrderSide.SHORT
+            sweep_level = eq_high_level
+            sweep_size = (high - eq_high_level) / atr
+            confs.append(f"Sweep above EQH ({eq_high_count} touches) at ${eq_high_level:.0f}")
+            score += 30
+
+            if sweep_size > 0.5:
+                score += 15
+                confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
+            elif sweep_size > 0.2:
+                score += 8
+
+        # Fallback: single swing sweep (less strong)
         if side is None:
-            for idx, swing_price in reversed(swing_highs[-5:]):
+            from data.structure import find_swings
+            swing_highs, swing_lows = find_swings(df, lookback=lookback)
+            for idx, swing_price in reversed(swing_lows[-5:]):
                 if idx >= len(df) - 2:
                     continue
-                if high > swing_price and close < swing_price:
-                    side = OrderSide.SHORT
+                if low < swing_price and close > swing_price:
+                    side = OrderSide.LONG
                     sweep_level = swing_price
-                    confs.append(f"Liquidity sweep above swing high ${swing_price:.0f}")
-                    score += 35
-                    sweep_depth = (high - swing_price) / atr
-                    if sweep_depth > 0.3:
-                        score += 10
-                        confs.append(f"Deep sweep ({sweep_depth:.1f}x ATR)")
+                    confs.append(f"Sweep below swing low ${swing_price:.0f}")
+                    score += 20  # weaker than equal-level sweep
                     break
+            if side is None:
+                for idx, swing_price in reversed(swing_highs[-5:]):
+                    if idx >= len(df) - 2:
+                        continue
+                    if high > swing_price and close < swing_price:
+                        side = OrderSide.SHORT
+                        sweep_level = swing_price
+                        confs.append(f"Sweep above swing high ${swing_price:.0f}")
+                        score += 20
+                        break
 
         if side is None:
             return None
 
-        # Volume spike on sweep (market makers active)
+        # ── Step 3: Reclaim strength ──
+        # How strongly did price reclaim after the sweep?
+        body = abs(close - open_)
+        candle_range = high - low if high > low else atr * 0.01
+        body_ratio = body / candle_range
+        if side == OrderSide.LONG:
+            close_position = (close - low) / candle_range
+        else:
+            close_position = (high - close) / candle_range
+
+        if body_ratio > 0.6 and close_position > 0.7:
+            score += 15
+            confs.append(f"Strong reclaim (body={body_ratio:.0%}, close_pos={close_position:.0%})")
+        elif body_ratio > 0.4:
+            score += 5
+
+        # ── Step 4: Displacement check ──
+        # Body must show real directional intent (> 0.3x ATR)
+        displacement = body / atr if atr > 0 else 0
+        if displacement > 0.8:
+            score += 15
+            confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
+        elif displacement > 0.4:
+            score += 8
+            confs.append(f"Moderate displacement ({displacement:.1f}x ATR)")
+        elif displacement < 0.2:
+            score -= 10  # weak reclaim, probably fake
+
+        # ── Step 5: Volume confirmation ──
         rel_vol = float(last.get("rel_vol", 1.0))
         if not np.isnan(rel_vol) and rel_vol > 1.5:
             confs.append(f"Volume spike {rel_vol:.1f}x")
-            score += 15
+            score += 10
         elif not np.isnan(rel_vol) and rel_vol > 1.0:
             score += 5
 
-        # RSI divergence at sweep (extra confirmation)
-        rsi = float(last.get("rsi", 50))
-        if side == OrderSide.LONG and rsi < 40:
-            confs.append(f"RSI oversold at sweep ({rsi:.0f})")
-            score += 10
-        elif side == OrderSide.SHORT and rsi > 60:
-            confs.append(f"RSI overbought at sweep ({rsi:.0f})")
-            score += 10
+        # ── Step 6: Sweep into structural zone ──
+        sm = self._structure_map
+        if sm is not None:
+            # Check if sweep touched an order block
+            if side == OrderSide.LONG:
+                for ob in getattr(sm, 'demand_zones', []):
+                    if isinstance(ob, dict) and low <= ob.get('high', 0) and low >= ob.get('low', float('inf')):
+                        score += 10
+                        confs.append("Sweep into demand zone/OB")
+                        break
+            else:
+                for ob in getattr(sm, 'supply_zones', []):
+                    if isinstance(ob, dict) and high >= ob.get('low', float('inf')) and high <= ob.get('high', 0):
+                        score += 10
+                        confs.append("Sweep into supply zone/OB")
+                        break
 
-        # HTF alignment
+        # ── Step 7: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("HTF aligned")
             score += 15
+        elif htf_bias == (-1 if side == OrderSide.LONG else 1):
+            score -= 5  # counter-trend penalty but don't block
 
-        confidence = min(score, 100)
+        confidence = max(min(score, 100), 0)
 
-        # SL below the sweep wick + buffer
+        # SL below/above the sweep wick + small buffer
         if side == OrderSide.LONG:
-            sl = low - close * 0.001  # below the sweep wick
+            sl = low - atr * 0.15
         else:
-            sl = high + close * 0.001
+            sl = high + atr * 0.15
 
         return _SetupResult(
             name="liquidity_sweep",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # BOS / CHOCH + Displacement Scanner
+    # ==================================================================
+
+    def _scan_bos_choch(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Break of Structure / Change of Character with displacement.
+
+        Detects:
+        - Local structure level broken
+        - Displacement strong enough to prove intent (body > ATR threshold)
+        - Optional retest/reclaim after break
+
+        Better than generic momentum because it says:
+        'price did not just move — it broke structure with force.'
+        """
+        if len(df) < 30:
+            return None
+
+        atr = float(df.iloc[-1].get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        lookback = min(30, len(df) - 5)
+        window = df.iloc[-(lookback + 1):]
+
+        # ── Step 1: Find local structure levels ──
+        # Swing highs/lows from the window
+        highs = window["high"].values
+        lows = window["low"].values
+        closes = window["close"].values
+
+        # Find recent swing high (local max in 5-bar window)
+        swing_high = 0.0
+        swing_high_idx = -1
+        for i in range(2, len(highs) - 3):
+            if highs[i] >= max(highs[i-2:i]) and highs[i] >= max(highs[i+1:i+3]):
+                if highs[i] > swing_high:
+                    swing_high = highs[i]
+                    swing_high_idx = i
+
+        # Find recent swing low
+        swing_low = float('inf')
+        swing_low_idx = -1
+        for i in range(2, len(lows) - 3):
+            if lows[i] <= min(lows[i-2:i]) and lows[i] <= min(lows[i+1:i+3]):
+                if lows[i] < swing_low:
+                    swing_low = lows[i]
+                    swing_low_idx = i
+
+        # Current bar values
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high_val = float(last["high"])
+        low_val = float(last["low"])
+        body = abs(close - open_)
+
+        # Previous bar close (to confirm break happened on THIS bar)
+        prev_close = float(prev["close"])
+
+        side = None
+        confs = []
+        score = 0
+        is_choch = False
+
+        # ── Step 2: Detect BOS or CHOCH ──
+        # Bullish BOS: close breaks above swing high (prev close was below)
+        if swing_high > 0 and close > swing_high and prev_close <= swing_high:
+            side = OrderSide.LONG
+            break_dist = (close - swing_high) / atr
+            confs.append(f"Bullish BOS above ${swing_high:.0f} ({break_dist:.2f}x ATR)")
+            score += 25
+
+            # Check if this is CHOCH (break against prior trend)
+            # Prior trend was bearish if EMA8 slope was negative
+            ema8_vals = window["ema_8"].values if "ema_8" in window.columns else None
+            if ema8_vals is not None and len(ema8_vals) >= 5:
+                prior_slope = (ema8_vals[-5] - ema8_vals[-10]) / atr if len(ema8_vals) >= 10 else 0
+                if prior_slope < -0.3:
+                    is_choch = True
+                    confs.append("CHOCH: bullish break after downtrend")
+                    score += 15
+
+        # Bearish BOS: close breaks below swing low (prev close was above)
+        elif swing_low < float('inf') and close < swing_low and prev_close >= swing_low:
+            side = OrderSide.SHORT
+            break_dist = (swing_low - close) / atr
+            confs.append(f"Bearish BOS below ${swing_low:.0f} ({break_dist:.2f}x ATR)")
+            score += 25
+
+            ema8_vals = window["ema_8"].values if "ema_8" in window.columns else None
+            if ema8_vals is not None and len(ema8_vals) >= 5:
+                prior_slope = (ema8_vals[-5] - ema8_vals[-10]) / atr if len(ema8_vals) >= 10 else 0
+                if prior_slope > 0.3:
+                    is_choch = True
+                    confs.append("CHOCH: bearish break after uptrend")
+                    score += 15
+
+        if side is None:
+            return None
+
+        # ── Step 3: Displacement check ──
+        # Break candle must have real impulse (body > threshold × ATR)
+        displacement = body / atr if atr > 0 else 0
+        if displacement > 1.2:
+            score += 20
+            confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
+        elif displacement > 0.7:
+            score += 12
+            confs.append(f"Good displacement ({displacement:.1f}x ATR)")
+        elif displacement > 0.4:
+            score += 5
+        else:
+            # Weak displacement — likely not a real break
+            score -= 15
+            confs.append(f"Weak displacement ({displacement:.1f}x ATR)")
+
+        # ── Step 4: Candle quality ──
+        candle_range = high_val - low_val if high_val > low_val else atr * 0.01
+        body_ratio = body / candle_range
+        if body_ratio > 0.6:
+            score += 10
+            confs.append(f"Clean break candle (body={body_ratio:.0%})")
+        elif body_ratio < 0.3:
+            score -= 10  # doji / indecision on break = unreliable
+
+        # Close in direction of break
+        if side == OrderSide.LONG:
+            close_pos = (close - low_val) / candle_range
+        else:
+            close_pos = (high_val - close) / candle_range
+        if close_pos > 0.7:
+            score += 5
+
+        # ── Step 5: Volume confirmation ──
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.5:
+            confs.append(f"Volume spike {rel_vol:.1f}x on break")
+            score += 10
+        elif not np.isnan(rel_vol) and rel_vol > 1.0:
+            score += 5
+        elif not np.isnan(rel_vol) and rel_vol < 0.5:
+            score -= 10  # low volume break = probably fake
+
+        # ── Step 6: HTF alignment ──
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned with break")
+            score += 15
+        elif htf_bias == (-1 if side == OrderSide.LONG else 1):
+            score -= 5  # counter-HTF break, weaker
+
+        # ── Step 7: Retest check (last 2-3 bars) ──
+        # If break happened 1-3 bars ago and price retested the level, stronger
+        if len(df) >= 4:
+            for lookback_i in range(2, min(5, len(df))):
+                bar = df.iloc[-lookback_i]
+                bar_close = float(bar["close"])
+                bar_body = abs(float(bar["close"]) - float(bar["open"]))
+                bar_disp = bar_body / atr if atr > 0 else 0
+                if side == OrderSide.LONG and swing_high > 0:
+                    if bar_close > swing_high and bar_disp > 0.5:
+                        # Previous bar already broke — current is retest
+                        if close > swing_high and abs(low_val - swing_high) < atr * 0.3:
+                            score += 10
+                            confs.append("Retest of broken level")
+                        break
+                elif side == OrderSide.SHORT and swing_low < float('inf'):
+                    if bar_close < swing_low and bar_disp > 0.5:
+                        if close < swing_low and abs(high_val - swing_low) < atr * 0.3:
+                            score += 10
+                            confs.append("Retest of broken level")
+                        break
+
+        confidence = max(min(score, 100), 0)
+
+        # SL: behind the structure level + buffer
+        if side == OrderSide.LONG:
+            sl = min(low_val, swing_high) - atr * 0.2
+        else:
+            sl = max(high_val, swing_low) + atr * 0.2
+
+        return _SetupResult(
+            name="bos_choch",
             side=side,
             confidence=confidence,
             confirmations=confs,

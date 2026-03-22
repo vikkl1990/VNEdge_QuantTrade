@@ -683,8 +683,8 @@ class CandidateTrainer:
 
         Returns metrics dict with per-fold and aggregate results.
         """
-        if len(X) < 100:
-            return {"error": f"insufficient data: {len(X)} candidates (need 100+)"}
+        if len(X) < 250:
+            return {"error": f"insufficient data: {len(X)} candidates (need 250+)"}
 
         # Store all feature names for reference
         all_feature_names = list(X.columns)
@@ -1134,6 +1134,7 @@ class CandidateTrainer:
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
         htf_df: Optional[pd.DataFrame] = None,
+        exclude_scanners: Optional[set] = None,
     ) -> Dict:
         """Run candidate training for ALL scanners and produce comparison.
 
@@ -1144,11 +1145,17 @@ class CandidateTrainer:
             label_mode: "mfe" (default) or "trade"
             mfe_threshold_r: MFE threshold in R (default 0.2)
             htf_df: Optional higher-timeframe DataFrame (15m) for multi-TF features
+            exclude_scanners: set of scanner names to skip (default: {"bb_squeeze", "simple_bias"})
 
         Returns dict with per-scanner results and comparison table.
         """
+        if exclude_scanners is None:
+            exclude_scanners = {"bb_squeeze", "simple_bias"}
+
         logger.info("=== Running candidate trainer for ALL %d scanners on %s (labels=%s) ===",
                      len(scanners), symbol, label_mode)
+        if exclude_scanners:
+            logger.info("  Excluding scanners: %s", exclude_scanners)
         if htf_df is not None:
             logger.info("  Multi-TF enabled: %d HTF candles for alignment features", len(htf_df))
 
@@ -1156,6 +1163,9 @@ class CandidateTrainer:
         comparison_rows = []
 
         for scanner_name, scanner_func in scanners.items():
+            if scanner_name in exclude_scanners:
+                logger.info("--- Scanner: %s --- SKIPPED (excluded)", scanner_name)
+                continue
             logger.info("--- Scanner: %s ---", scanner_name)
             # Fresh trainer per scanner (separate model)
             trainer = CandidateTrainer(self._config)
@@ -1221,6 +1231,156 @@ class CandidateTrainer:
             logger.info("All-scanner results saved to %s", path)
         except Exception as e:
             logger.warning("Failed to save combined results: %s", e)
+
+        return combined
+
+    def run_pair_family(
+        self,
+        symbol_data: Dict[str, pd.DataFrame],
+        scanners: Dict,
+        n_splits: int = 5,
+        n_estimators: int = 50,
+        max_depth: int = 6,
+        label_mode: str = "mfe",
+        mfe_threshold_r: float = 0.2,
+        mfe_max_bars: int = 30,
+        htf_data: Optional[Dict[str, pd.DataFrame]] = None,
+        exclude_scanners: Optional[set] = None,
+    ) -> Dict:
+        """Train ONE model per scanner per pair-family (not per symbol).
+
+        Groups symbols into families based on market characteristics, concatenates
+        candidates from all symbols in each family, and trains a shared model.
+
+        Args:
+            symbol_data: dict of {symbol: OHLCV DataFrame} e.g. {"BTC/USDT": df_btc, ...}
+            scanners: dict of {name: func} from trainer.py SCANNERS
+            n_splits, n_estimators, max_depth: training hyperparameters
+            label_mode: "mfe" (default) or "trade"
+            mfe_threshold_r: MFE threshold in R (default 0.2)
+            mfe_max_bars: max bars for MFE lookahead
+            htf_data: optional dict of {symbol: htf_df} for multi-TF features
+            exclude_scanners: set of scanner names to skip (default: {"bb_squeeze", "simple_bias"})
+
+        Returns dict with per-family, per-scanner results.
+        """
+        if exclude_scanners is None:
+            exclude_scanners = {"bb_squeeze", "simple_bias"}
+
+        # Define pair families
+        PAIR_FAMILIES = {
+            "liquid_majors": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+            "secondary": ["AVAX/USDT", "LINK/USDT"],
+            "high_beta": ["DOGE/USDT", "WIF/USDT", "SUI/USDT"],
+        }
+
+        # Assign each provided symbol to its family (or "other")
+        symbol_to_family = {}
+        for family_name, family_symbols in PAIR_FAMILIES.items():
+            for sym in family_symbols:
+                symbol_to_family[sym] = family_name
+        for sym in symbol_data:
+            if sym not in symbol_to_family:
+                symbol_to_family[sym] = "other"
+
+        # Group provided symbols by family
+        family_groups: Dict[str, List[str]] = {}
+        for sym in symbol_data:
+            fam = symbol_to_family[sym]
+            family_groups.setdefault(fam, []).append(sym)
+
+        logger.info("=== Pair-family training: %d symbols -> %d families ===",
+                     len(symbol_data), len(family_groups))
+        for fam, syms in family_groups.items():
+            logger.info("  Family '%s': %s", fam, syms)
+
+        all_family_results = {}
+
+        for family_name, family_symbols in family_groups.items():
+            logger.info("=== Training family: %s (%d symbols) ===", family_name, len(family_symbols))
+            family_results = {}
+
+            for scanner_name, scanner_func in scanners.items():
+                if scanner_name in exclude_scanners:
+                    logger.info("--- Scanner: %s --- SKIPPED (excluded)", scanner_name)
+                    continue
+
+                logger.info("--- Family '%s' | Scanner: %s ---", family_name, scanner_name)
+
+                # Collect candidates from all symbols in this family
+                all_X = []
+                all_y = []
+
+                for sym in family_symbols:
+                    df = symbol_data[sym]
+                    htf_df = htf_data.get(sym) if htf_data else None
+
+                    # Build a per-symbol trainer to run candidate extraction + features
+                    trainer = CandidateTrainer(self._config)
+                    try:
+                        X, y, _veto = trainer.build_dataset_with_veto_labels(
+                            df, sym,
+                            scanner_func=scanner_func,
+                            label_mode=label_mode,
+                            mfe_threshold_r=mfe_threshold_r,
+                            mfe_max_bars=mfe_max_bars,
+                            htf_df=htf_df,
+                        )
+                    except Exception as e:
+                        logger.warning("  %s: dataset build failed: %s", sym, e)
+                        continue
+
+                    if len(X) > 0:
+                        logger.info("  %s: %d candidates", sym, len(X))
+                        all_X.append(X)
+                        all_y.append(y)
+                    else:
+                        logger.info("  %s: no candidates", sym)
+
+                if not all_X:
+                    logger.warning("  Family '%s' scanner '%s': no candidates from any symbol",
+                                   family_name, scanner_name)
+                    family_results[scanner_name] = {"error": "no candidates from any symbol"}
+                    continue
+
+                # Concatenate all candidates across family symbols
+                X_combined = pd.concat(all_X, ignore_index=True)
+                y_combined = pd.concat(all_y, ignore_index=True)
+
+                logger.info("  Family '%s' scanner '%s': %d total candidates (from %d symbols)",
+                            family_name, scanner_name, len(X_combined), len(all_X))
+
+                # Train ONE shared model for the family
+                family_trainer = CandidateTrainer(self._config)
+                train_result = family_trainer.train(
+                    X_combined, y_combined,
+                    n_splits=n_splits,
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                )
+
+                family_results[scanner_name] = {
+                    "family": family_name,
+                    "symbols": family_symbols,
+                    "total_candidates": len(X_combined),
+                    "training": train_result,
+                }
+
+            all_family_results[family_name] = family_results
+
+        # Save combined results
+        combined = {
+            "mode": "pair_family",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "families": {fam: syms for fam, syms in family_groups.items()},
+            "results": all_family_results,
+        }
+        path = RESULTS_DIR / "candidate_pair_family.json"
+        try:
+            path.write_text(json.dumps(combined, default=str, indent=2))
+            logger.info("Pair-family results saved to %s", path)
+        except Exception as e:
+            logger.warning("Failed to save pair-family results: %s", e)
 
         return combined
 

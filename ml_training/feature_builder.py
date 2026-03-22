@@ -692,6 +692,47 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["recent_sweep_bull"] = features["sweep_low_reversal"].rolling(5).max()
     features["recent_sweep_bear"] = features["sweep_high_reversal"].rolling(5).max()
 
+    # Sweep into structural zone (FVG/OB confluence)
+    # Check if sweep low touched a bull FVG (within 0.5 ATR)
+    sweep_into_fvg = np.where(
+        (features["sweep_low_reversal"] > 0) & (features["dist_from_bull_fvg"].abs() < 0.5),
+        1.0,
+        np.where(
+            (features["sweep_high_reversal"] > 0) & (features["dist_from_bear_fvg"].abs() < 0.5),
+            1.0, 0.0
+        )
+    )
+    features["sweep_into_fvg"] = sweep_into_fvg
+
+    # Post-sweep displacement: body of reversal candle / ATR
+    body_vals = (c - o).abs()
+    post_sweep_disp = np.where(
+        (features["sweep_low_reversal"] > 0) | (features["sweep_high_reversal"] > 0),
+        body_vals / atr.replace(0, np.nan),
+        0.0
+    )
+    features["post_sweep_displacement_atr"] = post_sweep_disp
+
+    # Reclaim strength: how far price closed back into the range after sweep
+    candle_range = (h - l).replace(0, np.nan)
+    reclaim_bull = (c - l) / candle_range   # for low sweeps: close relative to range
+    reclaim_bear = (h - c) / candle_range   # for high sweeps: close relative to range
+    features["reclaim_strength"] = np.where(
+        features["sweep_low_reversal"] > 0, reclaim_bull,
+        np.where(features["sweep_high_reversal"] > 0, reclaim_bear, 0.0)
+    )
+
+    # Sweep into order block (within 0.5 ATR of OB level)
+    sweep_into_ob = np.where(
+        (features["sweep_low_reversal"] > 0) & (features["dist_from_bull_ob"].abs() < 0.5),
+        1.0,
+        np.where(
+            (features["sweep_high_reversal"] > 0) & (features["dist_from_bear_ob"].abs() < 0.5),
+            1.0, 0.0
+        )
+    )
+    features["sweep_into_ob"] = sweep_into_ob
+
     # ================================================================
     # 27. BOS / CHOCH + DISPLACEMENT
     # Break of Structure: price breaks above recent swing high (bullish BOS)
@@ -742,6 +783,65 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         (bullish_bos | bearish_bos) & (bull_fvg_exists | bear_fvg_exists),
         1.0, 0.0
     )
+
+    # Break distance from structure level (normalized by ATR)
+    # For bullish BOS: how far past the recent swing high; for bearish: past swing low
+    break_dist_bull = np.where(
+        bullish_bos,
+        (c - recent_swing_high.shift(1)) / atr.replace(0, np.nan),
+        0.0
+    )
+    break_dist_bear = np.where(
+        bearish_bos,
+        (recent_swing_low.shift(1) - c) / atr.replace(0, np.nan),
+        0.0
+    )
+    features["break_distance_atr"] = np.maximum(
+        np.nan_to_num(break_dist_bull, 0) + np.nan_to_num(break_dist_bear, 0), 0
+    )
+
+    # Retest flag: did price come back to test the broken level within 3 bars?
+    retest_bull = pd.Series(0.0, index=df.index)
+    retest_bear = pd.Series(0.0, index=df.index)
+    for lb in range(1, 4):
+        prev_low = l.shift(-lb)  # future bars' low came back to test
+        prev_high = h.shift(-lb)  # future bars' high came back to test
+        retest_bull = retest_bull | (
+            bullish_bos & ((prev_low - recent_swing_high.shift(1)).abs() < atr * 0.3)
+        )
+        retest_bear = retest_bear | (
+            bearish_bos & ((prev_high - recent_swing_low.shift(1)).abs() < atr * 0.3)
+        )
+    # Shift forward so the flag appears on the retest bar, not the BOS bar
+    features["retest_flag"] = (retest_bull.astype(float) + retest_bear.astype(float)).clip(upper=1.0)
+
+    # Impulse decay: how quickly displacement fades over next few bars
+    # Compare body/ATR of current bar vs the BOS bar's displacement
+    bos_disp = features["bos_displacement"]
+    current_body_atr = body_vals / atr.replace(0, np.nan)
+    impulse_decay_raw = np.where(
+        bos_disp > 0.5,
+        1.0 - (current_body_atr / bos_disp.replace(0, np.nan)),
+        0.0
+    )
+    features["impulse_decay"] = np.clip(np.nan_to_num(impulse_decay_raw, 0), 0, 1.0)
+
+    # HTF alignment with BOS direction
+    if "htf_trend_bias" in features.columns:
+        htf_bias = features["htf_trend_bias"]
+        htf_bos_align = np.where(
+            (bullish_bos) & (htf_bias > 0), 1.0,
+            np.where(
+                (bearish_bos) & (htf_bias < 0), 1.0,
+                np.where(
+                    (features["choch_bull"] > 0) | (features["choch_bear"] > 0),
+                    -0.5, 0.0
+                )
+            )
+        )
+        features["htf_bos_alignment"] = htf_bos_align
+    else:
+        features["htf_bos_alignment"] = 0.0
 
     # ================================================================
     # 28. KILLZONE / SESSION BOOST FEATURES

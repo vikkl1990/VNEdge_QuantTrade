@@ -18,7 +18,7 @@ from strategies.base import BaseStrategy, Signal
 from strategies.momentum_trend import MomentumTrendStrategy
 from strategies.scalp_strategy import ScalpStrategy
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.strategy.multi")
 
 
 class MultiStrategy(BaseStrategy):
@@ -61,7 +61,7 @@ class MultiStrategy(BaseStrategy):
                 sig.metadata["display_section"] = "Quick Scalp"
                 signals.append(sig)
         except Exception as exc:
-            logger.debug("Scalp strategy error: %s", exc)
+            logger.warning("Scalp strategy error for %s: %s", symbol, exc, exc_info=True)
 
         return signals
 

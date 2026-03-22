@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.ev_engine")
 
 
 @dataclass
@@ -68,7 +68,7 @@ class EVEngine:
     - Choppy/volatile: EV threshold raised (more noise)
     """
 
-    MIN_SAMPLES = 5              # Need at least 5 trades before gating
+    MIN_SAMPLES = 20             # Need at least 20 trades before gating (was 5 — too few for statistical significance)
     TRADE_EV_THRESHOLD = 0.10    # EV > 0.1R = full trade
     REDUCED_EV_THRESHOLD = 0.0   # EV > 0.0R = reduced size
     MAX_EV_SIZE_MULT = 1.3       # Max size multiplier for high EV

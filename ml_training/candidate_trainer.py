@@ -32,11 +32,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
-    classification_report,
+    classification_report, mean_squared_error,
 )
 
 # Add project root to path
@@ -624,6 +624,10 @@ class CandidateTrainer:
             if label_mode == "mfe":
                 mfe_series = mfe_labels_long if side == "long" else mfe_labels_short
                 labels.append(int(mfe_series.iloc[i]))
+            elif label_mode == "realized_r":
+                # Regression target: realized R after fees (continuous)
+                outcome = _simulate_trade_outcome(df, i, side, entry_price, atr, symbol)
+                labels.append(float(outcome["pnl_r"]))
             else:
                 outcome = _simulate_trade_outcome(df, i, side, entry_price, atr, symbol)
                 labels.append(1 if outcome["won"] else 0)
@@ -678,21 +682,20 @@ class CandidateTrainer:
         n_splits: int = 5,
         n_estimators: int = 50,
         max_depth: int = 6,
+        regression: bool = False,
     ) -> Dict:
-        """Train RandomForest with walk-forward TimeSeriesSplit validation.
+        """Train model with walk-forward TimeSeriesSplit validation.
+
+        If regression=True, uses GradientBoostingRegressor to predict realized R.
+        Otherwise uses RandomForestClassifier for binary classification.
 
         Returns metrics dict with per-fold and aggregate results.
         """
         if len(X) < 250:
             return {"error": f"insufficient data: {len(X)} candidates (need 250+)"}
 
-        # Store all feature names for reference
-        all_feature_names = list(X.columns)
-
+        self._regression = regression
         tscv = TimeSeriesSplit(n_splits=n_splits)
-
-        # Purge gap: remove last N training samples to prevent lookahead leakage
-        # MFE labels look forward 30 bars, so candidates near fold boundary leak info
         purge_gap = 5
 
         fold_results = []
@@ -701,18 +704,18 @@ class CandidateTrainer:
         all_mask = np.zeros(len(X), dtype=bool)
 
         for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
-            # Purge: remove last `purge_gap` samples from training set
             if purge_gap > 0 and len(train_idx) > purge_gap:
                 train_idx = train_idx[:-purge_gap]
 
             X_train_full, X_test_full = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
-            if len(y_train.unique()) < 2 or len(y_test) < 10:
+            if len(y_test) < 10:
+                continue
+            if not regression and len(y_train.unique()) < 2:
                 continue
 
-            # In-fold feature selection: select features using ONLY training data
-            # This prevents info leakage from test fold into feature selection
+            # In-fold feature selection
             if len(X_train_full.columns) > 40:
                 fold_features = self._select_top_features(X_train_full, y_train, max_features=40)
                 X_train = X_train_full[fold_features]
@@ -721,44 +724,82 @@ class CandidateTrainer:
                 X_train = X_train_full
                 X_test = X_test_full
 
-            clf = RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                n_jobs=1,  # 1GB VM constraint
-                random_state=42 + fold_idx,
-                class_weight="balanced",
-                min_samples_leaf=5,
-            )
-            clf.fit(X_train, y_train)
+            if regression:
+                model = GradientBoostingRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    random_state=42 + fold_idx,
+                    min_samples_leaf=10,
+                )
+                model.fit(X_train, y_train)
+                preds_r = model.predict(X_test)
+                all_probs[test_idx] = preds_r
+                all_preds[test_idx] = (preds_r > 0).astype(int)
+                all_mask[test_idx] = True
 
-            probs = clf.predict_proba(X_test)[:, 1]
-            preds = (probs >= 0.5).astype(int)
+                rmse = float(np.sqrt(mean_squared_error(y_test, preds_r)))
+                # Rank correlation: does model rank candidates correctly?
+                from scipy.stats import spearmanr
+                try:
+                    rank_corr, _ = spearmanr(y_test, preds_r)
+                except Exception:
+                    rank_corr = 0.0
+                # Top quartile actual R vs bottom quartile
+                sorted_idx = np.argsort(preds_r)
+                q25 = len(sorted_idx) // 4
+                bot_r = float(y_test.iloc[sorted_idx[:q25]].mean()) if q25 > 0 else 0
+                top_r = float(y_test.iloc[sorted_idx[-q25:]].mean()) if q25 > 0 else 0
 
-            all_probs[test_idx] = probs
-            all_preds[test_idx] = preds
-            all_mask[test_idx] = True
+                fold_results.append({
+                    "fold": fold_idx,
+                    "train_size": len(X_train),
+                    "test_size": len(X_test),
+                    "rmse": round(rmse, 4),
+                    "rank_corr": round(float(rank_corr) if not np.isnan(rank_corr) else 0, 4),
+                    "top_q_avg_r": round(top_r, 4),
+                    "bot_q_avg_r": round(bot_r, 4),
+                    "spread": round(top_r - bot_r, 4),
+                    "test_mean_r": round(float(y_test.mean()), 4),
+                })
+            else:
+                clf = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    n_jobs=1,
+                    random_state=42 + fold_idx,
+                    class_weight="balanced",
+                    min_samples_leaf=5,
+                )
+                clf.fit(X_train, y_train)
+                probs = clf.predict_proba(X_test)[:, 1]
+                preds = (probs >= 0.5).astype(int)
+                all_probs[test_idx] = probs
+                all_preds[test_idx] = preds
+                all_mask[test_idx] = True
 
-            try:
-                auc = roc_auc_score(y_test, probs)
-            except ValueError:
-                auc = 0.5
+                try:
+                    auc = roc_auc_score(y_test, probs)
+                except ValueError:
+                    auc = 0.5
 
-            fold_results.append({
-                "fold": fold_idx,
-                "train_size": len(X_train),
-                "test_size": len(X_test),
-                "accuracy": round(accuracy_score(y_test, preds) * 100, 1),
-                "precision": round(precision_score(y_test, preds, zero_division=0) * 100, 1),
-                "recall": round(recall_score(y_test, preds, zero_division=0) * 100, 1),
-                "f1": round(f1_score(y_test, preds, zero_division=0) * 100, 1),
-                "auc_roc": round(auc, 4),
-                "test_win_rate": round(y_test.mean() * 100, 1),
-            })
+                fold_results.append({
+                    "fold": fold_idx,
+                    "train_size": len(X_train),
+                    "test_size": len(X_test),
+                    "accuracy": round(accuracy_score(y_test, preds) * 100, 1),
+                    "precision": round(precision_score(y_test, preds, zero_division=0) * 100, 1),
+                    "recall": round(recall_score(y_test, preds, zero_division=0) * 100, 1),
+                    "f1": round(f1_score(y_test, preds, zero_division=0) * 100, 1),
+                    "auc_roc": round(auc, 4),
+                    "test_win_rate": round(y_test.mean() * 100, 1),
+                })
 
         if not fold_results:
             return {"error": "no valid folds"}
 
-        # Feature selection for final model (on full dataset — acceptable for production model)
+        # Feature selection for final model
         if len(X.columns) > 40:
             selected_features = self._select_top_features(X, y, max_features=40)
             X = X[selected_features]
@@ -767,14 +808,24 @@ class CandidateTrainer:
             self._feature_names = list(X.columns)
 
         # Train final model on all data
-        self._model = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            n_jobs=1,
-            random_state=42,
-            class_weight="balanced",
-            min_samples_leaf=5,
-        )
+        if regression:
+            self._model = GradientBoostingRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=0.05,
+                subsample=0.8,
+                random_state=42,
+                min_samples_leaf=10,
+            )
+        else:
+            self._model = RandomForestClassifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                n_jobs=1,
+                random_state=42,
+                class_weight="balanced",
+                min_samples_leaf=5,
+            )
         self._model.fit(X, y)
 
         # Feature importances
@@ -791,27 +842,47 @@ class CandidateTrainer:
             oos_probs = all_probs[oos_mask]
             oos_preds = all_preds[oos_mask]
 
-            try:
-                agg_auc = roc_auc_score(oos_y, oos_probs)
-            except ValueError:
-                agg_auc = 0.5
-
-            agg_metrics = {
-                "accuracy": round(accuracy_score(oos_y, oos_preds) * 100, 1),
-                "precision": round(precision_score(oos_y, oos_preds, zero_division=0) * 100, 1),
-                "recall": round(recall_score(oos_y, oos_preds, zero_division=0) * 100, 1),
-                "f1": round(f1_score(oos_y, oos_preds, zero_division=0) * 100, 1),
-                "auc_roc": round(agg_auc, 4),
-            }
+            if regression:
+                rmse = float(np.sqrt(mean_squared_error(oos_y, oos_probs)))
+                from scipy.stats import spearmanr
+                try:
+                    rank_corr, _ = spearmanr(oos_y, oos_probs)
+                except Exception:
+                    rank_corr = 0.0
+                sorted_idx = np.argsort(oos_probs)
+                q25 = len(sorted_idx) // 4
+                bot_r = float(oos_y.iloc[sorted_idx[:q25]].mean()) if q25 > 0 else 0
+                top_r = float(oos_y.iloc[sorted_idx[-q25:]].mean()) if q25 > 0 else 0
+                agg_metrics = {
+                    "rmse": round(rmse, 4),
+                    "rank_corr": round(float(rank_corr) if not np.isnan(rank_corr) else 0, 4),
+                    "top_q_avg_r": round(top_r, 4),
+                    "bot_q_avg_r": round(bot_r, 4),
+                    "spread": round(top_r - bot_r, 4),
+                    "auc_roc": round(rmse, 4),  # backwards compat — dashboard reads auc_roc
+                }
+            else:
+                try:
+                    agg_auc = roc_auc_score(oos_y, oos_probs)
+                except ValueError:
+                    agg_auc = 0.5
+                agg_metrics = {
+                    "accuracy": round(accuracy_score(oos_y, oos_preds) * 100, 1),
+                    "precision": round(precision_score(oos_y, oos_preds, zero_division=0) * 100, 1),
+                    "recall": round(recall_score(oos_y, oos_preds, zero_division=0) * 100, 1),
+                    "f1": round(f1_score(oos_y, oos_preds, zero_division=0) * 100, 1),
+                    "auc_roc": round(agg_auc, 4),
+                }
         else:
             agg_metrics = {}
 
         result = {
             "total_candidates": len(X),
-            "base_win_rate": round(y.mean() * 100, 1),
+            "base_win_rate": round(y.mean() * 100, 1) if not regression else round(float(y.mean()), 4),
             "folds": fold_results,
             "aggregate_oos": agg_metrics,
             "top_features": top_features,
+            "model_type": "regression" if regression else "classification",
         }
 
         self._results = result
@@ -1024,14 +1095,22 @@ class CandidateTrainer:
             self._save_results(result, scanner_name)
             return result
 
-        logger.info(
-            "Dataset: %d candidates, %.1f%% raw WR, %d features",
-            len(X), y.mean() * 100, len(X.columns),
-        )
+        is_regression = label_mode == "realized_r"
+        if is_regression:
+            logger.info(
+                "Dataset: %d candidates, mean R=%.3f, %d features",
+                len(X), float(y.mean()), len(X.columns),
+            )
+        else:
+            logger.info(
+                "Dataset: %d candidates, %.1f%% raw WR, %d features",
+                len(X), y.mean() * 100, len(X.columns),
+            )
 
         # Step 2: Train
         train_result = self.train(X, y, n_splits=n_splits,
-                                  n_estimators=n_estimators, max_depth=max_depth)
+                                  n_estimators=n_estimators, max_depth=max_depth,
+                                  regression=is_regression)
         if "error" in train_result:
             train_result["scanner"] = scanner_name
             self._save_results(train_result, scanner_name)

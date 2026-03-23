@@ -600,6 +600,46 @@ tr:hover{background:rgba(99,148,255,.02)}
     </div>
   </div>
 
+  <!-- Real Trading Status -->
+  <div class="panel" id="real-trading-panel" style="display:none;border:1px solid rgba(255,59,92,.3)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:3px;font-weight:600">
+        <span style="margin-right:6px">&#x1F534;</span> Real Trading
+      </div>
+      <span id="real-mode-badge" class="badge" style="font-size:.65rem">DISABLED</span>
+      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.7rem;color:var(--text-muted)">
+        <input type="checkbox" id="real-toggle" onchange="toggleRealTrading(this.checked)" style="accent-color:var(--red)">
+        Enable
+      </label>
+    </div>
+    <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Balance</div>
+        <div id="real-balance" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Daily P&L</div>
+        <div id="real-daily-pnl" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div>
+        <div id="real-total-pnl" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Open</div>
+        <div id="real-open-count" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Closed Today</div>
+        <div id="real-closed-today" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Circuit Breaker</div>
+        <div id="real-cb-status" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">OK</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Equity Curve -->
   <div class="panel">
     <div class="panel-title">Equity Curve & Drawdown</div>
@@ -818,6 +858,22 @@ async function api(path) {
     } catch { return null; }
 }
 
+async function toggleRealTrading(enabled) {
+    if (enabled && !confirm("⚠️ Enable REAL TRADING with real money? This will place actual orders on the exchange.")) {
+        document.getElementById("real-toggle").checked = false;
+        return;
+    }
+    try {
+        const r = await fetch("/api/real/toggle", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({enabled: enabled})
+        });
+        const d = await r.json();
+        if (d.error) alert("Error: " + d.error);
+    } catch (e) { alert("Toggle failed: " + e); }
+}
+
 function healthColor(pct) {
     if (pct > 85) return "var(--red)";
     if (pct > 70) return "var(--yellow)";
@@ -857,11 +913,45 @@ function switchTab(tab) {
 // TAB 1: LIVE TRADING REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshLive() {
-    const [status, decision, active, signals, funnel, alerts, closed] = await Promise.all([
+    const [status, decision, active, signals, funnel, alerts, closed, realStatus] = await Promise.all([
         api("/api/status"), api("/api/decision"), api("/api/tracker/active"),
         api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts"),
-        api("/api/tracker/closed")
+        api("/api/tracker/closed"), api("/api/real/status")
     ]);
+
+    // Real Trading Panel update
+    if (realStatus && document.getElementById("real-toggle")) {
+        document.getElementById("real-toggle").checked = realStatus.enabled || false;
+    }
+    if (realStatus) {
+        const rp = document.getElementById("real-trading-panel");
+        if (realStatus.enabled || realStatus.total_closed > 0) {
+            rp.style.display = "block";
+            const mode = realStatus.mode || "DISABLED";
+            const badge = document.getElementById("real-mode-badge");
+            badge.textContent = mode;
+            badge.style.background = mode === "LIVE" ? "var(--red)" : mode === "DRY RUN" ? "var(--cyan)" : "var(--text-muted)";
+            badge.style.color = mode === "LIVE" ? "#fff" : "#000";
+            const bal = realStatus.balance || 0;
+            document.getElementById("real-balance").textContent = "$" + bal.toFixed(2);
+            const dp = realStatus.circuit_breaker ? realStatus.circuit_breaker.daily_pnl : 0;
+            const dpEl = document.getElementById("real-daily-pnl");
+            dpEl.textContent = (dp >= 0 ? "+$" : "-$") + Math.abs(dp).toFixed(2);
+            dpEl.style.color = dp >= 0 ? "var(--green)" : "var(--red)";
+            const tp = realStatus.circuit_breaker ? realStatus.circuit_breaker.total_pnl : 0;
+            const tpEl = document.getElementById("real-total-pnl");
+            tpEl.textContent = (tp >= 0 ? "+$" : "-$") + Math.abs(tp).toFixed(2);
+            tpEl.style.color = tp >= 0 ? "var(--green)" : "var(--red)";
+            document.getElementById("real-open-count").textContent = realStatus.open_count || 0;
+            document.getElementById("real-closed-today").textContent = realStatus.closed_today || 0;
+            const cb = realStatus.circuit_breaker || {};
+            const cbEl = document.getElementById("real-cb-status");
+            cbEl.textContent = cb.is_tripped ? "TRIPPED" : "OK";
+            cbEl.style.color = cb.is_tripped ? "var(--red)" : "var(--green)";
+        } else {
+            rp.style.display = "none";
+        }
+    }
 
     // Update header status
     if (status) {

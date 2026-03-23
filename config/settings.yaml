@@ -27,6 +27,18 @@ exchange:
   reconnect_attempts: 10
   reconnect_delay: 5
 
+real_trading:
+  enabled: false               # master switch — set true to activate
+  dry_run: true                # log orders without placing them
+  daily_loss_limit_usd: 25.0   # $25/day hard stop for real trades
+  max_consecutive_losses: 3    # pause after 3 consecutive real losses
+  min_margin_per_trade: 10.0   # minimum $10 margin per trade
+  max_margin_per_trade: 25.0   # maximum $25 margin per trade
+  max_open_positions: 2        # max 2 real positions simultaneously
+  balance_reserve_pct: 15      # keep 15% of balance untouchable
+  min_balance_to_trade: 30.0   # don't trade if balance < $30
+  leverage_cap: 10             # hard cap on leverage for real trades
+
 ml:
   # Pair-specific ML probability thresholds for the hard veto gate.
   # Well-calibrated majors can use a slightly lower threshold;

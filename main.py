@@ -54,6 +54,7 @@ from strategies.multi_strategy import MultiStrategy
 from risk import RiskManager
 from execution.engine import ExecutionEngine
 from execution.paper_engine import PaperExecutionEngine
+from execution.real_manager import RealTradingManager
 from alerts import AlertManager
 from journal import TradeJournal
 from dashboard import DashboardServer
@@ -154,6 +155,16 @@ async def build_components(config, mode, symbols, logger):
         execution_engine = PaperExecutionEngine(config_dict)
         logger.info("Paper execution engine active - no real orders.")
 
+    # -- Real Trading Manager (mirrors paper trades to real exchange) --
+    real_manager = None
+    rt_cfg = config_dict.get("real_trading", {})
+    if rt_cfg.get("enabled", False):
+        real_manager = RealTradingManager(exchange, config_dict, risk_manager)
+        mode_str = "DRY RUN" if rt_cfg.get("dry_run", True) else "LIVE"
+        logger.warning("*** REAL TRADING MANAGER ACTIVE (%s) — mirrors paper trades ***", mode_str)
+    else:
+        logger.info("Real trading disabled (real_trading.enabled=false)")
+
     # -- Alerts --
     alert_manager = AlertManager(config_dict)
 
@@ -179,6 +190,7 @@ async def build_components(config, mode, symbols, logger):
         "strategy": strategy,
         "risk_manager": risk_manager,
         "execution_engine": execution_engine,
+        "real_manager": real_manager,
         "alert_manager": alert_manager,
         "journal": journal,
         "dashboard": dashboard,

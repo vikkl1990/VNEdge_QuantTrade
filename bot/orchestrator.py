@@ -82,6 +82,7 @@ class BotOrchestrator:
         dashboard,
         state_manager,
         heartbeat,
+        real_manager=None,
     ) -> None:
         self._config = config
         self._mode = mode
@@ -95,6 +96,7 @@ class BotOrchestrator:
         self._strategy = strategy
         self._risk_manager = risk_manager
         self._execution = execution_engine
+        self._real_manager = real_manager
         self._alerts = alert_manager
         self._journal = journal
         self._dashboard = dashboard
@@ -517,6 +519,17 @@ class BotOrchestrator:
                             self._trade_monitor.analyze_trade(closed_sig)
                         except Exception as exc:
                             self._log.warning("Trade monitor analysis failed: %s", exc)
+
+                        # Mirror exit to real exchange
+                        if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                            try:
+                                paper_id = closed_sig.get("trade_id", "")
+                                exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
+                                await self._real_manager.mirror_paper_exit(
+                                    paper_id, exit_price, ev_type,
+                                )
+                            except Exception as exc:
+                                self._log.error("Real exit mirror failed: %s", exc)
 
                 # Record heartbeat
                 self._heartbeat.record_activity("fast_trade_monitor")
@@ -980,6 +993,20 @@ class BotOrchestrator:
                     level=AlertLevel.ERROR,
                 )
                 return
+
+        # -- Mirror to real exchange (if enabled) --
+        if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+            try:
+                paper_trade_id = None
+                if order_result and hasattr(order_result, 'trade_id'):
+                    paper_trade_id = order_result.trade_id
+                elif isinstance(order_result, dict):
+                    paper_trade_id = order_result.get('trade_id')
+                await self._real_manager.mirror_paper_trade(
+                    symbol, sig_dict, paper_trade_id,
+                )
+            except Exception as exc:
+                self._log.error("Real trade mirror failed (paper unaffected): %s", exc)
 
         # -- Journal --
         try:

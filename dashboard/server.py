@@ -482,6 +482,8 @@ class DashboardServer:
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
         app.router.add_get("/api/grid/status", self._handle_grid_status)
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
+        app.router.add_get("/api/real/status", self._handle_real_status)
+        app.router.add_post("/api/real/toggle", self._handle_real_toggle)
         app.router.add_get("/api/ping", self._handle_ping)
         app.router.add_get("/api/latency", self._handle_latency)
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
@@ -892,6 +894,56 @@ class DashboardServer:
         if hasattr(self, '_grid_bot') and self._grid_bot:
             return web.json_response(self._grid_bot.get_open_positions(), dumps=_safe_dumps)
         return web.json_response([])
+
+    async def _handle_real_status(self, request: web.Request) -> web.Response:
+        """Return real trading manager status for dashboard."""
+        if hasattr(self, '_real_manager') and self._real_manager:
+            return web.json_response(self._real_manager.get_status())
+        # Check if orchestrator has it
+        orch = getattr(self, '_orchestrator', None)
+        if orch and hasattr(orch, '_real_manager') and orch._real_manager:
+            return web.json_response(orch._real_manager.get_status())
+        return web.json_response({
+            "enabled": False,
+            "dry_run": True,
+            "mode": "DISABLED",
+            "balance": 0,
+            "circuit_breaker": {"daily_pnl": 0, "is_tripped": False},
+            "open_positions": [],
+            "open_count": 0,
+            "closed_today": 0,
+            "total_closed": 0,
+            "recent_trades": [],
+        })
+
+    async def _handle_real_toggle(self, request: web.Request) -> web.Response:
+        """Toggle real trading on/off from dashboard."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = body.get("enabled")
+        dry_run = body.get("dry_run")
+
+        orch = getattr(self, '_orchestrator', None)
+        mgr = None
+        if hasattr(self, '_real_manager') and self._real_manager:
+            mgr = self._real_manager
+        elif orch and hasattr(orch, '_real_manager') and orch._real_manager:
+            mgr = orch._real_manager
+
+        if not mgr:
+            return web.json_response({"error": "Real trading manager not initialized"}, status=400)
+
+        if enabled is not None:
+            mgr.enabled = bool(enabled)
+            logger.warning("REAL TRADING %s via dashboard", "ENABLED" if mgr.enabled else "DISABLED")
+        if dry_run is not None:
+            mgr.dry_run = bool(dry_run)
+            logger.warning("REAL TRADING dry_run=%s via dashboard", mgr.dry_run)
+
+        mgr._save_state()
+        return web.json_response(mgr.get_status())
 
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""

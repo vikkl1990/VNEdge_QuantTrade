@@ -301,7 +301,7 @@ class ScalpStrategy(BaseStrategy):
         self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
 
         # Scalper window config (attached to each signal)
-        self.scalper_windows = {"BTC": 27 * 60, "ETH": 12 * 60, "AVAX": 12 * 60}
+        self.scalper_windows = {"BTC": 14 * 60, "ETH": 6 * 60, "AVAX": 6 * 60}
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -1329,6 +1329,15 @@ class ScalpStrategy(BaseStrategy):
                        best.side.value if best.side else "?", best_sr.weighted_score,
                        best_sr.tier, self._weight_manager.is_tradeable(best_sr.scanner_name))
 
+        # ── Setup strength veto: weak setups time out too often ──
+        MIN_SETUP_STRENGTH = 65
+        if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
+            self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
+            if pass_cnt <= 5 or pass_cnt % 100 == 0:
+                logger.info("FUNNEL %s | WEAK SETUP VETO #%d | score=%.0f < %d — skipping weak entry",
+                           symbol, pass_cnt, best_sr.weighted_score, MIN_SETUP_STRENGTH)
+            return []
+
         # ── Apply structural prefilter confidence adjustments ──
         _pf_adj = getattr(self, '_prefilter_result', {}).get('confidence_adj', 0)
         _pf_ctx = getattr(self, '_prefilter_result', {}).get('context', {})
@@ -2080,7 +2089,7 @@ class ScalpStrategy(BaseStrategy):
 
         # ── Scalper window: attach to signal for tracker to enforce ──
         coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
-        signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 12 * 60)
+        signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 6 * 60)
         signal.metadata["structure_bounce_only"] = self.structure_bounce_only
         signal.metadata["order_type"] = "post_only"  # always maker entry
 

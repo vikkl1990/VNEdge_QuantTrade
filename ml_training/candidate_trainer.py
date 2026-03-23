@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
@@ -651,13 +651,19 @@ class CandidateTrainer:
         return X, y, veto_blocked
 
     def _select_top_features(self, X: pd.DataFrame, y: pd.Series,
-                              max_features: int = 40) -> List[str]:
+                              max_features: int = 40,
+                              regression: bool = False) -> List[str]:
         """Select top N features by importance. Reduces overfitting."""
-        # Quick RF to get importances
-        quick_rf = RandomForestClassifier(
-            n_estimators=30, max_depth=4, random_state=42,
-            class_weight="balanced", n_jobs=1,
-        )
+        # Quick RF to get importances — use regressor for continuous labels
+        if regression:
+            quick_rf = RandomForestRegressor(
+                n_estimators=30, max_depth=4, random_state=42, n_jobs=1,
+            )
+        else:
+            quick_rf = RandomForestClassifier(
+                n_estimators=30, max_depth=4, random_state=42,
+                class_weight="balanced", n_jobs=1,
+            )
         quick_rf.fit(X.fillna(0), y)
 
         importances = dict(zip(X.columns, quick_rf.feature_importances_))
@@ -717,7 +723,7 @@ class CandidateTrainer:
 
             # In-fold feature selection
             if len(X_train_full.columns) > 40:
-                fold_features = self._select_top_features(X_train_full, y_train, max_features=40)
+                fold_features = self._select_top_features(X_train_full, y_train, max_features=40, regression=regression)
                 X_train = X_train_full[fold_features]
                 X_test = X_test_full[fold_features]
             else:
@@ -801,7 +807,7 @@ class CandidateTrainer:
 
         # Feature selection for final model
         if len(X.columns) > 40:
-            selected_features = self._select_top_features(X, y, max_features=40)
+            selected_features = self._select_top_features(X, y, max_features=40, regression=regression)
             X = X[selected_features]
             self._feature_names = selected_features
         else:
@@ -1452,12 +1458,14 @@ class CandidateTrainer:
                     continue
 
                 # Train ONE shared model for the family
+                is_regression = label_mode == "realized_r"
                 family_trainer = CandidateTrainer(self._config)
                 train_result = family_trainer.train(
                     X_combined, y_combined,
                     n_splits=n_splits,
                     n_estimators=n_estimators,
                     max_depth=max_depth,
+                    regression=is_regression,
                 )
 
                 family_results[scanner_name] = {

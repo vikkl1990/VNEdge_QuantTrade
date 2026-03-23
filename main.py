@@ -156,14 +156,13 @@ async def build_components(config, mode, symbols, logger):
         logger.info("Paper execution engine active - no real orders.")
 
     # -- Real Trading Manager (mirrors paper trades to real exchange) --
-    real_manager = None
-    rt_cfg = config_dict.get("real_trading", {})
-    if rt_cfg.get("enabled", False):
-        real_manager = RealTradingManager(exchange, config_dict, risk_manager)
-        mode_str = "DRY RUN" if rt_cfg.get("dry_run", True) else "LIVE"
+    # Always create so dashboard toggle works; starts disabled unless config says otherwise
+    real_manager = RealTradingManager(exchange, config_dict, risk_manager)
+    if real_manager.enabled:
+        mode_str = "DRY RUN" if real_manager.dry_run else "LIVE"
         logger.warning("*** REAL TRADING MANAGER ACTIVE (%s) — mirrors paper trades ***", mode_str)
     else:
-        logger.info("Real trading disabled (real_trading.enabled=false)")
+        logger.info("Real trading manager initialized (disabled — enable via dashboard or config)")
 
     # -- Alerts --
     alert_manager = AlertManager(config_dict)
@@ -173,6 +172,7 @@ async def build_components(config, mode, symbols, logger):
 
     # -- Dashboard --
     dashboard = DashboardServer()
+    dashboard._real_manager = real_manager  # Wire for /api/real/toggle
 
     # -- Persistent state --
     state_manager = StateManager()

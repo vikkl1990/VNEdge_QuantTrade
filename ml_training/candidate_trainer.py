@@ -1069,9 +1069,18 @@ class CandidateTrainer:
         self._save_results(result, scanner_name)
 
         # Save per-scanner model to disk for live scoring
-        if self._model is not None:
+        # Only save if calibration passes minimum quality gate
+        cal_verdict = bucket_eval.get("verdict", "NOT_USEFUL")
+        cal_rank = bucket_eval.get("rank_correlation", 0)
+        agg_auc = train_result.get("aggregate_oos", {}).get("auc_roc", 0.5)
+        if self._model is not None and (cal_verdict != "NOT_USEFUL" or agg_auc >= 0.55):
             self.save_model(scanner_name)
-            logger.info("Saved per-scanner model: %s", scanner_name)
+            logger.info("Saved per-scanner model: %s (calibration=%s, AUC=%.3f)", scanner_name, cal_verdict, agg_auc)
+        elif self._model is not None:
+            logger.warning(
+                "SKIPPED model save for %s: poor calibration (%s, rank=%.3f, AUC=%.3f)",
+                scanner_name, cal_verdict, cal_rank, agg_auc
+            )
 
         # Record training metrics for trend/drift tracking
         try:

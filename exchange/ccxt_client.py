@@ -173,6 +173,7 @@ class CcxtExchangeClient(ExchangeBase):
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": self._exchange_cfg.get("rate_limit", True),
+            "timeout": 30000,  # 30s max per API call to prevent infinite hangs
             "options": {
                 "defaultType": self._market_type.value,
                 "adjustForTimeDifference": True,

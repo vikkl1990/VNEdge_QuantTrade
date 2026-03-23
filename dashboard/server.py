@@ -180,8 +180,8 @@ class DashboardServer:
             logger.warning("Failed to load signal history: %s", exc)
         return []
 
-    def _persist_signals(self) -> None:
-        """Save current signals to disk (call inside lock)."""
+    def _persist_signals_sync(self) -> None:
+        """Save current signals to disk (blocking, run in executor)."""
         try:
             self._SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
             self._SIGNALS_FILE.write_text(
@@ -191,12 +191,18 @@ class DashboardServer:
         except Exception as exc:
             logger.warning("Failed to persist signals: %s", exc)
 
+    async def _persist_signals(self) -> None:
+        """Save signals to disk without blocking the event loop."""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._persist_signals_sync)
+
     async def add_signal(self, signal: Dict[str, Any]) -> None:
         """Push a new signal to the front of the signals list and persist."""
         async with self._lock:
             self._signals.insert(0, signal)
             self._signals = self._signals[:self._MAX_PERSISTED]
-            self._persist_signals()
+            await self._persist_signals()
 
     async def add_trade(self, trade: Dict[str, Any]) -> None:
         """Record a completed trade."""

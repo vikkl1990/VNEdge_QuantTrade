@@ -450,6 +450,20 @@ class TrackedSignal:
                 lev = max(1, lev)
             lev_cap_source = f"min_position_{int(MIN_POSITION_USD)}"
 
+        # ── FINAL LEVERAGE SAFETY CAP (after all adjustments) ──
+        if paper_stake > 0:
+            actual_lev = position_usd / paper_stake
+            if actual_lev > max_lev:
+                position_usd = paper_stake * max_lev
+                lev = max_lev
+                if entry > 0 and contract_sz > 0:
+                    raw_contracts = position_usd / (entry * contract_sz)
+                    num_contracts = max(1, int(raw_contracts))
+                    quantity = num_contracts * contract_sz
+                    position_usd = round(quantity * entry, 2)
+                risk_amount = position_usd * sl_dist_pct / 100
+                lev_cap_source = f"final_safety_cap_{max_lev}x"
+
         # ── FEE VIABILITY CHECK ──
         # Compute fee drag and penalize/block fee-dominated trades
         within_scalper = True  # assume scalper for entry (optimistic)
@@ -574,6 +588,7 @@ class SignalTracker:
         self._stats: Dict[str, Any] = {}
         self._lock = asyncio.Lock()  # protects _active/_closed state mutations
         self._exchange_balance: Optional[float] = None  # real exchange purse balance
+        self._paper_start_balance: float = 1000.0  # paper trading starting capital
         self._training_dataset = None  # set by orchestrator for ML feedback
         self._live_feedback_file = _STORAGE_DIR / "ml_live_feedback.jsonl"
         self._load()
@@ -608,7 +623,7 @@ class SignalTracker:
             return  # already tracking
 
         # ── DUPLICATE PREVENTION: max 1 per symbol+side (active) ──
-        for existing in self._active.values():
+        for existing in list(self._active.values()):
             if existing.symbol == ts.symbol and existing.side == ts.side:
                 logger.info(
                     "DUPLICATE BLOCKED (active): %s %s %s — already have %s open",
@@ -644,9 +659,9 @@ class SignalTracker:
                                     int((now_dt - closed_time).total_seconds() / 60),
                                 )
                                 return
-                        except:
+                        except (ValueError, TypeError, KeyError):
                             pass
-        except:
+        except (ValueError, TypeError, KeyError, AttributeError):
             pass
 
         self._active[ts.trade_id] = ts
@@ -665,7 +680,7 @@ class SignalTracker:
         events = []
         to_close = []
 
-        for tid, ts in self._active.items():
+        for tid, ts in list(self._active.items()):  # snapshot to avoid mutation during iteration
             price = prices.get(ts.symbol)
             if price is None:
                 continue
@@ -1309,7 +1324,7 @@ class SignalTracker:
 
     def get_stats(self) -> Dict[str, Any]:
         """Return current performance statistics."""
-        if not self._stats:
+        if not self._stats or "paper_start_balance" not in self._stats:
             self._recalc_stats()
         return self._stats.copy()
 
@@ -1362,6 +1377,23 @@ class SignalTracker:
                     logger.warning("ML feedback: training dataset update failed: %s", e)
 
             # 2. Append to live feedback file (per-pair, per-scanner, per-model)
+            # Dedup: skip if trade_id already in file
+            existing_ids: set = set()
+            try:
+                if self._live_feedback_file.exists():
+                    with open(self._live_feedback_file) as rf:
+                        for line in rf:
+                            if line.strip():
+                                try:
+                                    existing_ids.add(json.loads(line).get("trade_id", ""))
+                                except json.JSONDecodeError:
+                                    pass
+            except Exception:
+                pass
+            if ts.trade_id in existing_ids:
+                logger.debug("ML feedback: skipping duplicate trade_id %s", ts.trade_id[:8])
+                return
+
             meta = ts.metadata if isinstance(ts.metadata, dict) else {}
             feedback = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1404,6 +1436,8 @@ class SignalTracker:
                 # Fee tracking
                 "total_fees_usd": ts.total_fees_usd,
                 "within_scalper": ts.within_scalper,
+                # Mode tracking
+                "operating_mode": meta.get("operating_mode", "unknown"),
             }
             with open(self._live_feedback_file, "a") as f:
                 f.write(json.dumps(feedback, default=str) + "\n")
@@ -1490,9 +1524,10 @@ class SignalTracker:
 
     # Delta Exchange fee schedule
     # Standard fees
-    TAKER_FEE_PCT = 0.06    # 0.06% per side (taker)
-    MAKER_FEE_PCT = 0.04    # 0.04% per side (maker)
-    SETTLEMENT_FEE_PCT = 0.06  # 0.06% settlement fee on close
+    # Delta Exchange India actual rates (base + 18% GST)
+    TAKER_FEE_PCT = 0.059    # 0.05% base + 18% GST = 0.059% per side
+    MAKER_FEE_PCT = 0.0236   # 0.02% base + 18% GST = 0.0236% per side
+    SETTLEMENT_FEE_PCT = 0.059  # 0.05% base + 18% GST = 0.059% on close
 
     # Scalper offer fees (0% closing fee within window)
     SCALPER_ENTRY_MAKER_PCT = 0.02   # 0.02% maker opening fee
@@ -1505,13 +1540,13 @@ class SignalTracker:
 
         Position split: 35% TP1, 35% TP2, 30% runner
 
-        Fee logic — Scalper-aware:
+        Fee logic — Scalper-aware (Delta Exchange India actual rates + 18% GST):
         - If trade closes within Scalper window (BTC=27m, ETH/others=12m):
-          Entry: 0.02% (maker limit order) + Exit: 0.00% + Settlement: 0.06%
-          Total: 0.08% round-trip
+          Entry: 0.0236% (maker+GST) + Exit: 0.00% + Settlement: 0.059%
+          Total: 0.0826% round-trip
         - If trade closes OUTSIDE Scalper window:
-          Entry: 0.06% (taker) + Exit: 0.06% (taker) + Settlement: 0.06%
-          Total: 0.18% round-trip
+          Entry: 0.059% (taker+GST) + Exit: 0.059% + Settlement: 0.059%
+          Total: 0.177% round-trip
         """
         if ts.entry_price == 0:
             return 0.0
@@ -1594,17 +1629,20 @@ class SignalTracker:
         # Store net values (the "official" PnL)
         ts.pnl_usd = round(ts.position_size_usd * net_pct / 100, 2)
 
-        # Calculate exit R-multiple: net P&L expressed in risk units
+        # Calculate exit R-multiple: fee-adjusted net P&L in risk units
         if ts.initial_risk > 0:
+            # Fee impact in price terms
+            fee_impact = ts.entry_price * fee_pct / 100  # fee as price distance
+
             if is_long:
-                raw_r = (exit_price - ts.entry_price) / ts.initial_risk
+                raw_r = (exit_price - ts.entry_price - fee_impact) / ts.initial_risk
             else:
-                raw_r = (ts.entry_price - exit_price) / ts.initial_risk
+                raw_r = (ts.entry_price - exit_price - fee_impact) / ts.initial_risk
 
             def r_at(price: float) -> float:
                 if is_long:
-                    return (price - ts.entry_price) / ts.initial_risk
-                return (ts.entry_price - price) / ts.initial_risk
+                    return (price - ts.entry_price - fee_impact) / ts.initial_risk
+                return (ts.entry_price - price - fee_impact) / ts.initial_risk
 
             # For partial exits (35/35/30 split), use weighted R
             if ts.tp3_hit:
@@ -1670,15 +1708,15 @@ class SignalTracker:
         exit_slip = min(exit_slip, 0.15)
 
         if within_scalper:
-            # Scalper: 0.02% entry + 0% exit + 0.06% settlement + slippage both sides
-            entry_fee = 0.02
-            exit_fee = 0.00
-            settlement = 0.06
+            # Scalper: 0.02% entry + 0% exit + 0.05% settlement + slippage both sides
+            entry_fee = SignalTracker.SCALPER_ENTRY_MAKER_PCT
+            exit_fee = SignalTracker.SCALPER_EXIT_FEE_PCT
+            settlement = SignalTracker.SETTLEMENT_FEE_PCT
         else:
-            # Standard: 0.06% entry + 0.06% exit + 0.06% settlement + slippage
-            entry_fee = 0.06
-            exit_fee = 0.06
-            settlement = 0.06
+            # Standard: 0.05% entry + 0.05% exit + 0.05% settlement + slippage
+            entry_fee = SignalTracker.TAKER_FEE_PCT
+            exit_fee = SignalTracker.TAKER_FEE_PCT
+            settlement = SignalTracker.SETTLEMENT_FEE_PCT
 
         total_fees_pct = entry_fee + exit_fee + settlement + entry_slip + exit_slip
         min_move_pct = total_fees_pct
@@ -1861,11 +1899,9 @@ class SignalTracker:
         total_pnl_usd = sum(c.get("pnl_usd", 0) for c in self._closed)
         total_gross_pnl_usd = sum(c.get("gross_pnl_usd", c.get("pnl_usd", 0)) for c in self._closed)
         total_fees_usd = sum(c.get("total_fees_usd", 0) for c in self._closed)
-        # Use real exchange balance if available, otherwise fallback
-        if self._exchange_balance is not None:
-            paper_balance = self._exchange_balance
-        else:
-            paper_balance = total_pnl_usd  # just show cumulative P&L
+        # Paper mode: start at $1000 + cumulative PnL
+        # Live mode: use real exchange balance
+        paper_balance = self._paper_start_balance + total_pnl_usd
 
         # Active positions unrealized value
         active_positions_usd = sum(ts.position_size_usd for ts in self._active.values())
@@ -1897,7 +1933,12 @@ class SignalTracker:
             "paper_gross_pnl_usd": round(total_gross_pnl_usd, 2),  # GROSS PnL (before fees)
             "paper_total_fees_usd": round(total_fees_usd, 2),  # Total fees paid
             "active_positions_usd": round(active_positions_usd, 2),
+            "exchange_balance": self._exchange_balance,         # Real exchange balance (for live mode)
+            "paper_start_balance": self._paper_start_balance,  # Paper starting capital
+            "is_paper_mode": True,  # TODO: read from mode_manager when live
             "paper_stake_per_trade": 100.0,  # max $100, min $50 (fee-viable sizing)
+            # Daily P&L breakdown
+            "daily_pnl": self._calc_daily_pnl(),
             "fee_schedule": {
                 "taker_pct": self.TAKER_FEE_PCT,
                 "settlement_pct": self.SETTLEMENT_FEE_PCT,
@@ -1909,6 +1950,32 @@ class SignalTracker:
             # R-Multiple metrics (global)
             "r_metrics": self._calc_global_r_metrics(all_r_values, all_mae, all_mfe, win_count, total),
         }
+
+    def _calc_daily_pnl(self) -> Dict[str, Any]:
+        """Calculate daily P&L breakdown from closed signals."""
+        daily: Dict[str, Dict[str, float]] = {}
+        for c in self._closed:
+            meta = c if isinstance(c, dict) else {}
+            # Get close timestamp
+            ts = meta.get("closed_at", meta.get("exit_time", meta.get("timestamp", "")))
+            if not ts:
+                continue
+            day = str(ts)[:10]  # YYYY-MM-DD
+            if day not in daily:
+                daily[day] = {"trades": 0, "wins": 0, "gross_pnl": 0.0, "fees": 0.0, "net_pnl": 0.0}
+            daily[day]["trades"] += 1
+            pnl = meta.get("pnl_usd", 0) or 0
+            gross = meta.get("gross_pnl_usd", pnl) or pnl
+            fees = meta.get("total_fees_usd", 0) or 0
+            daily[day]["net_pnl"] = round(daily[day]["net_pnl"] + pnl, 2)
+            daily[day]["gross_pnl"] = round(daily[day]["gross_pnl"] + gross, 2)
+            daily[day]["fees"] = round(daily[day]["fees"] + fees, 2)
+            if pnl > 0:
+                daily[day]["wins"] += 1
+        # Add win rate per day
+        for d in daily.values():
+            d["wr"] = round(d["wins"] / d["trades"] * 100, 1) if d["trades"] else 0.0
+        return daily
 
     @staticmethod
     def _calc_global_r_metrics(
@@ -2030,11 +2097,11 @@ class SignalTracker:
                     _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
                     logger.info("Auto-fixed %d exit reasons (stop_loss → trail_profit/partial_win)", fixed)
 
-                # ── AUTO-DEDUP: Remove duplicate entries (same symbol+side+entry) ──
+                # ── AUTO-DEDUP: Remove duplicate entries (same trade_id) ──
                 seen_keys = set()
                 deduped = []
                 for t in self._closed:
-                    key = f"{t.get('symbol','')}_{t.get('side','')}_{t.get('entry_price',0)}"
+                    key = t.get("trade_id", f"{t.get('symbol','')}_{t.get('side','')}_{t.get('entry_price',0)}_{t.get('timestamp','')}")
                     if key in seen_keys:
                         continue
                     seen_keys.add(key)

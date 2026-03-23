@@ -567,11 +567,12 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     body_atr_ratio = body_size / atr.replace(0, np.nan)
     is_large_body = body_atr_ratio > 1.0  # body > 1 ATR = significant candle
 
-    # Bullish OB: large bearish candle at the bottom of a down move
+    # Bullish OB: large bearish candle FOLLOWED BY reversal (use past confirmation only)
+    # shift(1) = previous bar was large bearish, current bar is bullish = confirmed OB
     is_bearish = c < o
     is_bullish_candle = c > o
-    bull_ob = is_large_body & is_bearish & is_bullish_candle.shift(-1)  # reversal after
-    bear_ob = is_large_body & is_bullish_candle & is_bearish.shift(-1)
+    bull_ob = is_large_body.shift(1) & is_bearish.shift(1) & is_bullish_candle  # past bar was OB, current confirms
+    bear_ob = is_large_body.shift(1) & is_bullish_candle.shift(1) & is_bearish  # past bar was OB, current confirms
 
     # Track OB levels (use the midpoint of the OB candle)
     bull_ob_level = np.where(bull_ob, (h + l) / 2, np.nan)
@@ -639,10 +640,11 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         htf_return5 = htf_c.pct_change(5)
         htf_atr_ratio = htf_df["atr_7"] / htf_atr.replace(0, np.nan)
 
-        # Resample HTF features to match LTF index (forward-fill to avoid lookahead)
-        htf_trend_resampled = htf_trend_series.reindex(df.index, method="ffill")
-        htf_return_resampled = htf_return5.reindex(df.index, method="ffill")
-        htf_atr_resampled = htf_atr_ratio.reindex(df.index, method="ffill")
+        # Resample HTF features to match LTF index
+        # shift(1) ensures we only use COMPLETED HTF bars (strictly past-looking)
+        htf_trend_resampled = htf_trend_series.reindex(df.index, method="ffill").shift(1)
+        htf_return_resampled = htf_return5.reindex(df.index, method="ffill").shift(1)
+        htf_atr_resampled = htf_atr_ratio.reindex(df.index, method="ffill").shift(1)
 
         features["htf_trend_bias"] = htf_trend_resampled.fillna(0.0)
         features["htf_momentum"] = htf_return_resampled.fillna(0.0)
@@ -740,15 +742,15 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     # Change of Character: BOS in opposite direction of prior trend.
     # Displacement: the impulse candle that caused the break.
     # ================================================================
-    # Swing highs/lows (simplified: 5-bar pivot)
-    swing_high = h.rolling(5, center=True).max()
-    swing_low = l.rolling(5, center=True).min()
+    # Swing highs/lows (past-only: 5-bar lookback, no future data)
+    swing_high = h.rolling(5, center=False).max()
+    swing_low = l.rolling(5, center=False).min()
     is_swing_high = (h == swing_high)
     is_swing_low = (l == swing_low)
 
-    # Track most recent swing high/low levels
-    recent_swing_high = h.where(is_swing_high).ffill()
-    recent_swing_low = l.where(is_swing_low).ffill()
+    # Track most recent swing high/low levels (shift(1) to avoid using current bar)
+    recent_swing_high = h.where(is_swing_high).ffill().shift(1)
+    recent_swing_low = l.where(is_swing_low).ffill().shift(1)
 
     # BOS: current close breaks above recent swing high or below recent swing low
     bullish_bos = (c > recent_swing_high.shift(1)) & (c.shift(1) <= recent_swing_high.shift(1))
@@ -799,19 +801,21 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         np.nan_to_num(break_dist_bull, 0) + np.nan_to_num(break_dist_bear, 0), 0
     )
 
-    # Retest flag: did price come back to test the broken level within 3 bars?
+    # Retest flag: did price come back to test a recently broken level?
+    # Uses PAST bars only — checks if any of the last 3 bars retested a level
     retest_bull = pd.Series(0.0, index=df.index)
     retest_bear = pd.Series(0.0, index=df.index)
     for lb in range(1, 4):
-        prev_low = l.shift(-lb)  # future bars' low came back to test
-        prev_high = h.shift(-lb)  # future bars' high came back to test
+        past_low = l.shift(lb)   # PAST bars' low tested the level
+        past_high = h.shift(lb)  # PAST bars' high tested the level
+        # Bull retest: BOS happened lb bars ago AND current price is near the broken level
         retest_bull = retest_bull.astype(bool) | (
-            bullish_bos.astype(bool) & ((prev_low - recent_swing_high.shift(1)).abs() < atr * 0.3)
+            bullish_bos.shift(lb).fillna(False).astype(bool) & ((l - recent_swing_high.shift(lb + 1)).abs() < atr * 0.3)
         )
+        # Bear retest: BOS happened lb bars ago AND current price is near the broken level
         retest_bear = retest_bear.astype(bool) | (
-            bearish_bos.astype(bool) & ((prev_high - recent_swing_low.shift(1)).abs() < atr * 0.3)
+            bearish_bos.shift(lb).fillna(False).astype(bool) & ((h - recent_swing_low.shift(lb + 1)).abs() < atr * 0.3)
         )
-    # Shift forward so the flag appears on the retest bar, not the BOS bar
     features["retest_flag"] = (retest_bull.astype(float) + retest_bear.astype(float)).clip(upper=1.0)
 
     # Impulse decay: how quickly displacement fades over next few bars
@@ -901,9 +905,18 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["confluence_max"] = pd.concat([bull_signals, bear_signals], axis=1).max(axis=1)
 
     # ================================================================
-    # CLEANUP: Replace NaN/inf with 0.0 for all features
+    # CLEANUP: Replace NaN/inf, mark warmup period
     # ================================================================
-    features = features.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+    # Replace inf with NaN first
+    features = features.replace([np.inf, -np.inf], np.nan)
+
+    # Add warmup flag — first 200 rows have unreliable indicator values
+    WARMUP_ROWS = 200
+    features["is_warmup"] = 0.0
+    features.iloc[:WARMUP_ROWS, features.columns.get_loc("is_warmup")] = 1.0
+
+    # Fill remaining NaN with 0.0 (after warmup flag is set)
+    features = features.fillna(0.0)
 
     return features
 
@@ -1017,7 +1030,7 @@ def build_directional_labels(df: pd.DataFrame, forward_bars: int = 12,
 
 def build_mfe_labels(df: pd.DataFrame, side: str, max_bars: int = 30,
                      threshold_r: float = 0.2,
-                     fee_pct: float = 0.00055) -> pd.Series:
+                     fee_pct: float = 0.00059) -> pd.Series:
     """Build MFE-based label: will fee-adjusted MFE exceed threshold_r?
 
     Instead of asking "did the whole trade work?", asks:

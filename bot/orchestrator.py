@@ -502,8 +502,8 @@ class BotOrchestrator:
                     self._log.info("Fast Monitor: %s", msg)
                     try:
                         await self._alerts.send_system_alert(msg, level=level)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._log.debug("Alert send failed: %s", exc)
 
                     # AI learning + trade monitor analysis on closure
                     if ev_type in ("sl_hit", "tp3_hit", "expired",
@@ -511,12 +511,12 @@ class BotOrchestrator:
                         try:
                             closed_sig = ev.get("signal", {})
                             self._signal_learner.learn_from_outcome(closed_sig)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self._log.warning("Signal learner failed: %s", exc)
                         try:
                             self._trade_monitor.analyze_trade(closed_sig)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self._log.warning("Trade monitor analysis failed: %s", exc)
 
                 # Record heartbeat
                 self._heartbeat.record_activity("fast_trade_monitor")
@@ -657,8 +657,8 @@ class BotOrchestrator:
                     self._log.info("Signal Tracker: %s", msg)
                     try:
                         await self._alerts.send_system_alert(msg, level=level)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._log.debug("Alert send failed: %s", exc)
 
                     # -- AI Learning: learn from closed signals (SL, TP3, expired) --
                     if ev_type in ("sl_hit", "tp3_hit", "expired"):

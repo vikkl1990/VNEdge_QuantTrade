@@ -89,8 +89,9 @@ class TradeMonitorAgent:
             h: {"wins": 0, "losses": 0, "pnl": 0.0} for h in range(24)
         }
 
-        # ── Seen trade IDs (avoid double-processing) ──
+        # ── Seen trade IDs (avoid double-processing, bounded to prevent memory leak) ──
         self._seen_ids: set = set()
+        self._MAX_SEEN_IDS = 2000  # auto-evict oldest when exceeded
 
         # ── Recent trades buffer for rolling stats ──
         self._recent_trades: deque = deque(maxlen=50)
@@ -111,6 +112,12 @@ class TradeMonitorAgent:
         if trade_id in self._seen_ids:
             return {"status": "already_analyzed"}
         self._seen_ids.add(trade_id)
+        # Prevent unbounded growth
+        if len(self._seen_ids) > self._MAX_SEEN_IDS:
+            # Remove oldest entries (set is unordered, but this prevents OOM)
+            excess = len(self._seen_ids) - self._MAX_SEEN_IDS
+            for _ in range(excess):
+                self._seen_ids.pop()
 
         pnl = float(closed_signal.get("pnl_pct", 0))
         pnl_usd = float(closed_signal.get("pnl_usd", 0))
@@ -343,13 +350,18 @@ class TradeMonitorAgent:
         all_recent = list(self._recent_trades)
         if len(all_recent) >= 5:
             pnl_returns = [t["pnl_pct"] for t in all_recent]
-            mean_ret = sum(pnl_returns) / len(pnl_returns)
-            # Standard deviation
-            variance = sum((r - mean_ret) ** 2 for r in pnl_returns) / len(pnl_returns)
+            n = len(pnl_returns)
+            mean_ret = sum(pnl_returns) / n
+            # Standard deviation (sample, ddof=1 for small samples)
+            ddof = 1 if n > 1 else 0
+            variance = sum((r - mean_ret) ** 2 for r in pnl_returns) / max(1, n - ddof)
             std_ret = math.sqrt(variance) if variance > 0 else 0.0
-            # Sharpe ratio: mean / std * sqrt(252)
+            # Sharpe ratio: mean / std * sqrt(trades_per_year)
+            # Using trades/day * 365 instead of hardcoded 252
+            trades_per_year = max(1, n / max(1, (all_recent[-1].get("duration_sec", 86400) or 86400))) * 365
+            annualization = math.sqrt(min(trades_per_year, 10000))  # cap to avoid explosion
             if std_ret > 0:
-                m["sharpe_ratio"] = round(mean_ret / std_ret * math.sqrt(252), 3)
+                m["sharpe_ratio"] = round(mean_ret / std_ret * annualization, 3)
             else:
                 m["sharpe_ratio"] = 0.0
             # Sortino ratio: mean / downside_std * sqrt(252)

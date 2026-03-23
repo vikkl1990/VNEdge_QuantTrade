@@ -218,12 +218,18 @@ class RegimeFilter:
 
         Returns: "trending_up", "trending_down", "ranging", "volatile", "quiet"
         """
+        import math
         ema8 = indicators.get("ema_8", 0)
         ema21 = indicators.get("ema_21", 0)
         ema50 = indicators.get("ema_50", 0)
         close = indicators.get("close", 0)
         atr = indicators.get("atr", 0)
         bb_bandwidth = indicators.get("bb_bandwidth", 0)
+
+        # Guard against NaN/None — return "quiet" (safest: blocks trading)
+        critical_vals = [ema8, ema21, ema50, close, bb_bandwidth]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in critical_vals):
+            return "quiet"  # safest: no scanners allowed in quiet regime
 
         # Full stack alignment = strong trend
         full_bull = ema8 > ema21 > ema50 and close > ema8

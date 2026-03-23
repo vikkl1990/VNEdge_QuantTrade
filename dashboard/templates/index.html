@@ -619,6 +619,17 @@ tr:hover{background:rgba(99,148,255,.02)}
     </div>
   </div>
 
+  <!-- Daily P&L -->
+  <div class="panel">
+    <div class="panel-title">Daily P&L</div>
+    <div class="tbl-wrap" style="max-height:300px;overflow-y:auto">
+      <table>
+        <thead><tr><th>Date</th><th>Trades</th><th>Wins</th><th>WR</th><th>Gross</th><th>Fees</th><th>Net</th></tr></thead>
+        <tbody id="daily-pnl-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- Session Analysis -->
   <div class="panel">
     <div class="panel-title">Session Analysis</div>
@@ -797,12 +808,15 @@ async function refreshLive() {
 
     // Paper balance
     try {
-        const monSnap = await api("/api/monitor/report");
-        if (monSnap && monSnap.paper_balance) {
+        const trkSnap = await api("/api/tracker/stats");
+        if (trkSnap) {
             const balEl = document.getElementById("price-bal");
-            const pb = monSnap.paper_balance;
-            const cls = pb >= 1000 ? "green" : "red";
-            balEl.textContent = "$" + pb.toFixed(2);
+            const isPaper = trkSnap.is_paper_mode !== false;
+            const startBal = trkSnap.paper_start_balance || 1000;
+            const netPnl = trkSnap.paper_pnl_usd || 0;
+            const displayVal = isPaper ? (startBal + netPnl) : (trkSnap.exchange_balance || 0);
+            const cls = netPnl >= 0 ? "green" : "red";
+            balEl.textContent = "$" + displayVal.toFixed(2);
             balEl.className = cls;
             balEl.style.fontFamily = "var(--font-mono)";
             balEl.style.fontWeight = "700";
@@ -1195,18 +1209,20 @@ function updateAlerts(alerts) {
 // TAB 2: ANALYTICS REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshAnalytics() {
-    const [closed, rMetrics, exitQ, scannerH, aiData, monitor] = await Promise.all([
+    const [closed, rMetrics, exitQ, scannerH, aiData, monitor, trkStats] = await Promise.all([
         api("/api/tracker/closed"), api("/api/r-metrics"), api("/api/exit-quality"),
-        api("/api/scanner-health"), api("/api/ai/insights"), api("/api/monitor/report")
+        api("/api/scanner-health"), api("/api/ai/insights"), api("/api/monitor/report"),
+        api("/api/tracker/stats")
     ]);
     updateEquityChart(closed);
     updateRMetrics(rMetrics);
     updateExitQuality(exitQ);
     updateScannerTable(scannerH);
     updateAIInsights(aiData);
-    updateSessionAnalysis(monitor);
+    updateSessionAnalysis(monitor, trkStats);
     updatePaperBalance(monitor);
     updateClosedTrades(closed);
+    updateDailyPnl(trkStats);
 }
 
 function updateEquityChart(closed) {
@@ -1334,7 +1350,7 @@ function updateAIInsights(data) {
     wrap.innerHTML = html || '<div class="empty">No adjustments active</div>';
 }
 
-function updateSessionAnalysis(report) {
+function updateSessionAnalysis(report, trkStats) {
     const wrap = document.getElementById("session-analysis");
     if (!report) { wrap.innerHTML = '<div class="empty">No data</div>'; return; }
     let html = "";
@@ -1344,7 +1360,7 @@ function updateSessionAnalysis(report) {
         <div class="stat-card"><div class="stat-value ${(report.current_streak||0)>=0?'green':'red'}">${report.current_streak||0}</div><div class="stat-label">Streak</div></div>
         <div class="stat-card"><div class="stat-value ${(report.rolling_20_wr||0)>=50?'green':'red'}">${num(report.rolling_20_wr,1)}%</div><div class="stat-label">Rolling 20 WR</div></div>
         <div class="stat-card"><div class="stat-value ${(report.rolling_20_pnl||0)>=0?'green':'red'}">${num(report.rolling_20_pnl,2)}%</div><div class="stat-label">Rolling 20 PnL</div></div>
-        <div class="stat-card"><div class="stat-value">${num(report.paper_balance,2)}</div><div class="stat-label">Paper Balance</div></div>
+        <div class="stat-card"><div class="stat-value" id="session-paper-bal">--</div><div class="stat-label">Paper Balance</div></div>
         <div class="stat-card"><div class="stat-value red">${num(report.max_drawdown,1)}%</div><div class="stat-label">Max Drawdown</div></div>
         <div class="stat-card"><div class="stat-value">${num(report.sharpe_ratio,2)}</div><div class="stat-label">Sharpe</div></div>
     </div>`;
@@ -1391,33 +1407,98 @@ function updateSessionAnalysis(report) {
         });
     }
     wrap.innerHTML = html;
+    // Set paper balance from tracker stats
+    if (trkStats) {
+        const balEl = document.getElementById("session-paper-bal");
+        if (balEl) {
+            const startBal = trkStats.paper_start_balance || 1000;
+            const netPnl = trkStats.paper_pnl_usd || 0;
+            const bal = startBal + netPnl;
+            balEl.textContent = "$" + bal.toFixed(2);
+            balEl.className = netPnl >= 0 ? "green" : "red";
+        }
+    }
 }
 
-function updatePaperBalance(report) {
+async function updatePaperBalance(report) {
     if (!report) return;
-    const bal = report.paper_balance || 1000;
-    const peak = report.peak_balance || bal;
-    const startBal = 1000;
-    const netPnl = bal - startBal;
-    const returnPct = ((bal - startBal) / startBal) * 100;
+    // Use tracker stats as single source of truth for P&L
+    let stats = {};
+    try { stats = await api("/api/tracker/stats"); } catch(e) {}
+
+    const netPnl = stats.paper_pnl_usd || 0;
+    const grossPnl = stats.paper_gross_pnl_usd || 0;
+    const totalFees = stats.paper_total_fees_usd || 0;
+    const totalTrades = stats.closed || 0;
     const dd = report.current_drawdown || 0;
+    const peak = report.peak_balance || 0;
+
+    // Hero: paper mode shows $1000 + PnL, live mode shows exchange balance
+    const isPaper = stats.is_paper_mode !== false;
+    const startBal = stats.paper_start_balance || 1000;
+    const heroVal = isPaper ? (startBal + netPnl) : (stats.exchange_balance || 0);
     const cls = netPnl >= 0 ? "green" : "red";
-    document.getElementById("paper-balance-hero").textContent = "$" + bal.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
-    document.getElementById("paper-balance-hero").className = cls;
-    document.getElementById("paper-balance-hero").style.fontFamily = "var(--font-mono)";
+    const heroEl = document.getElementById("paper-balance-hero");
+    heroEl.textContent = "$" + Math.abs(heroVal).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+    heroEl.className = cls;
+    heroEl.style.fontFamily = "var(--font-mono)";
+
+    // Net P&L
     const netEl = document.getElementById("paper-net-pnl");
-    netEl.textContent = (netPnl >= 0 ? "+$" : "-$") + Math.abs(netPnl).toFixed(2);
+    netEl.textContent = "Net P&L: " + (netPnl >= 0 ? "+$" : "-$") + Math.abs(netPnl).toFixed(2);
     netEl.className = cls;
+
+    // Return % against starting balance
     const retEl = document.getElementById("paper-return-pct");
-    retEl.textContent = (returnPct >= 0 ? "+" : "") + returnPct.toFixed(2) + "%";
+    const returnPct = startBal > 0 ? ((netPnl / startBal) * 100) : 0;
+    retEl.textContent = "Return: " + (netPnl >= 0 ? "+" : "") + returnPct.toFixed(2) + "%";
     retEl.className = cls;
+
+    // Drawdown and peak
     document.getElementById("paper-dd").textContent = dd.toFixed(1) + "%";
     document.getElementById("paper-peak").textContent = "$" + peak.toFixed(2);
-    const totalTrades = report.total_analyzed || 0;
-    const totalFees = totalTrades * 100 * 0.0018;
+
+    // Actual fees from tracker (not estimated)
     document.getElementById("paper-fees").textContent = "$" + totalFees.toFixed(2);
-    const days = Math.max(1, (Date.now() - new Date("2026-03-01").getTime()) / 86400000);
-    document.getElementById("paper-tpd").textContent = (totalTrades / days).toFixed(1);
+
+    // Trades per day
+    const daily = stats.daily_pnl || {};
+    const tradingDays = Math.max(1, Object.keys(daily).length);
+    document.getElementById("paper-tpd").textContent = (totalTrades / tradingDays).toFixed(1);
+}
+
+function updateDailyPnl(stats) {
+    const tbody = document.getElementById("daily-pnl-body");
+    if (!stats || !stats.daily_pnl) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No daily data</td></tr>'; return; }
+    const daily = stats.daily_pnl;
+    const days = Object.keys(daily).sort().reverse();
+    if (days.length === 0) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No trades yet</td></tr>'; return; }
+    let totalTrades = 0, totalWins = 0, totalGross = 0, totalFees = 0, totalNet = 0;
+    let html = "";
+    days.forEach(d => {
+        const r = daily[d];
+        const cls = r.net_pnl >= 0 ? "green" : "red";
+        html += `<tr>
+            <td style="font-weight:600">${d}</td>
+            <td>${r.trades}</td>
+            <td>${r.wins}</td>
+            <td class="${r.wr >= 50 ? 'green' : 'red'}">${r.wr.toFixed(1)}%</td>
+            <td>$${r.gross_pnl.toFixed(2)}</td>
+            <td class="red">$${r.fees.toFixed(2)}</td>
+            <td class="${cls}">$${r.net_pnl >= 0 ? '+' : ''}${r.net_pnl.toFixed(2)}</td>
+        </tr>`;
+        totalTrades += r.trades; totalWins += r.wins;
+        totalGross += r.gross_pnl; totalFees += r.fees; totalNet += r.net_pnl;
+    });
+    const totalWR = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+    html += `<tr style="border-top:2px solid var(--border);font-weight:700">
+        <td>TOTAL</td><td>${totalTrades}</td><td>${totalWins}</td>
+        <td class="${totalWR >= 50 ? 'green' : 'red'}">${totalWR.toFixed(1)}%</td>
+        <td>$${totalGross.toFixed(2)}</td>
+        <td class="red">$${totalFees.toFixed(2)}</td>
+        <td class="${totalNet >= 0 ? 'green' : 'red'}">$${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(2)}</td>
+    </tr>`;
+    tbody.innerHTML = html;
 }
 
 function updateClosedTrades(closed) {

@@ -63,7 +63,7 @@ class ScannerBacktester:
 
     def __init__(self, config: dict):
         self._config = config
-        self._fee_rate = config.get("backtest", {}).get("fee_rate", 0.00055)
+        self._fee_rate = config.get("backtest", {}).get("fee_rate", 0.00059)  # Delta Exchange: 0.05% + 18% GST = 0.059% per side
         self._slippage_pct = config.get("backtest", {}).get("slippage_pct", 0.05) / 100
         self._scalper_window_btc = 27 * 60  # seconds
         self._scalper_window_other = 12 * 60

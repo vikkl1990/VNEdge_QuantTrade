@@ -907,7 +907,7 @@ class CandidateTrainer:
         if self._model is None or len(X) == 0:
             return {"error": "model not trained or empty dataset"}
 
-        probs = self._model.predict_proba(X)[:, 1]
+        probs = self._predict_scores(X)
 
         # Raw: all candidates (no filtering)
         raw_wr = y.mean() * 100
@@ -981,7 +981,7 @@ class CandidateTrainer:
         if self._model is None or len(X) == 0:
             return {"error": "model not trained or empty dataset"}
 
-        probs = self._model.predict_proba(X)[:, 1]
+        probs = self._predict_scores(X)
 
         # Create buckets by percentile
         bucket_edges = np.percentile(probs, np.linspace(0, 100, n_buckets + 1))
@@ -1493,10 +1493,27 @@ class CandidateTrainer:
 
         return combined
 
+    def _is_regression_model(self) -> bool:
+        """Check if the trained model is a regressor (not classifier)."""
+        return hasattr(self._model, 'predict') and not hasattr(self._model, 'predict_proba')
+
+    def _predict_scores(self, X: pd.DataFrame) -> np.ndarray:
+        """Unified scoring: returns 0-1 scores for both classifier and regressor.
+
+        For classifiers: returns predict_proba[:, 1]
+        For regressors: returns sigmoid(predict) to normalize R values to 0-1
+        """
+        if self._is_regression_model():
+            raw = self._model.predict(X)
+            # Sigmoid normalization: maps R values to 0-1 probability-like scores
+            return 1 / (1 + np.exp(-raw * 2))  # scale factor 2 for reasonable spread
+        else:
+            return self._model.predict_proba(X)[:, 1]
+
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Score new candidates with the trained model.
 
-        Returns array of win probabilities [0, 1].
+        Returns array of scores [0, 1] — probabilities for classifier, normalized R for regressor.
         """
         if self._model is None:
             raise RuntimeError("Model not trained. Call train() first.")
@@ -1508,7 +1525,7 @@ class CandidateTrainer:
                 X[col] = 0.0
         X = X[self._feature_names].fillna(0)
 
-        return self._model.predict_proba(X)[:, 1]
+        return self._predict_scores(X)
 
     def score_candidate(
         self, df: pd.DataFrame, idx: int, side: str, symbol: str,
@@ -1545,7 +1562,7 @@ class CandidateTrainer:
             row_df[col] = 0.0
         row_df = row_df[self._feature_names].fillna(0)
 
-        return float(self._model.predict_proba(row_df)[0, 1])
+        return float(self._predict_scores(row_df)[0])
 
     def get_model(self) -> Optional[RandomForestClassifier]:
         """Return the trained model (for serialization or inspection)."""

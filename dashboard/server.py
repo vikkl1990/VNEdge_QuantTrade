@@ -5,10 +5,13 @@ for bot status, positions, signals, trade history, performance, and alerts.
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import platform
+import secrets
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
@@ -73,6 +76,10 @@ class DashboardServer:
     _SIGNALS_FILE = Path(__file__).resolve().parent.parent / "storage" / "signals_history.json"
     _MAX_PERSISTED = 200  # keep last 200 signals on disk
 
+    # Auth: public paths that don't require login
+    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico"}
+    _PUBLIC_PREFIXES = ("/static/",)
+
     def __init__(self) -> None:
         cfg = get_config()
         dash_cfg = cfg.get("dashboard", {})
@@ -125,6 +132,15 @@ class DashboardServer:
             "maker": paper_cfg.get("maker_fee_rate", 0.0004),
             "settlement": paper_cfg.get("settlement_fee_rate", 0.0006),
         }
+
+        # Auth config
+        self._auth_user = os.getenv("DASHBOARD_USER", "admin")
+        self._auth_password = os.getenv("DASHBOARD_PASSWORD", "")
+        self._auth_secret = os.getenv("DASHBOARD_SECRET_KEY", secrets.token_hex(32))
+        self._auth_enabled = bool(self._auth_password)  # disabled if no password set
+        self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> session data
+        self._session_history: List[Dict[str, Any]] = []  # login history
+        self._session_timeout = 86400  # 24 hours
 
         # aiohttp internals
         self._app: Optional[web.Application] = None
@@ -268,12 +284,149 @@ class DashboardServer:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Authentication
+    # ------------------------------------------------------------------
+
+    def _sign_token(self, token: str) -> str:
+        """Sign a session token with HMAC-SHA256."""
+        return hmac.new(
+            self._auth_secret.encode(), token.encode(), hashlib.sha256
+        ).hexdigest()
+
+    def _verify_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
+        """Check if request has a valid session cookie. Returns session or None."""
+        if not self._auth_enabled:
+            return {"user": "admin", "auth_disabled": True}
+        cookie = request.cookies.get("vn_session")
+        if not cookie:
+            return None
+        parts = cookie.split(":", 1)
+        if len(parts) != 2:
+            return None
+        token, sig = parts
+        if not hmac.compare_digest(self._sign_token(token), sig):
+            return None
+        session = self._sessions.get(token)
+        if not session:
+            return None
+        # Check timeout
+        if time.time() - session["login_time"] > self._session_timeout:
+            del self._sessions[token]
+            return None
+        session["last_activity"] = time.time()
+        session["requests"] += 1
+        return session
+
+    @web.middleware
+    async def _auth_middleware(self, request: web.Request, handler):
+        """Middleware that checks auth on every request except public paths."""
+        path = request.path
+        # Allow public paths
+        if path in self._PUBLIC_PATHS or any(path.startswith(p) for p in self._PUBLIC_PREFIXES):
+            return await handler(request)
+        # Check session
+        session = self._verify_session(request)
+        if session:
+            request["session"] = session
+            return await handler(request)
+        # Not authenticated
+        if path.startswith("/api/"):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        # For page requests, serve the index (login form will show)
+        return await handler(request)
+
+    async def _handle_login(self, request: web.Request) -> web.Response:
+        """POST /api/login — validate credentials, set session cookie."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        user = body.get("username", "")
+        password = body.get("password", "")
+        if user != self._auth_user or password != self._auth_password:
+            logger.warning("Failed login attempt from %s (user=%s)", request.remote, user)
+            self._session_history.append({
+                "user": user, "ip": request.remote,
+                "time": datetime.now(IST).isoformat(),
+                "success": False,
+            })
+            return web.json_response({"error": "invalid credentials"}, status=401)
+        # Create session
+        token = secrets.token_hex(32)
+        sig = self._sign_token(token)
+        self._sessions[token] = {
+            "user": user, "login_time": time.time(),
+            "last_activity": time.time(), "ip": request.remote,
+            "user_agent": request.headers.get("User-Agent", ""),
+            "requests": 0,
+        }
+        self._session_history.append({
+            "user": user, "ip": request.remote,
+            "time": datetime.now(IST).isoformat(),
+            "success": True,
+        })
+        logger.info("Successful login from %s (user=%s)", request.remote, user)
+        resp = web.json_response({"ok": True, "user": user})
+        resp.set_cookie(
+            "vn_session", f"{token}:{sig}",
+            max_age=self._session_timeout, httponly=True, samesite="Lax",
+        )
+        return resp
+
+    async def _handle_logout(self, request: web.Request) -> web.Response:
+        """POST /api/logout — clear session cookie."""
+        cookie = request.cookies.get("vn_session")
+        if cookie:
+            token = cookie.split(":", 1)[0]
+            self._sessions.pop(token, None)
+        resp = web.json_response({"ok": True})
+        resp.del_cookie("vn_session")
+        return resp
+
+    async def _handle_session(self, request: web.Request) -> web.Response:
+        """GET /api/session — return current session info."""
+        session = self._verify_session(request)
+        if not session:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response({
+            "user": session.get("user", "admin"),
+            "login_time": session.get("login_time", 0),
+            "last_activity": session.get("last_activity", 0),
+            "requests": session.get("requests", 0),
+            "auth_enabled": self._auth_enabled,
+        })
+
+    async def _handle_usage(self, request: web.Request) -> web.Response:
+        """GET /api/usage — return session history and active sessions."""
+        active = []
+        for token, s in self._sessions.items():
+            active.append({
+                "user": s["user"], "ip": s["ip"],
+                "login_time": datetime.fromtimestamp(s["login_time"], IST).isoformat(),
+                "last_activity": datetime.fromtimestamp(s["last_activity"], IST).isoformat(),
+                "requests": s["requests"],
+                "duration_min": round((time.time() - s["login_time"]) / 60, 1),
+            })
+        return web.json_response({
+            "active_sessions": active,
+            "login_history": self._session_history[-50:],
+            "auth_enabled": self._auth_enabled,
+        })
+
     async def start(self, host: str = "0.0.0.0", port: int = 8080) -> None:
         """Create the aiohttp application, bind, and start serving."""
         self._started_at = time.time()
         self._bot_status = "running"
 
-        self._app = web.Application()
+        middlewares = []
+        if self._auth_enabled:
+            middlewares.append(self._auth_middleware)
+            logger.info("Dashboard auth ENABLED (user=%s)", self._auth_user)
+        else:
+            logger.warning("Dashboard auth DISABLED — set DASHBOARD_PASSWORD in .env to enable")
+
+        self._app = web.Application(middlewares=middlewares)
         self._register_routes(self._app)
 
         self._runner = web.AppRunner(self._app)
@@ -334,6 +487,12 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
+
+        # Auth endpoints
+        app.router.add_post("/api/login", self._handle_login)
+        app.router.add_post("/api/logout", self._handle_logout)
+        app.router.add_get("/api/session", self._handle_session)
+        app.router.add_get("/api/usage", self._handle_usage)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)

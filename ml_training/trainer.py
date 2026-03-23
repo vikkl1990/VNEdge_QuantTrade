@@ -525,13 +525,13 @@ class TrainingOrchestrator:
                     df = df.iloc[-15000:]
                     logger.info("Capped to 15k rows for %s", symbol)
 
-                logger.info("Running candidate trainer for %s (all scanners, MFE labels)...", symbol)
+                logger.info("Running candidate trainer for %s (all scanners, simulated trade labels)...", symbol)
                 await asyncio.sleep(0)
                 ct = CandidateTrainer()
                 result = ct.run_all_scanners(
                     df, symbol, SCANNERS,
                     n_splits=5, n_estimators=50, max_depth=6,
-                    label_mode="mfe",
+                    label_mode="trade",
                     mfe_threshold_r=0.8,
                     mfe_max_bars=15,
                     htf_df=htf_df,
@@ -576,7 +576,7 @@ class TrainingOrchestrator:
                     family_results = ct_family.run_pair_family(
                         symbol_data_all, SCANNERS,
                         n_splits=5, n_estimators=50, max_depth=6,
-                        label_mode="mfe",
+                        label_mode="trade",
                         mfe_threshold_r=0.8,
                         mfe_max_bars=15,
                         htf_data=htf_data_all,
@@ -599,7 +599,7 @@ class TrainingOrchestrator:
             # Record run in tracker for comparison
             self._tracker.record_run(
                 run_config={"symbols": symbols, "timeframes": timeframes,
-                            "label_mode": "mfe", "mfe_threshold_r": 0.8,
+                            "label_mode": "trade", "mfe_threshold_r": 0.8,
                             "mfe_max_bars": 15, "candidate_tf": "5m"},
                 scanner_results=all_results,
                 ml_results=candidate_results,

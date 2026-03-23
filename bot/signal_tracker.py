@@ -34,8 +34,8 @@ _STATS_FILE = _STORAGE_DIR / "signal_stats.json"
 # Max age before auto-closing a signal (seconds)
 # Scalper offer: BTC 30 min, others 15 min (free closing fee within window)
 MAX_SIGNAL_AGE = 4 * 3600  # 4 hours hard backstop
-SCALPER_WINDOW_BTC = 27 * 60   # 27 minutes — BTC Scalper (leave 3min buffer)
-SCALPER_WINDOW_OTHER = 12 * 60  # 12 minutes — ETH/AVAX/others (leave 3min buffer)
+SCALPER_WINDOW_BTC = 14 * 60   # 14 minutes — BTC Scalper (halved from 27)
+SCALPER_WINDOW_OTHER = 6 * 60  # 6 minutes — ETH/AVAX/others (halved from 12)
 
 # ══════════════════════════════════════════════════════════════
 # TRADE TYPE CLASSIFICATION — 3 tiers with different exit logic
@@ -51,24 +51,24 @@ TRADE_TYPE_CONFIG = {
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
-        "time_stop_bars": 5,      # 5 bars (25 min on 5m) hard time stop
+        "time_stop_bars": 3,      # 3 bars (15 min on 5m) hard time stop (halved from 5)
         "time_stop_type": "hard", # kill if not moving
-        "early_kill_sec": 180,    # 3 min early kill (was 5 min)
-        "early_kill_mfe": 0.10,   # lower MFE threshold
+        "early_kill_sec": 90,     # 90s early kill (halved from 120) — kill dead scalps faster
+        "early_kill_mfe": 0.08,   # lower MFE threshold — need to show life quickly
         "trail_atr_mult": 0.6,   # tight trail
-        "max_age_sec": 30 * 60,   # 30 min absolute max
+        "max_age_sec": 15 * 60,   # 15 min absolute max (halved from 30)
     },
     TRADE_TYPE_INTRADAY: {
         "sl_atr_mult": 1.15,      # moderate SL
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 15,     # 15 bars (~75 min) soft time stop
+        "time_stop_bars": 8,      # 8 bars (~40 min) soft time stop (halved from 15)
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 600,    # 10 min early kill
+        "early_kill_sec": 300,    # 5 min early kill (halved from 600)
         "early_kill_mfe": 0.15,   # standard MFE threshold
         "trail_atr_mult": 1.0,   # standard trail
-        "max_age_sec": 2 * 3600,  # 2 hours max
+        "max_age_sec": 1 * 3600,  # 1 hour max (halved from 2)
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room
@@ -641,6 +641,17 @@ class SignalTracker:
                     existing.trade_id[:8], existing.side, existing.symbol,
                 )
                 return
+
+        # ── SETUP STRENGTH VETO: reject weak setups that tend to timeout ──
+        MIN_SETUP_STRENGTH = 65
+        meta = signal_dict.get("metadata", {})
+        setup_score = meta.get("weighted_score", 0)
+        if setup_score and setup_score < MIN_SETUP_STRENGTH:
+            logger.info(
+                "WEAK SETUP BLOCKED: %s %s %s | score=%.0f < %d — likely to timeout",
+                ts.trade_id[:8], ts.symbol, ts.side, setup_score, MIN_SETUP_STRENGTH,
+            )
+            return
 
         # ── DUPLICATE PREVENTION: no re-entry at same price within 30 min ──
         from datetime import datetime, timedelta, timezone

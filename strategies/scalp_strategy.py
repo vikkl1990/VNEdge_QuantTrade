@@ -1327,6 +1327,34 @@ class ScalpStrategy(BaseStrategy):
                 }
                 return []
 
+        # ── Confluence bonus: boost when multiple scanners agree on same side ──
+        if len(tradeable) >= 2:
+            # Group by side
+            side_groups = {}
+            for sr in tradeable:
+                side_val = sr.side.value if sr.side else "none"
+                if side_val not in side_groups:
+                    side_groups[side_val] = []
+                side_groups[side_val].append(sr)
+
+            # Find the side with most agreement
+            for side_val, group in side_groups.items():
+                if len(group) >= 2:
+                    # Multiple scanners agree — boost all by +15 per extra scanner
+                    confluence_bonus = (len(group) - 1) * 15
+                    scanner_names_list = [sr.scanner_name for sr in group]
+                    for sr in group:
+                        sr.weighted_score += confluence_bonus
+                        sr.confirmations.append(
+                            f"Multi-scanner confluence ({'+'.join(scanner_names_list)}) +{confluence_bonus}"
+                        )
+                    if pass_cnt <= 5 or pass_cnt % 50 == 0:
+                        logger.info(
+                            "FUNNEL %s | CONFLUENCE #%d | %d scanners agree on %s: %s (+%d bonus)",
+                            symbol, pass_cnt, len(group), side_val,
+                            scanner_names_list, confluence_bonus,
+                        )
+
         # Pick best by weighted score
         best_sr = max(tradeable, key=lambda s: s.weighted_score)
         best = best_sr.setup_result
@@ -1338,7 +1366,7 @@ class ScalpStrategy(BaseStrategy):
                        best_sr.tier, self._weight_manager.is_tradeable(best_sr.scanner_name))
 
         # ── Setup strength veto: weak setups time out too often ──
-        MIN_SETUP_STRENGTH = 65
+        MIN_SETUP_STRENGTH = 55  # Lowered from 65: lets bos_choch (avg 59) and liquidity_sweep (55) through
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
@@ -1383,10 +1411,12 @@ class ScalpStrategy(BaseStrategy):
         # ══════════════════════════════════════════════════════
         scanner_size = self.scanner_size_tiers.get(best_sr.scanner_name, 0.6)
 
-        # structure_bounce_only mode: override scanner weights
+        # structure_bounce_only mode: DISABLED — now allowing bos_choch + liquidity_sweep
+        # These scanners have been fixed and validated (17 triggers on Mar 24)
         if self.structure_bounce_only and not self._is_learning:
-            if best_sr.scanner_name not in ("structure_bounce", "order_block_entry"):
-                scanner_size = 0.0  # force shadow — only SB+OB trade
+            if best_sr.scanner_name not in ("structure_bounce", "order_block_entry",
+                                             "bos_choch", "liquidity_sweep"):
+                scanner_size = 0.0  # shadow only ML-training scanners
 
             # Apply stricter thresholds for SB-only mode
             if best_sr.scanner_name == "structure_bounce":
@@ -1395,15 +1425,12 @@ class ScalpStrategy(BaseStrategy):
 
         # Shadow proven-negative scanners EVEN in learning mode
         # simple_bias: 25% WR, fires on any EMA alignment → pure noise
-        # liquidity_sweep: fake sweeps, net negative after fees
-        # These scanners drag the paper balance down and pollute ML data
-        if best_sr.scanner_name in ("simple_bias", "liquidity_sweep"):
+        if best_sr.scanner_name in ("simple_bias",):
             scanner_size = 0.0  # ML log only, no trade — even in learning
 
         # Shadow scanners: block from trading (log for ML only)
-        # Block if: (1) scanner_size=0 in non-learning mode, OR
-        #           (2) scanner is simple_bias/liquidity_sweep (always shadow, even learning)
-        _force_shadow = best_sr.scanner_name in ("simple_bias", "liquidity_sweep")
+        # Block if: scanner_size=0 in non-learning mode
+        _force_shadow = best_sr.scanner_name in ("simple_bias",)
         if scanner_size <= 0.0 and (not self._is_learning or _force_shadow):
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
                 logger.info("FUNNEL %s | SCANNER SHADOW #%d | scanner=%s conf=%d min_conf=%d size=%.1f",

@@ -77,7 +77,7 @@ class DashboardServer:
     _MAX_PERSISTED = 200  # keep last 200 signals on disk
 
     # Auth: public paths that don't require login
-    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico"}
+    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico", "/api/real/status", "/api/real/trades", "/api/risk-metrics", "/api/session-heatmap"}
     _PUBLIC_PREFIXES = ("/static/",)
 
     def __init__(self) -> None:
@@ -484,6 +484,8 @@ class DashboardServer:
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
         app.router.add_get("/api/real/status", self._handle_real_status)
         app.router.add_post("/api/real/toggle", self._handle_real_toggle)
+        app.router.add_get("/api/risk-metrics", self._handle_risk_metrics)
+        app.router.add_get("/api/session-heatmap", self._handle_session_heatmap)
         app.router.add_get("/api/ping", self._handle_ping)
         app.router.add_get("/api/latency", self._handle_latency)
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
@@ -898,12 +900,33 @@ class DashboardServer:
 
     async def _handle_real_status(self, request: web.Request) -> web.Response:
         """Return real trading manager status for dashboard."""
-        if hasattr(self, '_real_manager') and self._real_manager:
-            return web.json_response(self._real_manager.get_status())
-        # Check if orchestrator has it
-        orch = getattr(self, '_orchestrator', None)
-        if orch and hasattr(orch, '_real_manager') and orch._real_manager:
-            return web.json_response(orch._real_manager.get_status())
+        mgr = getattr(self, '_real_manager', None)
+        if not mgr:
+            orch = getattr(self, '_orchestrator', None)
+            if orch:
+                mgr = getattr(orch, '_real_manager', None)
+        if mgr:
+            try:
+                await mgr.update_prices()
+            except Exception:
+                pass
+            # Auto-sync: close orphaned dry run positions
+            try:
+                tracker = getattr(self, '_signal_tracker', None)
+                if not tracker:
+                    orch = getattr(self, '_orchestrator', None)
+                    if orch:
+                        tracker = getattr(orch, '_signal_tracker', None)
+                if tracker and hasattr(mgr, 'sync_with_paper'):
+                    active_ids = set()
+                    for sig in tracker.get_active_signals():
+                        tid = sig.get("trade_id", "") if isinstance(sig, dict) else getattr(sig, "trade_id", "")
+                        if tid:
+                            active_ids.add(tid)
+                    mgr.sync_with_paper(active_ids)
+            except Exception:
+                pass
+            return web.json_response(mgr.get_status())
         return web.json_response({
             "enabled": False,
             "dry_run": True,
@@ -945,6 +968,131 @@ class DashboardServer:
 
         mgr._save_state()
         return web.json_response(mgr.get_status())
+
+    async def _handle_risk_metrics(self, request: web.Request) -> web.Response:
+        """Return risk-adjusted metrics: Sharpe, Sortino, Calmar, max DD duration."""
+        import math
+        trades = []
+        try:
+            feedback_path = Path("storage/ml_live_feedback.jsonl")
+            if feedback_path.exists():
+                with open(feedback_path) as f:
+                    trades = [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+
+        if len(trades) < 5:
+            return web.json_response({"error": "insufficient_data", "trades": len(trades)})
+
+        returns = [t.get("exit_r", 0) for t in trades]
+        n = len(returns)
+        mean_r = sum(returns) / n
+        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in returns) / max(n - 1, 1))
+        downside = [r for r in returns if r < 0]
+        downside_std = math.sqrt(sum(r ** 2 for r in downside) / max(len(downside), 1)) if downside else 0.001
+
+        # Sharpe (annualized assuming ~10 trades/day)
+        trades_per_year = 10 * 365
+        sharpe = (mean_r / std_r) * math.sqrt(trades_per_year) if std_r > 0 else 0
+        sortino = (mean_r / downside_std) * math.sqrt(trades_per_year) if downside_std > 0 else 0
+
+        # Max drawdown + duration
+        equity = 1000.0
+        peak = equity
+        max_dd = 0
+        dd_start = 0
+        max_dd_duration = 0
+        current_dd_start = None
+        for i, r in enumerate(returns):
+            pnl = equity * 0.01 * r  # Approx
+            equity += pnl
+            if equity > peak:
+                peak = equity
+                if current_dd_start is not None:
+                    dur = i - current_dd_start
+                    max_dd_duration = max(max_dd_duration, dur)
+                current_dd_start = None
+            else:
+                dd = (peak - equity) / peak
+                if dd > max_dd:
+                    max_dd = dd
+                if current_dd_start is None:
+                    current_dd_start = i
+
+        calmar = (mean_r * trades_per_year) / max_dd if max_dd > 0 else 0
+
+        # Win/loss streaks
+        max_win_streak = 0
+        max_loss_streak = 0
+        cur_w = 0
+        cur_l = 0
+        for r in returns:
+            if r > 0:
+                cur_w += 1
+                cur_l = 0
+            else:
+                cur_l += 1
+                cur_w = 0
+            max_win_streak = max(max_win_streak, cur_w)
+            max_loss_streak = max(max_loss_streak, cur_l)
+
+        return web.json_response({
+            "sharpe": round(sharpe, 2),
+            "sortino": round(sortino, 2),
+            "calmar": round(calmar, 2),
+            "max_drawdown_pct": round(max_dd * 100, 2),
+            "max_dd_duration_trades": max_dd_duration,
+            "mean_r": round(mean_r, 4),
+            "std_r": round(std_r, 4),
+            "total_trades": n,
+            "max_win_streak": max_win_streak,
+            "max_loss_streak": max_loss_streak,
+            "profit_factor": round(sum(r for r in returns if r > 0) / abs(sum(r for r in returns if r < 0)) if sum(r for r in returns if r < 0) != 0 else 0, 2),
+        }, dumps=_safe_dumps)
+
+    async def _handle_session_heatmap(self, request: web.Request) -> web.Response:
+        """Return WR and avg R by UTC hour for session heatmap."""
+        trades = []
+        try:
+            feedback_path = Path("storage/ml_live_feedback.jsonl")
+            if feedback_path.exists():
+                with open(feedback_path) as f:
+                    trades = [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            pass
+
+        hours = {}
+        for t in trades:
+            ts = t.get("timestamp", "")
+            if "T" not in ts:
+                continue
+            try:
+                h = int(ts.split("T")[1][:2])
+            except (ValueError, IndexError):
+                continue
+            if h not in hours:
+                hours[h] = {"trades": 0, "wins": 0, "pnl": 0, "r_sum": 0}
+            hours[h]["trades"] += 1
+            if t.get("pnl_usd", 0) > 0:
+                hours[h]["wins"] += 1
+            hours[h]["pnl"] += t.get("pnl_usd", 0)
+            hours[h]["r_sum"] += t.get("exit_r", 0)
+
+        result = []
+        for h in range(24):
+            d = hours.get(h, {"trades": 0, "wins": 0, "pnl": 0, "r_sum": 0})
+            wr = (d["wins"] / d["trades"] * 100) if d["trades"] > 0 else 0
+            avg_r = (d["r_sum"] / d["trades"]) if d["trades"] > 0 else 0
+            result.append({
+                "hour": h,
+                "trades": d["trades"],
+                "wins": d["wins"],
+                "wr": round(wr, 1),
+                "avg_r": round(avg_r, 3),
+                "pnl": round(d["pnl"], 2),
+            })
+
+        return web.json_response(result, dumps=_safe_dumps)
 
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""

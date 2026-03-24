@@ -743,6 +743,30 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div id="real-cb-status" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">OK</div>
       </div>
     </div>
+    <!-- Dry Run Open Positions -->
+    <div id="real-positions-table" style="margin-top:12px;display:none">
+      <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">DRY RUN POSITIONS</div>
+      <table style="width:100%;font-size:.72rem;border-collapse:collapse">
+        <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:4px">Symbol</th>
+          <th style="text-align:left;padding:4px">Side</th>
+          <th style="text-align:right;padding:4px">Entry</th>
+          <th style="text-align:right;padding:4px">Current</th>
+          <th style="text-align:right;padding:4px">UPNL</th>
+          <th style="text-align:right;padding:4px">SL</th>
+          <th style="text-align:right;padding:4px">TP1</th>
+          <th style="text-align:right;padding:4px">Margin</th>
+          <th style="text-align:right;padding:4px">Position</th>
+          <th style="text-align:right;padding:4px">Contracts</th>
+          <th style="text-align:center;padding:4px">Lev</th>
+          <th style="text-align:left;padding:4px">Scanner</th>
+          <th style="text-align:center;padding:4px">ML</th>
+          <th style="text-align:left;padding:4px">Regime</th>
+          <th style="text-align:right;padding:4px">Time</th>
+        </tr></thead>
+        <tbody id="real-positions-body"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Equity Curve -->
@@ -765,6 +789,31 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="stat-card"><div class="stat-value green" id="rm-best-r">--</div><div class="stat-label">Best Trade (R)</div></div>
     <div class="stat-card"><div class="stat-value red" id="rm-worst-r">--</div><div class="stat-label">Worst Trade (R)</div></div>
     <div class="stat-card"><div class="stat-value" id="rm-r-std">--</div><div class="stat-label">R Std Dev</div></div>
+  </div>
+
+  <!-- Risk Metrics Panel -->
+  <div class="panel">
+    <div class="panel-title">Risk Analytics <span class="badge">Advanced</span></div>
+    <div class="grid-4" id="risk-metrics-grid">
+      <div class="stat-card"><div class="stat-value green" id="rk-sharpe">--</div><div class="stat-label">Sharpe Ratio</div></div>
+      <div class="stat-card"><div class="stat-value green" id="rk-sortino">--</div><div class="stat-label">Sortino Ratio</div></div>
+      <div class="stat-card"><div class="stat-value blue" id="rk-calmar">--</div><div class="stat-label">Calmar Ratio</div></div>
+      <div class="stat-card"><div class="stat-value red" id="rk-maxdd">--</div><div class="stat-label">Max Drawdown</div></div>
+      <div class="stat-card"><div class="stat-value" id="rk-dd-dur">--</div><div class="stat-label">Max DD Duration</div></div>
+      <div class="stat-card"><div class="stat-value green" id="rk-win-streak">--</div><div class="stat-label">Max Win Streak</div></div>
+      <div class="stat-card"><div class="stat-value red" id="rk-loss-streak">--</div><div class="stat-label">Max Loss Streak</div></div>
+      <div class="stat-card"><div class="stat-value blue" id="rk-pf">--</div><div class="stat-label">Profit Factor</div></div>
+    </div>
+  </div>
+
+  <!-- Session Performance Heatmap -->
+  <div class="panel">
+    <div class="panel-title">Session Performance Heatmap <span class="badge">By UTC Hour</span></div>
+    <div id="session-heatmap" style="display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin-top:8px">
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:.6rem;color:var(--text-muted)">
+      <span>00:00 UTC</span><span>06:00 — Asia</span><span>12:00 — London</span><span>18:00 — NY</span><span>23:00</span>
+    </div>
   </div>
 
   <!-- Exit Quality + AI Insights -->
@@ -817,16 +866,33 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- Closed Trades -->
+  <!-- Closed Trades with Paper/Real tabs -->
   <div class="panel">
-    <div class="panel-title">Closed Trades <span class="badge">last 50</span></div>
-    <div class="tbl-wrap" style="max-height:400px;overflow-y:auto">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
+      <div class="panel-title" style="margin-bottom:0">Closed Trades</div>
+      <div style="display:flex;gap:4px">
+        <button id="tab-paper-closed" onclick="switchClosedTab('paper')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:var(--cyan);color:#000;border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
+        <button id="tab-real-closed" onclick="switchClosedTab('real')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DRY RUN</button>
+      </div>
+      <span class="badge" id="closed-count-badge">last 50</span>
+    </div>
+    <div id="paper-closed-wrap" class="tbl-wrap" style="max-height:400px;overflow-y:auto">
       <table>
         <thead>
           <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Type</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>ML</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
         </thead>
         <tbody id="closed-trades-body">
-          <tr><td colspan="14" class="empty">No closed trades</td></tr>
+          <tr><td colspan="16" class="empty">No closed trades</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="real-closed-wrap" class="tbl-wrap" style="max-height:400px;overflow-y:auto;display:none">
+      <table>
+        <thead>
+          <tr style="color:var(--text-muted)"><th>Date</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Margin</th><th>Position</th><th>Lev</th><th>PnL $</th><th>PnL %</th><th>Scanner</th><th>Reason</th></tr>
+        </thead>
+        <tbody id="real-closed-body">
+          <tr><td colspan="12" class="empty">No dry run trades closed</td></tr>
         </tbody>
       </table>
     </div>
@@ -1247,6 +1313,48 @@ async function refreshLive() {
             const cbEl = document.getElementById("real-cb-status");
             cbEl.textContent = cb.is_tripped ? "TRIPPED" : "OK";
             cbEl.style.color = cb.is_tripped ? "var(--red)" : "var(--green)";
+            // Render open positions table
+            const posTable = document.getElementById("real-positions-table");
+            const posBody = document.getElementById("real-positions-body");
+            const positions = realStatus.open_positions || [];
+            if (positions.length > 0) {
+                posTable.style.display = "block";
+                posBody.innerHTML = positions.map(p => {
+                    const sideColor = p.side === "long" ? "var(--green)" : "var(--red)";
+                    const mlColor = (p.ml_prob || 0) >= 0.5 ? "var(--green)" : (p.ml_prob || 0) >= 0.45 ? "var(--yellow)" : "var(--red)";
+                    const posUsd = p.position_usd || (p.margin || 0) * (p.leverage || 1);
+                    const upnl = p.upnl_usd || 0;
+                    const upnlPct = p.upnl_pct || 0;
+                    const upnlColor = upnl >= 0 ? "var(--green)" : "var(--red)";
+                    const dec = p.symbol.includes("BTC") ? 2 : p.symbol.includes("ETH") ? 2 : 4;
+                    const durMin = p.duration_min || 0;
+                    const durStr = durMin >= 60 ? (durMin/60).toFixed(1)+"h" : durMin.toFixed(0)+"m";
+                    const coin = p.symbol.split("/")[0];
+                    const size = p.position_size || 0;
+                    const sizeStr = size >= 1 ? size.toFixed(2) : size.toFixed(6);
+                    return `<tr style="border-bottom:1px solid var(--border)">
+                        <td style="padding:4px;font-weight:600">${p.symbol}</td>
+                        <td style="padding:4px;color:${sideColor};font-weight:600;text-transform:uppercase">${p.side}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono)">${(p.entry_price||0).toFixed(dec)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono)">${(p.current_price||0).toFixed(dec)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono);color:${upnlColor};font-weight:600">${upnl>=0?"+":""}$${upnl.toFixed(2)} (${upnlPct>=0?"+":""}${upnlPct.toFixed(2)}%)</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono);color:var(--red)">${(p.stop_loss||0).toFixed(dec)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono);color:var(--green)">${(p.tp1||0).toFixed(dec)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono)">$${(p.margin||0).toFixed(2)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono)">$${posUsd.toFixed(2)}</td>
+                        <td style="padding:4px;text-align:right;font-family:var(--font-mono)">${sizeStr} ${coin}</td>
+                        <td style="padding:4px;text-align:center">${p.leverage||0}x</td>
+                        <td style="padding:4px;color:var(--cyan)">${p.scanner||"--"}</td>
+                        <td style="padding:4px;text-align:center;color:${mlColor}">${((p.ml_prob||0)*100).toFixed(0)}% ${p.ml_verdict||""}</td>
+                        <td style="padding:4px;color:var(--text-muted)">${p.regime||"--"}</td>
+                        <td style="padding:4px;text-align:right;color:var(--text-muted)">${durStr}</td>
+                    </tr>`;
+                }).join("");
+            } else {
+                posTable.style.display = "none";
+            }
+            // Update real closed trades tab
+            updateRealClosedTrades(realStatus);
         }
     }
 
@@ -1718,10 +1826,10 @@ function updateAlerts(alerts) {
 // TAB 2: ANALYTICS REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshAnalytics() {
-    const [closed, rMetrics, exitQ, scannerH, aiData, monitor, trkStats] = await Promise.all([
+    const [closed, rMetrics, exitQ, scannerH, aiData, monitor, trkStats, riskData, heatmapData] = await Promise.all([
         api("/api/tracker/closed"), api("/api/r-metrics"), api("/api/exit-quality"),
         api("/api/scanner-health"), api("/api/ai/insights"), api("/api/monitor/report"),
-        api("/api/tracker/stats")
+        api("/api/tracker/stats"), api("/api/risk-metrics"), api("/api/session-heatmap")
     ]);
     updateEquityChart(closed);
     updateRMetrics(rMetrics);
@@ -1732,6 +1840,8 @@ async function refreshAnalytics() {
     updatePaperBalance(monitor);
     updateClosedTrades(closed);
     updateDailyPnl(trkStats);
+    updateRiskMetrics(riskData);
+    updateSessionHeatmap(heatmapData);
 }
 
 function updateEquityChart(closed) {
@@ -2008,6 +2118,91 @@ function updateDailyPnl(stats) {
         <td class="${totalNet >= 0 ? 'green' : 'red'}">$${totalNet >= 0 ? '+' : ''}${totalNet.toFixed(2)}</td>
     </tr>`;
     tbody.innerHTML = html;
+}
+
+function updateRiskMetrics(data) {
+    if (!data || data.error) return;
+    const el = id => document.getElementById(id);
+    el("rk-sharpe").textContent = num(data.sharpe, 2);
+    el("rk-sharpe").className = "stat-value " + (data.sharpe >= 1 ? "green" : data.sharpe >= 0 ? "yellow" : "red");
+    el("rk-sortino").textContent = num(data.sortino, 2);
+    el("rk-sortino").className = "stat-value " + (data.sortino >= 1.5 ? "green" : data.sortino >= 0 ? "yellow" : "red");
+    el("rk-calmar").textContent = num(data.calmar, 2);
+    el("rk-calmar").className = "stat-value " + (data.calmar >= 2 ? "green" : "blue");
+    el("rk-maxdd").textContent = num(data.max_drawdown_pct, 2) + "%";
+    el("rk-dd-dur").textContent = data.max_dd_duration_trades + " trades";
+    el("rk-win-streak").textContent = data.max_win_streak;
+    el("rk-loss-streak").textContent = data.max_loss_streak;
+    el("rk-pf").textContent = num(data.profit_factor, 2);
+    el("rk-pf").className = "stat-value " + (data.profit_factor >= 2 ? "green" : data.profit_factor >= 1 ? "yellow" : "red");
+}
+
+function updateSessionHeatmap(data) {
+    if (!data || !Array.isArray(data)) return;
+    const container = document.getElementById("session-heatmap");
+    const maxTrades = Math.max(...data.map(d => d.trades), 1);
+    container.innerHTML = data.map(d => {
+        const intensity = d.trades / maxTrades;
+        const bgColor = d.trades === 0 ? "rgba(255,255,255,.02)" :
+            d.wr >= 80 ? `rgba(0,255,157,${0.1 + intensity * 0.4})` :
+            d.wr >= 60 ? `rgba(0,212,255,${0.1 + intensity * 0.3})` :
+            d.wr >= 40 ? `rgba(255,215,0,${0.1 + intensity * 0.3})` :
+            `rgba(255,59,92,${0.1 + intensity * 0.3})`;
+        const textColor = d.trades === 0 ? "var(--text-muted)" :
+            d.wr >= 80 ? "var(--green)" :
+            d.wr >= 60 ? "var(--cyan)" :
+            d.wr >= 40 ? "var(--yellow)" : "var(--red)";
+        return `<div style="background:${bgColor};border-radius:4px;padding:4px 2px;text-align:center;min-height:48px;display:flex;flex-direction:column;justify-content:center;cursor:default" title="${d.hour}:00 UTC | ${d.trades} trades | WR ${d.wr}% | Avg R ${d.avg_r} | PnL $${d.pnl}">
+            <div style="font-size:.6rem;color:var(--text-muted)">${String(d.hour).padStart(2,'0')}</div>
+            <div style="font-size:.75rem;font-weight:700;color:${textColor}">${d.trades > 0 ? d.wr + '%' : '-'}</div>
+            <div style="font-size:.55rem;color:var(--text-muted)">${d.trades}t</div>
+        </div>`;
+    }).join("");
+}
+
+let _currentClosedTab = "paper";
+function switchClosedTab(tab) {
+    _currentClosedTab = tab;
+    document.getElementById("paper-closed-wrap").style.display = tab === "paper" ? "block" : "none";
+    document.getElementById("real-closed-wrap").style.display = tab === "real" ? "block" : "none";
+    const paperBtn = document.getElementById("tab-paper-closed");
+    const realBtn = document.getElementById("tab-real-closed");
+    paperBtn.style.background = tab === "paper" ? "var(--cyan)" : "transparent";
+    paperBtn.style.color = tab === "paper" ? "#000" : "var(--text-muted)";
+    realBtn.style.background = tab === "real" ? "var(--red)" : "transparent";
+    realBtn.style.color = tab === "real" ? "#fff" : "var(--text-muted)";
+}
+
+function updateRealClosedTrades(realStatus) {
+    const body = document.getElementById("real-closed-body");
+    if (!body) return;
+    const trades = (realStatus && realStatus.recent_trades) || [];
+    if (trades.length === 0) {
+        body.innerHTML = '<tr><td colspan="12" class="empty">No dry run trades closed yet</td></tr>';
+        return;
+    }
+    const badge = document.getElementById("closed-count-badge");
+    if (_currentClosedTab === "real") badge.textContent = trades.length + " dry run";
+    body.innerHTML = trades.slice().reverse().map(t => {
+        const pnlColor = (t.pnl_usd || 0) >= 0 ? "var(--green)" : "var(--red)";
+        const sideColor = t.side === "long" ? "var(--green)" : "var(--red)";
+        const dec = (t.symbol || "").includes("BTC") ? 2 : 4;
+        const ts = (t.timestamp || "").replace("T", " ").substring(0, 19);
+        return `<tr>
+            <td>${ts}</td>
+            <td style="font-weight:600">${t.symbol || "?"}</td>
+            <td style="color:${sideColor};font-weight:600;text-transform:uppercase">${t.side || "?"}</td>
+            <td style="font-family:var(--font-mono)">${(t.entry_price || 0).toFixed(dec)}</td>
+            <td style="font-family:var(--font-mono)">${(t.exit_price || 0).toFixed(dec)}</td>
+            <td style="font-family:var(--font-mono)">$${(t.margin || 0).toFixed(2)}</td>
+            <td style="font-family:var(--font-mono)">$${((t.margin || 0) * (t.leverage || 1)).toFixed(2)}</td>
+            <td>${t.leverage || 0}x</td>
+            <td style="color:${pnlColor};font-weight:600;font-family:var(--font-mono)">${(t.pnl_usd||0)>=0?"+":""}$${(t.pnl_usd || 0).toFixed(2)}</td>
+            <td style="color:${pnlColor};font-family:var(--font-mono)">${(t.pnl_pct||0)>=0?"+":""}${(t.pnl_pct || 0).toFixed(1)}%</td>
+            <td style="color:var(--cyan)">${t.scanner || "--"}</td>
+            <td>${t.reason || "?"}</td>
+        </tr>`;
+    }).join("");
 }
 
 function updateClosedTrades(closed) {

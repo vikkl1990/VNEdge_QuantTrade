@@ -551,6 +551,7 @@ class DashboardServer:
                 "memory_mb": self._memory_mb,
                 "server_time": datetime.now(IST).isoformat(),
                 "fees": self._fees,
+                "start_time": datetime.fromtimestamp(self._started_at, IST).isoformat() if self._started_at else None,
             }
 
             # Setup lifecycle candidates from strategy

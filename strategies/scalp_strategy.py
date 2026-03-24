@@ -1139,7 +1139,13 @@ class ScalpStrategy(BaseStrategy):
             self._funnel["scanned"] += 1
 
             try:
-                result = scanner(symbol, df, htf_bias, confirm_bias)
+                # trend_continuation and ema_momentum work better on 5m
+                # Use confirm_df (5m) if available, else fall back to primary (1m)
+                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum) and confirm_df is not None and len(confirm_df) >= 50:
+                    scanner_df = confirm_df
+                else:
+                    scanner_df = df
+                result = scanner(symbol, scanner_df, htf_bias, confirm_bias)
 
                 if result is not None:
                     # Scanner triggered — compute weighted score
@@ -3398,14 +3404,14 @@ class ScalpStrategy(BaseStrategy):
             sweep_level = eq_low_level
             sweep_size = (eq_low_level - low) / atr
             confs.append(f"Sweep below EQL ({eq_low_count} touches) at ${eq_low_level:.0f}")
-            score += 30
+            score += 35  # boosted from 30 — sweep+reclaim is high-quality
 
             # Sweep depth scoring
             if sweep_size > 0.5:
                 score += 15
                 confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.2:
-                score += 8
+            elif sweep_size > 0.15:  # relaxed from 0.2
+                score += 10  # boosted from 8
 
         # SHORT: Price raids above equal highs, closes back below
         if side is None and eq_high_level > 0 and high > eq_high_level and close < eq_high_level:
@@ -3413,13 +3419,13 @@ class ScalpStrategy(BaseStrategy):
             sweep_level = eq_high_level
             sweep_size = (high - eq_high_level) / atr
             confs.append(f"Sweep above EQH ({eq_high_count} touches) at ${eq_high_level:.0f}")
-            score += 30
+            score += 35  # boosted from 30
 
             if sweep_size > 0.5:
                 score += 15
                 confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.2:
-                score += 8
+            elif sweep_size > 0.15:  # relaxed from 0.2
+                score += 10  # boosted from 8
 
         # Fallback: rolling min/max sweep (simpler, more reliable)
         if side is None:
@@ -3434,13 +3440,13 @@ class ScalpStrategy(BaseStrategy):
                     side = OrderSide.LONG
                     sweep_level = rolling_low
                     confs.append(f"Sweep below rolling low {rolling_low:.2f}")
-                    score += 20
+                    score += 28  # boosted from 20
                 # Sweep above rolling high + reclaim
                 elif high > rolling_high and close < rolling_high:
                     side = OrderSide.SHORT
                     sweep_level = rolling_high
                     confs.append(f"Sweep above rolling high {rolling_high:.2f}")
-                    score += 20
+                    score += 28  # boosted from 20
 
         if side is None:
             return None
@@ -3455,16 +3461,16 @@ class ScalpStrategy(BaseStrategy):
         else:
             close_position = (high - close) / candle_range
 
-        if body_ratio > 0.6 and close_position > 0.7:
+        if body_ratio > 0.5 and close_position > 0.6:
             score += 15
             confs.append(f"Strong reclaim (body={body_ratio:.0%}, close_pos={close_position:.0%})")
-        elif body_ratio > 0.4:
-            score += 5
+        elif body_ratio > 0.3:
+            score += 8  # boosted from 5
 
         # ── Step 4: Displacement check ──
-        # Body must show real directional intent (> 0.3x ATR)
+        # Body must show real directional intent
         displacement = body / atr if atr > 0 else 0
-        if displacement > 0.8:
+        if displacement > 0.6:  # relaxed from 0.8
             score += 15
             confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
         elif displacement > 0.4:

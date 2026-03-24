@@ -141,7 +141,7 @@ class RealTradingManager:
         self.dry_run: bool = rt_cfg.get("dry_run", True)
         self.min_margin: float = rt_cfg.get("min_margin_per_trade", 10.0)
         self.max_margin: float = rt_cfg.get("max_margin_per_trade", 25.0)
-        self.max_open: int = rt_cfg.get("max_open_positions", 2)
+        self.max_open: int = rt_cfg.get("max_open_positions", 5)
         self.reserve_pct: float = rt_cfg.get("balance_reserve_pct", 15) / 100.0
         self.min_balance: float = rt_cfg.get("min_balance_to_trade", 30.0)
         self.leverage_cap: int = rt_cfg.get("leverage_cap", 10)
@@ -213,15 +213,48 @@ class RealTradingManager:
         leverage = min(signal.get("leverage", 5), self.leverage_cap)
 
         if self.dry_run:
+            dry_id = f"dry_{paper_trade_id or str(int(time.time()))}"
+            entry_price = signal.get("entry_price", 0)
             logger.info(
                 "REAL [DRY RUN]: %s %s %s | margin=$%.2f | pos=$%.2f | "
-                "size=%.6f | lev=%dx | entry=%.4f | SL=%.4f",
+                "size=%.6f | lev=%dx | entry=%.4f | SL=%.4f | id=%s",
                 symbol, signal.get("side", "?"), signal.get("metadata", {}).get("setup_type", "?"),
                 margin, margin * leverage, position_size, leverage,
-                signal.get("entry_price", 0), signal.get("stop_loss", 0),
+                entry_price, signal.get("stop_loss", 0), dry_id,
             )
+            # Track dry run trade so dashboard can display it
+            meta = signal.get("metadata", {})
+            tps = signal.get("take_profits", [])
+            dry_trade = type("DryTrade", (), {
+                "trade_id": dry_id,
+                "symbol": symbol,
+                "side": signal.get("side", "long"),
+                "entry_price": entry_price,
+                "stop_loss": signal.get("stop_loss", 0),
+                "tp1": tps[0] if len(tps) > 0 else 0,
+                "tp2": tps[1] if len(tps) > 1 else 0,
+                "tp3": tps[2] if len(tps) > 2 else 0,
+                "position_size": position_size,
+                "margin": margin,
+                "leverage": leverage,
+                "status": "open",
+                "opened_at": time.time(),
+                "scanner": meta.get("setup_type", ""),
+                "trade_type": meta.get("display_section", ""),
+                "confidence": signal.get("confidence", 0),
+                "ml_prob": meta.get("ml_probability", 0),
+                "ml_verdict": meta.get("ml_verdict", ""),
+                "regime": meta.get("regime", ""),
+                "paper_trade_id": paper_trade_id,
+                "current_price": entry_price,  # updated by paper sync
+            })()
+            self.real_trades[dry_id] = dry_trade
+            if paper_trade_id:
+                self.paper_to_real[paper_trade_id] = dry_id
+            self._save_state()
             return {
                 "status": "dry_run",
+                "trade_id": dry_id,
                 "symbol": symbol,
                 "side": signal.get("side"),
                 "margin": margin,
@@ -295,33 +328,56 @@ class RealTradingManager:
         if not real_trade_id:
             return None  # No real trade for this paper trade
 
+        # Look up in real_trades first, then _open_positions (dry run)
         trade = self.real_trades.get(real_trade_id)
+        if not trade:
+            trade = self._open_positions.get(real_trade_id)
         if not trade:
             return None
 
         if self.dry_run:
-            # Calculate what PnL would have been
-            if trade.side.value == "long":
-                pnl_pct = (exit_price - trade.entry_price) / trade.entry_price
+            # For dry run trades stored as dicts
+            if isinstance(trade, dict):
+                side_str = trade.get("side", "long")
+                entry_p = trade.get("entry_price", 0)
+                pos_size = trade.get("position_size", 0)
+                margin = trade.get("margin", 0)
+                leverage = trade.get("leverage", 1)
+                symbol = trade.get("symbol", "?")
             else:
-                pnl_pct = (trade.entry_price - exit_price) / trade.entry_price
+                side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+                entry_p = trade.entry_price
+                pos_size = getattr(trade, "position_size", 0)
+                margin = getattr(trade, "margin", 0)
+                leverage = getattr(trade, "leverage", 1)
+                symbol = getattr(trade, "symbol", "?")
 
-            notional = trade.entry_price * trade.position_size
+            if side_str == "long":
+                pnl_pct = (exit_price - entry_p) / entry_p if entry_p else 0
+            else:
+                pnl_pct = (entry_p - exit_price) / entry_p if entry_p else 0
+
+            notional = entry_p * pos_size
             pnl_usd = pnl_pct * notional
             fee_est = notional * 0.0015  # ~0.15% round trip
             net_pnl = pnl_usd - fee_est
 
             logger.info(
                 "REAL [DRY RUN] EXIT: %s %s | entry=%.4f exit=%.4f | "
-                "gross=$%.2f fees=$%.2f net=$%.2f | reason=%s",
-                trade.symbol, trade.side.value,
-                trade.entry_price, exit_price,
-                pnl_usd, fee_est, net_pnl, reason,
+                "gross=$%.2f fees=$%.2f net=$%.2f | margin=$%.2f lev=%dx | reason=%s",
+                symbol, side_str,
+                entry_p, exit_price,
+                pnl_usd, fee_est, net_pnl, margin, leverage, reason,
             )
+
+            # Remove from open positions
+            self._open_positions.pop(real_trade_id, None)
+            self.paper_to_real.pop(paper_trade_id, None)
 
             self.circuit_breaker.record_trade(net_pnl)
             self._record_closed_trade(trade, exit_price, net_pnl, reason, dry_run=True)
-            return {"status": "dry_run_exit", "pnl_usd": net_pnl}
+            self._save_state()
+            return {"status": "dry_run_exit", "pnl_usd": net_pnl, "reason": reason}
 
         # === REAL EXIT ===
         try:
@@ -335,7 +391,7 @@ class RealTradingManager:
 
             logger.info(
                 "🔴 REAL EXIT: %s %s | PnL=$%.2f fees=$%.2f | reason=%s | trade=%s",
-                trade.symbol, trade.side.value, pnl_usd, fee, reason, trade.trade_id,
+                trade.symbol, trade.side.value if hasattr(trade.side, "value") else str(trade.side), pnl_usd, fee, reason, trade.trade_id,
             )
 
             self._save_state()
@@ -419,6 +475,21 @@ class RealTradingManager:
         margin = max(margin, self.min_margin)
         margin = min(margin, self.max_margin)
 
+        # Adaptive: scale margin by scanner score (confidence)
+        # Score 90+ = full margin, Score 55 = 40% of margin
+        score = signal.get("confidence", signal.get("metadata", {}).get("weighted_score", 70))
+        if score >= 90:
+            score_mult = 1.0      # Full conviction
+        elif score >= 75:
+            score_mult = 0.8      # High conviction
+        elif score >= 65:
+            score_mult = 0.6      # Medium conviction
+        else:
+            score_mult = 0.4      # Low conviction — minimum size
+
+        margin = max(margin * score_mult, self.min_margin)
+        margin = min(margin, self.max_margin)
+
         # Notional = margin × leverage
         leverage = min(signal.get("leverage", 5), self.leverage_cap)
         notional = margin * leverage
@@ -479,18 +550,25 @@ class RealTradingManager:
     # State Persistence
     # ==================================================================
 
-    def _record_closed_trade(self, trade: Trade, exit_price: float,
+    def _record_closed_trade(self, trade, exit_price: float,
                               pnl_usd: float, reason: str, dry_run: bool = False):
         """Record a closed real trade."""
+        side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
         self.closed_real_trades.append({
             "trade_id": trade.trade_id,
             "symbol": trade.symbol,
-            "side": trade.side.value,
+            "side": side_str,
             "entry_price": trade.entry_price,
             "exit_price": exit_price,
-            "pnl_usd": round(pnl_usd, 2),
+            "margin": getattr(trade, "margin", 0),
+            "leverage": getattr(trade, "leverage", 0),
+            "position_size": getattr(trade, "position_size", 0),
+            "pnl_usd": round(pnl_usd, 4),
+            "pnl_pct": round(pnl_usd / getattr(trade, "margin", 1) * 100, 2) if getattr(trade, "margin", 0) > 0 else 0,
+            "scanner": getattr(trade, "scanner", ""),
             "reason": reason,
             "dry_run": dry_run,
+            "paper_trade_id": getattr(trade, "paper_trade_id", ""),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -504,9 +582,37 @@ class RealTradingManager:
 
     def _save_state(self):
         """Persist real trading state to disk."""
+        # Serialize open trades (including dry run)
+        open_trades_data = []
+        for t in self.real_trades.values():
+            side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            open_trades_data.append({
+                "trade_id": t.trade_id,
+                "symbol": t.symbol,
+                "side": side,
+                "entry_price": t.entry_price,
+                "stop_loss": getattr(t, "stop_loss", 0),
+                "tp1": getattr(t, "tp1", 0),
+                "tp2": getattr(t, "tp2", 0),
+                "tp3": getattr(t, "tp3", 0),
+                "position_size": getattr(t, "position_size", 0),
+                "margin": getattr(t, "margin", 0),
+                "leverage": getattr(t, "leverage", 0),
+                "status": getattr(t, "status", "open"),
+                "opened_at": getattr(t, "opened_at", 0),
+                "scanner": getattr(t, "scanner", ""),
+                "trade_type": getattr(t, "trade_type", ""),
+                "confidence": getattr(t, "confidence", 0),
+                "ml_prob": getattr(t, "ml_prob", 0),
+                "ml_verdict": getattr(t, "ml_verdict", ""),
+                "regime": getattr(t, "regime", ""),
+                "paper_trade_id": getattr(t, "paper_trade_id", ""),
+                "current_price": getattr(t, "current_price", t.entry_price),
+            })
         state = {
             "circuit_breaker": self.circuit_breaker.to_dict(),
             "paper_to_real": self.paper_to_real,
+            "open_trades": open_trades_data,
             "closed_trades": self.closed_real_trades[-100:],  # keep last 100
             "enabled": self.enabled,
             "dry_run": self.dry_run,
@@ -518,6 +624,50 @@ class RealTradingManager:
             STATE_FILE.write_text(json.dumps(state, indent=2))
         except Exception as e:
             logger.error("Failed to save real trading state: %s", e)
+
+    def sync_with_paper(self, active_paper_ids: set):
+        """Close orphaned dry run positions whose paper trades are already closed."""
+        orphans = []
+        for trade_id, trade in list(self.real_trades.items()):
+            paper_id = getattr(trade, "paper_trade_id", "")
+            if paper_id and paper_id not in active_paper_ids:
+                orphans.append(trade_id)
+        for trade_id in orphans:
+            trade = self.real_trades[trade_id]
+            # Close at last known price
+            exit_price = getattr(trade, "current_price", trade.entry_price)
+            side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+            if side_str == "long":
+                pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price else 0
+            else:
+                pnl_pct = (trade.entry_price - exit_price) / trade.entry_price if trade.entry_price else 0
+            notional = trade.entry_price * getattr(trade, "position_size", 0)
+            net_pnl = pnl_pct * notional - notional * 0.0015
+            logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | paper closed without mirror",
+                        trade.symbol, side_str, net_pnl)
+            self.circuit_breaker.record_trade(net_pnl)
+            self._record_closed_trade(trade, exit_price, net_pnl, "orphan_sync", dry_run=True)
+        if orphans:
+            self._save_state()
+
+    async def update_prices(self):
+        """Update current prices for all open dry run positions."""
+        if not self.real_trades:
+            return
+        for trade in list(self.real_trades.values()):
+            try:
+                ticker = await self.exchange.fetch_ticker(trade.symbol)
+                if ticker and isinstance(ticker, dict):
+                    trade.current_price = ticker.get("last", ticker.get("close", trade.entry_price))
+                elif hasattr(ticker, "last"):
+                    trade.current_price = ticker.last or trade.entry_price
+            except Exception:
+                pass  # Keep last known price
+        # Also refresh balance
+        try:
+            await self._get_balance()
+        except Exception:
+            pass
 
     def _load_state(self):
         """Load persisted state on startup, including toggle state."""
@@ -534,12 +684,16 @@ class RealTradingManager:
                 self.enabled = state["enabled"]
             if "dry_run" in state:
                 self.dry_run = state["dry_run"]
+            # Restore open trades (dry run positions survive restart)
+            for td in state.get("open_trades", []):
+                dry_obj = type("DryTrade", (), td)()
+                self.real_trades[td["trade_id"]] = dry_obj
             logger.info(
                 "REAL: Loaded state — enabled=%s, dry_run=%s, CB daily=$%.2f, "
-                "total=$%.2f, %d closed trades",
+                "total=$%.2f, %d closed trades, %d open trades",
                 self.enabled, self.dry_run,
                 self.circuit_breaker.daily_pnl, self.circuit_breaker.total_pnl,
-                len(self.closed_real_trades),
+                len(self.closed_real_trades), len(self.real_trades),
             )
         except Exception as e:
             logger.warning("Failed to load real trading state: %s", e)
@@ -552,12 +706,47 @@ class RealTradingManager:
         """Return current real trading status for dashboard."""
         open_trades = []
         for t in self.real_trades.values():
+            side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            entry = t.entry_price
+            current = getattr(t, "current_price", entry) or entry
+            pos_size = getattr(t, "position_size", 0)
+            margin = getattr(t, "margin", 0)
+            lev = getattr(t, "leverage", 1)
+            # UPNL calculation
+            if side == "long":
+                upnl_pct = ((current - entry) / entry * 100) if entry > 0 else 0
+                upnl_usd = (current - entry) * pos_size
+            else:
+                upnl_pct = ((entry - current) / entry * 100) if entry > 0 else 0
+                upnl_usd = (entry - current) * pos_size
+            # Time open
+            opened = getattr(t, "opened_at", 0)
+            duration_min = (time.time() - opened) / 60 if opened > 0 else 0
             open_trades.append({
                 "trade_id": t.trade_id,
                 "symbol": t.symbol,
-                "side": t.side.value,
-                "entry_price": t.entry_price,
-                "position_size": t.position_size,
+                "side": side,
+                "entry_price": entry,
+                "current_price": current,
+                "stop_loss": getattr(t, "stop_loss", 0),
+                "tp1": getattr(t, "tp1", 0),
+                "tp2": getattr(t, "tp2", 0),
+                "tp3": getattr(t, "tp3", 0),
+                "position_size": pos_size,
+                "margin": margin,
+                "leverage": lev,
+                "position_usd": margin * lev,
+                "upnl_pct": round(upnl_pct, 3),
+                "upnl_usd": round(upnl_usd, 4),
+                "scanner": getattr(t, "scanner", ""),
+                "trade_type": getattr(t, "trade_type", ""),
+                "confidence": getattr(t, "confidence", 0),
+                "ml_prob": getattr(t, "ml_prob", 0),
+                "ml_verdict": getattr(t, "ml_verdict", ""),
+                "regime": getattr(t, "regime", ""),
+                "paper_trade_id": getattr(t, "paper_trade_id", ""),
+                "opened_at": opened,
+                "duration_min": round(duration_min, 1),
             })
 
         return {

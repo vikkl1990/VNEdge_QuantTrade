@@ -1037,12 +1037,14 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_ema_momentum,
                 self._scan_structure_bounce,
                 self._scan_bos_choch,               # BOS with displacement in trend
+                self._scan_liquidity_sweep,          # sweep + reversal in trend
             ],
             "trending_down": [
                 self._scan_trend_continuation,
                 self._scan_ema_momentum,
                 self._scan_structure_bounce,
                 self._scan_bos_choch,
+                self._scan_liquidity_sweep,          # sweep + reversal in trend
             ],
             "breakout": [
                 self._scan_bos_choch,               # BOS/CHOCH ideal for breakouts
@@ -3583,8 +3585,11 @@ class ScalpStrategy(BaseStrategy):
         low_val = float(last["low"])
         body = abs(close - open_)
 
-        # Previous bar close (to confirm break happened on THIS bar)
+        # Check if break happened in last 3 bars (not just current bar)
+        # This catches breaks that happened 1-2 bars ago where price is still
+        # holding above/below the level — a more practical detection window
         prev_close = float(prev["close"])
+        recent_closes = [float(df.iloc[-i]["close"]) for i in range(1, min(4, len(df)))]
 
         side = None
         confs = []
@@ -3592,8 +3597,12 @@ class ScalpStrategy(BaseStrategy):
         is_choch = False
 
         # ── Step 2: Detect BOS or CHOCH ──
-        # Bullish BOS: close breaks above swing high (prev close was below)
-        if swing_high > 0 and close > swing_high and prev_close <= swing_high:
+        # Bullish BOS: current close above swing high AND at least one recent
+        # bar was below (break happened within last 3 bars)
+        any_below_high = any(c <= swing_high for c in recent_closes[1:]) if len(recent_closes) > 1 else prev_close <= swing_high
+        any_above_low = any(c >= swing_low for c in recent_closes[1:]) if len(recent_closes) > 1 else prev_close >= swing_low
+
+        if swing_high > 0 and close > swing_high and any_below_high:
             side = OrderSide.LONG
             break_dist = (close - swing_high) / atr
             confs.append(f"Bullish BOS above ${swing_high:.0f} ({break_dist:.2f}x ATR)")
@@ -3609,8 +3618,8 @@ class ScalpStrategy(BaseStrategy):
                     confs.append("CHOCH: bullish break after downtrend")
                     score += 15
 
-        # Bearish BOS: close breaks below swing low (prev close was above)
-        elif swing_low < float('inf') and close < swing_low and prev_close >= swing_low:
+        # Bearish BOS: close below swing low AND recent bar was above
+        elif swing_low < float('inf') and close < swing_low and any_above_low:
             side = OrderSide.SHORT
             break_dist = (swing_low - close) / atr
             confs.append(f"Bearish BOS below ${swing_low:.0f} ({break_dist:.2f}x ATR)")

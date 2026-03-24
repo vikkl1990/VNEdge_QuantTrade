@@ -63,12 +63,12 @@ TRADE_TYPE_CONFIG = {
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 8,      # 8 bars (~40 min) soft time stop (halved from 15)
+        "time_stop_bars": 8,      # 8 bars (~40 min) soft time stop
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 300,    # 5 min early kill (halved from 600)
+        "early_kill_sec": 300,    # 5 min early kill
         "early_kill_mfe": 0.15,   # standard MFE threshold
-        "trail_atr_mult": 1.0,   # standard trail
-        "max_age_sec": 1 * 3600,  # 1 hour max (halved from 2)
+        "trail_atr_mult": 1.2,   # wider trail (was 1.0) — capture more of move
+        "max_age_sec": 1 * 3600,  # 1 hour max
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room
@@ -79,7 +79,7 @@ TRADE_TYPE_CONFIG = {
         "time_stop_type": "none", # only exit on structure/trailing
         "early_kill_sec": 0,      # no early kill
         "early_kill_mfe": 0.0,    # disabled
-        "trail_atr_mult": 1.5,   # wide trail — trend-following
+        "trail_atr_mult": 2.0,   # wider trail (was 1.5) — let runners run
         "max_age_sec": 8 * 3600,  # 8 hours max
     },
 }
@@ -1516,10 +1516,11 @@ class SignalTracker:
         trail_atr_mult = base_trail * regime_mult
 
         # Scanner-specific fine-tuning
-        if scanner in ("bb_squeeze", "trend_continuation"):
+        if scanner in ("bb_squeeze", "trend_continuation", "bos_choch"):
             trail_atr_mult *= 1.1  # these setups tend to have bigger moves
-        elif scanner in ("vwap_mean_revert", "structure_bounce"):
+        elif scanner in ("vwap_mean_revert",):
             trail_atr_mult *= 0.9  # mean-reversion setups: take profit faster
+        # structure_bounce: no modifier (was 0.9x — too tight, killing exit efficiency)
 
         # Trade type adjustments to tighten_after_bars
         if trade_type == TRADE_TYPE_SCALP:

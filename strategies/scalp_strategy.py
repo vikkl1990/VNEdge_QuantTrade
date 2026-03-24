@@ -3359,17 +3359,18 @@ class ScalpStrategy(BaseStrategy):
 
         # ── Step 1: Find equal highs/lows clusters ──
         # At least 2 touches within tolerance = liquidity pool
-        tolerance = atr * 0.15
+        # Relaxed tolerance: 0.25 ATR (was 0.15 — too tight for 1m candles)
+        tolerance = atr * 0.25
         highs = window["high"].values
         lows = window["low"].values
 
         # Equal highs: cluster of 2+ bars with highs within tolerance
         eq_high_level = 0.0
         eq_high_count = 0
-        for i in range(len(highs) - 1, -1, -1):
+        for i in range(len(highs) - 1, max(-1, len(highs) - 30), -1):
             h = highs[i]
             touches = sum(1 for j in range(len(highs)) if j != i and abs(highs[j] - h) < tolerance)
-            if touches >= 2 and h > eq_high_level:
+            if touches >= 1 and h > eq_high_level:  # Relaxed: 1 touch = 2 bars
                 eq_high_level = h
                 eq_high_count = touches + 1
                 break
@@ -3377,10 +3378,10 @@ class ScalpStrategy(BaseStrategy):
         # Equal lows: cluster of 2+ bars with lows within tolerance
         eq_low_level = 0.0
         eq_low_count = 0
-        for i in range(len(lows) - 1, -1, -1):
+        for i in range(len(lows) - 1, max(-1, len(lows) - 30), -1):
             l_val = lows[i]
             touches = sum(1 for j in range(len(lows)) if j != i and abs(lows[j] - l_val) < tolerance)
-            if touches >= 2 and (eq_low_level == 0 or l_val < eq_low_level):
+            if touches >= 1 and (eq_low_level == 0 or l_val < eq_low_level):  # Relaxed
                 eq_low_level = l_val
                 eq_low_count = touches + 1
                 break
@@ -3420,29 +3421,26 @@ class ScalpStrategy(BaseStrategy):
             elif sweep_size > 0.2:
                 score += 8
 
-        # Fallback: single swing sweep (less strong)
+        # Fallback: rolling min/max sweep (simpler, more reliable)
         if side is None:
-            from data.structure import find_swings
-            swing_highs, swing_lows = find_swings(df, lookback=lookback)
-            for idx, swing_price in reversed(swing_lows[-5:]):
-                if idx >= len(df) - 2:
-                    continue
-                if low < swing_price and close > swing_price:
+            # Use rolling 15-bar high/low as structure
+            recent_window = df.iloc[-18:-3]
+            if len(recent_window) >= 8:
+                rolling_high = float(recent_window["high"].max())
+                rolling_low = float(recent_window["low"].min())
+
+                # Sweep below rolling low + reclaim
+                if low < rolling_low and close > rolling_low:
                     side = OrderSide.LONG
-                    sweep_level = swing_price
-                    confs.append(f"Sweep below swing low ${swing_price:.0f}")
-                    score += 20  # weaker than equal-level sweep
-                    break
-            if side is None:
-                for idx, swing_price in reversed(swing_highs[-5:]):
-                    if idx >= len(df) - 2:
-                        continue
-                    if high > swing_price and close < swing_price:
-                        side = OrderSide.SHORT
-                        sweep_level = swing_price
-                        confs.append(f"Sweep above swing high ${swing_price:.0f}")
-                        score += 20
-                        break
+                    sweep_level = rolling_low
+                    confs.append(f"Sweep below rolling low {rolling_low:.2f}")
+                    score += 20
+                # Sweep above rolling high + reclaim
+                elif high > rolling_high and close < rolling_high:
+                    side = OrderSide.SHORT
+                    sweep_level = rolling_high
+                    confs.append(f"Sweep above rolling high {rolling_high:.2f}")
+                    score += 20
 
         if side is None:
             return None
@@ -3534,187 +3532,131 @@ class ScalpStrategy(BaseStrategy):
     ) -> Optional[_SetupResult]:
         """Break of Structure / Change of Character with displacement.
 
-        Detects:
-        - Local structure level broken
-        - Displacement strong enough to prove intent (body > ATR threshold)
-        - Optional retest/reclaim after break
-
-        Better than generic momentum because it says:
-        'price did not just move — it broke structure with force.'
+        Uses simple rolling high/low instead of swing detection.
+        Rolling max/min of last 10-20 bars = structure level.
+        Current bar breaks it with displacement = BOS.
         """
-        if len(df) < 30:
+        if len(df) < 20:
             return None
 
         atr = float(df.iloc[-1].get("atr", 0))
         if atr <= 0 or np.isnan(atr):
             return None
 
-        lookback = min(30, len(df) - 5)
-        window = df.iloc[-(lookback + 1):]
-
-        # ── Step 1: Find local structure levels ──
-        # Swing highs/lows from the window
-        highs = window["high"].values
-        lows = window["low"].values
-        closes = window["close"].values
-
-        # Find recent swing high (local max in 5-bar window)
-        swing_high = 0.0
-        swing_high_idx = -1
-        for i in range(2, len(highs) - 3):
-            if highs[i] >= max(highs[i-2:i]) and highs[i] >= max(highs[i+1:i+3]):
-                if highs[i] > swing_high:
-                    swing_high = highs[i]
-                    swing_high_idx = i
-
-        # Find recent swing low
-        swing_low = float('inf')
-        swing_low_idx = -1
-        for i in range(2, len(lows) - 3):
-            if lows[i] <= min(lows[i-2:i]) and lows[i] <= min(lows[i+1:i+3]):
-                if lows[i] < swing_low:
-                    swing_low = lows[i]
-                    swing_low_idx = i
-
-        # Current bar values
         last = df.iloc[-1]
-        prev = df.iloc[-2]
         close = float(last["close"])
         open_ = float(last["open"])
         high_val = float(last["high"])
         low_val = float(last["low"])
         body = abs(close - open_)
 
-        # Check if break happened in last 3 bars (not just current bar)
-        # This catches breaks that happened 1-2 bars ago where price is still
-        # holding above/below the level — a more practical detection window
-        prev_close = float(prev["close"])
-        recent_closes = [float(df.iloc[-i]["close"]) for i in range(1, min(4, len(df)))]
+        # ── Step 1: Rolling structure levels ──
+        # Use bars 4-20 (skip last 3 to avoid detecting current move as structure)
+        structure_window = df.iloc[-20:-3]
+        if len(structure_window) < 8:
+            return None
+
+        rolling_high = float(structure_window["high"].max())
+        rolling_low = float(structure_window["low"].min())
+
+        # Recent 3 bars (the break zone)
+        recent = df.iloc[-3:]
+        recent_closes = [float(r["close"]) for _, r in recent.iterrows()]
+        recent_highs = [float(r["high"]) for _, r in recent.iterrows()]
+        recent_lows = [float(r["low"]) for _, r in recent.iterrows()]
 
         side = None
         confs = []
         score = 0
-        is_choch = False
 
-        # ── Step 2: Detect BOS or CHOCH ──
-        # Bullish BOS: current close above swing high AND at least one recent
-        # bar was below (break happened within last 3 bars)
-        any_below_high = any(c <= swing_high for c in recent_closes[1:]) if len(recent_closes) > 1 else prev_close <= swing_high
-        any_above_low = any(c >= swing_low for c in recent_closes[1:]) if len(recent_closes) > 1 else prev_close >= swing_low
-
-        if swing_high > 0 and close > swing_high and any_below_high:
+        # ── Step 2: Detect break ──
+        # Bullish BOS: close above rolling high AND was below recently
+        if close > rolling_high and min(recent_closes[:-1]) <= rolling_high:
             side = OrderSide.LONG
-            break_dist = (close - swing_high) / atr
-            confs.append(f"Bullish BOS above ${swing_high:.0f} ({break_dist:.2f}x ATR)")
+            break_dist = (close - rolling_high) / atr
+            confs.append(f"BOS above {rolling_high:.2f} ({break_dist:.2f}x ATR)")
             score += 25
+            if break_dist > 0.5:
+                score += 10
 
-            # Check if this is CHOCH (break against prior trend)
-            # Prior trend was bearish if EMA8 slope was negative
-            ema8_vals = window["ema_8"].values if "ema_8" in window.columns else None
-            if ema8_vals is not None and len(ema8_vals) >= 5:
-                prior_slope = (ema8_vals[-5] - ema8_vals[-10]) / atr if len(ema8_vals) >= 10 else 0
-                if prior_slope < -0.3:
-                    is_choch = True
-                    confs.append("CHOCH: bullish break after downtrend")
-                    score += 15
-
-        # Bearish BOS: close below swing low AND recent bar was above
-        elif swing_low < float('inf') and close < swing_low and any_above_low:
+        # Bearish BOS: close below rolling low AND was above recently
+        elif close < rolling_low and max(recent_closes[:-1]) >= rolling_low:
             side = OrderSide.SHORT
-            break_dist = (swing_low - close) / atr
-            confs.append(f"Bearish BOS below ${swing_low:.0f} ({break_dist:.2f}x ATR)")
+            break_dist = (rolling_low - close) / atr
+            confs.append(f"BOS below {rolling_low:.2f} ({break_dist:.2f}x ATR)")
             score += 25
-
-            ema8_vals = window["ema_8"].values if "ema_8" in window.columns else None
-            if ema8_vals is not None and len(ema8_vals) >= 5:
-                prior_slope = (ema8_vals[-5] - ema8_vals[-10]) / atr if len(ema8_vals) >= 10 else 0
-                if prior_slope > 0.3:
-                    is_choch = True
-                    confs.append("CHOCH: bearish break after uptrend")
-                    score += 15
+            if break_dist > 0.5:
+                score += 10
 
         if side is None:
             return None
 
-        # ── Step 3: Displacement check ──
-        # Break candle must have real impulse (body > threshold × ATR)
+        # ── Step 3: Displacement (body strength) ──
         displacement = body / atr if atr > 0 else 0
-        if displacement > 1.2:
+        if displacement > 1.0:
             score += 20
             confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.7:
+        elif displacement > 0.5:
             score += 12
             confs.append(f"Good displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.4:
+        elif displacement > 0.3:
             score += 5
         else:
-            # Weak displacement — likely not a real break
-            score -= 15
-            confs.append(f"Weak displacement ({displacement:.1f}x ATR)")
+            score -= 10
 
         # ── Step 4: Candle quality ──
         candle_range = high_val - low_val if high_val > low_val else atr * 0.01
         body_ratio = body / candle_range
-        if body_ratio > 0.6:
+        if body_ratio > 0.55:
             score += 10
-            confs.append(f"Clean break candle (body={body_ratio:.0%})")
-        elif body_ratio < 0.3:
-            score -= 10  # doji / indecision on break = unreliable
+            confs.append(f"Clean break candle ({body_ratio:.0%} body)")
+        elif body_ratio < 0.25:
+            score -= 10
 
         # Close in direction of break
         if side == OrderSide.LONG:
             close_pos = (close - low_val) / candle_range
         else:
             close_pos = (high_val - close) / candle_range
-        if close_pos > 0.7:
+        if close_pos > 0.65:
             score += 5
 
-        # ── Step 5: Volume confirmation ──
+        # ── Step 5: Volume ──
         rel_vol = float(last.get("rel_vol", 1.0))
         if not np.isnan(rel_vol) and rel_vol > 1.5:
-            confs.append(f"Volume spike {rel_vol:.1f}x on break")
+            confs.append(f"Volume {rel_vol:.1f}x on break")
             score += 10
         elif not np.isnan(rel_vol) and rel_vol > 1.0:
             score += 5
         elif not np.isnan(rel_vol) and rel_vol < 0.5:
-            score -= 10  # low volume break = probably fake
+            score -= 10
 
         # ── Step 6: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):
-            confs.append("HTF aligned with break")
+            confs.append("HTF aligned")
             score += 15
         elif htf_bias == (-1 if side == OrderSide.LONG else 1):
-            score -= 5  # counter-HTF break, weaker
+            score -= 5
 
-        # ── Step 7: Retest check (last 2-3 bars) ──
-        # If break happened 1-3 bars ago and price retested the level, stronger
-        if len(df) >= 4:
-            for lookback_i in range(2, min(5, len(df))):
-                bar = df.iloc[-lookback_i]
-                bar_close = float(bar["close"])
-                bar_body = abs(float(bar["close"]) - float(bar["open"]))
-                bar_disp = bar_body / atr if atr > 0 else 0
-                if side == OrderSide.LONG and swing_high > 0:
-                    if bar_close > swing_high and bar_disp > 0.5:
-                        # Previous bar already broke — current is retest
-                        if close > swing_high and abs(low_val - swing_high) < atr * 0.3:
-                            score += 10
-                            confs.append("Retest of broken level")
-                        break
-                elif side == OrderSide.SHORT and swing_low < float('inf'):
-                    if bar_close < swing_low and bar_disp > 0.5:
-                        if close < swing_low and abs(high_val - swing_low) < atr * 0.3:
-                            score += 10
-                            confs.append("Retest of broken level")
-                        break
+        # ── Step 7: CHOCH detection (break against EMA trend) ──
+        if "ema_21" in df.columns and "ema_8" in df.columns:
+            ema8 = float(last.get("ema_8", 0))
+            ema21 = float(last.get("ema_21", 0))
+            if ema8 > 0 and ema21 > 0:
+                if side == OrderSide.LONG and ema8 < ema21:
+                    confs.append("CHOCH: bullish break in bearish EMA")
+                    score += 10
+                elif side == OrderSide.SHORT and ema8 > ema21:
+                    confs.append("CHOCH: bearish break in bullish EMA")
+                    score += 10
 
         confidence = max(min(score, 100), 0)
 
         # SL: behind the structure level + buffer
         if side == OrderSide.LONG:
-            sl = min(low_val, swing_high) - atr * 0.2
+            sl = min(low_val, rolling_high) - atr * 0.3
         else:
-            sl = max(high_val, swing_low) + atr * 0.2
+            sl = max(high_val, rolling_low) + atr * 0.3
 
         return _SetupResult(
             name="bos_choch",

@@ -137,6 +137,56 @@ tr:hover{background:var(--accent-dim)}
 <!-- OVERVIEW -->
 <div class="tab-content active" id="tab-overview">
   <div class="flow-diagram" id="pipeline-flow"></div>
+
+  <!-- COMMAND CENTER: Equity Sparkline + Drift Score + Key KPIs -->
+  <div class="card" style="margin-top:12px;border:1px solid rgba(0,255,157,.15)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0">Command Center</h3>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div id="drift-badge" class="badge" style="font-size:.75rem;padding:4px 12px">DRIFT: --</div>
+        <div id="system-uptime" style="color:var(--text-dim);font-size:.72rem"></div>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+      <!-- Equity Sparkline -->
+      <div>
+        <div style="color:var(--text-dim);font-size:.7rem;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Rolling Equity (Last 50 Trades)</div>
+        <div style="position:relative;height:100px;width:100%"><canvas id="equity-sparkline"></canvas></div>
+      </div>
+      <!-- Key KPIs -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="text-align:center;padding:8px;background:rgba(0,0,0,.2);border-radius:8px">
+          <div style="font-size:1.1rem;font-weight:700" id="kpi-sharpe">--</div>
+          <div style="color:var(--text-dim);font-size:.6rem;text-transform:uppercase;letter-spacing:1px">Sharpe</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:rgba(0,0,0,.2);border-radius:8px">
+          <div style="font-size:1.1rem;font-weight:700" id="kpi-expectancy">--</div>
+          <div style="color:var(--text-dim);font-size:.6rem;text-transform:uppercase;letter-spacing:1px">Exp(R)</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:rgba(0,0,0,.2);border-radius:8px">
+          <div style="font-size:1.1rem;font-weight:700" id="kpi-active-scanners">--</div>
+          <div style="color:var(--text-dim);font-size:.6rem;text-transform:uppercase;letter-spacing:1px">Active Scanners</div>
+        </div>
+        <div style="text-align:center;padding:8px;background:rgba(0,0,0,.2);border-radius:8px">
+          <div style="font-size:1.1rem;font-weight:700" id="kpi-ml-corr">--</div>
+          <div style="color:var(--text-dim);font-size:.6rem;text-transform:uppercase;letter-spacing:1px">ML Corr(R)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOP 5 / BOTTOM 5 Summary Cards -->
+  <div class="grid grid-2" style="margin-top:12px">
+    <div class="card" style="border-left:3px solid var(--green)">
+      <h3 style="font-size:.75rem">🏆 Top 5 Setups (by Exp R)</h3>
+      <div id="top5-cards" style="display:flex;flex-direction:column;gap:4px;margin-top:8px"></div>
+    </div>
+    <div class="card" style="border-left:3px solid var(--red)">
+      <h3 style="font-size:.75rem">⚠️ Bottom 5 Setups</h3>
+      <div id="bottom5-cards" style="display:flex;flex-direction:column;gap:4px;margin-top:8px"></div>
+    </div>
+  </div>
+
   <div class="grid grid-3" style="margin-top:16px">
     <div class="card"><h3>Pipeline Status</h3><div id="pipeline-status">Loading...</div></div>
     <div class="card"><h3>Training Config</h3><div id="training-config">Loading...</div></div>
@@ -198,11 +248,25 @@ tr:hover{background:var(--accent-dim)}
 <!-- SCANNER RESULTS -->
 <div class="tab-content" id="tab-scanners">
   <div class="card">
-    <h3>Scanner Backtest Results</h3>
-    <table>
-      <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th></tr>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3>Scanner Backtest Results</h3>
+      <button class="btn" style="padding:4px 14px;font-size:.7rem" onclick="exportScannerCSV()">📥 Export CSV</button>
+    </div>
+    <table id="scanner-table">
+      <tr><th>Scanner</th><th>Symbol</th><th>TF</th><th>Trades</th><th>WR%</th><th>Exp(R)</th><th>PF</th><th>Avg Win</th><th>Avg Loss</th><th>Last Fired</th><th>Live WR</th></tr>
       <tbody id="scanner-results"></tbody>
     </table>
+  </div>
+</div>
+
+<!-- Scanner Detail Modal -->
+<div id="scanner-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:500;justify-content:center;align-items:center">
+  <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 0 40px rgba(0,255,157,.1)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 id="modal-scanner-name" style="color:var(--accent);margin:0">Scanner Detail</h3>
+      <button class="btn" style="padding:4px 12px" onclick="document.getElementById('scanner-modal').style.display='none'">✕ Close</button>
+    </div>
+    <div id="modal-content">Loading...</div>
   </div>
 </div>
 
@@ -409,7 +473,10 @@ tr:hover{background:var(--accent-dim)}
 
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
+let equityChart = null;
+
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -646,15 +713,38 @@ async function refreshAll() {
     Object.entries(resultsData).filter(([k]) => !k.startsWith('_')).sort((a,b) => (b[1].metrics?.expectancy_r||0) - (a[1].metrics?.expectancy_r||0)).forEach(([key, data]) => {
       if (!data || !data.metrics) return;
       const m = data.metrics || {};
-      srHTML += '<tr><td>' + data.scanner + '</td><td>' + (data.symbol||'?') + '</td><td>' + (data.timeframe||'?') + '</td>';
+      const sc = data.scanner || '?';
+      const sym = data.symbol || '?';
+      srHTML += '<tr style="cursor:pointer" onclick="openScannerModal(\'' + sc + '\',\'' + sym + '\')">';
+      srHTML += '<td style="color:var(--accent)">' + sc + '</td><td>' + sym + '</td><td>' + (data.timeframe||'?') + '</td>';
       srHTML += '<td>' + (m.trades||0) + '</td>';
       srHTML += '<td class="' + cls((m.win_rate||0)-50) + '">' + pct(m.win_rate) + '</td>';
       srHTML += '<td class="' + cls(m.expectancy_r) + '">' + rval(m.expectancy_r) + '</td>';
       srHTML += '<td>' + (m.profit_factor||'\u2014') + '</td>';
       srHTML += '<td class="positive">' + rval(m.avg_win_r) + '</td>';
-      srHTML += '<td class="negative">' + rval(m.avg_loss_r) + '</td></tr>';
+      srHTML += '<td class="negative">' + rval(m.avg_loss_r) + '</td>';
+      srHTML += '<td style="color:var(--text-dim);font-size:.7rem">--</td>';
+      srHTML += '<td style="color:var(--text-dim);font-size:.7rem">--</td></tr>';
     });
-    document.getElementById('scanner-results').innerHTML = srHTML || '<tr><td colspan="9" style="color:var(--text-dim)">No results</td></tr>';
+    document.getElementById('scanner-results').innerHTML = srHTML || '<tr><td colspan="11" style="color:var(--text-dim)">No results</td></tr>';
+
+    // Enrich with live data (last fired + live WR)
+    fetchJSON('/api/live-feedback').then(fb => {
+      if (!fb || !fb.by_scanner) return;
+      const rows = document.querySelectorAll('#scanner-results tr');
+      rows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length < 11) return;
+        const scanner = cells[0].textContent;
+        const liveData = fb.by_scanner[scanner];
+        if (liveData) {
+          cells[9].textContent = liveData.trades > 0 ? 'Active' : 'Dormant';
+          cells[9].style.color = liveData.trades > 0 ? 'var(--green)' : 'var(--red)';
+          cells[10].textContent = liveData.win_rate.toFixed(0) + '%';
+          cells[10].style.color = liveData.win_rate > 60 ? 'var(--green)' : liveData.win_rate > 40 ? 'var(--yellow)' : 'var(--red)';
+        }
+      });
+    });
   }
 
   // CALIBRATION
@@ -760,6 +850,135 @@ async function refreshAll() {
     document.getElementById('walk-forward-results').innerHTML = wfHTML || '<span style="color:var(--text-dim)">No walk-forward data</span>';
   }
   } catch(err) { console.error('refreshAll error:', err); showError('JS Error: ' + err.message); }
+}
+
+// -------------------------------------------------------------------
+//  COMMAND CENTER: Equity Sparkline + Drift + KPIs
+// -------------------------------------------------------------------
+async function refreshCommandCenter() {
+  try {
+    const fb = await fetchJSON('/api/live-feedback');
+    if (!fb || !fb.recent) return;
+
+    const trades = fb.recent || [];
+    if (trades.length === 0) return;
+
+    // Build equity curve from trades
+    let equity = [0];
+    let totalR = 0;
+    const rs = [];
+    trades.forEach(t => {
+      const r = t.exit_r || 0;
+      totalR += r;
+      equity.push(totalR);
+      rs.push(r);
+    });
+
+    // Equity sparkline
+    const ctx = document.getElementById('equity-sparkline');
+    if (ctx && typeof Chart !== 'undefined') {
+      if (equityChart) equityChart.destroy();
+      equityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: equity.map((_, i) => i),
+          datasets: [{
+            data: equity,
+            borderColor: totalR >= 0 ? '#00ff9d' : '#ff3b5c',
+            backgroundColor: totalR >= 0 ? 'rgba(0,255,157,.08)' : 'rgba(255,59,92,.08)',
+            fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2,
+          }]
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { display: false },
+            y: { display: true, grid: { color: 'rgba(255,255,255,.05)' },
+                 ticks: { color: '#5a7090', font: { size: 9 }, callback: v => v.toFixed(1) + 'R' } }
+          },
+          responsive: true, maintainAspectRatio: false,
+          animation: { duration: 300 },
+          layout: { padding: { top: 5, bottom: 5 } },
+        }
+      });
+    }
+
+    // KPIs
+    const n = rs.length;
+    const meanR = rs.reduce((a, b) => a + b, 0) / n;
+    const stdR = Math.sqrt(rs.reduce((a, b) => a + (b - meanR) ** 2, 0) / n);
+    const sharpe = stdR > 0 ? (meanR / stdR * Math.sqrt(252)).toFixed(1) : '--';
+    const expR = meanR.toFixed(3);
+
+    // ML correlation
+    const mlProbs = trades.map(t => t.ml_probability || 0);
+    const exitRs = trades.map(t => t.exit_r || 0);
+    const meanML = mlProbs.reduce((a, b) => a + b, 0) / n;
+    const meanER = exitRs.reduce((a, b) => a + b, 0) / n;
+    let cov = 0, stdML = 0, stdER2 = 0;
+    for (let i = 0; i < n; i++) {
+      cov += (mlProbs[i] - meanML) * (exitRs[i] - meanER);
+      stdML += (mlProbs[i] - meanML) ** 2;
+      stdER2 += (exitRs[i] - meanER) ** 2;
+    }
+    const corr = (Math.sqrt(stdML) * Math.sqrt(stdER2)) > 0 ? (cov / (Math.sqrt(stdML) * Math.sqrt(stdER2))).toFixed(3) : '--';
+
+    // Active scanners (unique from trades)
+    const scannerSet = new Set(trades.map(t => t.setup_type).filter(Boolean));
+    const activeScanners = scannerSet.size;
+
+    document.getElementById('kpi-sharpe').textContent = sharpe;
+    document.getElementById('kpi-sharpe').style.color = parseFloat(sharpe) > 1 ? 'var(--green)' : parseFloat(sharpe) > 0 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('kpi-expectancy').textContent = expR + 'R';
+    document.getElementById('kpi-expectancy').style.color = parseFloat(expR) > 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('kpi-active-scanners').textContent = activeScanners + '/7';
+    document.getElementById('kpi-active-scanners').style.color = activeScanners >= 3 ? 'var(--green)' : activeScanners >= 2 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('kpi-ml-corr').textContent = corr;
+    document.getElementById('kpi-ml-corr').style.color = parseFloat(corr) > 0.1 ? 'var(--green)' : parseFloat(corr) > -0.1 ? 'var(--yellow)' : 'var(--red)';
+
+    // Drift badge
+    const driftBadge = document.getElementById('drift-badge');
+    const absCorr = Math.abs(parseFloat(corr));
+    if (absCorr > 0.15) {
+      driftBadge.textContent = 'DRIFT: LOW';
+      driftBadge.style.background = 'rgba(0,255,157,.15)'; driftBadge.style.color = 'var(--green)'; driftBadge.style.borderColor = 'var(--green)';
+    } else if (absCorr > 0.05) {
+      driftBadge.textContent = 'DRIFT: MODERATE';
+      driftBadge.style.background = 'rgba(255,215,0,.15)'; driftBadge.style.color = 'var(--yellow)'; driftBadge.style.borderColor = 'var(--yellow)';
+    } else {
+      driftBadge.textContent = 'DRIFT: HIGH';
+      driftBadge.style.background = 'rgba(255,59,92,.15)'; driftBadge.style.color = 'var(--red)'; driftBadge.style.borderColor = 'var(--red)';
+    }
+
+    // Top 5 / Bottom 5 by scanner
+    const bySc = {};
+    trades.forEach(t => {
+      const sc = t.setup_type || 'unknown';
+      if (!bySc[sc]) bySc[sc] = { trades: 0, wins: 0, pnl: 0, r_sum: 0 };
+      bySc[sc].trades++;
+      if ((t.pnl_usd || 0) > 0) bySc[sc].wins++;
+      bySc[sc].pnl += t.pnl_usd || 0;
+      bySc[sc].r_sum += t.exit_r || 0;
+    });
+    const scList = Object.entries(bySc).map(([name, d]) => ({
+      name, ...d, avg_r: d.r_sum / d.trades, wr: d.wins / d.trades * 100
+    })).sort((a, b) => b.avg_r - a.avg_r);
+
+    let top5 = '', bot5 = '';
+    scList.slice(0, 5).forEach(s => {
+      top5 += '<div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px;font-size:.75rem">'
+        + '<span>' + s.name + ' <span style="color:var(--text-dim)">(' + s.trades + ')</span></span>'
+        + '<span style="color:var(--green)">' + s.avg_r.toFixed(3) + 'R | ' + s.wr.toFixed(0) + '%</span></div>';
+    });
+    scList.slice(-5).reverse().forEach(s => {
+      bot5 += '<div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,59,92,.04);border-radius:4px;font-size:.75rem">'
+        + '<span>' + s.name + ' <span style="color:var(--text-dim)">(' + s.trades + ')</span></span>'
+        + '<span style="color:var(--red)">' + s.avg_r.toFixed(3) + 'R | ' + s.wr.toFixed(0) + '%</span></div>';
+    });
+    document.getElementById('top5-cards').innerHTML = top5 || '<span style="color:var(--text-dim)">No data</span>';
+    document.getElementById('bottom5-cards').innerHTML = bot5 || '<span style="color:var(--text-dim)">No data</span>';
+
+  } catch (err) { console.error('Command center error:', err); }
 }
 
 // -------------------------------------------------------------------
@@ -1217,16 +1436,95 @@ function renderBacktest() {
 }
 
 // -------------------------------------------------------------------
+//  SCANNER MODAL + CSV EXPORT
+// -------------------------------------------------------------------
+function openScannerModal(scanner, symbol) {
+  const modal = document.getElementById('scanner-modal');
+  document.getElementById('modal-scanner-name').textContent = scanner + ' — ' + symbol;
+  modal.style.display = 'flex';
+
+  // Fetch scanner details
+  fetchJSON('/api/candidates').then(candidates => {
+    let html = '';
+    if (candidates && candidates[symbol]) {
+      const comp = candidates[symbol].comparison || [];
+      const sc = comp.find(r => r.scanner === scanner) || {};
+      html += '<div class="grid grid-3" style="gap:12px">';
+      html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:' + (sc.oos_auc > 0.55 ? 'var(--green)' : 'var(--yellow)') + '">' + (sc.oos_auc || 0).toFixed(3) + '</div><div style="color:var(--text-dim);font-size:.65rem">AUC</div></div>';
+      html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700">' + (sc.candidates || 0) + '</div><div style="color:var(--text-dim);font-size:.65rem">Candidates</div></div>';
+      html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:' + ((sc.ml_top_quartile_wr||0) > 60 ? 'var(--green)' : 'var(--yellow)') + '">' + (sc.ml_top_quartile_wr || 0).toFixed(0) + '%</div><div style="color:var(--text-dim);font-size:.65rem">ML Q75 WR</div></div>';
+      html += '</div>';
+
+      // Win rate comparison
+      html += '<div style="margin-top:16px"><h3 style="font-size:.8rem;color:var(--accent)">Win Rate Layers</h3>';
+      html += '<table><tr><th>Layer</th><th>WR</th><th>Count</th></tr>';
+      html += '<tr><td>Raw Backtest</td><td>' + (sc.raw_wr||0).toFixed(1) + '%</td><td>' + (sc.candidates||0) + '</td></tr>';
+      html += '<tr><td>Rule Filter</td><td>' + (sc.rule_wr||0).toFixed(1) + '%</td><td>--</td></tr>';
+      html += '<tr><td>ML Top Quartile</td><td class="positive">' + (sc.ml_top_quartile_wr||0).toFixed(1) + '%</td><td>--</td></tr>';
+      html += '<tr><td>ML Top Decile</td><td class="positive">' + (sc.ml_top_decile_wr||0).toFixed(1) + '%</td><td>--</td></tr>';
+      html += '</table></div>';
+    }
+
+    // Live performance from feedback
+    fetchJSON('/api/live-feedback').then(fb => {
+      if (fb && fb.by_pair_scanner) {
+        const live = fb.by_pair_scanner.filter(r => r.scanner === scanner);
+        if (live.length > 0) {
+          html += '<div style="margin-top:16px"><h3 style="font-size:.8rem;color:var(--cyan)">Live Performance</h3>';
+          html += '<table><tr><th>Symbol</th><th>Trades</th><th>WR</th><th>PnL</th><th>Avg R</th><th>Avg ML</th></tr>';
+          live.forEach(r => {
+            html += '<tr><td>' + r.symbol + '</td><td>' + r.trades + '</td>';
+            html += '<td class="' + (r.win_rate > 60 ? 'positive' : 'negative') + '">' + r.win_rate.toFixed(0) + '%</td>';
+            html += '<td class="' + (r.pnl_usd > 0 ? 'positive' : 'negative') + '">$' + r.pnl_usd.toFixed(2) + '</td>';
+            html += '<td>' + r.avg_r.toFixed(3) + '</td>';
+            html += '<td>' + (r.avg_ml_prob||0).toFixed(2) + '</td></tr>';
+          });
+          html += '</table></div>';
+        }
+      }
+      document.getElementById('modal-content').innerHTML = html || '<span style="color:var(--text-dim)">No data for this scanner</span>';
+    });
+  });
+}
+
+function exportScannerCSV() {
+  const table = document.getElementById('scanner-table');
+  if (!table) return;
+  let csv = '';
+  const rows = table.querySelectorAll('tr');
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('th, td');
+    const rowData = [];
+    cells.forEach(cell => rowData.push('"' + cell.textContent.replace(/"/g, '""') + '"'));
+    csv += rowData.join(',') + '\n';
+  });
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'scanner_results_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Close modal on backdrop click
+document.getElementById('scanner-modal')?.addEventListener('click', function(e) {
+  if (e.target === this) this.style.display = 'none';
+});
+
+// -------------------------------------------------------------------
 //  INIT
 // -------------------------------------------------------------------
 refreshAll();
 refreshLiveFeedback();
 refreshModelHealth();
 refreshBacktestAll();
+refreshCommandCenter();
 setInterval(refreshAll, 5000);
 setInterval(refreshLiveFeedback, 10000);
 setInterval(refreshModelHealth, 30000);
 setInterval(refreshBacktestAll, 15000);
+setInterval(refreshCommandCenter, 15000);
 </script>
 </body>
 </html>

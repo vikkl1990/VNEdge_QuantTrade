@@ -876,15 +876,19 @@ class SignalTracker:
                 # Fee context: round-trip ~0.36% of position ≈ 0.4-0.5R
                 # So locks below 0.5R are roughly breakeven after fees,
                 # but STILL better than -1.0R loss.
+                # Wide trail for runners: give breathing room so trades can reach TP2/TP3
+                # Old levels locked 80% → too tight, pulled out on minor pullbacks
+                # New levels: lock 50-65% below 1.5R (let it breathe), tighten above 2R
                 trail_levels = [
-                    (3.0, 2.5),   # 83% locked
-                    (2.5, 2.0),   # 80% locked
-                    (2.0, 1.6),   # 80% locked
-                    (1.5, 1.2),   # 80% locked
-                    (1.0, 0.8),   # 80% locked — solidly profitable
-                    (0.7, 0.5),   # 71% locked — breakeven+ after fees
-                    (0.5, 0.25),  # 50% locked — ~breakeven after fees (vs -1R loss)
-                    (0.3, 0.0),   # Move SL to entry (breakeven) — MUCH better than full SL
+                    (4.0, 3.2),   # 80% locked — deep in profit, protect it
+                    (3.0, 2.3),   # 77% locked — solidly profitable runner
+                    (2.5, 1.8),   # 72% locked — approaching TP2 territory
+                    (2.0, 1.4),   # 70% locked — strong move, still room to run
+                    (1.5, 1.0),   # 67% locked — past TP1, give room for TP2
+                    (1.0, 0.5),   # 50% locked — 0.5R breathing room (was 0.2R)
+                    (0.7, 0.3),   # 43% locked — covers fees, lets trade develop
+                    (0.5, 0.1),   # 20% locked — just above breakeven
+                    (0.3, 0.0),   # Move SL to entry (breakeven)
                 ]
 
                 for trigger_r, lock_r in trail_levels:

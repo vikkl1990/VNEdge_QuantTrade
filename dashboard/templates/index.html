@@ -601,7 +601,7 @@ tr:hover{background:rgba(99,148,255,.02)}
   </div>
 
   <!-- Real Trading Status -->
-  <div class="panel" id="real-trading-panel" style="display:none;border:1px solid rgba(255,59,92,.3)">
+  <div class="panel" id="real-trading-panel" style="border:1px solid rgba(255,59,92,.3)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:3px;font-weight:600">
         <span style="margin-right:6px">&#x1F534;</span> Real Trading
@@ -925,8 +925,7 @@ async function refreshLive() {
     }
     if (realStatus) {
         const rp = document.getElementById("real-trading-panel");
-        if (realStatus.enabled || realStatus.total_closed > 0) {
-            rp.style.display = "block";
+        {
             const mode = realStatus.mode || "DISABLED";
             const badge = document.getElementById("real-mode-badge");
             badge.textContent = mode;
@@ -948,8 +947,6 @@ async function refreshLive() {
             const cbEl = document.getElementById("real-cb-status");
             cbEl.textContent = cb.is_tripped ? "TRIPPED" : "OK";
             cbEl.style.color = cb.is_tripped ? "var(--red)" : "var(--green)";
-        } else {
-            rp.style.display = "none";
         }
     }
 

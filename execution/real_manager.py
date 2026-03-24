@@ -167,7 +167,7 @@ class RealTradingManager:
         self._api_failures: int = 0
         self._max_api_failures: int = 5
 
-        # Load persisted state
+        # Load persisted state (may override enabled/dry_run from saved toggle)
         self._load_state()
 
         mode = "DRY RUN" if self.dry_run else "LIVE"
@@ -436,20 +436,40 @@ class RealTradingManager:
     # ==================================================================
 
     async def _get_balance(self) -> float:
-        """Fetch wallet balance with 60s cache."""
+        """Fetch real exchange wallet balance with 60s cache."""
         now = time.time()
         if self._cached_balance is not None and (now - self._balance_ts) < 60:
             return self._cached_balance
 
         try:
             bal = await self.exchange.fetch_balance()
-            usdt = bal.get("USDT", bal.get("total", {}).get("USDT", 0))
-            if isinstance(usdt, dict):
-                usdt = usdt.get("total", usdt.get("free", 0))
+            usdt = 0
+            # ccxt returns dict-like object: bal['USDT']['free'] or bal['free']['USDT']
+            if isinstance(bal, dict):
+                # Standard ccxt format: {'free': {'USDT': 118.46}, 'total': {...}}
+                free = bal.get("free", {})
+                total = bal.get("total", {})
+                if isinstance(free, dict):
+                    usdt = free.get("USDT", 0)
+                elif isinstance(total, dict):
+                    usdt = total.get("USDT", 0)
+                # Some exchanges: {'USDT': {'free': 118.46}}
+                if not usdt:
+                    usdt_data = bal.get("USDT", {})
+                    if isinstance(usdt_data, dict):
+                        usdt = usdt_data.get("free", usdt_data.get("total", 0))
+                    elif isinstance(usdt_data, (int, float)):
+                        usdt = usdt_data
+            # ccxt Balance object with attributes (Delta uses 'USD' not 'USDT')
+            elif hasattr(bal, 'free') and isinstance(bal.free, dict):
+                usdt = bal.free.get("USDT", bal.free.get("USD", 0))
+            elif hasattr(bal, 'total') and isinstance(bal.total, dict):
+                usdt = bal.total.get("USDT", bal.total.get("USD", 0))
             self._cached_balance = float(usdt) if usdt else 0
             self._balance_ts = now
+            logger.info("REAL: Exchange balance fetched: $%.2f USDT", self._cached_balance)
         except Exception as e:
-            logger.warning("REAL: Balance fetch failed: %s", e)
+            logger.warning("REAL: Balance fetch failed: %s (type=%s)", e, type(e).__name__)
             if self._cached_balance is None:
                 self._cached_balance = 0
 
@@ -500,7 +520,7 @@ class RealTradingManager:
             logger.error("Failed to save real trading state: %s", e)
 
     def _load_state(self):
-        """Load persisted state on startup."""
+        """Load persisted state on startup, including toggle state."""
         if not STATE_FILE.exists():
             return
         try:
@@ -509,11 +529,17 @@ class RealTradingManager:
             self.paper_to_real = state.get("paper_to_real", {})
             self.closed_real_trades = state.get("closed_trades", [])
             self._api_failures = state.get("api_failures", 0)
+            # Restore toggle state from dashboard
+            if "enabled" in state:
+                self.enabled = state["enabled"]
+            if "dry_run" in state:
+                self.dry_run = state["dry_run"]
             logger.info(
-                "REAL: Loaded state — CB daily=$%.2f, total=$%.2f, "
-                "%d closed trades, %d api failures",
+                "REAL: Loaded state — enabled=%s, dry_run=%s, CB daily=$%.2f, "
+                "total=$%.2f, %d closed trades",
+                self.enabled, self.dry_run,
                 self.circuit_breaker.daily_pnl, self.circuit_breaker.total_pnl,
-                len(self.closed_real_trades), self._api_failures,
+                len(self.closed_real_trades),
             )
         except Exception as e:
             logger.warning("Failed to load real trading state: %s", e)

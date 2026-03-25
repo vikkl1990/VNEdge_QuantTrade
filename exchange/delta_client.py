@@ -270,6 +270,94 @@ class DeltaClient:
             return {"error": str(e)}
 
     # ==================================================================
+    # Bracket Order (atomic entry + SL + TP)
+    # ==================================================================
+
+    def place_bracket_order(
+        self, symbol: str, side: str, lots: int,
+        stop_loss_price: float, take_profit_price: float = 0,
+        limit_price: float = 0,
+    ) -> Dict[str, Any]:
+        """Place an atomic bracket order: entry + SL + optional TP in one call.
+
+        Uses Delta's /v2/orders/bracket endpoint.
+        If bracket fails, falls back to separate orders.
+
+        Args:
+            symbol: e.g. "BTC/USDT"
+            side: "buy" or "sell"
+            lots: number of contracts
+            stop_loss_price: SL trigger price
+            take_profit_price: TP trigger price (0 to skip)
+            limit_price: limit price for entry (0 for market)
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return {"error": "unknown_symbol"}
+
+        info = self._get_product_info(symbol)
+        tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
+
+        # Round prices to tick size
+        stop_loss_price = round(stop_loss_price / tick) * tick
+        if take_profit_price > 0:
+            take_profit_price = round(take_profit_price / tick) * tick
+
+        # Build bracket order payload
+        bracket_payload = {
+            "product_id": product_id,
+            "size": int(lots),
+            "side": side,
+            "order_type": "market_order" if limit_price <= 0 else "limit_order",
+            "stop_loss_order": {
+                "order_type": "market_order",
+                "stop_price": str(stop_loss_price),
+            },
+        }
+
+        if limit_price > 0:
+            bracket_payload["limit_price"] = str(round(limit_price / tick) * tick)
+
+        if take_profit_price > 0:
+            bracket_payload["take_profit_order"] = {
+                "order_type": "market_order",
+                "stop_price": str(take_profit_price),
+            }
+
+        try:
+            result = self._client.request(
+                "POST", "/v2/orders/bracket",
+                payload=bracket_payload,
+                auth=True,
+            )
+            logger.info(
+                "DELTA [%s] BRACKET ORDER: %s %s %d lots | SL=%.4f TP=%.4f | result=%s",
+                self.mode.upper(), side, symbol, lots, stop_loss_price,
+                take_profit_price, str(result)[:200],
+            )
+            return result if isinstance(result, dict) else {"raw": result}
+
+        except Exception as e:
+            logger.warning(
+                "DELTA [%s] BRACKET FAILED: %s | falling back to separate orders",
+                self.mode.upper(), e,
+            )
+            # Fallback: place entry + SL separately
+            entry_result = self.place_market_order(symbol, side, lots)
+            if entry_result.get("error"):
+                return entry_result
+
+            close_side = "sell" if side == "buy" else "buy"
+            sl_result = self.place_stop_loss(symbol, close_side, lots, stop_loss_price)
+
+            if take_profit_price > 0:
+                self.place_take_profit(symbol, close_side, lots, take_profit_price)
+
+            entry_result["sl_result"] = sl_result
+            entry_result["bracket_fallback"] = True
+            return entry_result
+
+    # ==================================================================
     # Leverage
     # ==================================================================
 

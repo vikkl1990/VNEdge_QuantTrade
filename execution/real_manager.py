@@ -287,41 +287,42 @@ class RealTradingManager:
                 close_side = "sell" if order_side == "buy" else "buy"
 
                 # Calculate lots from position size
-                lots = self._delta_demo.calculate_lots(symbol, margin * leverage, entry_price)
+                delta = self._delta_demo
+                lots = delta.calculate_lots(symbol, margin * leverage, entry_price)
 
                 # Set leverage
-                self._delta_demo.set_leverage(symbol, leverage)
+                delta.set_leverage(symbol, leverage)
 
-                # Place market entry
-                order = self._delta_demo.place_market_order(symbol, order_side, lots)
+                # Get SL and TP prices
+                sl = signal.get("stop_loss", 0)
+                tp1 = 0
+                if tps:
+                    tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else 0
+
+                # ATOMIC BRACKET ORDER: entry + SL + TP in one call
+                order = delta.place_bracket_order(
+                    symbol=symbol,
+                    side=order_side,
+                    lots=lots,
+                    stop_loss_price=sl,
+                    take_profit_price=tp1,
+                )
+
                 if order and not order.get("error"):
+                    # Extract fill data
                     order_id = order.get("id", order.get("order_id", ""))
                     demo_fill = float(order.get("average_fill_price", entry_price) or entry_price)
                     if demo_fill == 0:
                         demo_fill = entry_price
                     dry_id = "demo_%s" % (order_id or dry_id)
                     slippage_bps = abs(demo_fill - entry_price) / entry_price * 10000 if entry_price > 0 else 0
-                    logger.info("REAL [DEMO FILL]: %s %s | signal=%.4f fill=%.4f slip=%.1fbps | lots=%d",
-                               symbol, order_side, entry_price, demo_fill, slippage_bps, lots)
-
-                    # Place SL on demo
-                    sl = signal.get("stop_loss", 0)
-                    if sl > 0:
-                        sl_result = self._delta_demo.place_stop_loss(symbol, close_side, lots, sl)
-                        if sl_result.get("error"):
-                            logger.warning("REAL [DEMO] SL failed: %s", sl_result["error"])
-                        else:
-                            logger.info("REAL [DEMO SL]: %s @ %.4f", symbol, sl)
-
-                    # Place TP1 on demo
-                    if tps:
-                        tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else 0
-                        if tp1 > 0:
-                            tp_result = self._delta_demo.place_take_profit(symbol, close_side, lots, tp1)
-                            if tp_result.get("error"):
-                                logger.warning("REAL [DEMO] TP1 failed: %s", tp_result["error"])
-                            else:
-                                logger.info("REAL [DEMO TP1]: %s @ %.4f", symbol, tp1)
+                    is_bracket = not order.get("bracket_fallback", False)
+                    logger.info(
+                        "REAL [DEMO %s]: %s %s | signal=%.4f fill=%.4f slip=%.1fbps | lots=%d | SL=%.4f TP=%.4f",
+                        "BRACKET" if is_bracket else "FALLBACK",
+                        symbol, order_side, entry_price, demo_fill, slippage_bps,
+                        lots, sl, tp1,
+                    )
                 else:
                     logger.warning("REAL [DEMO]: Order failed: %s", order.get("error", "unknown"))
 

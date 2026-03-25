@@ -271,6 +271,13 @@ class RealTradingManager:
 
         # === REAL EXECUTION ===
         try:
+            # Set leverage on exchange before placing order
+            try:
+                await self.exchange.set_leverage(leverage, symbol)
+                logger.info("REAL: Leverage set to %dx for %s", leverage, symbol)
+            except Exception as lev_err:
+                logger.warning("REAL: Could not set leverage for %s: %s (continuing)", symbol, lev_err)
+
             # Build signal with capped leverage
             real_signal = dict(signal)
             real_signal["leverage"] = leverage
@@ -812,3 +819,58 @@ class RealTradingManager:
                 "samples": len(slippage_data),
             },
         }
+
+    async def reconcile_positions(self) -> Dict:
+        """Compare local open trades vs actual exchange positions.
+
+        Call periodically (every 5 min) to detect drift between
+        local state and exchange reality. Logs discrepancies but
+        does NOT auto-fix — human review required.
+        """
+        if not self.enabled or self.dry_run:
+            return {"status": "skipped", "reason": "disabled or dry_run"}
+
+        try:
+            positions = await self.exchange.fetch_positions()
+            exchange_pos = {}
+            for p in positions:
+                contracts = float(p.get("contracts", 0) or 0)
+                if abs(contracts) > 0:
+                    sym = p.get("symbol", "")
+                    exchange_pos[sym] = {
+                        "side": p.get("side", ""),
+                        "contracts": contracts,
+                        "notional": float(p.get("notional", 0) or 0),
+                        "entry_price": float(p.get("entryPrice", 0) or 0),
+                        "unrealized_pnl": float(p.get("unrealizedPnl", 0) or 0),
+                    }
+
+            # Compare with local trades
+            local_symbols = set()
+            for t in self.real_trades.values():
+                sym = t.symbol
+                local_symbols.add(sym)
+                if sym not in exchange_pos:
+                    logger.warning(
+                        "RECONCILE MISMATCH: %s exists locally but NOT on exchange",
+                        sym,
+                    )
+
+            for sym, pos in exchange_pos.items():
+                if sym not in local_symbols:
+                    logger.warning(
+                        "RECONCILE MISMATCH: %s exists on exchange (%.4f contracts) "
+                        "but NOT tracked locally — ORPHANED POSITION",
+                        sym, pos["contracts"],
+                    )
+
+            return {
+                "status": "ok",
+                "exchange_positions": len(exchange_pos),
+                "local_positions": len(self.real_trades),
+                "mismatches": len(exchange_pos.symmetric_difference(local_symbols))
+                if isinstance(exchange_pos, set) else 0,
+            }
+        except Exception as e:
+            logger.error("RECONCILE ERROR: %s", e)
+            return {"status": "error", "reason": str(e)}

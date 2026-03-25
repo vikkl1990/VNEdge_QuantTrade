@@ -51,24 +51,24 @@ TRADE_TYPE_CONFIG = {
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
-        "time_stop_bars": 3,      # 3 bars (15 min on 5m) hard time stop (halved from 5)
+        "time_stop_bars": 5,      # 5 bars — give 1m candles time to develop (was 3)
         "time_stop_type": "hard", # kill if not moving
-        "early_kill_sec": 90,     # 90s early kill (halved from 120) — kill dead scalps faster
-        "early_kill_mfe": 0.08,   # lower MFE threshold — need to show life quickly
-        "trail_atr_mult": 0.6,   # tight trail
-        "max_age_sec": 15 * 60,   # 15 min absolute max (halved from 30)
+        "early_kill_sec": 150,    # 2.5 min — price needs time to move (was 90s)
+        "early_kill_mfe": 0.12,   # higher threshold — don't kill setups showing life (was 0.08)
+        "trail_atr_mult": 0.8,   # wider trail — 53% efficiency was too low (was 0.6)
+        "max_age_sec": 20 * 60,   # 20 min max (was 15)
     },
     TRADE_TYPE_INTRADAY: {
         "sl_atr_mult": 1.15,      # moderate SL
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 8,      # 8 bars (~40 min) soft time stop
+        "time_stop_bars": 12,     # 12 bars — intraday needs patience (was 8)
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 300,    # 5 min early kill
-        "early_kill_mfe": 0.15,   # standard MFE threshold
-        "trail_atr_mult": 1.2,   # wider trail (was 1.0) — capture more of move
-        "max_age_sec": 1 * 3600,  # 1 hour max
+        "early_kill_sec": 420,    # 7 min — intraday setups take longer (was 300)
+        "early_kill_mfe": 0.18,   # slightly more room (was 0.15)
+        "trail_atr_mult": 1.5,   # wider — let intraday breathe (was 1.2)
+        "max_age_sec": 90 * 60,   # 90 min max (was 60)
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room
@@ -79,8 +79,8 @@ TRADE_TYPE_CONFIG = {
         "time_stop_type": "none", # only exit on structure/trailing
         "early_kill_sec": 0,      # no early kill
         "early_kill_mfe": 0.0,    # disabled
-        "trail_atr_mult": 2.0,   # wider trail (was 1.5) — let runners run
-        "max_age_sec": 8 * 3600,  # 8 hours max
+        "trail_atr_mult": 2.5,   # wider — runners need room to run (was 2.0)
+        "max_age_sec": 12 * 3600, # 12 hours max (was 8)
     },
 }
 
@@ -1518,8 +1518,8 @@ class SignalTracker:
         # Regime adjustments (multiplicative on trade type base)
         regime_lower = regime.lower() if regime else ""
         if regime_lower in ("trending_up", "trending_down", "breakout"):
-            regime_mult = 1.3   # wider — let it run in trends
-            tighten_after_bars = 8
+            regime_mult = 1.5   # wider — trends deserve room (was 1.3)
+            tighten_after_bars = 10  # more patience in trends (was 8)
             min_trail_floor_pct = 0.15
         elif regime_lower in ("ranging", "sideways"):
             regime_mult = 0.7   # tighter — take profit quickly in ranges
@@ -1542,11 +1542,13 @@ class SignalTracker:
         trail_atr_mult = base_trail * regime_mult
 
         # Scanner-specific fine-tuning
-        if scanner in ("bb_squeeze", "trend_continuation", "bos_choch"):
-            trail_atr_mult *= 1.1  # these setups tend to have bigger moves
+        if scanner in ("trend_continuation",):
+            trail_atr_mult *= 1.1  # trend setups tend to have bigger moves
+        elif scanner in ("bos_choch",):
+            trail_atr_mult *= 1.2  # displacement = bigger expected moves (was 1.1)
         elif scanner in ("vwap_mean_revert",):
             trail_atr_mult *= 0.9  # mean-reversion setups: take profit faster
-        # structure_bounce: no modifier (was 0.9x — too tight, killing exit efficiency)
+        # structure_bounce + liquidity_sweep: no modifier — let regime/trade_type handle it
 
         # Trade type adjustments to tighten_after_bars
         if trade_type == TRADE_TYPE_SCALP:

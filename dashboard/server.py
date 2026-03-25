@@ -77,7 +77,12 @@ class DashboardServer:
     _MAX_PERSISTED = 200  # keep last 200 signals on disk
 
     # Auth: public paths that don't require login (read-only, no sensitive data)
-    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico"}
+    _PUBLIC_PATHS = {
+        "/api/login", "/api/ping", "/favicon.ico",
+        "/api/real/status", "/api/real/trades",
+        "/api/risk-metrics", "/api/session-heatmap",
+        "/api/emergency-status",
+    }
     _PUBLIC_PREFIXES = ("/static/",)
 
     def __init__(self) -> None:

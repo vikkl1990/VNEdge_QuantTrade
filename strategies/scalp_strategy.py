@@ -666,9 +666,11 @@ class ScalpStrategy(BaseStrategy):
             }
             return []
 
-        # Confirmation (5m) and HTF (15m) — optional but add confidence
+        # Confirmation and HTF — optional but add confidence
         confirm_df = candles_dict.get(self.confirm_tf)
         htf_df = candles_dict.get(self.htf)
+        # 5m df for trend/momentum scanners (they need cleaner signal than 1m)
+        df_5m = candles_dict.get("5m")
 
         # Track signal count per symbol (decoupled — BTC signals don't count against ETH)
         if symbol not in self._signal_count_hr:
@@ -1147,9 +1149,9 @@ class ScalpStrategy(BaseStrategy):
 
             try:
                 # trend_continuation and ema_momentum work better on 5m
-                # Use confirm_df (5m) if available, else fall back to primary (1m)
-                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum) and confirm_df is not None and len(confirm_df) >= 50:
-                    scanner_df = confirm_df
+                # Use 5m df if available, else fall back to primary (1m)
+                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum) and df_5m is not None and len(df_5m) >= 50:
+                    scanner_df = df_5m
                 else:
                     scanner_df = df
                 result = scanner(symbol, scanner_df, htf_bias, confirm_bias)
@@ -3474,13 +3476,13 @@ class ScalpStrategy(BaseStrategy):
                     side = OrderSide.LONG
                     sweep_level = rolling_low
                     confs.append(f"Sweep below rolling low {rolling_low:.2f}")
-                    score += 28  # boosted from 20
+                    score += 35  # boosted from 28 — rolling sweep still valid
                 # Sweep above rolling high + reclaim
                 elif high > rolling_high and close < rolling_high:
                     side = OrderSide.SHORT
                     sweep_level = rolling_high
                     confs.append(f"Sweep above rolling high {rolling_high:.2f}")
-                    score += 28  # boosted from 20
+                    score += 35  # boosted from 28
 
         if side is None:
             return None

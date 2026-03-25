@@ -288,18 +288,48 @@ class RealTradingManager:
 
             self._api_failures = 0  # Reset on success
 
+            # Calculate slippage: signal price vs actual fill
+            signal_price = signal.get("entry_price", 0)
+            fill_price = trade.entry_price  # actual fill from exchange
+            slippage_ticks = 0.0
+            slippage_bps = 0.0
+            slippage_impact_r = 0.0
+            if signal_price > 0 and fill_price > 0:
+                raw_slip = abs(fill_price - signal_price)
+                slippage_bps = (raw_slip / signal_price) * 10000
+                atr = signal.get("metadata", {}).get("atr", 0)
+                initial_risk = abs(signal_price - signal.get("stop_loss", 0))
+                if initial_risk > 0:
+                    slippage_impact_r = raw_slip / initial_risk
+                tick_size = atr * 0.01 if atr > 0 else signal_price * 0.0001
+                slippage_ticks = raw_slip / tick_size if tick_size > 0 else 0
+
             logger.info(
-                "🔴 REAL ENTRY: %s %s %s @ %.4f | margin=$%.2f | pos=$%.2f | lev=%dx | trade=%s",
+                "🔴 REAL ENTRY: %s %s %s @ %.4f (signal=%.4f slip=%.1fbps %.2fR) | "
+                "margin=$%.2f | pos=$%.2f | lev=%dx | trade=%s",
                 symbol, signal.get("side"), signal.get("metadata", {}).get("setup_type", "?"),
-                trade.entry_price, margin, trade.entry_price * trade.position_size,
+                fill_price, signal_price, slippage_bps, slippage_impact_r,
+                margin, fill_price * trade.position_size,
                 leverage, trade.trade_id,
             )
+
+            # Alert on high slippage
+            if slippage_ticks > 4:
+                logger.warning(
+                    "⚠️ HIGH SLIPPAGE: %s %s | %.1f ticks | %.1f bps | %.3fR",
+                    symbol, signal.get("side"), slippage_ticks, slippage_bps, slippage_impact_r,
+                )
 
             self._save_state()
             return {
                 "status": "mirrored",
                 "trade_id": trade.trade_id,
                 "entry_price": trade.entry_price,
+                "signal_price": signal_price,
+                "fill_price": fill_price,
+                "slippage_bps": round(slippage_bps, 2),
+                "slippage_ticks": round(slippage_ticks, 2),
+                "slippage_impact_r": round(slippage_impact_r, 4),
                 "position_size": trade.position_size,
                 "margin": margin,
                 "leverage": leverage,
@@ -755,6 +785,13 @@ class RealTradingManager:
                 "duration_min": round(duration_min, 1),
             })
 
+        # Slippage metrics from closed trades
+        slippage_data = [t.get("slippage_bps", 0) for t in self.closed_real_trades if t.get("slippage_bps")]
+        avg_slippage_bps = sum(slippage_data) / len(slippage_data) if slippage_data else 0
+        max_slippage_bps = max(slippage_data) if slippage_data else 0
+        slippage_r = [t.get("slippage_impact_r", 0) for t in self.closed_real_trades if t.get("slippage_impact_r")]
+        avg_slippage_r = sum(slippage_r) / len(slippage_r) if slippage_r else 0
+
         return {
             "enabled": self.enabled,
             "dry_run": self.dry_run,
@@ -768,4 +805,10 @@ class RealTradingManager:
             "paper_to_real_mappings": len(self.paper_to_real),
             "api_failures": self._api_failures,
             "recent_trades": self.closed_real_trades[-10:],
+            "slippage": {
+                "avg_bps": round(avg_slippage_bps, 2),
+                "max_bps": round(max_slippage_bps, 2),
+                "avg_impact_r": round(avg_slippage_r, 4),
+                "samples": len(slippage_data),
+            },
         }

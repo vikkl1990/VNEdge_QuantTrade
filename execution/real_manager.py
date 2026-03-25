@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from execution.engine import ExecutionEngine
 from execution.trade import Trade, TradeStatus
+from exchange.delta_client import DeltaClient
 
 logger = logging.getLogger("bot.real_trading")
 
@@ -151,13 +152,14 @@ class RealTradingManager:
             max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 5),
         )
 
-        # Dual exchange setup:
-        # DRY RUN → demo exchange (testnet, fake money)
-        # LIVE → real exchange (personal account, real money)
-        self._demo_exchange = None  # initialized lazily in _get_trading_exchange()
-        self._demo_connected = False
+        # Delta SDK clients (replaces ccxt for order execution)
+        # DRY RUN → demo DeltaClient (testnet)
+        # LIVE → live DeltaClient (production)
+        self._delta_demo = DeltaClient(mode="demo")
+        self._delta_live = DeltaClient(mode="live")
+        self._delta_connected = False
 
-        # Engine wraps the trading exchange (demo or real based on mode)
+        # Legacy engine (kept for compatibility, not used for real orders)
         self.engine = ExecutionEngine(exchange, config, risk_manager)
 
         # Track real trades: paper_trade_id → real Trade
@@ -267,7 +269,7 @@ class RealTradingManager:
         leverage = min(signal.get("leverage", 5), self.leverage_cap)
 
         if self.dry_run:
-            # DRY RUN → Place REAL order on DEMO exchange (testnet, fake money)
+            # DRY RUN → Place REAL order on DEMO exchange via delta-rest-client
             dry_id = f"demo_{paper_trade_id or str(int(time.time()))}"
             entry_price = signal.get("entry_price", 0)
             meta = signal.get("metadata", {})
@@ -276,48 +278,52 @@ class RealTradingManager:
             slippage_bps = 0.0
 
             try:
-                trading_ex = await self._get_trading_exchange()
-                raw_ex = getattr(trading_ex, '_exchange', trading_ex)
+                # Connect delta client if needed
+                if not self._delta_demo.is_connected:
+                    self._delta_demo.connect()
+
                 side_str = signal.get("side", "long")
                 order_side = "buy" if side_str in ("long", "buy") else "sell"
-                ex_symbol = symbol.replace("/USDT", "/USD:USD")
+                close_side = "sell" if order_side == "buy" else "buy"
+
+                # Calculate lots from position size
+                lots = self._delta_demo.calculate_lots(symbol, margin * leverage, entry_price)
 
                 # Set leverage
-                try:
-                    await raw_ex.set_leverage(leverage, ex_symbol)
-                except Exception as e:
-                    logger.warning("REAL [DEMO]: set_leverage failed: %s", e)
+                self._delta_demo.set_leverage(symbol, leverage)
 
-                # Place market entry on demo
-                order = await raw_ex.create_order(ex_symbol, "market", order_side, position_size, None)
-                if order:
-                    demo_fill = float(order.get("average", order.get("price", entry_price)) or entry_price)
-                    dry_id = "demo_%s" % order.get("id", dry_id)
+                # Place market entry
+                order = self._delta_demo.place_market_order(symbol, order_side, lots)
+                if order and not order.get("error"):
+                    order_id = order.get("id", order.get("order_id", ""))
+                    demo_fill = float(order.get("average_fill_price", entry_price) or entry_price)
+                    if demo_fill == 0:
+                        demo_fill = entry_price
+                    dry_id = "demo_%s" % (order_id or dry_id)
                     slippage_bps = abs(demo_fill - entry_price) / entry_price * 10000 if entry_price > 0 else 0
                     logger.info("REAL [DEMO FILL]: %s %s | signal=%.4f fill=%.4f slip=%.1fbps | lots=%d",
-                               symbol, order_side, entry_price, demo_fill, slippage_bps, int(position_size))
+                               symbol, order_side, entry_price, demo_fill, slippage_bps, lots)
 
                     # Place SL on demo
                     sl = signal.get("stop_loss", 0)
-                    close_side = "sell" if order_side == "buy" else "buy"
                     if sl > 0:
-                        try:
-                            await raw_ex.create_order(ex_symbol, "market", close_side, position_size, None,
-                                {"stopPrice": sl, "type": "stop_market", "reduceOnly": True})
+                        sl_result = self._delta_demo.place_stop_loss(symbol, close_side, lots, sl)
+                        if sl_result.get("error"):
+                            logger.warning("REAL [DEMO] SL failed: %s", sl_result["error"])
+                        else:
                             logger.info("REAL [DEMO SL]: %s @ %.4f", symbol, sl)
-                        except Exception as e:
-                            logger.warning("REAL [DEMO]: SL failed: %s", e)
 
                     # Place TP1 on demo
                     if tps:
-                        tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else float(tps[0].get("price", 0) if isinstance(tps[0], dict) else 0)
+                        tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else 0
                         if tp1 > 0:
-                            try:
-                                await raw_ex.create_order(ex_symbol, "limit", close_side, position_size, tp1,
-                                    {"reduceOnly": True})
+                            tp_result = self._delta_demo.place_take_profit(symbol, close_side, lots, tp1)
+                            if tp_result.get("error"):
+                                logger.warning("REAL [DEMO] TP1 failed: %s", tp_result["error"])
+                            else:
                                 logger.info("REAL [DEMO TP1]: %s @ %.4f", symbol, tp1)
-                            except Exception as e:
-                                logger.warning("REAL [DEMO]: TP1 failed: %s", e)
+                else:
+                    logger.warning("REAL [DEMO]: Order failed: %s", order.get("error", "unknown"))
 
             except Exception as demo_err:
                 logger.warning("REAL [DEMO]: Order failed: %s — tracking locally only", demo_err)
@@ -722,40 +728,16 @@ class RealTradingManager:
     # ==================================================================
 
     async def _get_balance(self) -> float:
-        """Fetch wallet balance from the correct exchange (demo or real) with 60s cache."""
+        """Fetch wallet balance via delta-rest-client with 60s cache."""
         now = time.time()
         if self._cached_balance is not None and (now - self._balance_ts) < 60:
             return self._cached_balance
 
         try:
-            trading_ex = await self._get_trading_exchange()
-            raw_ex = getattr(trading_ex, '_exchange', trading_ex)
-            bal = await raw_ex.fetch_balance()
-            usdt = 0
-            # ccxt returns dict-like object: bal['USDT']['free'] or bal['free']['USDT']
-            if isinstance(bal, dict):
-                # Standard ccxt format: {'free': {'USDT': 118.46}, 'total': {...}}
-                free = bal.get("free", {})
-                total = bal.get("total", {})
-                if isinstance(free, dict):
-                    usdt = free.get("USDT", free.get("USD", 0))
-                elif isinstance(total, dict):
-                    usdt = total.get("USDT", total.get("USD", 0))
-                # Some exchanges: {'USDT': {'free': 118.46}} or {'USD': {'free': 100}}
-                if not usdt:
-                    for currency in ["USDT", "USD"]:
-                        cdata = bal.get(currency, {})
-                        if isinstance(cdata, dict):
-                            usdt = cdata.get("free", cdata.get("total", 0))
-                        elif isinstance(cdata, (int, float)):
-                            usdt = cdata
-                        if usdt:
-                            break
-            # ccxt Balance object with attributes (Delta uses 'USD' not 'USDT')
-            elif hasattr(bal, 'free') and isinstance(bal.free, dict):
-                usdt = bal.free.get("USDT", bal.free.get("USD", 0))
-            elif hasattr(bal, 'total') and isinstance(bal.total, dict):
-                usdt = bal.total.get("USDT", bal.total.get("USD", 0))
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if not delta.is_connected:
+                delta.connect()
+            usdt = delta.fetch_balance()
             self._cached_balance = float(usdt) if usdt else 0
             self._balance_ts = now
             logger.info("REAL: Exchange balance fetched: $%.2f USDT", self._cached_balance)
@@ -890,10 +872,15 @@ class RealTradingManager:
                 pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price else 0
             else:
                 pnl_pct = (trade.entry_price - exit_price) / trade.entry_price if trade.entry_price else 0
-            notional = trade.entry_price * getattr(trade, "position_size", 0)
-            net_pnl = pnl_pct * notional - notional * 0.0015
-            logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | paper closed without mirror",
-                        trade.symbol, side_str, net_pnl)
+            # Use margin (USD stake), not entry_price × lots (which gives wrong notional)
+            margin = getattr(trade, "margin", 0) or 15.10
+            leverage = getattr(trade, "leverage", 10) or 10
+            position_usd = margin * leverage
+            net_pnl = pnl_pct * position_usd - position_usd * 0.0015
+            # Safety cap: orphan PnL should never exceed margin
+            net_pnl = max(net_pnl, -margin)
+            logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | paper closed without mirror",
+                        trade.symbol, side_str, net_pnl, margin, position_usd)
             self.circuit_breaker.record_trade(net_pnl)
             self._record_closed_trade(trade, exit_price, net_pnl, "orphan_sync", dry_run=True)
         if orphans:
@@ -958,21 +945,19 @@ class RealTradingManager:
 
     async def sync_exchange_positions(self) -> None:
         """Reconcile local state with actual exchange positions (demo or real).
-        - Adds orphaned exchange positions to tracking
-        - Detects positions that closed on exchange (SL hit, liquidation)
-        - Records closed trades with PnL
+        Uses delta-rest-client for position queries.
         """
         try:
-            trading_ex = await self._get_trading_exchange()
-            raw_exchange = getattr(trading_ex, '_exchange', trading_ex)
-            positions = await raw_exchange.fetch_positions()
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if not delta.is_connected:
+                delta.connect()
+
+            positions = delta.get_all_positions()
 
             # Build set of currently open symbols on exchange
             exchange_open = set()
             for p in positions:
-                contracts = float(p.get("contracts", 0) or 0)
-                if abs(contracts) > 0:
-                    exchange_open.add(p.get("symbol", ""))
+                exchange_open.add(p.get("symbol", ""))
 
             # Detect locally tracked positions that are GONE from exchange
             # (closed by SL, TP, or liquidation on exchange side)
@@ -988,19 +973,21 @@ class RealTradingManager:
                     exit_price = 0
                     pnl_usd = 0
                     try:
-                        recent = await raw_exchange.fetch_my_trades(ex_sym, limit=5)
-                        # Find the most recent sell (for long) or buy (for short)
+                        fills = delta.get_fills(limit=10)
                         side = getattr(t, "side", "long")
                         close_side = "sell" if side in ("long", "buy") else "buy"
-                        for trade in reversed(recent):
-                            if trade.get("side") == close_side:
-                                exit_price = float(trade.get("price", 0))
-                                fee = float(trade.get("fee", {}).get("cost", 0))
-                                qty = float(trade.get("amount", 0))
+                        for fill in fills:
+                            fill_sym = fill.get("product", {}).get("symbol", "")
+                            if fill.get("side") == close_side and fill_sym == PRODUCT_MAP.get(t_sym, {}).get("symbol", ""):
+                                exit_price = float(fill.get("fill_price", 0) or 0)
+                                fee = float(fill.get("commission", 0) or 0)
+                                size = int(fill.get("size", 0) or 0)
+                                contract_size = PRODUCT_MAP.get(t_sym, {}).get("contract_size", 1)
+                                qty = size * contract_size
                                 if side in ("long", "buy"):
-                                    pnl_usd = (exit_price - entry) * qty - fee
+                                    pnl_usd = (exit_price - entry) * qty - abs(fee)
                                 else:
-                                    pnl_usd = (entry - exit_price) * qty - fee
+                                    pnl_usd = (entry - exit_price) * qty - abs(fee)
                                 break
                     except Exception as e:
                         logger.warning("REAL: Could not fetch exit details: %s", e)
@@ -1135,12 +1122,24 @@ class RealTradingManager:
         slippage_r = [t.get("slippage_impact_r", 0) for t in self.closed_real_trades if t.get("slippage_impact_r")]
         avg_slippage_r = sum(slippage_r) / len(slippage_r) if slippage_r else 0
 
-        # Separate dry run vs live trade data
-        # Dashboard shows only data matching current mode
-        mode_filter = self.dry_run  # True = show dry run data, False = show live data
-        mode_trades = [t for t in self.closed_real_trades if t.get("dry_run", True) == mode_filter]
-        mode_pnl = sum(t.get("pnl_usd", 0) for t in mode_trades)
-        mode_today = [t for t in mode_trades if t.get("timestamp", "")[:10] == str(date.today())]
+        # Separate dry run (demo) vs live trade data — always expose BOTH
+        demo_trades = [t for t in self.closed_real_trades if t.get("dry_run")]
+        live_trades = [t for t in self.closed_real_trades if not t.get("dry_run")]
+        demo_pnl = sum(t.get("pnl_usd", 0) for t in demo_trades)
+        live_pnl = sum(t.get("pnl_usd", 0) for t in live_trades)
+        today_str = str(date.today())
+        demo_today = [t for t in demo_trades if t.get("timestamp", "")[:10] == today_str]
+        live_today = [t for t in live_trades if t.get("timestamp", "")[:10] == today_str]
+
+        # Summary uses current mode for headline numbers
+        if self.dry_run:
+            headline_closed = len(demo_trades)
+            headline_pnl = demo_pnl
+            headline_today = len(demo_today)
+        else:
+            headline_closed = len(live_trades)
+            headline_pnl = live_pnl
+            headline_today = len(live_today)
 
         return {
             "enabled": self.enabled,
@@ -1150,20 +1149,24 @@ class RealTradingManager:
             "circuit_breaker": self.circuit_breaker.to_dict(),
             "open_positions": open_trades,
             "open_count": len(self.real_trades),
-            "closed_today": len(mode_today),
-            "total_closed": len(mode_trades),
-            "total_pnl": round(mode_pnl, 2),
+            "closed_today": headline_today,
+            "total_closed": headline_closed,
+            "total_pnl": round(headline_pnl, 2),
             "paper_to_real_mappings": len(self.paper_to_real),
             "api_failures": self._api_failures,
-            "recent_trades": mode_trades[-10:],
-            # Also include totals for both modes
+            "recent_trades": demo_trades[-10:] if self.dry_run else live_trades[-10:],
+            # ALWAYS expose both sets for dashboard tabs
+            "demo_trades": demo_trades[-20:],
+            "live_trades": live_trades[-20:],
             "dry_run_stats": {
-                "total": len([t for t in self.closed_real_trades if t.get("dry_run")]),
-                "pnl": round(sum(t.get("pnl_usd", 0) for t in self.closed_real_trades if t.get("dry_run")), 2),
+                "total": len(demo_trades),
+                "pnl": round(demo_pnl, 2),
+                "today": len(demo_today),
             },
             "live_stats": {
-                "total": len([t for t in self.closed_real_trades if not t.get("dry_run")]),
-                "pnl": round(sum(t.get("pnl_usd", 0) for t in self.closed_real_trades if not t.get("dry_run")), 2),
+                "total": len(live_trades),
+                "pnl": round(live_pnl, 2),
+                "today": len(live_today),
             },
             "slippage": {
                 "avg_bps": round(avg_slippage_bps, 2),

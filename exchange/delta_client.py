@@ -1,0 +1,413 @@
+"""
+Delta Exchange Client — Official SDK wrapper for order execution.
+
+Uses delta-rest-client (official Delta Exchange Python SDK) for:
+- Order placement (market, limit, stop-loss, take-profit)
+- Position management
+- Balance queries
+- Leverage setting
+
+Keeps ccxt for data feeds (candles, tickers) since delta-rest-client
+is synchronous and we need async for data.
+
+Supports dual mode:
+- DEMO: testnet (cdn-ind.testnet.deltaex.org)
+- LIVE: production (api.india.delta.exchange)
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger("bot.delta_client")
+
+# Product ID mapping: symbol → {demo_id, prod_id, contract_size, tick_size}
+PRODUCT_MAP = {
+    "BTC/USDT": {
+        "demo_id": 84,
+        "prod_id": 27,
+        "symbol": "BTCUSD",
+        "contract_size": 0.001,  # 1 lot = 0.001 BTC
+        "tick_size": 0.5,
+        "tick_size_demo": 0.1,
+    },
+    "ETH/USDT": {
+        "demo_id": 1699,
+        "prod_id": 3136,
+        "symbol": "ETHUSD",
+        "contract_size": 0.01,  # 1 lot = 0.01 ETH
+        "tick_size": 0.05,
+        "tick_size_demo": 0.05,
+    },
+    "SOL/USDT": {
+        "demo_id": 92572,
+        "prod_id": 14823,
+        "symbol": "SOLUSD",
+        "contract_size": 1.0,  # 1 lot = 1 SOL
+        "tick_size": 0.01,
+        "tick_size_demo": 0.0001,
+    },
+}
+
+# Demo balance asset ID (USD on testnet)
+DEMO_BALANCE_ASSET_ID = 3
+# Production balance asset IDs to check
+PROD_BALANCE_ASSET_IDS = [5, 3, 1, 2, 4, 6, 7]
+
+
+class DeltaClient:
+    """Unified Delta Exchange client for real/demo trading."""
+
+    def __init__(self, mode: str = "demo"):
+        """
+        Args:
+            mode: "demo" for testnet, "live" for production
+        """
+        self.mode = mode
+        self._client = None
+        self._connected = False
+        self._balance_cache: Optional[float] = None
+        self._balance_ts: float = 0
+
+    def connect(self) -> bool:
+        """Initialize the Delta REST client."""
+        try:
+            from delta_rest_client import DeltaRestClient
+
+            if self.mode == "demo":
+                api_key = os.getenv("DELTA_DEMO_API_KEY", "")
+                api_secret = os.getenv("DELTA_DEMO_API_SECRET", "")
+                base_url = os.getenv("DELTA_DEMO_BASE_URL", "https://cdn-ind.testnet.deltaex.org")
+            else:
+                api_key = os.getenv("DELTA_API_KEY", "")
+                api_secret = os.getenv("DELTA_API_SECRET", "")
+                base_url = "https://api.india.delta.exchange"
+
+            if not api_key or not api_secret:
+                logger.error("DELTA: No API credentials for %s mode", self.mode)
+                return False
+
+            self._client = DeltaRestClient(
+                base_url=base_url,
+                api_key=api_key,
+                api_secret=api_secret,
+            )
+            self._connected = True
+            logger.info("DELTA [%s]: Connected to %s", self.mode.upper(), base_url)
+            return True
+
+        except Exception as e:
+            logger.error("DELTA [%s]: Connection failed: %s", self.mode.upper(), e)
+            return False
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected and self._client is not None
+
+    def _get_product_id(self, symbol: str) -> Optional[int]:
+        """Get Delta product ID for a symbol."""
+        info = PRODUCT_MAP.get(symbol)
+        if not info:
+            logger.warning("DELTA: Unknown symbol %s", symbol)
+            return None
+        return info["demo_id"] if self.mode == "demo" else info["prod_id"]
+
+    def _get_product_info(self, symbol: str) -> Optional[Dict]:
+        """Get full product info for a symbol."""
+        return PRODUCT_MAP.get(symbol)
+
+    # ==================================================================
+    # Balance
+    # ==================================================================
+
+    def fetch_balance(self) -> float:
+        """Get available USDT/USD balance."""
+        now = time.time()
+        if self._balance_cache is not None and (now - self._balance_ts) < 30:
+            return self._balance_cache
+
+        try:
+            if self.mode == "demo":
+                bal = self._client.get_balances(DEMO_BALANCE_ASSET_ID)
+                if bal:
+                    self._balance_cache = float(bal.get("available_balance", 0))
+                    self._balance_ts = now
+                    return self._balance_cache
+            else:
+                for aid in PROD_BALANCE_ASSET_IDS:
+                    try:
+                        bal = self._client.get_balances(aid)
+                        if bal:
+                            avail = float(bal.get("available_balance", 0))
+                            if avail > 0:
+                                self._balance_cache = avail
+                                self._balance_ts = now
+                                return self._balance_cache
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning("DELTA [%s]: Balance fetch failed: %s", self.mode.upper(), e)
+
+        return self._balance_cache or 0.0
+
+    # ==================================================================
+    # Orders
+    # ==================================================================
+
+    def place_market_order(
+        self, symbol: str, side: str, lots: int, reduce_only: bool = False,
+    ) -> Dict[str, Any]:
+        """Place a market order.
+
+        Args:
+            symbol: e.g. "BTC/USDT"
+            side: "buy" or "sell"
+            lots: number of contracts/lots
+            reduce_only: True for closing orders
+
+        Returns:
+            Order response dict with id, status, fill_price, etc.
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return {"error": "unknown_symbol", "symbol": symbol}
+
+        try:
+            result = self._client.place_order(
+                product_id=product_id,
+                size=lots,
+                side=side,
+                order_type="market_order",
+                reduce_only="true" if reduce_only else "false",
+            )
+            logger.info(
+                "DELTA [%s] ORDER: %s %s %d lots | product=%d | result=%s",
+                self.mode.upper(), side, symbol, lots, product_id,
+                str(result)[:200],
+            )
+            return result if isinstance(result, dict) else {"raw": result}
+
+        except Exception as e:
+            logger.error("DELTA [%s] ORDER FAILED: %s %s %d lots | %s",
+                        self.mode.upper(), side, symbol, lots, e)
+            return {"error": str(e)}
+
+    def place_stop_loss(
+        self, symbol: str, side: str, lots: int, stop_price: float,
+    ) -> Dict[str, Any]:
+        """Place a stop-loss order (reduce-only).
+
+        Args:
+            symbol: e.g. "BTC/USDT"
+            side: "buy" (to close short) or "sell" (to close long)
+            lots: number of contracts
+            stop_price: trigger price
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return {"error": "unknown_symbol"}
+
+        info = self._get_product_info(symbol)
+        tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
+
+        # Round stop price to tick size
+        stop_price = round(stop_price / tick) * tick
+
+        try:
+            result = self._client.place_stop_order(
+                product_id=product_id,
+                size=lots,
+                side=side,
+                stop_price=str(stop_price),
+                order_type="market_order",
+            )
+            logger.info(
+                "DELTA [%s] SL: %s %s %d lots @ %.4f | result=%s",
+                self.mode.upper(), side, symbol, lots, stop_price,
+                str(result)[:200],
+            )
+            return result if isinstance(result, dict) else {"raw": result}
+
+        except Exception as e:
+            logger.error("DELTA [%s] SL FAILED: %s | %s", self.mode.upper(), symbol, e)
+            return {"error": str(e)}
+
+    def place_take_profit(
+        self, symbol: str, side: str, lots: int, stop_price: float,
+    ) -> Dict[str, Any]:
+        """Place a take-profit order (reduce-only stop at profit level).
+
+        Uses stop order with trigger at TP price.
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return {"error": "unknown_symbol"}
+
+        info = self._get_product_info(symbol)
+        tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
+        stop_price = round(stop_price / tick) * tick
+
+        try:
+            result = self._client.place_stop_order(
+                product_id=product_id,
+                size=lots,
+                side=side,
+                stop_price=str(stop_price),
+                order_type="market_order",
+            )
+            logger.info(
+                "DELTA [%s] TP: %s %s %d lots @ %.4f | result=%s",
+                self.mode.upper(), side, symbol, lots, stop_price,
+                str(result)[:200],
+            )
+            return result if isinstance(result, dict) else {"raw": result}
+
+        except Exception as e:
+            logger.error("DELTA [%s] TP FAILED: %s | %s", self.mode.upper(), symbol, e)
+            return {"error": str(e)}
+
+    # ==================================================================
+    # Leverage
+    # ==================================================================
+
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """Set leverage for a symbol."""
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return False
+
+        try:
+            self._client.set_leverage(
+                product_id=product_id,
+                leverage=str(leverage),
+            )
+            logger.info("DELTA [%s] LEVERAGE: %s = %dx", self.mode.upper(), symbol, leverage)
+            return True
+        except Exception as e:
+            logger.warning("DELTA [%s] LEVERAGE FAILED: %s %dx | %s",
+                          self.mode.upper(), symbol, leverage, e)
+            return False
+
+    # ==================================================================
+    # Positions
+    # ==================================================================
+
+    def get_position(self, symbol: str) -> Optional[Dict]:
+        """Get current position for a symbol."""
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return None
+
+        try:
+            pos = self._client.get_position(product_id)
+            if pos and int(pos.get("size", 0) or 0) != 0:
+                return {
+                    "symbol": symbol,
+                    "side": "long" if pos.get("side") == "buy" else "short",
+                    "size": int(pos.get("size", 0)),
+                    "entry_price": float(pos.get("entry_price", 0)),
+                    "margin": float(pos.get("margin", 0)),
+                    "unrealized_pnl": float(pos.get("pnl", 0) or 0),
+                    "leverage": float(pos.get("leverage", 0) or 0),
+                    "liquidation_price": float(pos.get("liquidation_price", 0) or 0),
+                    "raw": pos,
+                }
+            return None
+        except Exception as e:
+            logger.warning("DELTA [%s] POSITION: %s | %s", self.mode.upper(), symbol, e)
+            return None
+
+    def get_all_positions(self) -> List[Dict]:
+        """Get all open positions."""
+        positions = []
+        for symbol in PRODUCT_MAP:
+            pos = self.get_position(symbol)
+            if pos:
+                positions.append(pos)
+        return positions
+
+    # ==================================================================
+    # Orders
+    # ==================================================================
+
+    def get_open_orders(self) -> List[Dict]:
+        """Get all open orders."""
+        try:
+            orders = self._client.get_live_orders()
+            return orders if isinstance(orders, list) else []
+        except Exception as e:
+            logger.warning("DELTA [%s] ORDERS: %s", self.mode.upper(), e)
+            return []
+
+    def cancel_all_orders(self, symbol: Optional[str] = None) -> bool:
+        """Cancel all open orders, optionally for a specific symbol."""
+        try:
+            orders = self.get_open_orders()
+            if symbol:
+                product_id = self._get_product_id(symbol)
+                orders = [o for o in orders if o.get("product_id") == product_id]
+
+            for order in orders:
+                try:
+                    self._client.cancel_order(
+                        product_id=order.get("product_id"),
+                        order_id=order.get("id"),
+                    )
+                except Exception:
+                    pass
+
+            logger.info("DELTA [%s] CANCEL ALL: %d orders", self.mode.upper(), len(orders))
+            return True
+        except Exception as e:
+            logger.error("DELTA [%s] CANCEL ALL FAILED: %s", self.mode.upper(), e)
+            return False
+
+    # ==================================================================
+    # Trade History
+    # ==================================================================
+
+    def get_fills(self, limit: int = 20) -> List[Dict]:
+        """Get recent fills/trades."""
+        try:
+            result = self._client.fills(page_size=limit)
+            if isinstance(result, dict):
+                return result.get("result", [])
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            logger.warning("DELTA [%s] FILLS: %s", self.mode.upper(), e)
+            return []
+
+    # ==================================================================
+    # Utility
+    # ==================================================================
+
+    def calculate_lots(self, symbol: str, position_usd: float, price: float) -> int:
+        """Calculate number of lots for a given USD position size.
+
+        Args:
+            symbol: e.g. "BTC/USDT"
+            position_usd: desired position in USD
+            price: current price
+
+        Returns:
+            Number of lots (integer, minimum 1)
+        """
+        info = self._get_product_info(symbol)
+        if not info:
+            return 0
+
+        contract_size = info["contract_size"]
+        # 1 lot = contract_size × price USD
+        lot_value = contract_size * price
+        lots = int(position_usd / lot_value)
+        return max(lots, 1) if position_usd > 0 else 0
+
+    def lot_value_usd(self, symbol: str, price: float) -> float:
+        """Get the USD value of 1 lot at current price."""
+        info = self._get_product_info(symbol)
+        if not info:
+            return 0.0
+        return info["contract_size"] * price

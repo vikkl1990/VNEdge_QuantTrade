@@ -2661,8 +2661,8 @@ class ScalpStrategy(BaseStrategy):
 
         side = OrderSide.LONG if is_uptrend else OrderSide.SHORT
         ema_gap_pct = abs(ema8 - ema21) / ema21 * 100 if ema21 > 0 else 0
-        if ema_gap_pct < 0.05:
-            return None  # EMAs too close = not a real trend
+        if ema_gap_pct < 0.02:
+            return None  # EMAs too close = not a real trend (relaxed from 0.05)
 
         # --- STEP 1: Find impulse candle in last 8 bars ---
         impulse_idx = None
@@ -2673,8 +2673,8 @@ class ScalpStrategy(BaseStrategy):
             bar_atr = bar.get("atr", atr)
             if bar_atr <= 0 or np.isnan(bar_atr):
                 bar_atr = atr
-            if bar_body < bar_atr * 0.8:
-                continue  # not impulsive enough
+            if bar_body < bar_atr * 0.5:
+                continue  # not impulsive enough (relaxed from 0.8 — 15m candles have lower body/ATR)
             # Must be in trend direction
             if side == OrderSide.LONG and bar["close"] > bar["open"]:
                 impulse_idx = i

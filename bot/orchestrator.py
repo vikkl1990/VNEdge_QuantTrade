@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bot.decision_engine import DecisionEngine
+from bot.safety import audit_log, backup_state_files, check_price_freshness
 from bot.signal_learner import SignalLearner
 from bot.signal_tracker import SignalTracker
 from bot.trade_monitor import TradeMonitorAgent
@@ -176,6 +177,14 @@ class BotOrchestrator:
         self._running = True
         self._start_time = time.monotonic()
         self._stop_event.clear()
+
+        # Backup state files on startup
+        try:
+            backup_state_files(keep=10)
+        except Exception as e:
+            self._log.warning("Startup backup failed: %s", e)
+
+        audit_log("BOT_START", {"mode": self._mode.value, "symbols": self._symbols})
 
         try:
             # 1. Connect to exchange
@@ -507,29 +516,28 @@ class BotOrchestrator:
                     except Exception as exc:
                         self._log.debug("Alert send failed: %s", exc)
 
-                    # AI learning + trade monitor analysis on closure
-                    if ev_type in ("sl_hit", "tp3_hit", "expired",
-                                   "time_stop", "near_tp_protect"):
-                        try:
-                            closed_sig = ev.get("signal", {})
-                            self._signal_learner.learn_from_outcome(closed_sig)
-                        except Exception as exc:
-                            self._log.warning("Signal learner failed: %s", exc)
-                        try:
-                            self._trade_monitor.analyze_trade(closed_sig)
-                        except Exception as exc:
-                            self._log.warning("Trade monitor analysis failed: %s", exc)
+                    # AI learning + trade monitor + real exit mirror on ALL closures
+                    closed_sig = ev.get("signal", {})
+                    try:
+                        self._signal_learner.learn_from_outcome(closed_sig)
+                    except Exception as exc:
+                        self._log.warning("Signal learner failed: %s", exc)
+                    try:
+                        self._trade_monitor.analyze_trade(closed_sig)
+                    except Exception as exc:
+                        self._log.warning("Trade monitor analysis failed: %s", exc)
 
-                        # Mirror exit to real exchange
-                        if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
-                            try:
-                                paper_id = closed_sig.get("trade_id", "")
-                                exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
+                    # Mirror exit to real exchange — ALL exit types
+                    if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                        try:
+                            paper_id = closed_sig.get("trade_id", "")
+                            exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
+                            if paper_id and exit_price:
                                 await self._real_manager.mirror_paper_exit(
                                     paper_id, exit_price, ev_type,
                                 )
-                            except Exception as exc:
-                                self._log.error("Real exit mirror failed: %s", exc)
+                        except Exception as exc:
+                            self._log.error("Real exit mirror failed: %s", exc)
 
                 # Record heartbeat
                 self._heartbeat.record_activity("fast_trade_monitor")
@@ -975,6 +983,17 @@ class BotOrchestrator:
         except Exception as exc:
             self._log.debug("Failed to send signal alert: %s", exc)
 
+        # -- Stale price check --
+        is_fresh, age = check_price_freshness(sig_dict)
+        if not is_fresh:
+            self._log.warning("STALE PRICE: %s signal is %.1fs old — skipping", symbol, age)
+            return
+
+        # -- Emergency stop check --
+        if hasattr(self, '_dashboard') and getattr(self._dashboard, '_emergency_stop', False):
+            self._log.critical("EMERGENCY STOP active — blocking %s %s", symbol, signal_type)
+            return
+
         # -- Execute (if mode permits) --
         order_result = None
         if self._mode in (BotMode.PAPER, BotMode.LIVE, BotMode.FORWARD_TEST):
@@ -986,6 +1005,16 @@ class BotOrchestrator:
                     signal_type,
                     order_result,
                 )
+                # Audit trail — immutable record
+                audit_log("TRADE_ENTRY", {
+                    "symbol": symbol,
+                    "side": sig_dict.get("side"),
+                    "entry_price": sig_dict.get("entry_price"),
+                    "stop_loss": sig_dict.get("stop_loss"),
+                    "confidence": sig_dict.get("confidence"),
+                    "scanner": sig_dict.get("metadata", {}).get("setup_type"),
+                    "mode": self._mode.value,
+                })
             except Exception as exc:
                 self._handle_exception(exc, context=f"execute({symbol})")
                 await self._alerts.send_system_alert(

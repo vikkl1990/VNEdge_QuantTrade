@@ -76,8 +76,8 @@ class DashboardServer:
     _SIGNALS_FILE = Path(__file__).resolve().parent.parent / "storage" / "signals_history.json"
     _MAX_PERSISTED = 200  # keep last 200 signals on disk
 
-    # Auth: public paths that don't require login
-    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico", "/api/real/status", "/api/real/trades", "/api/risk-metrics", "/api/session-heatmap"}
+    # Auth: public paths that don't require login (read-only, no sensitive data)
+    _PUBLIC_PATHS = {"/api/login", "/api/ping", "/favicon.ico"}
     _PUBLIC_PREFIXES = ("/static/",)
 
     def __init__(self) -> None:
@@ -133,14 +133,18 @@ class DashboardServer:
             "settlement": paper_cfg.get("settlement_fee_rate", 0.0006),
         }
 
-        # Auth config
+        # Auth config — ALWAYS enabled, generate random password if not set
         self._auth_user = os.getenv("DASHBOARD_USER", "admin")
         self._auth_password = os.getenv("DASHBOARD_PASSWORD", "")
         self._auth_secret = os.getenv("DASHBOARD_SECRET_KEY", secrets.token_hex(32))
-        self._auth_enabled = bool(self._auth_password)  # disabled if no password set
+        if not self._auth_password:
+            self._auth_password = secrets.token_hex(16)
+            logger.warning("DASHBOARD_PASSWORD not set — generated random: %s", self._auth_password)
+        self._auth_enabled = True  # always enabled
         self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> session data
         self._session_history: List[Dict[str, Any]] = []  # login history
         self._session_timeout = 86400  # 24 hours
+        self._emergency_stop = False  # kill switch state
 
         # aiohttp internals
         self._app: Optional[web.Application] = None
@@ -484,6 +488,8 @@ class DashboardServer:
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
         app.router.add_get("/api/real/status", self._handle_real_status)
         app.router.add_post("/api/real/toggle", self._handle_real_toggle)
+        app.router.add_post("/api/emergency-stop", self._handle_emergency_stop)
+        app.router.add_get("/api/emergency-status", self._handle_emergency_status)
         app.router.add_get("/api/risk-metrics", self._handle_risk_metrics)
         app.router.add_get("/api/session-heatmap", self._handle_session_heatmap)
         app.router.add_get("/api/ping", self._handle_ping)
@@ -968,6 +974,41 @@ class DashboardServer:
 
         mgr._save_state()
         return web.json_response(mgr.get_status())
+
+    async def _handle_emergency_stop(self, request: web.Request) -> web.Response:
+        """KILL SWITCH: Stop all trading immediately."""
+        self._emergency_stop = True
+        logger.critical("EMERGENCY STOP ACTIVATED via dashboard")
+
+        # Disable real trading
+        mgr = getattr(self, '_real_manager', None)
+        if not mgr and hasattr(self, '_orchestrator'):
+            mgr = getattr(self._orchestrator, '_real_manager', None)
+        if mgr:
+            mgr.enabled = False
+            mgr._save_state()
+            logger.critical("EMERGENCY: Real trading DISABLED")
+
+        # Send Telegram alert
+        try:
+            alerts = getattr(self, '_alert_manager', None)
+            if alerts:
+                await alerts.send_system_alert(
+                    "EMERGENCY STOP ACTIVATED — All trading halted",
+                    level=AlertLevel.ERROR,
+                )
+        except Exception:
+            pass
+
+        return web.json_response({
+            "status": "emergency_stop_activated",
+            "real_trading": "disabled",
+            "message": "All trading halted. Restart bot to resume.",
+        })
+
+    async def _handle_emergency_status(self, request: web.Request) -> web.Response:
+        """Check if emergency stop is active."""
+        return web.json_response({"emergency_stop": self._emergency_stop})
 
     async def _handle_risk_metrics(self, request: web.Request) -> web.Response:
         """Return risk-adjusted metrics: Sharpe, Sortino, Calmar, max DD duration."""

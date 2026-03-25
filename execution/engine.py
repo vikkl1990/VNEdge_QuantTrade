@@ -127,6 +127,19 @@ class ExecutionEngine:
         stop_loss = signal.get("stop_loss", 0.0)
         leverage = min(signal.get("leverage", self.default_leverage), self.max_leverage)
 
+        # Order validation — prevent invalid orders
+        import math
+        if position_size <= 0 or math.isnan(position_size) or math.isinf(position_size):
+            logger.error("ORDER REJECTED: invalid position_size=%.6f for %s", position_size, symbol)
+            return Trade(trade_id="", symbol=symbol, side=side, status=TradeStatus.FAILED,
+                        entry_reason=f"invalid position_size: {position_size}")
+        if entry_price <= 0 or math.isnan(entry_price):
+            logger.error("ORDER REJECTED: invalid entry_price=%.4f for %s", entry_price, symbol)
+            return Trade(trade_id="", symbol=symbol, side=side, status=TradeStatus.FAILED,
+                        entry_reason=f"invalid entry_price: {entry_price}")
+        if stop_loss <= 0:
+            logger.warning("ORDER WARNING: no stop_loss set for %s", symbol)
+
         # Build take-profit levels from signal or config defaults
         take_profits = self._build_take_profits(signal, entry_price, stop_loss, side)
 

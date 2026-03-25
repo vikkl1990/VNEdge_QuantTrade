@@ -68,6 +68,18 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     config["_project_root"] = str(PROJECT_ROOT)
 
+    # Validate critical config on startup
+    mode = config.get("bot", {}).get("mode", "paper")
+    api_key = config["exchange"].get("api_key", "")
+    api_secret = config["exchange"].get("api_secret", "")
+    if mode in ("live",) and (not api_key or not api_secret):
+        raise ValueError(f"FATAL: {exchange_name} API key/secret required for live mode")
+    if not config.get("symbols"):
+        raise ValueError("FATAL: No symbols configured")
+    dash_pw = os.getenv("DASHBOARD_PASSWORD", "")
+    if not dash_pw:
+        logger.warning("SECURITY: DASHBOARD_PASSWORD not set — random password will be generated")
+
     _config = config
     return config
 

@@ -15,7 +15,7 @@ Architecture:
 
 import json
 import logging
-import pickle
+import joblib  # safer than pickle for ML model serialization
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -303,12 +303,11 @@ class MLProbabilityModel:
         model_path = MODEL_DIR / f"{safe}_model.pkl"
         meta_path = MODEL_DIR / f"{safe}_meta.json"
 
-        with open(model_path, "wb") as f:
-            pickle.dump({
-                "model": self.model,
-                "scaler": self.scaler,
-                "feature_names": self.feature_names,
-            }, f)
+        joblib.dump({
+            "model": self.model,
+            "scaler": self.scaler,
+            "feature_names": self.feature_names,
+        }, model_path)
 
         with open(meta_path, "w") as f:
             json.dump({
@@ -328,8 +327,7 @@ class MLProbabilityModel:
             return False
 
         try:
-            with open(model_path, "rb") as f:
-                data = pickle.load(f)
+            data = joblib.load(model_path)
             self.model = data["model"]
             self.scaler = data["scaler"]
             self.feature_names = data["feature_names"]

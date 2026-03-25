@@ -273,7 +273,7 @@ class RealTradingManager:
         try:
             # Set leverage on exchange before placing order
             try:
-                await self.exchange.set_leverage(leverage, symbol)
+                await self.exchange.set_leverage(symbol, leverage)
                 logger.info("REAL: Leverage set to %dx for %s", leverage, symbol)
             except Exception as lev_err:
                 logger.warning("REAL: Could not set leverage for %s: %s (continuing)", symbol, lev_err)
@@ -282,10 +282,28 @@ class RealTradingManager:
             real_signal = dict(signal)
             real_signal["leverage"] = leverage
 
-            trade = await self.engine.execute_entry(real_signal, position_size)
+            logger.info(
+                "REAL: Placing order — %s %s | size=%.6f | entry=%.4f | lev=%dx | engine=%s",
+                symbol, signal.get("side"), position_size,
+                signal.get("entry_price", 0), leverage,
+                type(self.engine).__name__,
+            )
+            try:
+                trade = await self.engine.execute_entry(real_signal, position_size)
+                logger.info("REAL: Engine returned trade status=%s reason=%s id=%s",
+                           trade.status, trade.entry_reason, trade.trade_id[:12] if trade.trade_id else "none")
+            except Exception as engine_err:
+                logger.error("REAL: Engine execute_entry EXCEPTION: %s: %s", type(engine_err).__name__, engine_err)
+                import traceback
+                logger.error("REAL: Traceback: %s", traceback.format_exc())
+                return {"status": "failed", "reason": str(engine_err)}
 
             if trade.status == TradeStatus.FAILED:
-                logger.error("REAL FAILED: %s %s — %s", symbol, signal.get("side"), trade.entry_reason)
+                logger.error(
+                    "REAL FAILED: %s %s — reason=%s | size=%.6f entry=%.4f lev=%dx",
+                    symbol, signal.get("side"), trade.entry_reason,
+                    position_size, signal.get("entry_price", 0), leverage,
+                )
                 return {"status": "failed", "reason": trade.entry_reason}
 
             # Track the mapping
@@ -541,9 +559,35 @@ class RealTradingManager:
         if entry_price <= 0:
             return 0, 0
 
-        position_size = notional / entry_price
+        # Convert to exchange lot count (Delta uses integer lots)
+        # Contract sizes: BTC=0.001, ETH=0.01, SOL=1.0
+        contract_sizes = {
+            "BTC/USDT": 0.001, "BTC/USD": 0.001,
+            "ETH/USDT": 0.01,  "ETH/USD": 0.01,
+            "SOL/USDT": 1.0,   "SOL/USD": 1.0,
+            "AVAX/USDT": 1.0,  "AVAX/USD": 1.0,
+            "LINK/USDT": 1.0,  "LINK/USD": 1.0,
+            "DOGE/USDT": 1.0,  "DOGE/USD": 1.0,
+        }
+        base_sym = symbol.split(":")[0] if ":" in symbol else symbol
+        contract_size = contract_sizes.get(base_sym, 1.0)
+        lot_value = entry_price * contract_size  # USD value per lot
 
-        return margin, position_size
+        # Calculate lots (round down to integer, minimum 1)
+        lots = max(1, int(notional / lot_value))
+
+        # Recalculate actual margin used
+        actual_notional = lots * lot_value
+        margin = actual_notional / leverage
+
+        logger.info(
+            "REAL SIZING: %s | notional=$%.2f | lot_value=$%.2f | lots=%d | "
+            "actual_notional=$%.2f | margin=$%.2f | lev=%dx",
+            symbol, notional, lot_value, lots, actual_notional, margin, leverage,
+        )
+
+        # Return margin and LOT COUNT (not fractional coins)
+        return margin, float(lots)
 
     # ==================================================================
     # Balance
@@ -595,25 +639,54 @@ class RealTradingManager:
 
     def _record_closed_trade(self, trade, exit_price: float,
                               pnl_usd: float, reason: str, dry_run: bool = False):
-        """Record a closed real trade."""
+        """Record a closed real trade to:
+        1. In-memory closed_real_trades list
+        2. State file (persisted)
+        3. Real trade feedback file (for analytics)
+        """
         side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
-        self.closed_real_trades.append({
+        entry = getattr(trade, "entry_price", 0)
+        margin = getattr(trade, "margin", 0)
+        leverage = getattr(trade, "leverage", 0)
+        position_size = getattr(trade, "position_size", 0)
+        scanner = getattr(trade, "scanner", "")
+        pnl_pct = round(pnl_usd / margin * 100, 2) if margin > 0 else 0
+
+        record = {
             "trade_id": trade.trade_id,
-            "symbol": trade.symbol,
+            "symbol": getattr(trade, "symbol", ""),
             "side": side_str,
-            "entry_price": trade.entry_price,
+            "entry_price": entry,
             "exit_price": exit_price,
-            "margin": getattr(trade, "margin", 0),
-            "leverage": getattr(trade, "leverage", 0),
-            "position_size": getattr(trade, "position_size", 0),
+            "margin": margin,
+            "leverage": leverage,
+            "position_size": position_size,
             "pnl_usd": round(pnl_usd, 4),
-            "pnl_pct": round(pnl_usd / getattr(trade, "margin", 1) * 100, 2) if getattr(trade, "margin", 0) > 0 else 0,
-            "scanner": getattr(trade, "scanner", ""),
+            "pnl_pct": pnl_pct,
+            "scanner": scanner,
             "reason": reason,
             "dry_run": dry_run,
             "paper_trade_id": getattr(trade, "paper_trade_id", ""),
             "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+            "confidence": getattr(trade, "confidence", 0),
+            "ml_prob": getattr(trade, "ml_prob", 0),
+            "ml_verdict": getattr(trade, "ml_verdict", ""),
+            "regime": getattr(trade, "regime", ""),
+            "trade_type": getattr(trade, "trade_type", ""),
+            "slippage_bps": getattr(trade, "slippage_bps", 0),
+            "slippage_impact_r": getattr(trade, "slippage_impact_r", 0),
+        }
+        self.closed_real_trades.append(record)
+
+        # Also write to real trade feedback file (separate from paper)
+        try:
+            feedback_file = Path("storage/real_trade_feedback.jsonl")
+            with open(feedback_file, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+            logger.info("REAL RECORDED: %s %s %s | entry=%.4f exit=%.4f | pnl=$%+.2f | %s",
+                       record["symbol"], side_str, scanner, entry, exit_price, pnl_usd, reason)
+        except Exception as e:
+            logger.warning("REAL: Failed to write feedback: %s", e)
 
         # Remove from active
         self.real_trades.pop(trade.trade_id, None)
@@ -745,6 +818,135 @@ class RealTradingManager:
     # Status for Dashboard
     # ==================================================================
 
+    async def refresh_balance(self) -> float:
+        """Force-refresh exchange balance (called by dashboard endpoint)."""
+        self._balance_ts = 0  # invalidate cache
+        return await self._get_balance()
+
+    async def sync_exchange_positions(self) -> None:
+        """Reconcile local state with actual exchange positions.
+        - Adds orphaned exchange positions to tracking
+        - Detects positions that closed on exchange (SL hit, liquidation)
+        - Records closed trades with PnL
+        """
+        try:
+            raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+            positions = await raw_exchange.fetch_positions()
+
+            # Build set of currently open symbols on exchange
+            exchange_open = set()
+            for p in positions:
+                contracts = float(p.get("contracts", 0) or 0)
+                if abs(contracts) > 0:
+                    exchange_open.add(p.get("symbol", ""))
+
+            # Detect locally tracked positions that are GONE from exchange
+            # (closed by SL, TP, or liquidation on exchange side)
+            for trade_id in list(self.real_trades.keys()):
+                t = self.real_trades[trade_id]
+                t_sym = getattr(t, "symbol", "")
+                # Convert to exchange format for comparison
+                ex_sym = t_sym.replace("/USDT", "/USD:USD")
+                if ex_sym not in exchange_open and t_sym not in exchange_open:
+                    # Position closed on exchange! Record it.
+                    entry = getattr(t, "entry_price", 0)
+                    # Try to get exit price from recent trades
+                    exit_price = 0
+                    pnl_usd = 0
+                    try:
+                        recent = await raw_exchange.fetch_my_trades(ex_sym, limit=5)
+                        # Find the most recent sell (for long) or buy (for short)
+                        side = getattr(t, "side", "long")
+                        close_side = "sell" if side in ("long", "buy") else "buy"
+                        for trade in reversed(recent):
+                            if trade.get("side") == close_side:
+                                exit_price = float(trade.get("price", 0))
+                                fee = float(trade.get("fee", {}).get("cost", 0))
+                                qty = float(trade.get("amount", 0))
+                                if side in ("long", "buy"):
+                                    pnl_usd = (exit_price - entry) * qty - fee
+                                else:
+                                    pnl_usd = (entry - exit_price) * qty - fee
+                                break
+                    except Exception as e:
+                        logger.warning("REAL: Could not fetch exit details: %s", e)
+
+                    if not exit_price:
+                        exit_price = getattr(t, "current_price", entry)
+
+                    reason = "exchange_closed"
+                    logger.warning(
+                        "REAL: Position CLOSED on exchange: %s %s | entry=%.4f exit=%.4f | pnl=$%.2f",
+                        t_sym, getattr(t, "side", "?"), entry, exit_price, pnl_usd,
+                    )
+
+                    # Record the closed trade
+                    self._record_closed_trade(t, exit_price, pnl_usd, reason, dry_run=False)
+                    self.circuit_breaker.record_trade(pnl_usd)
+                    self._save_state()
+
+                    # Send Telegram alert
+                    try:
+                        from bot.alerts.manager import AlertManager, AlertLevel
+                        # Use global alert if available
+                        emoji = "🟢" if pnl_usd >= 0 else "🔴"
+                        msg = (
+                            "%s REAL CLOSE: %s %s | entry=%.2f exit=%.2f | "
+                            "PnL=$%+.2f | reason=%s"
+                        ) % (emoji, t_sym, getattr(t, "side", "?"),
+                             entry, exit_price, pnl_usd, reason)
+                        logger.info(msg)
+                    except Exception:
+                        pass
+
+            # Now add any NEW exchange positions not locally tracked
+            for p in positions:
+                contracts = float(p.get("contracts", 0) or 0)
+                if abs(contracts) == 0:
+                    continue
+                sym = p.get("symbol", "")
+                side = p.get("side", "long")
+                entry = float(p.get("entryPrice", 0) or 0)
+                # Check if already tracked
+                already_tracked = any(
+                    getattr(t, "symbol", "") == sym or
+                    getattr(t, "symbol", "").replace("/USDT", "/USD:USD") == sym
+                    for t in self.real_trades.values()
+                )
+                if not already_tracked and entry > 0:
+                    trade_id = "exchange_%s_%s" % (sym.replace("/", "").replace(":", ""), int(time.time()))
+                    # Normalize side: buy→long, sell→short
+                    norm_side = "long" if side in ("buy", "long") else "short"
+                    # Calculate margin and leverage from exchange data
+                    mark_price = float(p.get("markPrice", entry) or entry)
+                    notional = abs(contracts * mark_price)
+                    init_margin = float(p.get("initialMargin", 0) or 0)
+                    lev = int(float(p.get("leverage", 0) or 0))
+                    if not lev and init_margin > 0:
+                        lev = max(1, int(notional / init_margin))
+                    if not lev:
+                        lev = 10  # default for Delta
+                    if not init_margin:
+                        init_margin = notional / lev
+                    # Normalize symbol for display
+                    display_sym = sym.replace("/USD:USD", "/USDT").replace("/USD:", "/USDT:")
+                    orphan = type("ExchangePosition", (), {
+                        "trade_id": trade_id, "symbol": display_sym, "side": norm_side,
+                        "entry_price": entry, "stop_loss": 0, "tp1": 0, "tp2": 0, "tp3": 0,
+                        "position_size": contracts, "margin": round(init_margin, 2),
+                        "leverage": lev,
+                        "status": "open", "opened_at": time.time(),
+                        "scanner": "exchange_sync", "trade_type": "",
+                        "confidence": 0, "ml_prob": 0, "ml_verdict": "",
+                        "regime": "", "paper_trade_id": "",
+                        "current_price": mark_price,
+                    })()
+                    self.real_trades[trade_id] = orphan
+                    logger.warning("REAL: Synced orphaned exchange position: %s %s %s contracts @ %.4f",
+                                 sym, side, contracts, entry)
+        except Exception as e:
+            logger.warning("REAL: Position sync failed: %s", e)
+
     def get_status(self) -> Dict:
         """Return current real trading status for dashboard."""
         open_trades = []
@@ -799,6 +1001,13 @@ class RealTradingManager:
         slippage_r = [t.get("slippage_impact_r", 0) for t in self.closed_real_trades if t.get("slippage_impact_r")]
         avg_slippage_r = sum(slippage_r) / len(slippage_r) if slippage_r else 0
 
+        # Separate dry run vs live trade data
+        # Dashboard shows only data matching current mode
+        mode_filter = self.dry_run  # True = show dry run data, False = show live data
+        mode_trades = [t for t in self.closed_real_trades if t.get("dry_run", True) == mode_filter]
+        mode_pnl = sum(t.get("pnl_usd", 0) for t in mode_trades)
+        mode_today = [t for t in mode_trades if t.get("timestamp", "")[:10] == str(date.today())]
+
         return {
             "enabled": self.enabled,
             "dry_run": self.dry_run,
@@ -807,11 +1016,21 @@ class RealTradingManager:
             "circuit_breaker": self.circuit_breaker.to_dict(),
             "open_positions": open_trades,
             "open_count": len(self.real_trades),
-            "closed_today": self.circuit_breaker.trade_count_today,
-            "total_closed": len(self.closed_real_trades),
+            "closed_today": len(mode_today),
+            "total_closed": len(mode_trades),
+            "total_pnl": round(mode_pnl, 2),
             "paper_to_real_mappings": len(self.paper_to_real),
             "api_failures": self._api_failures,
-            "recent_trades": self.closed_real_trades[-10:],
+            "recent_trades": mode_trades[-10:],
+            # Also include totals for both modes
+            "dry_run_stats": {
+                "total": len([t for t in self.closed_real_trades if t.get("dry_run")]),
+                "pnl": round(sum(t.get("pnl_usd", 0) for t in self.closed_real_trades if t.get("dry_run")), 2),
+            },
+            "live_stats": {
+                "total": len([t for t in self.closed_real_trades if not t.get("dry_run")]),
+                "pnl": round(sum(t.get("pnl_usd", 0) for t in self.closed_real_trades if not t.get("dry_run")), 2),
+            },
             "slippage": {
                 "avg_bps": round(avg_slippage_bps, 2),
                 "max_bps": round(max_slippage_bps, 2),

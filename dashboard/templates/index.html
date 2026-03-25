@@ -497,6 +497,61 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <div class="live-grid">
 
+    <!-- Real Trading Status (moved from Analytics to front page) -->
+    <div class="panel live-span-2" id="real-trading-panel-live" style="border:1px solid rgba(255,59,92,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:3px;font-weight:600">
+          <span style="margin-right:6px">&#x1F534;</span> Real Trading
+        </div>
+        <span id="real-mode-badge-live" class="badge" style="font-size:.65rem">DISABLED</span>
+        <select id="real-mode-select-live" onchange="setRealMode(this.value)" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.7rem;font-family:var(--font-mono);cursor:pointer">
+          <option value="disabled">Disabled</option>
+          <option value="dry_run">Dry Run</option>
+          <option value="live">LIVE</option>
+        </select>
+      </div>
+      <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Balance</div>
+          <div id="real-balance-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Daily P&L</div>
+          <div id="real-daily-pnl-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div>
+          <div id="real-total-pnl-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Open</div>
+          <div id="real-open-count-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Closed Today</div>
+          <div id="real-closed-today-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Circuit Breaker</div>
+          <div id="real-cb-status-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">OK</div>
+        </div>
+      </div>
+      <div id="real-positions-table-live" style="margin-top:12px;display:none">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">REAL POSITIONS</div>
+        <table style="width:100%;font-size:.72rem;border-collapse:collapse">
+          <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:4px">Symbol</th><th style="text-align:left;padding:4px">Side</th>
+            <th style="text-align:right;padding:4px">Entry</th><th style="text-align:right;padding:4px">Current</th>
+            <th style="text-align:right;padding:4px">UPNL</th><th style="text-align:right;padding:4px">SL</th>
+            <th style="text-align:right;padding:4px">Margin</th><th style="text-align:right;padding:4px">Position</th>
+            <th style="text-align:center;padding:4px">Lev</th><th style="text-align:left;padding:4px">Scanner</th>
+            <th style="text-align:center;padding:4px">ML</th><th style="text-align:right;padding:4px">Time</th>
+          </tr></thead>
+          <tbody id="real-positions-body-live"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Active Trades -->
     <div class="panel live-span-2">
       <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span></div>
@@ -738,10 +793,11 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <span style="margin-right:6px">&#x1F534;</span> Real Trading
       </div>
       <span id="real-mode-badge" class="badge" style="font-size:.65rem">DISABLED</span>
-      <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-size:.7rem;color:var(--text-muted)">
-        <input type="checkbox" id="real-toggle" onchange="toggleRealTrading(this.checked)" style="accent-color:var(--red)">
-        Enable
-      </label>
+      <select id="real-mode-select" onchange="setRealMode(this.value)" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.7rem;font-family:var(--font-mono);cursor:pointer">
+        <option value="disabled">Disabled</option>
+        <option value="dry_run">Dry Run</option>
+        <option value="live">LIVE</option>
+      </select>
     </div>
     <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
       <div style="text-align:center">
@@ -771,7 +827,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
     <!-- Dry Run Open Positions -->
     <div id="real-positions-table" style="margin-top:12px;display:none">
-      <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">DRY RUN POSITIONS</div>
+      <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">REAL POSITIONS</div>
       <table style="width:100%;font-size:.72rem;border-collapse:collapse">
         <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
           <th style="text-align:left;padding:4px">Symbol</th>
@@ -1203,21 +1259,29 @@ async function api(path) {
     } catch { return null; }
 }
 
-async function toggleRealTrading(enabled) {
-    if (enabled && !confirm("⚠️ Enable REAL TRADING with real money? This will place actual orders on the exchange.")) {
-        document.getElementById("real-toggle").checked = false;
+async function setRealMode(mode) {
+    if (mode === "live" && !confirm("⚠️ ENABLE LIVE TRADING?\n\nThis will place REAL orders with REAL money on Delta Exchange.\n\nAre you absolutely sure?")) {
+        document.getElementById("real-mode-select").value = "dry_run";
         return;
     }
+    if (mode === "live" && !confirm("🔴 FINAL CONFIRMATION\n\nReal money will be at risk.\nCircuit breaker: $25/day loss limit.\n\nType OK to confirm.")) {
+        document.getElementById("real-mode-select").value = "dry_run";
+        return;
+    }
+    const enabled = mode !== "disabled";
+    const dry_run = mode !== "live";
     try {
         const r = await fetch("/api/real/toggle", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({enabled: enabled})
+            body: JSON.stringify({enabled, dry_run})
         });
         const d = await r.json();
         if (d.error) alert("Error: " + d.error);
-    } catch (e) { alert("Toggle failed: " + e); }
+    } catch (e) { alert("Mode change failed: " + e); }
 }
+// Legacy support
+async function toggleRealTrading(enabled) { setRealMode(enabled ? "dry_run" : "disabled"); }
 
 function healthColor(pct) {
     if (pct > 85) return "var(--red)";
@@ -1321,9 +1385,60 @@ async function refreshLive() {
         api("/api/tracker/closed"), api("/api/real/status")
     ]);
 
-    // Real Trading Panel update
-    if (realStatus && document.getElementById("real-toggle")) {
-        document.getElementById("real-toggle").checked = realStatus.enabled || false;
+    // Real Trading Panel — update BOTH analytics and live tab versions
+    if (realStatus) {
+        const modeVal = !realStatus.enabled ? "disabled" : realStatus.dry_run ? "dry_run" : "live";
+        const modeLabel = !realStatus.enabled ? "DISABLED" : realStatus.dry_run ? "DRY RUN" : "LIVE";
+        const modeColor = !realStatus.enabled ? "var(--text-muted)" : realStatus.dry_run ? "var(--cyan)" : "var(--red)";
+        const bal = realStatus.balance || 0;
+        const cb = realStatus.circuit_breaker || {};
+        const dp = cb.daily_pnl || 0;
+        const tp = cb.total_pnl || dp;
+        const cbOk = !cb.is_tripped;
+
+        // Update both panel instances (analytics + live tab)
+        for (const suffix of ["", "-live"]) {
+            const sel = document.getElementById("real-mode-select" + suffix);
+            if (sel) sel.value = modeVal;
+            const badge = document.getElementById("real-mode-badge" + suffix);
+            if (badge) { badge.textContent = modeLabel; badge.style.color = modeColor; badge.style.borderColor = modeColor; }
+            const balEl = document.getElementById("real-balance" + suffix);
+            if (balEl) balEl.textContent = "$" + num(bal, 2);
+            const dpEl = document.getElementById("real-daily-pnl" + suffix);
+            if (dpEl) { dpEl.textContent = "$" + (dp >= 0 ? "+" : "") + num(dp, 2); dpEl.className = dp >= 0 ? "positive" : "negative"; }
+            const tpEl = document.getElementById("real-total-pnl" + suffix);
+            if (tpEl) { tpEl.textContent = "$" + (tp >= 0 ? "+" : "") + num(tp, 2); tpEl.className = tp >= 0 ? "positive" : "negative"; }
+            const ocEl = document.getElementById("real-open-count" + suffix);
+            if (ocEl) ocEl.textContent = realStatus.open_count || 0;
+            const ctEl = document.getElementById("real-closed-today" + suffix);
+            if (ctEl) ctEl.textContent = realStatus.closed_today || 0;
+            const cbEl = document.getElementById("real-cb-status" + suffix);
+            if (cbEl) { cbEl.textContent = cbOk ? "OK" : "TRIPPED"; cbEl.style.color = cbOk ? "var(--green)" : "var(--red)"; }
+
+            // Positions table
+            const posTable = document.getElementById("real-positions-table" + suffix);
+            const posBody = document.getElementById("real-positions-body" + suffix);
+            if (posTable && posBody && realStatus.open_positions && realStatus.open_positions.length > 0) {
+                posTable.style.display = "block";
+                let ph = "";
+                for (const p of realStatus.open_positions) {
+                    const sideColor = p.side === "long" ? "var(--green)" : "var(--red)";
+                    const upnlColor = p.upnl_usd >= 0 ? "var(--green)" : "var(--red)";
+                    const dur = p.duration_min >= 60 ? num(p.duration_min/60,1) + "h" : num(p.duration_min,0) + "m";
+                    ph += "<tr><td>" + p.symbol + "</td><td style='color:" + sideColor + "'>" + (p.side||"").toUpperCase() + "</td>" +
+                        "<td style='text-align:right'>" + num(p.entry_price,4) + "</td><td style='text-align:right'>" + num(p.current_price,4) + "</td>" +
+                        "<td style='text-align:right;color:" + upnlColor + "'>$" + num(p.upnl_usd,2) + " (" + num(p.upnl_pct,2) + "%)</td>" +
+                        "<td style='text-align:right;color:var(--red)'>" + num(p.stop_loss,4) + "</td>" +
+                        "<td style='text-align:right'>$" + num(p.margin,2) + "</td><td style='text-align:right'>$" + num(p.position_usd,2) + "</td>" +
+                        "<td style='text-align:center'>" + p.leverage + "x</td><td>" + (p.scanner||"--") + "</td>" +
+                        "<td style='text-align:center'>" + (p.ml_prob ? num(p.ml_prob*100,0) + "%" : "--") + "</td>" +
+                        "<td style='text-align:right'>" + dur + "</td></tr>";
+                }
+                posBody.innerHTML = ph;
+            } else if (posTable) {
+                posTable.style.display = "none";
+            }
+        }
     }
     if (realStatus) {
         const rp = document.getElementById("real-trading-panel");

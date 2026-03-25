@@ -921,6 +921,18 @@ class DashboardServer:
                 await mgr.update_prices()
             except Exception:
                 pass
+            # Refresh balance from exchange (async)
+            try:
+                if hasattr(mgr, 'refresh_balance'):
+                    await mgr.refresh_balance()
+            except Exception:
+                pass
+            # Sync exchange positions (detect orphaned real positions)
+            try:
+                if hasattr(mgr, 'sync_exchange_positions') and not mgr.dry_run:
+                    await mgr.sync_exchange_positions()
+            except Exception:
+                pass
             # Auto-sync: close orphaned dry run positions
             try:
                 tracker = getattr(self, '_signal_tracker', None)
@@ -974,8 +986,20 @@ class DashboardServer:
             mgr.enabled = bool(enabled)
             logger.warning("REAL TRADING %s via dashboard", "ENABLED" if mgr.enabled else "DISABLED")
         if dry_run is not None:
+            old_dry_run = mgr.dry_run
             mgr.dry_run = bool(dry_run)
             logger.warning("REAL TRADING dry_run=%s via dashboard", mgr.dry_run)
+            # Reset circuit breaker when switching modes (dry→live or live→dry)
+            if old_dry_run != mgr.dry_run:
+                mgr.circuit_breaker.daily_pnl = 0
+                mgr.circuit_breaker.total_pnl = 0
+                mgr.circuit_breaker.consecutive_losses = 0
+                mgr.circuit_breaker.is_tripped = False
+                mgr.circuit_breaker.trip_reason = ""
+                mgr.circuit_breaker.trade_count_today = 0
+                logger.warning("REAL TRADING: Circuit breaker RESET on mode switch (%s → %s)",
+                             "dry_run" if old_dry_run else "live",
+                             "dry_run" if mgr.dry_run else "live")
 
         mgr._save_state()
         return web.json_response(mgr.get_status())

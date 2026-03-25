@@ -522,12 +522,19 @@ class ScalpStrategy(BaseStrategy):
             confidence_adj -= 10
             reasons.append(f"ATR low ({atr_ratio:.2f})")
             context["atr_regime"] = "low"
-        elif atr_ratio > 3.0:
+        # Adaptive ATR threshold: higher for high-beta coins
+        atr_extreme_threshold = 3.0
+        if symbol in ("AVAX/USDT", "DOGE/USDT", "LINK/USDT"):
+            atr_extreme_threshold = 5.0  # high-beta coins have naturally higher ATR ratios
+        elif symbol in ("SOL/USDT",):
+            atr_extreme_threshold = 4.0  # SOL is more volatile than BTC/ETH
+
+        if atr_ratio > atr_extreme_threshold:
             # Extreme volatility — hard block
             return {
                 "pass": False,
                 "confidence_adj": 0,
-                "reason": f"ATR PREFILTER: ratio {atr_ratio:.2f} > 3.0 — extreme volatility",
+                "reason": f"ATR PREFILTER: ratio {atr_ratio:.2f} > {atr_extreme_threshold} — extreme volatility",
                 "context": {**context, "atr_regime": "extreme"},
             }
         elif atr_ratio > 2.0:

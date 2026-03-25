@@ -158,6 +158,7 @@ class RealTradingManager:
         self.real_trades: Dict[str, Trade] = {}
         self.closed_real_trades: List[Dict] = []
         self.paper_to_real: Dict[str, str] = {}  # paper_id → real_id
+        self._open_positions: Dict[str, Any] = {}  # dry run open positions
 
         # Balance cache
         self._cached_balance: Optional[float] = None

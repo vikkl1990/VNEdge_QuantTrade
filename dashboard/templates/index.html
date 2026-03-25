@@ -888,6 +888,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <button id="tab-real-closed" onclick="switchClosedTab('real')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DRY RUN</button>
       </div>
       <span class="badge" id="closed-count-badge">last 50</span>
+      <button onclick="exportCSV()" style="padding:4px 12px;font-size:.7rem;border:1px solid rgba(0,255,157,.3);background:transparent;color:var(--green);border-radius:4px;cursor:pointer;margin-left:auto">Export CSV</button>
     </div>
     <div id="paper-closed-wrap" class="tbl-wrap" style="max-height:400px;overflow-y:auto">
       <table>
@@ -2247,7 +2248,8 @@ function updateClosedTrades(closed) {
         return;
     }
     const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
-    body.innerHTML = sorted.slice(0, 50).map(t => {
+    _closedTradesCache = sorted.slice(0, 50);
+    body.innerHTML = _closedTradesCache.map((t, idx) => {
         const pnl = Number(t.pnl_pct || t.pnl || 0);
         const pnlUsd = Number(t.pnl_usd || 0);
         const r = Number(t.exit_r || t.r_multiple || t.r || 0);
@@ -2262,7 +2264,7 @@ function updateClosedTrades(closed) {
             dur = mins >= 60 ? Math.floor(mins/60) + "h" + (mins%60) + "m" : mins + "m";
         } catch(e) {}
         const rowBg = pnl > 0 ? "rgba(34,197,94,.03)" : pnl < -0.3 ? "rgba(239,68,68,.03)" : "";
-        return `<tr style="background:${rowBg}">
+        return `<tr style="background:${rowBg};cursor:pointer" onclick="showTradeDetail(${idx})" title="Click for details">
             <td>${formatTime(t.closed_at || t.exit_time)}</td>
             <td style="font-weight:600">${esc(t.symbol || "--")}</td>
             <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
@@ -2897,8 +2899,76 @@ async function handleContact(e) {
     return false;
 }
 
+// ── TRADE DETAIL MODAL ───────────────────────────────────
+let _closedTradesCache = [];
+function showTradeDetail(idx) {
+    const t = _closedTradesCache[idx];
+    if (!t) return;
+    const m = document.getElementById("trade-modal");
+    const dec = (t.symbol||"").includes("BTC") ? 2 : 4;
+    const dur = t.duration_sec ? Math.round(t.duration_sec/60) + "m" : "--";
+    const ml = t.metadata && t.metadata.ml_probability != null ? (t.metadata.ml_probability*100).toFixed(0)+"%" : "--";
+    const regime = (t.metadata && t.metadata.regime) || "--";
+    const exitEff = t.mfe_r > 0 ? ((t.exit_r/t.mfe_r)*100).toFixed(0)+"%" : "--";
+    m.innerHTML = `<div style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:999;display:flex;align-items:center;justify-content:center" onclick="this.remove()">
+    <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="color:var(--accent);font-size:1rem">${t.symbol} ${(t.side||"").toUpperCase()} — Trade Detail</h3>
+        <span onclick="this.closest('[style*=fixed]').remove()" style="cursor:pointer;color:var(--text-muted);font-size:1.2rem">&times;</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.8rem">
+        <div class="metric"><span class="label">Entry</span><span class="value">${(t.entry_price||0).toFixed(dec)}</span></div>
+        <div class="metric"><span class="label">Exit</span><span class="value">${(t.exit_price||0).toFixed(dec)}</span></div>
+        <div class="metric"><span class="label">SL</span><span class="value">${(t.stop_loss||0).toFixed(dec)}</span></div>
+        <div class="metric"><span class="label">TP1</span><span class="value">${(t.tp1||0).toFixed(dec)}</span></div>
+        <div class="metric"><span class="label">PnL %</span><span class="value ${t.pnl_pct>=0?"positive":"negative"}">${(t.pnl_pct||0).toFixed(2)}%</span></div>
+        <div class="metric"><span class="label">PnL $</span><span class="value ${t.pnl_usd>=0?"positive":"negative"}">$${(t.pnl_usd||0).toFixed(2)}</span></div>
+        <div class="metric"><span class="label">R Multiple</span><span class="value ${t.exit_r>=0?"positive":"negative"}">${(t.exit_r||0).toFixed(3)}R</span></div>
+        <div class="metric"><span class="label">MFE</span><span class="value">${(t.mfe_r||0).toFixed(3)}R</span></div>
+        <div class="metric"><span class="label">MAE</span><span class="value">${(t.mae_r||0).toFixed(3)}R</span></div>
+        <div class="metric"><span class="label">Exit Efficiency</span><span class="value">${exitEff}</span></div>
+        <div class="metric"><span class="label">Duration</span><span class="value">${dur}</span></div>
+        <div class="metric"><span class="label">Exit Reason</span><span class="value">${t.exit_reason||"--"}</span></div>
+        <div class="metric"><span class="label">Scanner</span><span class="value" style="color:var(--cyan)">${t.setup_type||t.scanner||"--"}</span></div>
+        <div class="metric"><span class="label">Trade Type</span><span class="value">${t.trade_type||"--"}</span></div>
+        <div class="metric"><span class="label">ML Prob</span><span class="value">${ml}</span></div>
+        <div class="metric"><span class="label">Regime</span><span class="value">${regime}</span></div>
+        <div class="metric"><span class="label">Leverage</span><span class="value">${t.leverage||"--"}x</span></div>
+        <div class="metric"><span class="label">Position</span><span class="value">$${(t.position_size_usd||0).toFixed(0)}</span></div>
+        <div class="metric"><span class="label">Fees</span><span class="value negative">$${(t.total_fees_usd||0).toFixed(2)}</span></div>
+        <div class="metric"><span class="label">Slippage</span><span class="value">${t.slippage_bps!=null?t.slippage_bps.toFixed(1)+"bp":"--"}</span></div>
+      </div>
+      <div style="margin-top:12px;font-size:.7rem;color:var(--text-muted)">
+        <div>Signal: ${t.reason||"--"}</div>
+        <div>ID: ${t.trade_id||"--"}</div>
+        <div>Time: ${t.entry_time||"--"} → ${t.exit_time||t.closed_at||"--"}</div>
+      </div>
+    </div></div>`;
+}
+
+// ── CSV EXPORT ───────────────────────────────────────────
+function exportCSV() {
+    if (!_closedTradesCache.length) { alert("No trades to export"); return; }
+    const headers = ["Date","Symbol","Side","Type","Scanner","Lev","Entry","Exit","PnL%","PnL$","R","MFE","MAE","ML","ExitReason","Duration_sec","Slippage_bps","Fees$"];
+    const rows = _closedTradesCache.map(t => [
+        t.closed_at||t.exit_time||"", t.symbol||"", t.side||"", t.trade_type||"",
+        t.setup_type||t.scanner||"", t.leverage||"", t.entry_price||0, t.exit_price||0,
+        (t.pnl_pct||0).toFixed(4), (t.pnl_usd||0).toFixed(4), (t.exit_r||0).toFixed(4),
+        (t.mfe_r||0).toFixed(4), (t.mae_r||0).toFixed(4),
+        t.metadata&&t.metadata.ml_probability!=null?(t.metadata.ml_probability).toFixed(4):"",
+        t.exit_reason||"", t.duration_sec||0, (t.slippage_bps||0).toFixed(2), (t.total_fees_usd||0).toFixed(4)
+    ]);
+    const csv = [headers.join(","), ...rows.map(r=>r.join(","))].join("\n");
+    const blob = new Blob([csv], {type:"text/csv"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "vn_edge_trades_" + new Date().toISOString().slice(0,10) + ".csv";
+    a.click();
+}
+
 // ── INIT ─────────────────────────────────────────────────
 switchTab("live");
 </script>
+<div id="trade-modal"></div>
 </body>
 </html>

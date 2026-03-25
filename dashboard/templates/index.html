@@ -357,6 +357,25 @@ textarea.contact-input{min-height:100px;resize:vertical}
 @media(max-width:480px){
   .features-grid{grid-template-columns:1fr}
 }
+/* ── RESPONSIVE: Mobile/Tablet ──────────────────────────── */
+@media(max-width:768px){
+  .header{padding:0 12px;height:50px}
+  .header-brand-name{font-size:1rem}
+  .header-brand-tagline{display:none}
+  .tab-bar{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tab-btn{padding:10px 12px;font-size:.68rem;white-space:nowrap}
+  .stat-grid{grid-template-columns:repeat(2,1fr)!important}
+  .stat-cards-row{grid-template-columns:repeat(2,1fr)!important}
+  table{font-size:.65rem}
+  th,td{padding:4px 6px}
+  .trade-card{grid-template-columns:1fr!important}
+  .cmd-center{grid-template-columns:1fr!important}
+  .cmd-action{font-size:1.4rem;padding:10px 16px}
+}
+@media(max-width:480px){
+  .header-status{display:none}
+  .stat-grid{grid-template-columns:1fr!important}
+}
 </style>
 </head>
 <body>
@@ -391,7 +410,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <span id="hdr-status" style="font-weight:600;font-size:.72rem">Connecting</span>
     </div>
     <span style="color:var(--text-muted);font-size:.72rem">Scalper: <span id="hdr-scalper" style="color:var(--green);font-weight:600;font-family:var(--font-mono)">--</span></span>
-    <span class="header-version">v2.0</span>
+    <span class="header-version">v2.1</span>
+    <a href="http://158.101.112.94:8081" target="_blank" style="padding:4px 10px;font-size:.65rem;border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.08);color:var(--purple);border-radius:4px;text-decoration:none;font-weight:600">ML Lab</a>
+    <button onclick="emergencyStop()" id="emergency-btn" style="padding:4px 12px;font-size:.65rem;border:1px solid rgba(255,59,92,.5);background:rgba(255,59,92,.1);color:var(--red);border-radius:4px;cursor:pointer;font-weight:700;letter-spacing:1px">STOP</button>
     <span class="session-info" id="session-info"></span>
     <button class="logout-btn" id="logout-btn" onclick="handleLogout()" style="display:none">LOGOUT</button>
   </div>
@@ -400,10 +421,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
-  <button class="tab-btn" data-tab="latency" onclick="switchTab('latency')">⚡ Latency Arb</button>
+  <button class="tab-btn" data-tab="latency" onclick="switchTab('latency')">Latency Arb</button>
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
-  <button class="tab-btn" data-tab="about" onclick="switchTab('about')">About</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
@@ -488,6 +508,12 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <!-- Signal Feed -->
     <div class="panel">
       <div class="panel-title">Signal Feed <span class="badge">last 10</span></div>
+      <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="filter-btn active" onclick="filterSignals('ALL')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:var(--accent-dim);color:var(--accent);border-radius:3px;cursor:pointer">ALL</button>
+        <button class="filter-btn" onclick="filterSignals('BTC')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">BTC</button>
+        <button class="filter-btn" onclick="filterSignals('ETH')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">ETH</button>
+        <button class="filter-btn" onclick="filterSignals('SOL')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">SOL</button>
+      </div>
       <div id="signal-feed"><div class="empty">No signals</div></div>
     </div>
 
@@ -1266,6 +1292,11 @@ function updateFooter(status) {
     const restartEl = document.getElementById("last-restart");
     if (uptimeEl && status.uptime) uptimeEl.textContent = "Uptime: " + status.uptime;
     if (restartEl && status.start_time) restartEl.textContent = "Last Restart: " + formatTime(status.start_time);
+    // Footer
+    const fu = document.getElementById("footer-uptime");
+    const fr = document.getElementById("footer-restart");
+    if (fu && status.uptime) fu.textContent = status.uptime;
+    if (fr && status.start_time) fr.textContent = formatTime(status.start_time);
 }
 
 // ── TAB SWITCHING ────────────────────────────────────────
@@ -2966,9 +2997,48 @@ function exportCSV() {
     a.click();
 }
 
+// ── SIGNAL FILTER ────────────────────────────────────────
+let _signalFilter = "ALL";
+function filterSignals(sym) {
+    _signalFilter = sym;
+    document.querySelectorAll(".filter-btn").forEach(b => {
+        b.style.background = b.textContent === sym ? "var(--accent-dim)" : "transparent";
+        b.style.color = b.textContent === sym ? "var(--accent)" : "var(--text-muted)";
+        if (b.textContent === sym) b.classList.add("active");
+        else b.classList.remove("active");
+    });
+    // Re-render signal feed with filter
+    const cards = document.querySelectorAll("#signal-feed .signal-card");
+    cards.forEach(c => {
+        if (sym === "ALL" || c.dataset.symbol && c.dataset.symbol.includes(sym)) c.style.display = "";
+        else c.style.display = "none";
+    });
+}
+
+// ── EMERGENCY STOP ───────────────────────────────────────
+async function emergencyStop() {
+    if (!confirm("EMERGENCY STOP: This will immediately halt ALL trading. Are you sure?")) return;
+    if (!confirm("CONFIRM: This action cannot be undone without restarting the bot.")) return;
+    try {
+        const r = await fetch("/api/emergency-stop", {method:"POST", credentials:"include"});
+        const d = await r.json();
+        if (d.status === "emergency_stop_activated") {
+            document.getElementById("emergency-btn").style.background = "var(--red)";
+            document.getElementById("emergency-btn").style.color = "#fff";
+            document.getElementById("emergency-btn").textContent = "STOPPED";
+            alert("EMERGENCY STOP ACTIVATED. All trading halted. Restart bot to resume.");
+        } else {
+            alert("Failed: " + JSON.stringify(d));
+        }
+    } catch(e) { alert("Emergency stop failed: " + e.message); }
+}
+
 // ── INIT ─────────────────────────────────────────────────
 switchTab("live");
 </script>
 <div id="trade-modal"></div>
+<footer style="text-align:center;padding:12px;font-size:.6rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,.03);margin-top:20px">
+  VN Edge v2.1 | <span id="footer-uptime">--</span> uptime | Last restart: <span id="footer-restart">--</span> | <a href="http://158.101.112.94:8081" target="_blank" style="color:var(--purple);text-decoration:none">ML Training Lab</a>
+</footer>
 </body>
 </html>

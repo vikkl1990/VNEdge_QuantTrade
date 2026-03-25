@@ -196,6 +196,10 @@ class RealTradingManager:
         if not self.enabled:
             return {"status": "disabled"}
 
+        # Dedup: skip if this paper trade already has a dry run/real entry
+        if paper_trade_id and paper_trade_id in self.paper_to_real:
+            return {"status": "already_mirrored", "existing_id": self.paper_to_real[paper_trade_id]}
+
         # Pre-flight safety checks
         allowed, reason = await self._preflight_checks(symbol, signal)
         if not allowed:
@@ -357,9 +361,10 @@ class RealTradingManager:
             else:
                 pnl_pct = (entry_p - exit_price) / entry_p if entry_p else 0
 
-            notional = entry_p * pos_size
+            # Use margin × leverage as notional (same as paper trade sizing)
+            notional = margin * leverage
             pnl_usd = pnl_pct * notional
-            fee_est = notional * 0.0015  # ~0.15% round trip
+            fee_est = notional * 0.0015  # ~0.15% round trip (0.075% × 2)
             net_pnl = pnl_usd - fee_est
 
             logger.info(

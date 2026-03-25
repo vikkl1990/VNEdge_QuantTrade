@@ -132,7 +132,7 @@ class RealTradingManager:
     """
 
     def __init__(self, exchange, config: Dict[str, Any], risk_manager=None):
-        self.exchange = exchange
+        self.exchange = exchange  # Main exchange (for paper/data)
         self.config = config
         self.risk_manager = risk_manager
 
@@ -148,10 +148,16 @@ class RealTradingManager:
 
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
-            max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 3),
+            max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 5),
         )
 
-        # Engine wraps the existing ExecutionEngine
+        # Dual exchange setup:
+        # DRY RUN → demo exchange (testnet, fake money)
+        # LIVE → real exchange (personal account, real money)
+        self._demo_exchange = None  # initialized lazily in _get_trading_exchange()
+        self._demo_connected = False
+
+        # Engine wraps the trading exchange (demo or real based on mode)
         self.engine = ExecutionEngine(exchange, config, risk_manager)
 
         # Track real trades: paper_trade_id → real Trade
@@ -170,6 +176,49 @@ class RealTradingManager:
 
         # Load persisted state (may override enabled/dry_run from saved toggle)
         self._load_state()
+
+    async def _get_trading_exchange(self):
+        """Get the correct exchange client based on mode.
+        DRY RUN → demo exchange (testnet)
+        LIVE → real exchange (personal account)
+        """
+        import os
+
+        if self.dry_run:
+            # Use demo exchange
+            if self._demo_exchange is None or not self._demo_connected:
+                try:
+                    import ccxt.async_support as ccxt_async
+                    demo_key = os.getenv("DELTA_DEMO_API_KEY", "")
+                    demo_secret = os.getenv("DELTA_DEMO_API_SECRET", "")
+                    demo_url = os.getenv("DELTA_DEMO_BASE_URL", "https://cdn-ind.testnet.deltaex.org")
+
+                    if not demo_key:
+                        logger.warning("REAL: No demo API key configured, using main exchange")
+                        return self.exchange
+
+                    self._demo_exchange = ccxt_async.delta({
+                        "apiKey": demo_key,
+                        "secret": demo_secret,
+                        "urls": {"api": {"public": demo_url, "private": demo_url}},
+                        "options": {"defaultType": "swap"},
+                    })
+                    await self._demo_exchange.load_markets()
+                    self._demo_connected = True
+                    logger.info("REAL: Demo exchange connected (testnet) — %d markets", len(self._demo_exchange.markets))
+                except Exception as e:
+                    logger.error("REAL: Failed to connect demo exchange: %s", e)
+                    return self.exchange
+            return type("DemoWrapper", (), {
+                "_exchange": self._demo_exchange,
+                "fetch_balance": self._demo_exchange.fetch_balance,
+                "set_leverage": lambda s, l: self._demo_exchange.set_leverage(l, s),
+                "fetch_ticker": self._demo_exchange.fetch_ticker,
+                "_to_exchange_symbol": lambda s: s,
+            })()
+        else:
+            # Use real exchange (already connected via main bot)
+            return self.exchange
 
         mode = "DRY RUN" if self.dry_run else "LIVE"
         status = "ENABLED" if self.enabled else "DISABLED"
@@ -218,27 +267,79 @@ class RealTradingManager:
         leverage = min(signal.get("leverage", 5), self.leverage_cap)
 
         if self.dry_run:
-            dry_id = f"dry_{paper_trade_id or str(int(time.time()))}"
+            # DRY RUN → Place REAL order on DEMO exchange (testnet, fake money)
+            dry_id = f"demo_{paper_trade_id or str(int(time.time()))}"
             entry_price = signal.get("entry_price", 0)
-            logger.info(
-                "REAL [DRY RUN]: %s %s %s | margin=$%.2f | pos=$%.2f | "
-                "size=%.6f | lev=%dx | entry=%.4f | SL=%.4f | id=%s",
-                symbol, signal.get("side", "?"), signal.get("metadata", {}).get("setup_type", "?"),
-                margin, margin * leverage, position_size, leverage,
-                entry_price, signal.get("stop_loss", 0), dry_id,
-            )
-            # Track dry run trade so dashboard can display it
             meta = signal.get("metadata", {})
             tps = signal.get("take_profits", [])
+            demo_fill = entry_price
+            slippage_bps = 0.0
+
+            try:
+                trading_ex = await self._get_trading_exchange()
+                raw_ex = getattr(trading_ex, '_exchange', trading_ex)
+                side_str = signal.get("side", "long")
+                order_side = "buy" if side_str in ("long", "buy") else "sell"
+                ex_symbol = symbol.replace("/USDT", "/USD:USD")
+
+                # Set leverage
+                try:
+                    await raw_ex.set_leverage(leverage, ex_symbol)
+                except Exception as e:
+                    logger.warning("REAL [DEMO]: set_leverage failed: %s", e)
+
+                # Place market entry on demo
+                order = await raw_ex.create_order(ex_symbol, "market", order_side, position_size, None)
+                if order:
+                    demo_fill = float(order.get("average", order.get("price", entry_price)) or entry_price)
+                    dry_id = "demo_%s" % order.get("id", dry_id)
+                    slippage_bps = abs(demo_fill - entry_price) / entry_price * 10000 if entry_price > 0 else 0
+                    logger.info("REAL [DEMO FILL]: %s %s | signal=%.4f fill=%.4f slip=%.1fbps | lots=%d",
+                               symbol, order_side, entry_price, demo_fill, slippage_bps, int(position_size))
+
+                    # Place SL on demo
+                    sl = signal.get("stop_loss", 0)
+                    close_side = "sell" if order_side == "buy" else "buy"
+                    if sl > 0:
+                        try:
+                            await raw_ex.create_order(ex_symbol, "market", close_side, position_size, None,
+                                {"stopPrice": sl, "type": "stop_market", "reduceOnly": True})
+                            logger.info("REAL [DEMO SL]: %s @ %.4f", symbol, sl)
+                        except Exception as e:
+                            logger.warning("REAL [DEMO]: SL failed: %s", e)
+
+                    # Place TP1 on demo
+                    if tps:
+                        tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else float(tps[0].get("price", 0) if isinstance(tps[0], dict) else 0)
+                        if tp1 > 0:
+                            try:
+                                await raw_ex.create_order(ex_symbol, "limit", close_side, position_size, tp1,
+                                    {"reduceOnly": True})
+                                logger.info("REAL [DEMO TP1]: %s @ %.4f", symbol, tp1)
+                            except Exception as e:
+                                logger.warning("REAL [DEMO]: TP1 failed: %s", e)
+
+            except Exception as demo_err:
+                logger.warning("REAL [DEMO]: Order failed: %s — tracking locally only", demo_err)
+
+            logger.info(
+                "REAL [DRY RUN]: %s %s %s | margin=$%.2f | pos=$%.2f | "
+                "lots=%d | lev=%dx | signal=%.4f | fill=%.4f | slip=%.1fbps | id=%s",
+                symbol, signal.get("side", "?"), meta.get("setup_type", "?"),
+                margin, margin * leverage, int(position_size), leverage,
+                entry_price, demo_fill, slippage_bps, dry_id,
+            )
+
+            # Track with demo fill data
             dry_trade = type("DryTrade", (), {
                 "trade_id": dry_id,
                 "symbol": symbol,
                 "side": signal.get("side", "long"),
-                "entry_price": entry_price,
+                "entry_price": demo_fill,
                 "stop_loss": signal.get("stop_loss", 0),
-                "tp1": tps[0] if len(tps) > 0 else 0,
-                "tp2": tps[1] if len(tps) > 1 else 0,
-                "tp3": tps[2] if len(tps) > 2 else 0,
+                "tp1": float(tps[0]) if tps and isinstance(tps[0], (int, float)) else 0,
+                "tp2": float(tps[1]) if len(tps) > 1 and isinstance(tps[1], (int, float)) else 0,
+                "tp3": float(tps[2]) if len(tps) > 2 and isinstance(tps[2], (int, float)) else 0,
                 "position_size": position_size,
                 "margin": margin,
                 "leverage": leverage,
@@ -251,7 +352,8 @@ class RealTradingManager:
                 "ml_verdict": meta.get("ml_verdict", ""),
                 "regime": meta.get("regime", ""),
                 "paper_trade_id": paper_trade_id,
-                "current_price": entry_price,  # updated by paper sync
+                "current_price": demo_fill,
+                "slippage_bps": slippage_bps,
             })()
             self.real_trades[dry_id] = dry_trade
             if paper_trade_id:
@@ -267,6 +369,8 @@ class RealTradingManager:
                 "position_size": position_size,
                 "leverage": leverage,
                 "paper_trade_id": paper_trade_id,
+                "fill_price": demo_fill,
+                "slippage_bps": slippage_bps,
             }
 
         # === REAL EXECUTION ===
@@ -511,7 +615,8 @@ class RealTradingManager:
 
         # 4b. Duplicate check — exchange positions (prevents double entry after restart)
         try:
-            raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+            trading_ex = await self._get_trading_exchange()
+            raw_exchange = getattr(trading_ex, '_exchange', trading_ex)
             positions = await raw_exchange.fetch_positions()
             ex_symbol = symbol.replace("/USDT", "/USD:USD")
             for p in positions:
@@ -617,13 +722,15 @@ class RealTradingManager:
     # ==================================================================
 
     async def _get_balance(self) -> float:
-        """Fetch real exchange wallet balance with 60s cache."""
+        """Fetch wallet balance from the correct exchange (demo or real) with 60s cache."""
         now = time.time()
         if self._cached_balance is not None and (now - self._balance_ts) < 60:
             return self._cached_balance
 
         try:
-            bal = await self.exchange.fetch_balance()
+            trading_ex = await self._get_trading_exchange()
+            raw_ex = getattr(trading_ex, '_exchange', trading_ex)
+            bal = await raw_ex.fetch_balance()
             usdt = 0
             # ccxt returns dict-like object: bal['USDT']['free'] or bal['free']['USDT']
             if isinstance(bal, dict):
@@ -631,16 +738,19 @@ class RealTradingManager:
                 free = bal.get("free", {})
                 total = bal.get("total", {})
                 if isinstance(free, dict):
-                    usdt = free.get("USDT", 0)
+                    usdt = free.get("USDT", free.get("USD", 0))
                 elif isinstance(total, dict):
-                    usdt = total.get("USDT", 0)
-                # Some exchanges: {'USDT': {'free': 118.46}}
+                    usdt = total.get("USDT", total.get("USD", 0))
+                # Some exchanges: {'USDT': {'free': 118.46}} or {'USD': {'free': 100}}
                 if not usdt:
-                    usdt_data = bal.get("USDT", {})
-                    if isinstance(usdt_data, dict):
-                        usdt = usdt_data.get("free", usdt_data.get("total", 0))
-                    elif isinstance(usdt_data, (int, float)):
-                        usdt = usdt_data
+                    for currency in ["USDT", "USD"]:
+                        cdata = bal.get(currency, {})
+                        if isinstance(cdata, dict):
+                            usdt = cdata.get("free", cdata.get("total", 0))
+                        elif isinstance(cdata, (int, float)):
+                            usdt = cdata
+                        if usdt:
+                            break
             # ccxt Balance object with attributes (Delta uses 'USD' not 'USDT')
             elif hasattr(bal, 'free') and isinstance(bal.free, dict):
                 usdt = bal.free.get("USDT", bal.free.get("USD", 0))
@@ -847,13 +957,14 @@ class RealTradingManager:
         return await self._get_balance()
 
     async def sync_exchange_positions(self) -> None:
-        """Reconcile local state with actual exchange positions.
+        """Reconcile local state with actual exchange positions (demo or real).
         - Adds orphaned exchange positions to tracking
         - Detects positions that closed on exchange (SL hit, liquidation)
         - Records closed trades with PnL
         """
         try:
-            raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+            trading_ex = await self._get_trading_exchange()
+            raw_exchange = getattr(trading_ex, '_exchange', trading_ex)
             positions = await raw_exchange.fetch_positions()
 
             # Build set of currently open symbols on exchange

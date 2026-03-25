@@ -223,6 +223,15 @@ class TrackedSignal:
     mae_r: float = 0.0              # Max Adverse Excursion in R (worst drawdown)
     mfe_r: float = 0.0              # Max Favorable Excursion in R (best unrealized)
 
+    # Slippage tracking
+    signal_price: float = 0.0         # price at signal generation (before execution)
+    fill_price: float = 0.0           # actual fill price from exchange
+    slippage_ticks: float = 0.0       # (fill - signal) / tick_size
+    slippage_bps: float = 0.0         # slippage in basis points
+    slippage_impact_r: float = 0.0    # slippage in R units
+    order_type: str = "market"        # "market" or "limit"
+    fill_time_ms: float = 0.0         # time from signal to fill
+
     # Tracking state
     status: str = "active"  # active, tp1_hit, tp2_hit, tp3_hit, stopped, expired
     tp1_hit: bool = False
@@ -575,6 +584,15 @@ class TrackedSignal:
             entry_time=sig.get("timestamp", datetime.now(timezone.utc).isoformat()),
             highest_price=entry,
             lowest_price=entry,
+            # Slippage: signal_price = intended entry, fill_price = actual fill
+            # In paper mode both equal entry (zero slippage)
+            # Real mode: fill_price updated after exchange confirms fill
+            signal_price=entry,
+            fill_price=entry,  # updated by real manager if live
+            slippage_ticks=0.0,
+            slippage_bps=0.0,
+            slippage_impact_r=0.0,
+            order_type=meta.get("order_type", "market"),
         )
 
 
@@ -1451,6 +1469,14 @@ class SignalTracker:
                 # Fee tracking
                 "total_fees_usd": ts.total_fees_usd,
                 "within_scalper": ts.within_scalper,
+                # Slippage tracking
+                "signal_price": ts.signal_price,
+                "fill_price": ts.fill_price,
+                "slippage_ticks": round(ts.slippage_ticks, 2),
+                "slippage_bps": round(ts.slippage_bps, 2),
+                "slippage_impact_r": round(ts.slippage_impact_r, 4),
+                "order_type": ts.order_type,
+                "fill_time_ms": round(ts.fill_time_ms, 1),
                 # Mode tracking
                 "operating_mode": meta.get("operating_mode", "unknown"),
             }

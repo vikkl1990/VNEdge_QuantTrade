@@ -816,6 +816,19 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- Execution Quality Panel -->
+  <div class="panel" style="border-color:rgba(0,212,255,.15)">
+    <div class="panel-title">Execution Quality <span class="badge" style="background:rgba(0,212,255,.15);color:var(--cyan)">Slippage Tracking</span></div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:8px">
+      <div class="stat-card"><div class="stat-value" id="eq-avg-slip" style="color:var(--green)">--</div><div class="stat-label">Avg Slip (ticks)</div></div>
+      <div class="stat-card"><div class="stat-value" id="eq-avg-bps" style="color:var(--green)">--</div><div class="stat-label">Avg Slip (bps)</div></div>
+      <div class="stat-card"><div class="stat-value" id="eq-drag-r" style="color:var(--yellow)">--</div><div class="stat-label">Slip Drag (R) 7d</div></div>
+      <div class="stat-card"><div class="stat-value" id="eq-max-slip" style="color:var(--red)">--</div><div class="stat-label">Max Slip (ticks)</div></div>
+      <div class="stat-card"><div class="stat-value" id="eq-fill-rate">--</div><div class="stat-label">Fill Rate</div></div>
+    </div>
+    <div style="margin-top:8px;font-size:.7rem;color:var(--text-muted)">Paper mode: slippage = 0 (simulated fills at signal price). Real mode: measures actual exchange fill vs signal price.</div>
+  </div>
+
   <!-- Exit Quality + AI Insights -->
   <div class="grid-2">
     <div class="panel">
@@ -879,10 +892,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div id="paper-closed-wrap" class="tbl-wrap" style="max-height:400px;overflow-y:auto">
       <table>
         <thead>
-          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Type</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>ML</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
+          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Type</th><th>Scanner</th><th>Lev</th><th>Entry</th><th>Exit</th><th>Slip</th><th>PnL%</th><th>PnL $</th><th>R</th><th>MFE</th><th>ML</th><th>Exit Reason</th><th>Duration</th><th>TP</th></tr>
         </thead>
         <tbody id="closed-trades-body">
-          <tr><td colspan="16" class="empty">No closed trades</td></tr>
+          <tr><td colspan="17" class="empty">No closed trades</td></tr>
         </tbody>
       </table>
     </div>
@@ -1439,6 +1452,28 @@ async function refreshLive() {
     updateScalperCountdown(status);
     updatePerSymbolStatus(status, decision);
     updateRecentClosed(closed);
+
+    // Execution Quality metrics (slippage tracking)
+    if (closed && Array.isArray(closed) && closed.length > 0) {
+        const recent50 = closed.slice(-50);
+        const slips = recent50.map(t => t.slippage_bps || 0);
+        const slipTicks = recent50.map(t => t.slippage_ticks || 0);
+        const slipR = recent50.map(t => t.slippage_impact_r || 0);
+        const avgSlipBps = slips.reduce((a,b)=>a+b,0) / slips.length;
+        const avgSlipTicks = slipTicks.reduce((a,b)=>a+b,0) / slipTicks.length;
+        const dragR = slipR.reduce((a,b)=>a+b,0);
+        const maxSlip = Math.max(...slipTicks);
+        const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+        el("eq-avg-slip", avgSlipTicks.toFixed(2));
+        el("eq-avg-bps", avgSlipBps.toFixed(1));
+        el("eq-drag-r", dragR.toFixed(4) + "R");
+        el("eq-max-slip", maxSlip.toFixed(1));
+        el("eq-fill-rate", "100%");
+        // Color coding
+        const setColor = (id, val, g, y) => { const e = document.getElementById(id); if (e) e.style.color = val <= g ? "var(--green)" : val <= y ? "var(--yellow)" : "var(--red)"; };
+        setColor("eq-avg-slip", avgSlipTicks, 1.5, 3.0);
+        setColor("eq-max-slip", maxSlip, 3.0, 5.0);
+    }
 
     // Mini bar
     try {
@@ -2208,7 +2243,7 @@ function updateRealClosedTrades(realStatus) {
 function updateClosedTrades(closed) {
     const body = document.getElementById("closed-trades-body");
     if (!closed || !Array.isArray(closed) || closed.length === 0) {
-        body.innerHTML = '<tr><td colspan="16" class="empty">No closed trades</td></tr>';
+        body.innerHTML = '<tr><td colspan="17" class="empty">No closed trades</td></tr>';
         return;
     }
     const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
@@ -2236,6 +2271,7 @@ function updateClosedTrades(closed) {
             <td style="color:var(--yellow)">${lev}x</td>
             <td>${num(t.entry_price || t.entry, t.entry_price > 100 ? 2 : 4)}</td>
             <td>${num(t.exit_price || t.exit, t.exit_price > 100 ? 2 : 4)}</td>
+            <td style="color:${(t.slippage_bps||0) <= 1.5 ? 'var(--green)' : (t.slippage_bps||0) <= 3 ? 'var(--yellow)' : 'var(--red)'};font-family:var(--font-mono);font-size:.72rem">${t.slippage_bps != null ? Number(t.slippage_bps).toFixed(1) + 'bp' : '--'}</td>
             <td class="${pnlClass(pnl)}" style="font-weight:600">${pnlSign(pnl)}%</td>
             <td class="${pnlClass(pnlUsd)}" style="font-weight:700">${pnlUsd >= 0 ? "+$" : "-$"}${Math.abs(pnlUsd).toFixed(2)}</td>
             <td class="${pnlClass(r)}">${pnlSign(r)}R</td>

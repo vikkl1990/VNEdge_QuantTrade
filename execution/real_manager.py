@@ -496,11 +496,34 @@ class RealTradingManager:
         if open_count >= self.max_open:
             return False, f"max_open: {open_count}/{self.max_open} positions"
 
-        # 4. Duplicate check
+        # 4. Duplicate check — local state
         side = signal.get("side", "")
+        if hasattr(side, "value"):
+            side = side.value
         for t in self.real_trades.values():
-            if t.symbol == symbol and t.side.value == side:
-                return False, f"duplicate: {symbol} {side} already open"
+            t_side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            t_sym = getattr(t, "symbol", "")
+            # Match both USDT and USD:USD formats
+            sym_match = (t_sym == symbol or
+                        t_sym.replace("/USDT", "/USD:USD") == symbol.replace("/USDT", "/USD:USD"))
+            if sym_match and t_side == side:
+                return False, f"duplicate: {symbol} {side} already open (local)"
+
+        # 4b. Duplicate check — exchange positions (prevents double entry after restart)
+        try:
+            raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+            positions = await raw_exchange.fetch_positions()
+            ex_symbol = symbol.replace("/USDT", "/USD:USD")
+            for p in positions:
+                contracts = float(p.get("contracts", 0) or 0)
+                if abs(contracts) == 0:
+                    continue
+                p_sym = p.get("symbol", "")
+                p_side = "long" if p.get("side") in ("buy", "long") else "short"
+                if (p_sym == ex_symbol or p_sym == symbol) and p_side == side:
+                    return False, f"duplicate: {symbol} {side} already open on exchange"
+        except Exception as e:
+            logger.warning("REAL: Exchange duplicate check failed: %s (continuing)", e)
 
         # 5. Balance check
         balance = await self._get_balance()

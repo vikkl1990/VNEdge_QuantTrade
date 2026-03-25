@@ -21,7 +21,7 @@ from execution.trade import (
     TradeStatus,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("bot.execution.engine")
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -527,11 +527,15 @@ class ExecutionEngine:
         Returns the number of orders cancelled.
         """
         cancelled = 0
+        raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+        ex_symbol = symbol
+        if hasattr(self.exchange, '_to_exchange_symbol'):
+            ex_symbol = self.exchange._to_exchange_symbol(symbol)
         try:
-            open_orders = await self.exchange.fetch_open_orders(symbol)
+            open_orders = await raw_exchange.fetch_open_orders(ex_symbol)
             for order in open_orders:
                 try:
-                    await self.exchange.cancel_order(order["id"], symbol)
+                    await raw_exchange.cancel_order(order["id"], ex_symbol)
                     cancelled += 1
                     logger.debug("Cancelled order %s for %s", order["id"], symbol)
                 except Exception as e:
@@ -604,17 +608,25 @@ class ExecutionEngine:
 
         for attempt in range(MAX_RETRIES):
             try:
+                # Use raw ccxt exchange directly (bypass CcxtExchangeClient wrapper)
+                # Raw ccxt signature: create_order(symbol, type, side, amount, price, params)
+                raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+                ex_symbol = symbol
+                # Convert symbol for exchange if wrapper has the method
+                if hasattr(self.exchange, '_to_exchange_symbol'):
+                    ex_symbol = self.exchange._to_exchange_symbol(symbol)
+
                 if order_type == "market":
-                    order = await self.exchange.create_order(
-                        symbol, "market", side, amount, None, params
+                    order = await raw_exchange.create_order(
+                        ex_symbol, "market", side, amount, None, params
                     )
                 elif order_type == "limit":
-                    order = await self.exchange.create_order(
-                        symbol, "limit", side, amount, price, params
+                    order = await raw_exchange.create_order(
+                        ex_symbol, "limit", side, amount, price, params
                     )
                 elif order_type == "stop_market":
-                    order = await self.exchange.create_order(
-                        symbol, "market", side, amount, None,
+                    order = await raw_exchange.create_order(
+                        ex_symbol, "market", side, amount, None,
                         {**params, "stopPrice": price, "type": "stop_market"},
                     )
                 else:
@@ -661,15 +673,21 @@ class ExecutionEngine:
         """
         Place stop-loss and take-profit orders on the exchange after entry fill.
         These are best-effort; the bot also monitors prices locally.
+        Uses raw ccxt exchange to bypass CcxtExchangeClient wrapper.
         """
         symbol = trade.symbol
         close_side = "sell" if trade.side == TradeSide.LONG else "buy"
+        raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+        ex_symbol = symbol
+        if hasattr(self.exchange, '_to_exchange_symbol'):
+            ex_symbol = self.exchange._to_exchange_symbol(symbol)
 
-        # Place SL as stop-market
+        # Place SL as stop-market (full position close)
         if trade.stop_loss > 0:
             try:
-                sl_order = await self.exchange.create_order(
-                    symbol, "market", close_side, trade.remaining_size, None,
+                sl_size = max(1, round(trade.remaining_size))  # Integer lots for Delta
+                sl_order = await raw_exchange.create_order(
+                    ex_symbol, "market", close_side, sl_size, None,
                     {
                         "stopPrice": trade.stop_loss,
                         "type": "stop_market",
@@ -678,34 +696,46 @@ class ExecutionEngine:
                 )
                 if sl_order:
                     trade.order_ids.append(sl_order.get("id", ""))
-                    logger.debug("SL order placed: %s @ %.4f", sl_order.get("id"), trade.stop_loss)
+                    logger.info("SL order placed: %s @ %.4f (id=%s)",
+                               symbol, trade.stop_loss, sl_order.get("id"))
             except Exception as e:
                 logger.warning("Failed to place SL order for %s: %s", trade.trade_id, e)
 
-        # Place TP limit orders
-        for i, tp in enumerate(trade.take_profits):
+        # Place TP1 as limit order (only TP1 on exchange, bot manages TP2/TP3)
+        if trade.take_profits:
+            tp = trade.take_profits[0]
             try:
                 tp_size = trade.remaining_size * tp.close_pct
-                if tp_size <= 0:
-                    continue
-                tp_order = await self.exchange.create_order(
-                    symbol, "limit", close_side, tp_size, tp.price,
-                    {"reduceOnly": True},
-                )
-                if tp_order:
-                    tp.order_id = tp_order.get("id", "")
-                    trade.order_ids.append(tp.order_id)
-                    logger.debug(
-                        "TP%d order placed: %s @ %.4f (%.0f%%)",
-                        i + 1, tp.order_id, tp.price, tp.close_pct * 100,
+                # Delta uses integer lots — round up to at least 1
+                tp_size = max(1, round(tp_size))
+                # If position is small (1-2 lots), close entire position at TP1
+                if trade.remaining_size <= 2:
+                    tp_size = trade.remaining_size
+                if tp_size > 0 and tp.price > 0:
+                    tp_order = await raw_exchange.create_order(
+                        ex_symbol, "limit", close_side, tp_size, tp.price,
+                        {"reduceOnly": True},
                     )
+                    if tp_order:
+                        tp.order_id = tp_order.get("id", "")
+                        trade.order_ids.append(tp.order_id)
+                        logger.info(
+                            "TP1 order placed: %s @ %.4f (%d lots, id=%s)",
+                            symbol, tp.price, tp_size, tp.order_id,
+                        )
             except Exception as e:
-                logger.warning("Failed to place TP%d order for %s: %s", i + 1, trade.trade_id, e)
+                logger.warning("Failed to place TP1 order for %s: %s", trade.trade_id, e)
 
     async def _set_leverage(self, symbol: str, leverage: int) -> None:
         """Set leverage on the exchange for a symbol."""
         try:
-            await self.exchange.set_leverage(leverage, symbol)
+            # CcxtExchangeClient: set_leverage(symbol, leverage)
+            # Raw ccxt: set_leverage(leverage, symbol)
+            raw_exchange = getattr(self.exchange, '_exchange', self.exchange)
+            ex_symbol = symbol
+            if hasattr(self.exchange, '_to_exchange_symbol'):
+                ex_symbol = self.exchange._to_exchange_symbol(symbol)
+            await raw_exchange.set_leverage(leverage, ex_symbol)
             logger.debug("Leverage set to %dx for %s", leverage, symbol)
         except Exception as e:
             # Some exchanges don't support per-symbol leverage changes

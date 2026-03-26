@@ -910,33 +910,37 @@ class SignalTracker:
                     ts.mfe_stale_seconds = now_ts - ts.last_mfe_update_time
 
                 # MFE-based lock: protect percentage of peak profit
+                # More aggressive tiers — lock more as MFE grows
                 if ts.peak_mfe_r >= 0.15:
-                    if ts.peak_mfe_r >= 1.0:
-                        lock_pct = 0.75  # lock 75% of peak when >1R
-                    elif ts.peak_mfe_r >= 0.6:
-                        lock_pct = 0.65  # lock 65% when >0.6R
+                    if ts.peak_mfe_r >= 1.5:
+                        lock_pct = 0.85  # lock 85% of peak when >1.5R
+                    elif ts.peak_mfe_r >= 1.0:
+                        lock_pct = 0.80  # lock 80% when >1R
+                    elif ts.peak_mfe_r >= 0.75:
+                        lock_pct = 0.72  # lock 72% when >0.75R
+                    elif ts.peak_mfe_r >= 0.5:
+                        lock_pct = 0.65  # lock 65% when >0.5R
                     elif ts.peak_mfe_r >= 0.3:
-                        lock_pct = 0.50  # lock 50% when >0.3R
+                        lock_pct = 0.55  # lock 55% when >0.3R
                     else:
                         lock_pct = 0.0   # breakeven when >0.15R
 
-                    # ── FIX #3: TIME-BASED TIGHTENING ──
-                    # If MFE hasn't improved in 10 min, tighten lock by 15%
-                    if ts.mfe_stale_seconds > 600 and ts.peak_mfe_r > 0.3:
-                        lock_pct = min(lock_pct + 0.15, 0.85)
+                    # ── TIME-BASED TIGHTENING ──
+                    # If MFE hasn't improved in 8 min, tighten lock by 10%
+                    if ts.mfe_stale_seconds > 480 and ts.peak_mfe_r > 0.3:
+                        lock_pct = min(lock_pct + 0.10, 0.90)
 
-                    # ── FIX #4: REGIME-ADAPTIVE TRAIL ──
+                    # ── REGIME-ADAPTIVE TRAIL ──
                     _regime = ts.metadata.get("regime", "") if ts.metadata else ""
                     if _regime in ("trending_up", "trending_down", "breakout"):
-                        lock_pct *= 0.85  # wider trail in trends (let it run)
+                        lock_pct *= 0.92  # slight discount in trends (was 0.85 — too loose)
                     elif _regime in ("ranging", "sideways", "quiet"):
-                        lock_pct *= 1.15  # tighter in ranges (take what you can)
-                        lock_pct = min(lock_pct, 0.90)
+                        lock_pct *= 1.10  # tighter in ranges
+                        lock_pct = min(lock_pct, 0.92)
 
-                    # ── FIX #5: MOMENTUM DECAY ──
-                    # If momentum is fading, tighten further
+                    # ── MOMENTUM DECAY ──
                     if ts.momentum_decay_count >= 3 and ts.peak_mfe_r > 0.3:
-                        lock_pct = min(lock_pct + 0.10, 0.90)
+                        lock_pct = min(lock_pct + 0.10, 0.92)
 
                     lock_r = ts.peak_mfe_r * lock_pct
                     lock_dist = ts.initial_risk * lock_r

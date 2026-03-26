@@ -297,14 +297,15 @@ class ScalpStrategy(BaseStrategy):
         # --- Tier 2: Scanner weight tiers ---
         # structure_bounce_only=True overrides these to shadow everything else
         self.scanner_size_tiers = {
-            "structure_bounce": 1.0,     # ✅ ONLY real trader (68% WR, +164%)
-            "order_block_entry": 0.8,    # ✅ Institutional zones — secondary
-            "rsi_divergence": 0.0,       # ❌ ML-only (70% WR but tiny sample)
-            "ema_momentum": 0.0,         # ❌ ML-only (-14% PnL)
-            "trend_continuation": 0.0,   # ❌ ML-only (+0.4% marginal)
-            "vwap_mean_revert": 0.0,     # ❌ ML-only (-10% PnL)
-            "liquidity_sweep": 0.8,      # ✅ Upgraded: EQL/EQH sweep + displacement
-            "bos_choch": 0.8,          # ✅ BOS/CHOCH with displacement
+            "structure_bounce": 1.0,     # ✅ Primary (82% WR)
+            "order_block_entry": 0.8,    # ✅ Institutional zones
+            "rsi_divergence": 0.7,       # ✅ Enabled: divergence signals
+            "ema_momentum": 0.7,         # ✅ Enabled: momentum after cross
+            "trend_continuation": 0.8,   # ✅ Enabled: trend pullback entry
+            "vwap_mean_revert": 0.7,     # ✅ Enabled: VWAP band reversal
+            "liquidity_sweep": 0.8,      # ✅ EQL/EQH sweep + displacement
+            "bos_choch": 0.8,            # ✅ BOS/CHOCH with displacement
+            "cvd_divergence": 0.8,       # ✅ NEW: volume-price divergence
             "simple_bias": 0.0,          # ❌ ML training only
         }
         self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
@@ -1056,6 +1057,9 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_structure_bounce,
                 self._scan_bos_choch,               # BOS with displacement in trend
                 self._scan_liquidity_sweep,          # sweep + reversal in trend
+                self._scan_cvd_divergence,           # volume-price divergence
+                self._scan_vwap_mean_revert,         # VWAP extreme reversal
+                self._scan_rsi_divergence,           # RSI divergence
             ],
             "trending_down": [
                 self._scan_trend_continuation,
@@ -1063,6 +1067,9 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_structure_bounce,
                 self._scan_bos_choch,
                 self._scan_liquidity_sweep,          # sweep + reversal in trend
+                self._scan_cvd_divergence,           # volume-price divergence
+                self._scan_vwap_mean_revert,         # VWAP extreme reversal
+                self._scan_rsi_divergence,           # RSI divergence
             ],
             "breakout": [
                 self._scan_bos_choch,               # BOS/CHOCH ideal for breakouts
@@ -2422,10 +2429,11 @@ class ScalpStrategy(BaseStrategy):
         if atr <= 0 or np.isnan(atr):
             return None
 
-        # --- STEP 1: Find EMA cross in last 6 candles (NOT current bar) ---
+        # --- STEP 1: Find EMA cross in last 12 candles (NOT current bar) ---
+        # Extended from 6 to 12 — crosses are rare on 5m candles
         cross_idx = None
         cross_type = None  # "bullish" or "bearish"
-        for i in range(2, min(7, len(df))):
+        for i in range(2, min(13, len(df))):
             bar = df.iloc[-i]
             bar_prev = df.iloc[-i - 1] if (i + 1) <= len(df) else None
             if bar_prev is None:
@@ -2710,15 +2718,19 @@ class ScalpStrategy(BaseStrategy):
             return None
 
         # Determine trend direction from EMA alignment
-        is_uptrend = ema8 > ema21 > ema50
-        is_downtrend = ema8 < ema21 < ema50
+        # Relaxed: only need ema8 vs ema21 (not strict triple alignment)
+        is_uptrend = ema8 > ema21
+        is_downtrend = ema8 < ema21
         if not is_uptrend and not is_downtrend:
-            return None  # No clear trend = no continuation signal
+            return None
 
         side = OrderSide.LONG if is_uptrend else OrderSide.SHORT
         ema_gap_pct = abs(ema8 - ema21) / ema21 * 100 if ema21 > 0 else 0
-        if ema_gap_pct < 0.02:
-            return None  # EMAs too close = not a real trend (relaxed from 0.05)
+        if ema_gap_pct < 0.01:
+            return None  # EMAs too close (relaxed from 0.02)
+
+        # Bonus for triple alignment (ema8 > ema21 > ema50)
+        triple_aligned = (ema8 > ema21 > ema50) if is_uptrend else (ema8 < ema21 < ema50)
 
         # --- STEP 1: Find impulse candle in last 8 bars ---
         impulse_idx = None
@@ -2729,8 +2741,8 @@ class ScalpStrategy(BaseStrategy):
             bar_atr = bar.get("atr", atr)
             if bar_atr <= 0 or np.isnan(bar_atr):
                 bar_atr = atr
-            if bar_body < bar_atr * 0.5:
-                continue  # not impulsive enough (relaxed from 0.8 — 15m candles have lower body/ATR)
+            if bar_body < bar_atr * 0.35:
+                continue  # not impulsive enough (relaxed from 0.5 — 5m candles have smaller bodies)
             # Must be in trend direction
             if side == OrderSide.LONG and bar["close"] > bar["open"]:
                 impulse_idx = i
@@ -2921,10 +2933,10 @@ class ScalpStrategy(BaseStrategy):
         rsi_diff_bull = rsi_now - rsi_at_min
         rsi_diff_bear = rsi_at_max - rsi_now
 
-        # Bullish divergence - require STRONG divergence
-        if (close <= price_min * 1.001  # price very near/below the recent low
-            and rsi_diff_bull >= 8       # RSI must be 8+ points higher (was 3)
-            and rsi_now < 40             # RSI must be in oversold territory (was 45)
+        # Bullish divergence - relaxed for 5m crypto
+        if (close <= price_min * 1.003  # price near the recent low (relaxed from 1.001)
+            and rsi_diff_bull >= 5       # RSI 5+ points higher (relaxed from 8)
+            and rsi_now < 45             # RSI in oversold-ish territory (relaxed from 40)
             and rsi_at_min < 30):        # Original RSI was truly oversold
             side = OrderSide.LONG
             confs.append(f"Bullish RSI divergence ({rsi_at_min:.0f}→{rsi_now:.0f})")
@@ -2937,11 +2949,11 @@ class ScalpStrategy(BaseStrategy):
                 confs.append("Strong divergence")
                 score += 10
 
-        # Bearish divergence - require STRONG divergence
-        elif (close >= price_max * 0.999  # price very near/above the recent high
-              and rsi_diff_bear >= 8       # RSI must be 8+ points lower (was 3)
-              and rsi_now > 60             # RSI must be in overbought territory (was 55)
-              and rsi_at_max > 70):        # Original RSI was truly overbought
+        # Bearish divergence - relaxed for 5m crypto
+        elif (close >= price_max * 0.997  # price near the recent high (relaxed from 0.999)
+              and rsi_diff_bear >= 5       # RSI 5+ points lower (relaxed from 8)
+              and rsi_now > 55             # RSI in overbought-ish territory (relaxed from 60)
+              and rsi_at_max > 62):        # Original RSI was elevated (relaxed from 70)
             side = OrderSide.SHORT
             confs.append(f"Bearish RSI divergence ({rsi_at_max:.0f}→{rsi_now:.0f})")
             score += 35
@@ -3765,6 +3777,152 @@ class ScalpStrategy(BaseStrategy):
         )
 
     # ==================================================================
+    # ==================================================================
+    # CVD (Cumulative Volume Delta) Scanner
+    # ==================================================================
+
+    def _scan_cvd_divergence(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """CVD Divergence: price vs volume delta discrepancy.
+
+        Detects when price makes new high/low but volume delta disagrees:
+        - Bearish CVD div: price higher high + volume declining = hidden selling
+        - Bullish CVD div: price lower low + volume increasing = hidden buying
+
+        This captures the "smart money" divergence that MACD/RSI miss.
+        Uses volume × direction as proxy for CVD when real delta unavailable.
+        """
+        if len(df) < 15:
+            return None
+
+        last = df.iloc[-1]
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high_val = float(last["high"])
+        low_val = float(last["low"])
+        volume = float(last.get("volume", 0))
+        body = abs(close - open_)
+
+        # Build CVD proxy: cumulative (volume × direction)
+        # direction = +1 if close > open, -1 if close < open, 0 if doji
+        lookback = min(15, len(df) - 1)
+        window = df.iloc[-lookback:]
+        cvd = 0.0
+        cvd_values = []
+        for _, bar in window.iterrows():
+            bar_close = float(bar["close"])
+            bar_open = float(bar["open"])
+            bar_vol = float(bar.get("volume", 0))
+            if bar_close > bar_open:
+                cvd += bar_vol
+            elif bar_close < bar_open:
+                cvd -= bar_vol
+            cvd_values.append(cvd)
+
+        if len(cvd_values) < 10:
+            return None
+
+        # Price trend: compare first half vs second half
+        half = len(window) // 2
+        price_first = float(window.iloc[:half]["close"].mean())
+        price_second = float(window.iloc[half:]["close"].mean())
+        cvd_first = sum(cvd_values[:half]) / half
+        cvd_second = sum(cvd_values[half:]) / (len(cvd_values) - half)
+
+        # Rolling highs/lows
+        recent_high = float(window["high"].max())
+        recent_low = float(window["low"].min())
+        recent_vol_avg = float(window["volume"].mean()) if "volume" in window.columns else 1
+
+        side = None
+        confs = []
+        score = 0
+
+        # Bearish CVD divergence: price trending up but CVD trending down
+        if price_second > price_first * 1.001 and cvd_second < cvd_first * 0.8:
+            # Price higher but CVD lower = hidden selling
+            if close < open_:  # current bar bearish (confirmation)
+                side = OrderSide.SHORT
+                div_strength = abs(cvd_first - cvd_second) / max(abs(cvd_first), 1)
+                confs.append(f"CVD bearish divergence (strength={div_strength:.1f})")
+                score += 30
+                if div_strength > 1.5:
+                    score += 15
+                    confs.append("Strong volume-price disconnect")
+                elif div_strength > 0.8:
+                    score += 8
+
+        # Bullish CVD divergence: price trending down but CVD trending up
+        elif price_second < price_first * 0.999 and cvd_second > cvd_first * 1.2:
+            # Price lower but CVD higher = hidden buying
+            if close > open_:  # current bar bullish (confirmation)
+                side = OrderSide.LONG
+                div_strength = abs(cvd_second - cvd_first) / max(abs(cvd_first), 1)
+                confs.append(f"CVD bullish divergence (strength={div_strength:.1f})")
+                score += 30
+                if div_strength > 1.5:
+                    score += 15
+                    confs.append("Strong volume-price disconnect")
+                elif div_strength > 0.8:
+                    score += 8
+
+        if side is None:
+            return None
+
+        # Candle quality
+        candle_range = high_val - low_val if high_val > low_val else atr * 0.01
+        body_ratio = body / candle_range
+        if body_ratio > 0.5:
+            score += 10
+            confs.append(f"Clean reversal candle ({body_ratio:.0%} body)")
+
+        # Volume confirmation
+        rel_vol = volume / recent_vol_avg if recent_vol_avg > 0 else 1
+        if rel_vol > 1.5:
+            score += 10
+            confs.append(f"Volume spike {rel_vol:.1f}x")
+        elif rel_vol > 1.0:
+            score += 5
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            score += 15
+            confs.append("HTF aligned")
+        elif htf_bias == (-1 if side == OrderSide.LONG else 1):
+            score -= 5
+
+        # Price at extreme (near recent high for short, near recent low for long)
+        if side == OrderSide.SHORT and high_val >= recent_high * 0.998:
+            score += 10
+            confs.append("At recent high — reversal zone")
+        elif side == OrderSide.LONG and low_val <= recent_low * 1.002:
+            score += 10
+            confs.append("At recent low — reversal zone")
+
+        confidence = max(min(score, 100), 0)
+
+        # SL beyond the extreme
+        if side == OrderSide.LONG:
+            sl = recent_low - atr * 0.3
+        else:
+            sl = recent_high + atr * 0.3
+
+        return _SetupResult(
+            name="cvd_divergence",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
     # LEARNING MODE: Simple Bias Scanner (fires on any directional candle)
     # ==================================================================
 
@@ -3939,8 +4097,28 @@ class ScalpStrategy(BaseStrategy):
     ) -> Optional[_SetupResult]:
         """Price at VWAP band extreme + reversal candle."""
         sm = self._structure_map
-        if sm is None or sm.vwap <= 0:
+
+        # Fallback: calculate VWAP bands from dataframe if structure_map unavailable
+        vwap_val = 0.0
+        vwap_upper = 0.0
+        vwap_lower = 0.0
+        if sm is not None and sm.vwap > 0:
+            vwap_val = sm.vwap
+            vwap_upper = getattr(sm, 'vwap_upper_1', 0)
+            vwap_lower = getattr(sm, 'vwap_lower_1', 0)
+
+        if vwap_val <= 0 and "vwap" in df.columns:
+            vwap_val = float(df.iloc[-1].get("vwap", 0))
+
+        if vwap_val <= 0:
             return None
+
+        # Calculate bands from ATR if not available
+        last_atr = float(df.iloc[-1].get("atr", 0))
+        if vwap_upper <= 0 and last_atr > 0:
+            vwap_upper = vwap_val + last_atr * 1.5
+        if vwap_lower <= 0 and last_atr > 0:
+            vwap_lower = vwap_val - last_atr * 1.5
 
         last = df.iloc[-1]
         close = float(last["close"])
@@ -3961,26 +4139,28 @@ class ScalpStrategy(BaseStrategy):
         score = 0
 
         # LONG: Price at/below VWAP lower band + bullish reversal
-        if close <= sm.vwap_lower_1 and sm.vwap_lower_1 > 0:
+        if close <= vwap_lower and vwap_lower > 0:
             lower_wick = min(open_, close) - low
-            if close > open_ and lower_wick > body * 0.5:
+            if close > open_ and lower_wick > body * 0.3:  # relaxed from 0.5
                 side = OrderSide.LONG
-                confs.append(f"VWAP lower band touch (VWAP=${sm.vwap:.0f})")
+                confs.append(f"VWAP lower band touch (VWAP=${vwap_val:.0f})")
                 score += 30
 
-                if close <= sm.vwap_lower_2 and sm.vwap_lower_2 > 0:
+                vwap_lower_2 = getattr(sm, 'vwap_lower_2', vwap_val - last_atr * 2.5) if sm else vwap_val - last_atr * 2.5
+                if close <= vwap_lower_2 and vwap_lower_2 > 0:
                     confs.append("Below 2nd std dev — extreme")
                     score += 10
 
         # SHORT: Price at/above VWAP upper band + bearish reversal
-        if side is None and close >= sm.vwap_upper_1 and sm.vwap_upper_1 > 0:
+        if side is None and close >= vwap_upper and vwap_upper > 0:
             upper_wick = high - max(open_, close)
-            if close < open_ and upper_wick > body * 0.5:
+            if close < open_ and upper_wick > body * 0.3:  # relaxed from 0.5
                 side = OrderSide.SHORT
-                confs.append(f"VWAP upper band touch (VWAP=${sm.vwap:.0f})")
+                confs.append(f"VWAP upper band touch (VWAP=${vwap_val:.0f})")
                 score += 30
 
-                if close >= sm.vwap_upper_2 and sm.vwap_upper_2 > 0:
+                vwap_upper_2 = getattr(sm, 'vwap_upper_2', vwap_val + last_atr * 2.5) if sm else vwap_val + last_atr * 2.5
+                if close >= vwap_upper_2 and vwap_upper_2 > 0:
                     confs.append("Above 2nd std dev — extreme")
                     score += 10
 

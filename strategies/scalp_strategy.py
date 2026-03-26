@@ -138,6 +138,15 @@ class ScanResult:
     scanner_status: str = "active"
     setup_result: Optional[_SetupResult] = field(default=None, repr=False)
 
+    @property
+    def confidence(self) -> int:
+        """Alias for raw_score — used throughout veto layer."""
+        return self.raw_score
+
+    @confidence.setter
+    def confidence(self, value: int):
+        self.raw_score = value
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "scanner": self.scanner_name,
@@ -1542,6 +1551,34 @@ class ScalpStrategy(BaseStrategy):
             )
             if htf_opposes:
                 vetos.append(f"HTF STRICT: HTF={'bearish' if htf_bias < 0 else 'bullish'} vs {best.side.value}")
+
+        # VETO 2b: 5m Momentum Gate (prevents timeout entries)
+        # If 5m EMA8 slope disagrees with entry direction → soft penalty
+        # If BOTH 5m and 15m disagree → hard block (trade will timeout)
+        if df_5m is not None and len(df_5m) >= 10 and "ema_8" in df_5m.columns:
+            ema8_5m = df_5m["ema_8"].dropna()
+            if len(ema8_5m) >= 5:
+                _best_atr = getattr(best, "atr", getattr(best_sr, "atr", 1.0)) if best else 1.0
+                slope_5m = (float(ema8_5m.iloc[-1]) - float(ema8_5m.iloc[-5])) / max(_best_atr, 0.001)
+                side_val = best.side.value if hasattr(best.side, "value") else str(best.side)
+                mtf_agrees = (slope_5m > 0.1 and side_val == "long") or (slope_5m < -0.1 and side_val == "short")
+                mtf_disagrees = (slope_5m < -0.2 and side_val == "long") or (slope_5m > 0.2 and side_val == "short")
+
+                if mtf_disagrees:
+                    if htf_bias != 0 and ((htf_bias < 0 and side_val == "long") or (htf_bias > 0 and side_val == "short")):
+                        vetos.append("MTF BLOCK: 5m(%.2f) + 15m both against %s" % (slope_5m, side_val))
+                    else:
+                        soft_vetos.append("5m MOMENTUM: slope=%.2f against %s (-15)" % (slope_5m, side_val))
+                        _cur_conf = getattr(best, "confidence", getattr(best, "raw_score", 50))
+                        _cur_confs = getattr(best, "confirmations", [])
+                        best_sr = best_sr._replace(weighted_score=max(best_sr.weighted_score - 15, 20)) if hasattr(best_sr, "_replace") else best_sr
+                        if hasattr(best_sr, "weighted_score"):
+                            best_sr.weighted_score = max(best_sr.weighted_score - 15, 20)
+                            best_sr.confirmations = list(best_sr.confirmations) + ["[5M_PENALTY: -15, slope=%.2f]" % slope_5m]
+                elif mtf_agrees:
+                    if hasattr(best_sr, "weighted_score"):
+                        best_sr.weighted_score = min(best_sr.weighted_score + 10, 100)
+                        best_sr.confirmations = list(best_sr.confirmations) + ["[5M_BOOST: +10, slope=%.2f]" % slope_5m]
 
         # VETO 3: Session (architect-corrected)
         # 2-5 UTC: HARD BLOCK (genuinely low liquidity)

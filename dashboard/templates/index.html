@@ -2075,7 +2075,8 @@ function updateRecentClosed(closed) {
             dur = mins >= 60 ? Math.floor(mins/60) + "h" + (mins%60) + "m" : mins + "m";
         } catch(e) {}
         const rowBg = pnlUsd > 0 ? "rgba(34,197,94,.03)" : pnlUsd < 0 ? "rgba(239,68,68,.03)" : "";
-        return `<tr style="background:${rowBg}">
+        const tradeJson = JSON.stringify(t).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+        return `<tr style="background:${rowBg};cursor:pointer" onclick='openTradeDetail(JSON.parse(this.dataset.trade))' data-trade='${JSON.stringify(t).replace(/'/g, "&#39;")}'>
             <td>${formatTime(t.closed_at || t.exit_time)}</td>
             <td style="font-weight:600">${esc(t.symbol || "--")}</td>
             <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
@@ -3433,7 +3434,79 @@ switchTab = function(tab) {
 // ── INIT ─────────────────────────────────────────────────
 switchTab("live");
 </script>
-<div id="trade-modal"></div>
+<div id="trade-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h3 id="tm-title" style="color:var(--accent);margin:0">Trade Detail</h3>
+      <button onclick="document.getElementById('trade-modal').style.display='none'" style="background:none;border:none;color:var(--text-dim);font-size:1.2rem;cursor:pointer">&times;</button>
+    </div>
+    <div id="tm-body" style="font-size:.8rem"></div>
+  </div>
+</div>
+<script>
+function openTradeDetail(trade) {
+    if (!trade) return;
+    const m = document.getElementById("trade-modal");
+    const title = document.getElementById("tm-title");
+    const body = document.getElementById("tm-body");
+    const sym = trade.symbol || trade.trade_id || "?";
+    const side = trade.side || "?";
+    const sideColor = side === "long" ? "var(--green)" : "var(--red)";
+    title.innerHTML = sym + " <span style='color:" + sideColor + "'>" + side.toUpperCase() + "</span>";
+
+    const entry = trade.entry_price || 0;
+    const exit = trade.exit_price || 0;
+    const pnl = trade.pnl_usd || trade.pnl || 0;
+    const pnlPct = trade.pnl_pct || 0;
+    const r = trade.exit_r || 0;
+    const mfe = trade.mfe_r || 0;
+    const mae = trade.mae_r || 0;
+    const sl = trade.stop_loss || 0;
+    const tp1 = trade.tp1 || 0;
+    const conf = trade.confidence || 0;
+    const scanner = trade.setup_type || trade.scanner || "?";
+    const exitReason = trade.exit_reason || "?";
+    const ml = trade.ml_probability || 0;
+    const regime = trade.regime || "?";
+    const dur = trade.duration_sec || 0;
+    const durMin = (dur / 60).toFixed(1);
+    const tradeType = trade.trade_type || "?";
+    const ts = trade.timestamp || "";
+
+    const pnlColor = pnl >= 0 ? "var(--green)" : "var(--red)";
+    const efficiency = mfe > 0 ? ((r / mfe) * 100).toFixed(0) : "—";
+
+    body.innerHTML = "" +
+        "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px'>" +
+        "<div class='metric'><span class='label'>Entry</span><span class='value'>" + entry.toFixed(4) + "</span></div>" +
+        "<div class='metric'><span class='label'>Exit</span><span class='value'>" + exit.toFixed(4) + "</span></div>" +
+        "<div class='metric'><span class='label'>Stop Loss</span><span class='value' style='color:var(--red)'>" + sl.toFixed(4) + "</span></div>" +
+        "<div class='metric'><span class='label'>TP1</span><span class='value' style='color:var(--green)'>" + (tp1 > 0 ? tp1.toFixed(4) : "—") + "</span></div>" +
+        "</div>" +
+        "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px'>" +
+        "<div style='text-align:center;padding:8px;background:rgba(255,255,255,.03);border-radius:6px'><div style='font-size:1.1rem;font-weight:700;color:" + pnlColor + "'>$" + pnl.toFixed(2) + "</div><div style='font-size:.6rem;color:var(--text-muted)'>PNL</div></div>" +
+        "<div style='text-align:center;padding:8px;background:rgba(255,255,255,.03);border-radius:6px'><div style='font-size:1.1rem;font-weight:700;color:" + pnlColor + "'>" + r.toFixed(2) + "R</div><div style='font-size:.6rem;color:var(--text-muted)'>R-MULTIPLE</div></div>" +
+        "<div style='text-align:center;padding:8px;background:rgba(255,255,255,.03);border-radius:6px'><div style='font-size:1.1rem;font-weight:700'>" + efficiency + "%</div><div style='font-size:.6rem;color:var(--text-muted)'>EXIT EFF</div></div>" +
+        "</div>" +
+        "<div style='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px'>" +
+        "<div class='metric'><span class='label'>MFE (Peak)</span><span class='value' style='color:var(--green)'>" + mfe.toFixed(3) + "R</span></div>" +
+        "<div class='metric'><span class='label'>MAE (Worst)</span><span class='value' style='color:var(--red)'>" + mae.toFixed(3) + "R</span></div>" +
+        "<div class='metric'><span class='label'>Scanner</span><span class='value'>" + scanner + "</span></div>" +
+        "<div class='metric'><span class='label'>Exit Reason</span><span class='value'>" + exitReason + "</span></div>" +
+        "<div class='metric'><span class='label'>Confidence</span><span class='value'>" + conf + "/100</span></div>" +
+        "<div class='metric'><span class='label'>ML Score</span><span class='value'>" + (ml * 100).toFixed(0) + "%</span></div>" +
+        "<div class='metric'><span class='label'>Regime</span><span class='value'>" + regime + "</span></div>" +
+        "<div class='metric'><span class='label'>Type</span><span class='value'>" + tradeType + "</span></div>" +
+        "<div class='metric'><span class='label'>Duration</span><span class='value'>" + durMin + " min</span></div>" +
+        "<div class='metric'><span class='label'>Time</span><span class='value' style='font-size:.65rem'>" + ts.substring(0,19) + "</span></div>" +
+        "</div>" +
+        "<div style='margin-top:8px;padding:8px;background:rgba(255,255,255,.02);border-radius:4px;font-size:.7rem;color:var(--text-dim)'>" +
+        "<strong>Lifecycle:</strong> Entry " + entry.toFixed(2) + " → Peak +" + mfe.toFixed(2) + "R → Worst -" + mae.toFixed(2) + "R → Exit " + r.toFixed(2) + "R (" + exitReason + ")" +
+        "</div>";
+
+    m.style.display = "flex";
+}
+</script>
 <footer style="text-align:center;padding:12px;font-size:.6rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,.03);margin-top:20px">
   VN Edge v2.1 | <span id="footer-uptime">--</span> uptime | Last restart: <span id="footer-restart">--</span> | <a href="http://158.101.112.94:8081" target="_blank" style="color:var(--purple);text-decoration:none">ML Training Lab</a>
 </footer>

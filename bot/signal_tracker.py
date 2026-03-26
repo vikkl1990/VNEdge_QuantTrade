@@ -1413,7 +1413,11 @@ class SignalTracker:
         return [ts.to_dict() for ts in self._active.values()]
 
     def get_closed_signals(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return recent closed signals from persisted file + in-memory."""
+        """Return recent closed signals — single source of truth.
+
+        Priority: closed_signals.json > in-memory _closed > ml_live_feedback.jsonl
+        If closed_signals.json is empty (post-restart), rebuild from feedback file.
+        """
         all_closed = []
         # Load from persisted file first
         closed_file = _STORAGE_DIR / "closed_signals.json"
@@ -1424,12 +1428,36 @@ class SignalTracker:
                     all_closed = data
         except Exception:
             pass
+
         # Add any in-memory signals not yet in file
         existing_ids = {s.get("trade_id") for s in all_closed if isinstance(s, dict)}
         for s in self._closed:
             sid = s.get("trade_id") if isinstance(s, dict) else getattr(s, "trade_id", None)
             if sid and sid not in existing_ids:
                 all_closed.append(s if isinstance(s, dict) else s.to_dict() if hasattr(s, "to_dict") else s)
+
+        # Fallback: if no closed signals, rebuild from feedback file (single source of truth)
+        if len(all_closed) < 5:
+            feedback_file = _STORAGE_DIR / "ml_live_feedback.jsonl"
+            try:
+                if feedback_file.exists():
+                    fb_trades = []
+                    with open(feedback_file) as f:
+                        for line in f:
+                            if line.strip():
+                                try:
+                                    fb_trades.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    pass
+                    # Merge: add feedback trades not already in closed
+                    for fb in fb_trades:
+                        fid = fb.get("trade_id", "")
+                        if fid and fid not in existing_ids:
+                            all_closed.append(fb)
+                            existing_ids.add(fid)
+            except Exception:
+                pass
+
         return all_closed[-limit:]
 
     def get_stats(self) -> Dict[str, Any]:

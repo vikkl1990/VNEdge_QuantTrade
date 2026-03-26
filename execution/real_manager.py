@@ -700,9 +700,14 @@ class RealTradingManager:
             "BTC/USDT": 0.001, "BTC/USD": 0.001,
             "ETH/USDT": 0.01,  "ETH/USD": 0.01,
             "SOL/USDT": 1.0,   "SOL/USD": 1.0,
-            "AVAX/USDT": 1.0,  "AVAX/USD": 1.0,
-            "LINK/USDT": 1.0,  "LINK/USD": 1.0,
+            "XRP/USDT": 1.0,   "XRP/USD": 1.0,
+            "LTC/USDT": 0.1,   "LTC/USD": 0.1,
+            "ADA/USDT": 1.0,   "ADA/USD": 1.0,
+            "DOT/USDT": 1.0,   "DOT/USD": 1.0,
+            "TAO/USDT": 0.01,  "TAO/USD": 0.01,
             "DOGE/USDT": 1.0,  "DOGE/USD": 1.0,
+            "LINK/USDT": 1.0,  "LINK/USD": 1.0,
+            "AVAX/USDT": 1.0,  "AVAX/USD": 1.0,
         }
         base_sym = symbol.split(":")[0] if ":" in symbol else symbol
         contract_size = contract_sizes.get(base_sym, 1.0)
@@ -1134,7 +1139,12 @@ class RealTradingManager:
             margin = getattr(t, "margin", 0)
             lev = getattr(t, "leverage", 1)
             # Get contract size for correct PnL calculation
-            contract_sizes = {"BTC/USDT": 0.001, "ETH/USDT": 0.01, "SOL/USDT": 1.0}
+            contract_sizes = {
+                "BTC/USDT": 0.001, "ETH/USDT": 0.01, "SOL/USDT": 1.0,
+                "XRP/USDT": 1.0, "LTC/USDT": 0.1, "ADA/USDT": 1.0,
+                "DOT/USDT": 1.0, "TAO/USDT": 0.01, "DOGE/USDT": 1.0,
+                "LINK/USDT": 1.0, "AVAX/USDT": 1.0,
+            }
             contract_size = contract_sizes.get(t.symbol, 1.0)
             qty = pos_size * contract_size  # actual base currency amount
             # UPNL calculation: price_diff × quantity (not lots!)

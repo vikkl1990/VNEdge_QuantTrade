@@ -50,6 +50,62 @@ PRODUCT_MAP = {
         "tick_size": 0.01,
         "tick_size_demo": 0.0001,
     },
+    "XRP/USDT": {
+        "demo_id": 0,  # TODO: find testnet ID
+        "prod_id": 0,  # TODO: find prod ID via API
+        "symbol": "XRPUSD",
+        "contract_size": 1.0,  # 1 lot = 1 XRP
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    "LTC/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "LTCUSD",
+        "contract_size": 0.1,  # 1 lot = 0.1 LTC
+        "tick_size": 0.01,
+        "tick_size_demo": 0.01,
+    },
+    "ADA/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "ADAUSD",
+        "contract_size": 1.0,  # 1 lot = 1 ADA
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    "DOT/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "DOTUSD",
+        "contract_size": 1.0,  # 1 lot = 1 DOT
+        "tick_size": 0.001,
+        "tick_size_demo": 0.001,
+    },
+    "TAO/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "TAOUSD",
+        "contract_size": 0.01,  # 1 lot = 0.01 TAO
+        "tick_size": 0.01,
+        "tick_size_demo": 0.01,
+    },
+    "DOGE/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "DOGEUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.00001,
+        "tick_size_demo": 0.00001,
+    },
+    "LINK/USDT": {
+        "demo_id": 0,
+        "prod_id": 0,
+        "symbol": "LINKUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.001,
+        "tick_size_demo": 0.001,
+    },
 }
 
 # Demo balance asset ID (USD on testnet)

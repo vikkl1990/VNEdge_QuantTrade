@@ -10,11 +10,21 @@ bot:
   strict_mode: true  # Enforced: ML veto + regime routing active
 
 symbols:
+  # Tier 1: Anchors (highest liquidity)
   - "BTC/USDT"
   - "ETH/USDT"
-  - "AVAX/USDT"
+  # Tier 2: High-beta liquid
   - "SOL/USDT"
+  - "XRP/USDT"     # NEW: $13.4M turnover, clean trends
+  # Tier 3: Mid-cap alts
+  - "LTC/USDT"     # NEW: classic crypto, clean structure
+  - "ADA/USDT"     # NEW: high volume alt, range trading
+  - "DOT/USDT"     # NEW: infra, good wick quality
+  - "TAO/USDT"     # NEW: AI narrative, strong trends
+  # Tier 4: Speculative
   - "DOGE/USDT"
+  - "LINK/USDT"
+  # REMOVED: AVAX/USDT (too low volume on Delta India)
 
 exchange:
   name: "delta"            # binance | bybit | okx | delta

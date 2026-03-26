@@ -429,6 +429,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
   <button class="tab-btn" data-tab="latency" onclick="switchTab('latency')">Latency Arb</button>
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
+  <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
 </nav>
 
@@ -1005,6 +1006,59 @@ textarea.contact-input{min-height:100px;resize:vertical}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB: CONFIG                                            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-config">
+  <div class="panel" style="margin-bottom:16px">
+    <div class="panel-header">TRADE TYPE CONFIGURATION</div>
+    <div style="overflow-x:auto;margin-top:8px">
+      <table style="width:100%;font-size:.78rem">
+        <thead><tr>
+          <th>Parameter</th>
+          <th style="text-align:center;color:var(--cyan)">SCALP</th>
+          <th style="text-align:center;color:var(--yellow)">INTRADAY</th>
+          <th style="text-align:center;color:var(--purple)">RUNNER</th>
+        </tr></thead>
+        <tbody id="config-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-bottom:16px">
+    <div class="panel">
+      <div class="panel-header">SCANNER SIZE TIERS</div>
+      <table style="width:100%;font-size:.78rem;margin-top:8px">
+        <thead><tr><th>Scanner</th><th style="text-align:center">Size Mult</th><th style="text-align:center">Status</th></tr></thead>
+        <tbody id="scanner-tiers-table"></tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <div class="panel-header">RISK PARAMETERS</div>
+      <div id="risk-params" style="font-size:.78rem;margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px">
+    <div class="panel-header">TRADE TYPE PERFORMANCE</div>
+    <div style="overflow-x:auto;margin-top:8px">
+      <table style="width:100%;font-size:.78rem">
+        <thead><tr>
+          <th>Trade Type</th><th style="text-align:right">Trades</th><th style="text-align:right">WR%</th>
+          <th style="text-align:right">Net PnL</th><th style="text-align:right">Avg R</th>
+          <th style="text-align:right">Avg Duration</th><th style="text-align:right">Trail%</th>
+          <th style="text-align:right">Timeout%</th><th style="text-align:right">SL%</th>
+        </tr></thead>
+        <tbody id="tradetype-perf-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">VETO & SAFETY GATES</div>
+    <div id="veto-config" style="font-size:.78rem;margin-top:8px"></div>
+  </div>
+</div>
+
 <!-- TAB 3: SYSTEM                                          -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-system">
@@ -3205,6 +3259,144 @@ async function emergencyStop() {
         }
     } catch(e) { alert("Emergency stop failed: " + e.message); }
 }
+
+// ── CONFIG TAB ───────────────────────────────────────────
+function populateConfigTab() {
+    // Trade Type Config table
+    const cfg = {
+        "SL ATR Mult":       ["0.9", "1.15", "1.5"],
+        "TP1 R:R":           ["0.8", "1.2", "1.5"],
+        "TP2 R:R":           ["1.2", "2.0", "3.0"],
+        "TP3 R:R":           ["none", "3.0", "5.0"],
+        "Time Stop (bars)":  ["3 (hard)", "8 (soft)", "none"],
+        "Early Kill":        ["120s / 0.10R", "300s / 0.15R", "disabled"],
+        "Trail ATR Mult":    ["0.6", "1.0", "1.5"],
+        "Max Age":           ["15 min", "60 min", "8 hours"],
+    };
+    let html = "";
+    for (const [param, vals] of Object.entries(cfg)) {
+        html += "<tr><td style='color:var(--text-secondary)'>" + param + "</td>";
+        html += "<td style='text-align:center;color:var(--cyan);font-weight:600'>" + vals[0] + "</td>";
+        html += "<td style='text-align:center;color:var(--yellow);font-weight:600'>" + vals[1] + "</td>";
+        html += "<td style='text-align:center;color:var(--purple);font-weight:600'>" + vals[2] + "</td></tr>";
+    }
+    document.getElementById("config-table").innerHTML = html;
+
+    // Scanner tiers
+    const tiers = {
+        "structure_bounce": {mult: "1.0", status: "ACTIVE"},
+        "bos_choch": {mult: "0.8", status: "ACTIVE"},
+        "liquidity_sweep": {mult: "0.8", status: "ACTIVE"},
+        "order_block_entry": {mult: "0.8", status: "ACTIVE"},
+        "ema_momentum": {mult: "0.0", status: "ML ONLY"},
+        "trend_continuation": {mult: "0.0", status: "ML ONLY"},
+        "vwap_mean_revert": {mult: "0.0", status: "ML ONLY"},
+        "rsi_divergence": {mult: "0.0", status: "ML ONLY"},
+    };
+    let thtml = "";
+    for (const [sc, info] of Object.entries(tiers)) {
+        const statusCls = info.status === "ACTIVE" ? "color:var(--green)" : "color:var(--text-muted)";
+        thtml += "<tr><td>" + sc + "</td><td style='text-align:center;font-weight:600'>" + info.mult + "</td>";
+        thtml += "<td style='text-align:center;" + statusCls + ";font-weight:600'>" + info.status + "</td></tr>";
+    }
+    document.getElementById("scanner-tiers-table").innerHTML = thtml;
+
+    // Risk params
+    const rp = [
+        ["Account Size", "$1,000 (paper)"],
+        ["Risk Per Trade", "0.75% ($7.50)"],
+        ["Max Margin", "$100/trade"],
+        ["Leverage Cap (paper)", "75x (conf 90+)"],
+        ["Leverage Cap (real)", "10x"],
+        ["Min Setup Strength", "65/100"],
+        ["Hard Loss Cap", "-1.2R"],
+        ["Circuit Breaker", "$25/day or 5 consec losses"],
+        ["Symbol Cooling", "30 min after 3 consec losses"],
+        ["VWAP Noise Zone", "< 0.12 ATR from VWAP"],
+    ];
+    let rphtml = "";
+    for (const [k, v] of rp) {
+        rphtml += "<div style='display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)'>";
+        rphtml += "<span style='color:var(--text-secondary)'>" + k + "</span>";
+        rphtml += "<span style='font-weight:600;font-family:var(--font-mono)'>" + v + "</span></div>";
+    }
+    document.getElementById("risk-params").innerHTML = rphtml;
+
+    // Veto gates
+    const vetos = [
+        {name: "1. Regime Router", desc: "Only trades trending markets. Quiet = zero trades", color: "var(--red)"},
+        {name: "2. HTF Alignment", desc: "15min trend must agree with 1min signal direction", color: "var(--red)"},
+        {name: "3. VWAP Filter", desc: "Blocks trades < 0.12 ATR from VWAP (noise zone)", color: "var(--red)"},
+        {name: "4. ATR Prefilter", desc: "Blocks extreme volatility (ATR ratio > 3.0)", color: "var(--yellow)"},
+        {name: "5. Setup Strength", desc: "Score must exceed 65/100 (removes weak entries)", color: "var(--yellow)"},
+        {name: "6. Counter-Trend Block", desc: "Cannot short in trending_up, long in trending_down", color: "var(--red)"},
+        {name: "7. Symbol Cooling", desc: "30 min pause after 3 consecutive losses on same pair", color: "var(--cyan)"},
+        {name: "8. Circuit Breaker", desc: "$25 daily loss limit or 5 consecutive losses", color: "var(--red)"},
+        {name: "9. Hard Loss Cap", desc: "Force close at -1.2R (prevents catastrophic losses)", color: "var(--red)"},
+    ];
+    let vhtml = "";
+    for (const v of vetos) {
+        vhtml += "<div style='display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);align-items:center'>";
+        vhtml += "<span style='color:" + v.color + ";font-weight:700;min-width:180px'>" + v.name + "</span>";
+        vhtml += "<span style='color:var(--text-secondary);font-size:.72rem'>" + v.desc + "</span></div>";
+    }
+    document.getElementById("veto-config").innerHTML = vhtml;
+}
+
+// Populate trade type performance from feedback data
+async function loadTradeTypePerf() {
+    try {
+        const data = await api("/api/tracker/closed");
+        if (!data || !data.length) return;
+        const types = {};
+        for (const t of data) {
+            const tt = t.trade_type || t.metadata?.trade_type || "SCALP";
+            if (!types[tt]) types[tt] = {w:0, l:0, pnl:0, r:[], dur:[], trail:0, timeout:0, sl:0};
+            const d = types[tt];
+            if ((t.pnl_usd||0) > 0) d.w++; else d.l++;
+            d.pnl += (t.pnl_usd||0);
+            d.r.push(t.exit_r||0);
+            d.dur.push(t.duration_sec||0);
+            const ex = t.exit_reason||"";
+            if (ex.includes("trail")) d.trail++;
+            if (ex.includes("time_stop") || ex.includes("timeout")) d.timeout++;
+            if (ex === "stop_loss") d.sl++;
+        }
+        let html = "";
+        for (const [tt, d] of Object.entries(types).sort((a,b) => b[1].w+b[1].l - a[1].w-a[1].l)) {
+            const total = d.w + d.l;
+            const wr = total > 0 ? (d.w/total*100) : 0;
+            const avgR = d.r.length > 0 ? d.r.reduce((a,b)=>a+b,0)/d.r.length : 0;
+            const avgDur = d.dur.length > 0 ? d.dur.reduce((a,b)=>a+b,0)/d.dur.length/60 : 0;
+            const trailPct = total > 0 ? (d.trail/total*100) : 0;
+            const toPct = total > 0 ? (d.timeout/total*100) : 0;
+            const slPct = total > 0 ? (d.sl/total*100) : 0;
+            const color = tt === "SCALP" ? "var(--cyan)" : tt === "INTRADAY" ? "var(--yellow)" : "var(--purple)";
+            html += "<tr>";
+            html += "<td style='color:" + color + ";font-weight:700'>" + tt + "</td>";
+            html += "<td style='text-align:right'>" + total + "</td>";
+            html += "<td style='text-align:right;color:" + (wr>=80?"var(--green)":wr>=70?"var(--yellow)":"var(--red)") + "'>" + wr.toFixed(1) + "%</td>";
+            html += "<td style='text-align:right;color:" + (d.pnl>=0?"var(--green)":"var(--red)") + "'>$" + d.pnl.toFixed(2) + "</td>";
+            html += "<td style='text-align:right;color:" + (avgR>=0?"var(--green)":"var(--red)") + "'>" + avgR.toFixed(3) + "</td>";
+            html += "<td style='text-align:right'>" + avgDur.toFixed(1) + "m</td>";
+            html += "<td style='text-align:right;color:var(--green)'>" + trailPct.toFixed(0) + "%</td>";
+            html += "<td style='text-align:right;color:var(--yellow)'>" + toPct.toFixed(0) + "%</td>";
+            html += "<td style='text-align:right;color:var(--red)'>" + slPct.toFixed(0) + "%</td>";
+            html += "</tr>";
+        }
+        document.getElementById("tradetype-perf-table").innerHTML = html || "<tr><td colspan=9 style='text-align:center;color:var(--text-muted)'>No data yet</td></tr>";
+    } catch(e) { console.warn("Config perf load failed:", e); }
+}
+
+// Load config when tab is switched
+const _origSwitchTab = switchTab;
+switchTab = function(tab) {
+    _origSwitchTab(tab);
+    if (tab === "config") {
+        populateConfigTab();
+        loadTradeTypePerf();
+    }
+};
 
 // ── INIT ─────────────────────────────────────────────────
 switchTab("live");

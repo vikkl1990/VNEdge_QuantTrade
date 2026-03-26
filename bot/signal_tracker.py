@@ -51,24 +51,24 @@ TRADE_TYPE_CONFIG = {
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
-        "time_stop_bars": 5,      # 5 bars — give 1m candles time to develop (was 3)
+        "time_stop_bars": 3,      # 3 bars — kill dead scalps fast (REVERTED from 5)
         "time_stop_type": "hard", # kill if not moving
-        "early_kill_sec": 150,    # 2.5 min — price needs time to move (was 90s)
-        "early_kill_mfe": 0.12,   # higher threshold — don't kill setups showing life (was 0.08)
-        "trail_atr_mult": 0.8,   # wider trail — 53% efficiency was too low (was 0.6)
-        "max_age_sec": 20 * 60,   # 20 min max (was 15)
+        "early_kill_sec": 120,    # 2 min early kill (REVERTED from 150)
+        "early_kill_mfe": 0.10,   # need to show life quickly (REVERTED from 0.12)
+        "trail_atr_mult": 0.6,   # tight trail for scalps (REVERTED from 0.8)
+        "max_age_sec": 15 * 60,   # 15 min max (REVERTED from 20)
     },
     TRADE_TYPE_INTRADAY: {
         "sl_atr_mult": 1.15,      # moderate SL
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 12,     # 12 bars — intraday needs patience (was 8)
+        "time_stop_bars": 8,      # 8 bars (REVERTED from 12)
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 420,    # 7 min — intraday setups take longer (was 300)
-        "early_kill_mfe": 0.18,   # slightly more room (was 0.15)
-        "trail_atr_mult": 1.5,   # wider — let intraday breathe (was 1.2)
-        "max_age_sec": 90 * 60,   # 90 min max (was 60)
+        "early_kill_sec": 300,    # 5 min (REVERTED from 420)
+        "early_kill_mfe": 0.15,   # standard (REVERTED from 0.18)
+        "trail_atr_mult": 1.0,   # standard trail (REVERTED from 1.5)
+        "max_age_sec": 1 * 3600,  # 1 hour max (REVERTED from 90)
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room
@@ -79,8 +79,8 @@ TRADE_TYPE_CONFIG = {
         "time_stop_type": "none", # only exit on structure/trailing
         "early_kill_sec": 0,      # no early kill
         "early_kill_mfe": 0.0,    # disabled
-        "trail_atr_mult": 2.5,   # wider — runners need room to run (was 2.0)
-        "max_age_sec": 12 * 3600, # 12 hours max (was 8)
+        "trail_atr_mult": 1.5,   # standard wide trail (REVERTED from 2.5)
+        "max_age_sec": 8 * 3600,  # 8 hours max (REVERTED from 12)
     },
 }
 
@@ -734,14 +734,15 @@ class SignalTracker:
                 ts.mae_r = round(max(ts.mae_r, adv), 4)
             now_iso = datetime.now(timezone.utc).isoformat()
 
-            # -- Early Invalidation Exit: Hard Loss Cap (-2R) --
-            # Force close if adverse excursion exceeds 2R (gap/slippage beyond SL)
+            # -- Early Invalidation Exit: Hard Loss Cap (-1.2R) --
+            # Force close if adverse excursion exceeds 1.2R (tightened from 2R)
+            # Prevents -1.7R catastrophic losses seen in last 24h
             if ts.initial_risk > 0:
                 if is_long:
                     current_adverse_r = (ts.entry_price - price) / ts.initial_risk
                 else:
                     current_adverse_r = (price - ts.entry_price) / ts.initial_risk
-                if current_adverse_r >= 2.0:
+                if current_adverse_r >= 1.2:
                     ts.exit_price = price
                     ts.exit_reason = "hard_loss_cap"
                     ts.exit_time = now_iso

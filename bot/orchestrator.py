@@ -527,6 +527,15 @@ class BotOrchestrator:
                     except Exception as exc:
                         self._log.warning("Trade monitor analysis failed: %s", exc)
 
+                    # Notify strategy of trade close (per-symbol cooling)
+                    try:
+                        pnl = closed_sig.get("metadata", {}).get("pnl_usd", closed_sig.get("pnl_usd", 0))
+                        sym = closed_sig.get("symbol", "")
+                        if sym and hasattr(self._strategy, "notify_trade_close"):
+                            self._strategy.notify_trade_close(sym, pnl or 0)
+                    except Exception:
+                        pass
+
                     # Mirror exit to real exchange — ALL exit types
                     if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                         try:

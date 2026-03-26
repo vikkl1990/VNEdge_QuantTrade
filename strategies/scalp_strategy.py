@@ -1096,6 +1096,15 @@ class ScalpStrategy(BaseStrategy):
             "low_liquidity": [],  # NO TRADING
         }
 
+        # ── Per-symbol cooling period: skip after 3 consecutive losses ──
+        cool_ts_key = f"_cool_until_{symbol}"
+        cool_until = getattr(self, cool_ts_key, 0)
+        if time.time() < cool_until:
+            remaining = int(cool_until - time.time())
+            if remaining % 600 < 5:  # log roughly every 10 min
+                logger.info("FUNNEL %s | COOLING OFF | %d sec remaining after 3 consecutive losses", symbol, remaining)
+            return []
+
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
 
@@ -1374,8 +1383,16 @@ class ScalpStrategy(BaseStrategy):
                        best.side.value if best.side else "?", best_sr.weighted_score,
                        best_sr.tier, self._weight_manager.is_tradeable(best_sr.scanner_name))
 
+        # ── Block zero-confidence trades (should never happen) ──
+        if best_sr.confidence <= 0 or best_sr.weighted_score <= 0:
+            logger.warning("FUNNEL %s | ZERO CONF BLOCK | conf=%d score=%.0f — rejecting unscored signal",
+                          symbol, best_sr.confidence, best_sr.weighted_score)
+            return []
+
         # ── Setup strength veto: weak setups time out too often ──
-        MIN_SETUP_STRENGTH = 55  # Lowered from 65: lets bos_choch (avg 59) and liquidity_sweep (55) through
+        # REVERTED to 65 from 55 — the 55 threshold let too many weak trades through
+        # causing WR drop from 84% to 74% in last 24h
+        MIN_SETUP_STRENGTH = 65
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
@@ -4955,3 +4972,26 @@ class ScalpStrategy(BaseStrategy):
             "last_results": dict(self._last_ml_result),
             "scanner_sl_tp": self._scanner_sl_tp,
         }
+
+    # ==================================================================
+    # Per-symbol cooling: triggered by orchestrator on trade close
+    # ==================================================================
+
+    def notify_trade_close(self, symbol: str, pnl_usd: float) -> None:
+        """Update per-symbol consecutive loss counter.
+        If 3 consecutive losses on same symbol, cool off for 30 minutes.
+        """
+        key = f"_consec_losses_{symbol}"
+        cool_key = f"_cool_until_{symbol}"
+        if pnl_usd <= 0:
+            current = getattr(self, key, 0) + 1
+            setattr(self, key, current)
+            if current >= 3:
+                import time as _t
+                setattr(self, cool_key, _t.time() + 1800)  # 30 min cooldown
+                setattr(self, key, 0)  # reset counter
+                logger.warning(
+                    "SYMBOL COOLING: %s — 3 consecutive losses, pausing for 30 minutes", symbol
+                )
+        else:
+            setattr(self, key, 0)  # reset on win

@@ -376,6 +376,52 @@ textarea.contact-input{min-height:100px;resize:vertical}
   .header-status{display:none}
   .stat-grid{grid-template-columns:1fr!important}
 }
+
+/* ── MTF CHAIN VISUAL ────────────────────────────────────── */
+.mtf-chain{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:8px;padding:8px 12px;background:rgba(255,255,255,.02);border-radius:var(--radius);border:1px solid var(--border)}
+.mtf-node{display:flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:.7rem;font-weight:700;font-family:var(--font-mono);letter-spacing:.3px}
+.mtf-node.bullish{background:rgba(0,255,157,.08);color:var(--green);border:1px solid rgba(0,255,157,.2)}
+.mtf-node.bearish{background:rgba(255,59,92,.08);color:var(--red);border:1px solid rgba(255,59,92,.2)}
+.mtf-node.neutral{background:rgba(90,112,144,.08);color:var(--text-muted);border:1px solid rgba(90,112,144,.15)}
+.mtf-arrow{color:var(--text-muted);font-size:.7rem}
+
+/* ── SCANNER DIVERSITY BAR ───────────────────────────────── */
+.scanner-diversity-bar{display:flex;height:22px;border-radius:4px;overflow:hidden;background:rgba(255,255,255,.03)}
+.scanner-diversity-seg{display:flex;align-items:center;justify-content:center;font-size:.55rem;font-weight:700;letter-spacing:.3px;color:#fff;white-space:nowrap;overflow:hidden;min-width:1px}
+.scanner-diversity-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;font-size:.62rem}
+
+/* ── REGIME BADGE ────────────────────────────────────────── */
+.regime-badge{font-size:.58rem;padding:2px 6px;border-radius:3px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.regime-badge.trending_up{background:rgba(0,255,157,.1);color:var(--green);border:1px solid rgba(0,255,157,.2)}
+.regime-badge.trending_down{background:rgba(255,59,92,.1);color:var(--red);border:1px solid rgba(255,59,92,.2)}
+.regime-badge.quiet{background:rgba(90,112,144,.1);color:var(--text-muted);border:1px solid rgba(90,112,144,.15)}
+.regime-badge.ranging{background:rgba(255,215,0,.1);color:var(--yellow);border:1px solid rgba(255,215,0,.2)}
+.regime-badge.volatile{background:rgba(249,115,22,.1);color:var(--orange);border:1px solid rgba(249,115,22,.2)}
+
+/* ── PAPER/REAL TRADE TABS ───────────────────────────────── */
+.trade-tab-bar{display:flex;gap:4px;margin-bottom:8px}
+.trade-tab-btn{padding:5px 16px;font-size:.72rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer;font-weight:600;transition:all .2s}
+.trade-tab-btn.active{background:var(--accent-dim);color:var(--accent);border-color:rgba(0,255,157,.25)}
+
+/* ── DAILY PNL BAR CHART ─────────────────────────────────── */
+.daily-pnl-bars{display:flex;align-items:flex-end;gap:2px;height:100px;padding:8px 4px 0}
+.daily-pnl-bar{flex:1;min-width:4px;max-width:24px;border-radius:2px 2px 0 0;transition:height .3s;cursor:default;position:relative}
+.daily-pnl-bar.pos{background:var(--green)}
+.daily-pnl-bar.neg{background:var(--red);align-self:flex-start;border-radius:0 0 2px 2px}
+
+/* ── FEE IMPACT CARD ─────────────────────────────────────── */
+.fee-impact-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+
+/* ── TRADE CORRELATION ───────────────────────────────────── */
+.correlation-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.corr-card{text-align:center;padding:8px;background:rgba(255,255,255,.03);border-radius:var(--radius);border:1px solid var(--border)}
+.corr-card .corr-label{font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px}
+.corr-card .corr-values{display:flex;justify-content:center;gap:16px;margin-top:4px}
+.corr-card .corr-val{font-size:.85rem;font-weight:700;font-family:var(--font-mono)}
+
+/* ── ML ACCURACY TRACKER ─────────────────────────────────── */
+.ml-accuracy-wrap{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.ml-accuracy-card{text-align:center;padding:10px;background:rgba(255,255,255,.03);border-radius:var(--radius);border:1px solid var(--border)}
 </style>
 </head>
 <body>
@@ -487,6 +533,21 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <span class="cmd-tag risk" id="cmd-risk">--</span>
         </div>
         <div id="cmd-blockers" style="margin-top:4px"></div>
+        <!-- #2 MTF Macro Bias Badge -->
+        <div style="margin-top:6px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:.6rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;font-weight:600">1H MACRO:</span>
+          <span id="cmd-macro-bias" class="regime-badge neutral">--</span>
+        </div>
+        <!-- #9 MTF Confirmation Chain Visual -->
+        <div class="mtf-chain" id="mtf-chain">
+          <div class="mtf-node neutral" id="mtf-1h">1H --</div>
+          <span class="mtf-arrow">&rarr;</span>
+          <div class="mtf-node neutral" id="mtf-15m">15M --</div>
+          <span class="mtf-arrow">&rarr;</span>
+          <div class="mtf-node neutral" id="mtf-5m">5M --</div>
+          <span class="mtf-arrow">&rarr;</span>
+          <div class="mtf-node neutral" id="mtf-1m">1M signal</div>
+        </div>
       </div>
     </div>
     <div class="equity-sparkline-wrap">
@@ -559,13 +620,24 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- Active Trades -->
+    <!-- Active Trades with Paper/Real tabs (#10) -->
     <div class="panel live-span-2">
-      <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span>
-        <span style="margin-left:8px;font-size:.6rem;color:var(--text-muted)">(All trades show <span style="color:var(--cyan);font-weight:600">PAPER</span> badge)</span>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <div class="panel-title" style="margin-bottom:0">Active Trades <span class="badge" id="active-trade-count"></span></div>
+        <div class="trade-tab-bar">
+          <button class="trade-tab-btn active" id="atab-paper" onclick="switchActiveTrades('paper')">PAPER</button>
+          <button class="trade-tab-btn" id="atab-real" onclick="switchActiveTrades('real')">REAL</button>
+        </div>
       </div>
-      <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:8px">
-        <div class="empty">No active trades</div>
+      <div id="active-trades-paper">
+        <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:8px">
+          <div class="empty">No active trades</div>
+        </div>
+      </div>
+      <div id="active-trades-real" style="display:none">
+        <div id="active-trades-real-cards" style="display:flex;flex-direction:column;gap:8px">
+          <div class="empty">No real positions</div>
+        </div>
       </div>
     </div>
 
@@ -936,7 +1008,83 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- Scanner Performance -->
+  <!-- #1 Per-Scanner Performance Panel -->
+  <div class="panel">
+    <div class="panel-title">Per-Scanner Performance <span class="badge">grouped by scanner</span></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Scanner</th><th>Trades</th><th>WR%</th><th>PnL $</th><th>Avg R</th><th>Best R</th><th>Worst R</th></tr>
+        </thead>
+        <tbody id="per-scanner-perf-body">
+          <tr><td colspan="7" class="empty">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- #3 Scanner Diversity Bar -->
+  <div class="panel">
+    <div class="panel-title">Scanner Diversity <span class="badge">trade distribution</span></div>
+    <div class="scanner-diversity-bar" id="scanner-diversity-bar"></div>
+    <div class="scanner-diversity-legend" id="scanner-diversity-legend"></div>
+  </div>
+
+  <!-- #13 Daily P&L Bar Chart -->
+  <div class="panel">
+    <div class="panel-title">Daily P&L Chart <span class="badge">bar chart</span></div>
+    <div class="chart-wrap" style="height:140px"><canvas id="daily-pnl-chart"></canvas></div>
+  </div>
+
+  <!-- #8 Fee Impact + #5 ML Accuracy -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Fee Impact <span class="badge">cost analysis</span></div>
+      <div class="fee-impact-grid" id="fee-impact-grid">
+        <div class="stat-card"><div class="stat-value yellow" id="fi-total-fees">--</div><div class="stat-label">Total Fees</div></div>
+        <div class="stat-card"><div class="stat-value yellow" id="fi-fee-pct">--</div><div class="stat-label">Fee % of Gross</div></div>
+        <div class="stat-card"><div class="stat-value yellow" id="fi-avg-fee">--</div><div class="stat-label">Avg Fee/Trade</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">ML Accuracy Tracker <span class="badge">TAKE vs WEAK</span></div>
+      <div class="ml-accuracy-wrap" id="ml-accuracy-wrap">
+        <div class="ml-accuracy-card">
+          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono);color:var(--green)" id="ml-take-wr">--</div>
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">ML TAKE WR</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:2px" id="ml-take-count">0 trades</div>
+        </div>
+        <div class="ml-accuracy-card">
+          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono);color:var(--red)" id="ml-weak-wr">--</div>
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">ML WEAK WR</div>
+          <div style="font-size:.65rem;color:var(--text-muted);margin-top:2px" id="ml-weak-count">0 trades</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- #12 Trade Correlation (Paper vs Real) -->
+  <div class="panel" id="trade-correlation-panel">
+    <div class="panel-title">Paper vs Real Comparison <span class="badge">correlation</span></div>
+    <div class="correlation-grid" id="trade-correlation-grid">
+      <div class="corr-card">
+        <div class="corr-label">Win Rate</div>
+        <div class="corr-values">
+          <div><div class="corr-val" style="color:var(--cyan)" id="corr-paper-wr">--</div><div style="font-size:.55rem;color:var(--text-muted)">PAPER</div></div>
+          <div><div class="corr-val" style="color:var(--red)" id="corr-real-wr">--</div><div style="font-size:.55rem;color:var(--text-muted)">REAL</div></div>
+        </div>
+      </div>
+      <div class="corr-card">
+        <div class="corr-label">Avg R</div>
+        <div class="corr-values">
+          <div><div class="corr-val" style="color:var(--cyan)" id="corr-paper-r">--</div><div style="font-size:.55rem;color:var(--text-muted)">PAPER</div></div>
+          <div><div class="corr-val" style="color:var(--red)" id="corr-real-r">--</div><div style="font-size:.55rem;color:var(--text-muted)">REAL</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scanner Performance (original) -->
   <div class="panel">
     <div class="panel-title">Scanner Performance</div>
     <div class="tbl-wrap">
@@ -1692,6 +1840,10 @@ async function refreshLive() {
     updatePerSymbolStatus(status, decision);
     updateSetupLifecycle(status);
     updateRecentClosed(closed);
+    // #2 + #9 MTF chain
+    updateMTFChain(decision);
+    // #10 Real active trades
+    if (realStatus) updateRealActiveTrades(realStatus);
 
     // Execution Quality metrics (slippage tracking)
     if (closed && Array.isArray(closed) && closed.length > 0) {
@@ -1992,7 +2144,7 @@ function updateSignals(signals) {
     }
     wrap.innerHTML = signals.slice(0, 10).map(s => {
         const side = (s.side || "LONG").toUpperCase();
-        const setup = (s.metadata && s.metadata.setup_type) || s.setup_type || s.scanner || "--";
+        const setup = (s.metadata && s.metadata.setup_type) || s.setup_type || s.scanner || (s.metadata && s.metadata.scanner) || (s.metadata && s.metadata.scanner_name) || "--";
         const entry = s.entry_price || s.entry || 0;
         const sl = s.stop_loss || s.sl || 0;
         const tp1 = (s.take_profits && s.take_profits[0]) || s.tp1 || 0;
@@ -2019,24 +2171,37 @@ function updateSetupLifecycle(decision) {
     if (!container) return;
 
     const candidates = (decision && decision.setup_candidates) || [];
-    if (countEl) countEl.textContent = candidates.length;
+    // #4 Also show near-miss scanners from decision data
+    const nearMisses = (decision && decision.near_misses) || (decision && decision.forming_setups) || [];
+    const allCards = [...candidates];
+    // Add near misses that are not already in candidates
+    nearMisses.forEach(nm => {
+        if (!allCards.find(c => c.symbol === nm.symbol && c.scanner === nm.scanner)) {
+            allCards.push({...nm, is_near_miss: true});
+        }
+    });
+    if (countEl) countEl.textContent = allCards.length;
 
-    if (candidates.length === 0) {
+    if (allCards.length === 0) {
         container.innerHTML = '<div class="empty" style="font-size:11px">No forming setups</div>';
         return;
     }
 
-    container.innerHTML = candidates.map(c => {
+    container.innerHTML = allCards.map(c => {
         const isSignal = c.signal;
-        const stateClass = isSignal ? "slc-active" : c.triggered > 0 ? "slc-forming" : "slc-scanning";
-        const stateLabel = isSignal ? "SIGNAL" : c.triggered > 0 ? "FORMING" : "SCANNING";
-        const stateColor = isSignal ? "var(--green)" : c.triggered > 0 ? "#eab308" : "var(--text-muted)";
+        const isNearMiss = c.is_near_miss;
+        const score = c.score || c.confidence || 0;
+        const stateClass = isSignal ? "slc-active" : isNearMiss ? "slc-forming" : c.triggered > 0 ? "slc-forming" : "slc-scanning";
+        const stateLabel = isSignal ? "SIGNAL" : isNearMiss ? "FORMING" : c.triggered > 0 ? "FORMING" : "SCANNING";
+        const stateColor = isSignal ? "var(--green)" : isNearMiss ? "#eab308" : c.triggered > 0 ? "#eab308" : "var(--text-muted)";
         const regimeColor = c.regime && c.regime.includes("trending") ? "var(--green)" : c.regime === "quiet" ? "var(--red)" : "var(--text-dim)";
+        const scannerName = c.scanner || c.setup_type || "";
         return '<div class="slc-card ' + stateClass + '" style="padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.06);border-left:3px solid ' + stateColor + ';background:rgba(255,255,255,.03);min-width:140px">' +
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
-            '<span style="font-weight:700;font-size:11px">' + c.symbol + '</span>' +
+            '<span style="font-weight:700;font-size:11px">' + (c.symbol||"?") + '</span>' +
             '<span class="badge" style="font-size:9px;background:rgba(255,255,255,.08);color:' + stateColor + '">' + stateLabel + '</span>' +
             '</div>' +
+            (scannerName ? '<div style="font-size:9px;color:var(--cyan);font-weight:600">' + scannerName + (score > 0 ? ' (score ' + score + ')' : '') + '</div>' : '') +
             '<div style="font-size:10px;color:' + regimeColor + '">' + (c.regime || "—") + ' | ATR:' + (c.atr_ratio || 0) + '</div>' +
             '<div style="font-size:9px;color:var(--text-muted);margin-top:2px">' + (c.reason || "").substring(0, 40) + '</div>' +
             '</div>';
@@ -2093,6 +2258,9 @@ function updatePerSymbolStatus(status, decision) {
     const container = document.getElementById("per-symbol-status");
     if (!container || !status || !status.prices) return;
     const prices = status.prices;
+    // #7 Extract per-symbol regime data
+    const regimes = status.regimes || status.symbol_regimes || {};
+    const perSymbol = status.per_symbol || {};
     let html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">';
     for (const sym of Object.keys(prices).sort()) {
         const base = sym.split("/")[0];
@@ -2101,10 +2269,18 @@ function updatePerSymbolStatus(status, decision) {
         const decimals = price > 100 ? 2 : 4;
         const isBest = decision && decision.best_symbol === sym;
         const border = isBest ? "border:1px solid rgba(34,197,94,.2)" : "border:1px solid var(--border)";
+        // #7 Regime for this symbol
+        const regime = regimes[sym] || regimes[base] || (perSymbol[sym] && perSymbol[sym].regime) || (perSymbol[base] && perSymbol[base].regime) || "";
+        const regimeLower = regime.toLowerCase();
+        const regimeCls = regimeLower.includes("trending_up") || regimeLower.includes("up") ? "trending_up" :
+            regimeLower.includes("trending_down") || regimeLower.includes("down") ? "trending_down" :
+            regimeLower.includes("quiet") ? "quiet" :
+            regimeLower.includes("rang") ? "ranging" :
+            regimeLower.includes("volat") ? "volatile" : "quiet";
         html += `<div style="padding:8px;border-radius:var(--radius);${border};text-align:center;background:var(--bg-card)">
             <div style="font-weight:700;color:${color};font-size:.82rem">${base}</div>
             <div style="font-size:.73rem;color:var(--text-secondary);font-family:var(--font-mono)">$${price.toFixed(decimals)}</div>
-            <div style="font-size:.58rem;color:var(--text-muted);letter-spacing:.8px;text-transform:uppercase;margin-top:2px">Scanning</div>
+            ${regime ? '<span class="regime-badge ' + regimeCls + '">' + esc(regime) + '</span>' : '<div style="font-size:.58rem;color:var(--text-muted);letter-spacing:.8px;text-transform:uppercase;margin-top:2px">Scanning</div>'}
         </div>`;
     }
     html += '</div>';
@@ -2149,6 +2325,15 @@ async function refreshAnalytics() {
     updateDailyPnl(trkStats);
     updateRiskMetrics(riskData);
     updateSessionHeatmap(heatmapData);
+    // New analytics panels
+    updatePerScannerPerf(closed);       // #1
+    updateScannerDiversity(closed);     // #3
+    updateDailyPnlChart(closed);        // #13
+    updateFeeImpact(closed);            // #8
+    updateMLAccuracy(closed);           // #5
+    // #12 Trade correlation
+    const realSt = await api("/api/real/status");
+    updateTradeCorrelation(closed, realSt);
 }
 
 function updateEquityChart(closed) {
@@ -3419,6 +3604,257 @@ async function loadTradeTypePerf() {
         }
         document.getElementById("tradetype-perf-table").innerHTML = html || "<tr><td colspan=9 style='text-align:center;color:var(--text-muted)'>No data yet</td></tr>";
     } catch(e) { console.warn("Config perf load failed:", e); }
+}
+
+// ── #10 PAPER/REAL ACTIVE TRADES TABS ────────────────────
+let _activeTradeTab = "paper";
+function switchActiveTrades(tab) {
+    _activeTradeTab = tab;
+    document.getElementById("active-trades-paper").style.display = tab === "paper" ? "block" : "none";
+    document.getElementById("active-trades-real").style.display = tab === "real" ? "block" : "none";
+    document.getElementById("atab-paper").className = "trade-tab-btn" + (tab === "paper" ? " active" : "");
+    document.getElementById("atab-real").className = "trade-tab-btn" + (tab === "real" ? " active" : "");
+}
+
+// ── #10 Update Real Active Trades cards ──────────────────
+function updateRealActiveTrades(realStatus) {
+    const wrap = document.getElementById("active-trades-real-cards");
+    if (!wrap) return;
+    const positions = (realStatus && realStatus.open_positions) || [];
+    if (positions.length === 0) {
+        wrap.innerHTML = '<div class="empty">No real positions</div>';
+        return;
+    }
+    wrap.innerHTML = positions.map(p => {
+        const sideColor = p.side === "long" ? "var(--green)" : "var(--red)";
+        const upnl = p.upnl_usd || 0;
+        const upnlColor = upnl >= 0 ? "var(--green)" : "var(--red)";
+        const dur = (p.duration_min || 0) >= 60 ? (p.duration_min/60).toFixed(1)+"h" : (p.duration_min||0).toFixed(0)+"m";
+        const dec = (p.symbol||"").includes("BTC") ? 2 : 4;
+        return '<div style="padding:10px;background:rgba(255,59,92,.04);border:1px solid rgba(255,59,92,.15);border-left:3px solid ' + sideColor + ';border-radius:8px;margin-bottom:6px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center">' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-weight:800">' + (p.symbol||"?") + '</span>' +
+            '<span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(255,59,92,.12);color:var(--red);font-weight:700;border:1px solid rgba(255,59,92,.25)">REAL</span>' +
+            '<span style="color:' + sideColor + ';font-weight:700;text-transform:uppercase">' + (p.side||"?") + '</span>' +
+            '<span style="color:var(--yellow);font-weight:700">' + (p.leverage||0) + 'x</span>' +
+            '<span style="color:var(--cyan);font-size:.72rem">' + (p.scanner||"--") + '</span>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;gap:12px">' +
+            '<span style="font-size:1.1rem;font-weight:800;color:' + upnlColor + '">' + (upnl>=0?"+":"") + '$' + upnl.toFixed(2) + '</span>' +
+            '<span style="color:var(--text-muted);font-size:.72rem">' + dur + '</span>' +
+            '</div></div>' +
+            '<div style="display:flex;gap:16px;margin-top:6px;font-size:.72rem;font-family:var(--font-mono)">' +
+            '<span style="color:var(--text-muted)">Entry: <span style="color:var(--text)">' + (p.entry_price||0).toFixed(dec) + '</span></span>' +
+            '<span style="color:var(--text-muted)">Current: <span style="color:var(--text)">' + (p.current_price||0).toFixed(dec) + '</span></span>' +
+            '<span style="color:var(--text-muted)">SL: <span style="color:var(--red)">' + (p.stop_loss||0).toFixed(dec) + '</span></span>' +
+            '<span style="color:var(--text-muted)">TP1: <span style="color:var(--green)">' + (p.tp1 ? p.tp1.toFixed(dec) : "--") + '</span></span>' +
+            '<span style="color:var(--text-muted)">Margin: $' + (p.margin||0).toFixed(2) + '</span>' +
+            '</div></div>';
+    }).join("");
+}
+
+// ── #2 + #9 MTF CHAIN UPDATE ─────────────────────────────
+function updateMTFChain(decision) {
+    if (!decision) return;
+    const ind = decision.indicators || {};
+    // #2 Macro bias badge
+    const macroBias = ind.macro_bias_str || ind.macro_bias || "neutral";
+    const macroEl = document.getElementById("cmd-macro-bias");
+    if (macroEl) {
+        const bias = macroBias.toLowerCase();
+        macroEl.textContent = macroBias.toUpperCase();
+        macroEl.className = "regime-badge " + (bias.includes("bull") ? "trending_up" : bias.includes("bear") ? "trending_down" : "neutral");
+    }
+    // #9 MTF chain visual
+    const htf = ind.htf_bias || ind.htf_alignment || "neutral";
+    const mtf15 = ind.mtf_15m_bias || ind.bias_15m || "neutral";
+    const mtf5 = ind.mtf_5m_bias || ind.bias_5m || "neutral";
+    const signalSide = decision.action === "BUY" ? "bullish" : decision.action === "SELL" ? "bearish" : "neutral";
+    function setMTFNode(id, label, bias) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const b = String(bias).toLowerCase();
+        const cls = b.includes("bull") || b.includes("up") || b.includes("long") ? "bullish" : b.includes("bear") || b.includes("down") || b.includes("short") ? "bearish" : "neutral";
+        el.className = "mtf-node " + cls;
+        el.textContent = label + " " + (cls === "bullish" ? "\u25B2" : cls === "bearish" ? "\u25BC" : "\u25CF");
+    }
+    setMTFNode("mtf-1h", "1H", macroBias);
+    setMTFNode("mtf-15m", "15M", mtf15);
+    setMTFNode("mtf-5m", "5M", mtf5);
+    setMTFNode("mtf-1m", "1M", signalSide);
+}
+
+// ── #3 SCANNER DIVERSITY ─────────────────────────────────
+const SCANNER_COLORS = {
+    "structure_bounce":"#22c55e","bos_choch":"#6366f1","liquidity_sweep":"#f59e0b",
+    "order_block_entry":"#ec4899","ema_momentum":"#06b6d4","trend_continuation":"#8b5cf6",
+    "vwap_mean_revert":"#f97316","rsi_divergence":"#ef4444","mean_reversion":"#14b8a6"
+};
+function updateScannerDiversity(closed) {
+    const bar = document.getElementById("scanner-diversity-bar");
+    const legend = document.getElementById("scanner-diversity-legend");
+    if (!bar || !legend || !closed || !Array.isArray(closed) || closed.length === 0) return;
+    const counts = {};
+    let total = 0;
+    closed.forEach(t => {
+        const sc = t.setup_type || t.scanner || "unknown";
+        counts[sc] = (counts[sc] || 0) + 1;
+        total++;
+    });
+    const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]);
+    bar.innerHTML = sorted.map(([sc, cnt]) => {
+        const pct = (cnt / total * 100);
+        const color = SCANNER_COLORS[sc] || "#6b7280";
+        return '<div class="scanner-diversity-seg" style="width:' + pct + '%;background:' + color + '" title="' + sc + ': ' + cnt + ' (' + pct.toFixed(1) + '%)">' + (pct > 8 ? sc.split("_")[0] : "") + '</div>';
+    }).join("");
+    legend.innerHTML = sorted.map(([sc, cnt]) => {
+        const color = SCANNER_COLORS[sc] || "#6b7280";
+        const pct = (cnt / total * 100).toFixed(1);
+        return '<span style="display:flex;align-items:center;gap:3px"><span style="width:8px;height:8px;border-radius:2px;background:' + color + '"></span>' + sc + ' (' + pct + '%)</span>';
+    }).join("");
+}
+
+// ── #1 PER-SCANNER PERFORMANCE ───────────────────────────
+function updatePerScannerPerf(closed) {
+    const body = document.getElementById("per-scanner-perf-body");
+    if (!body || !closed || !Array.isArray(closed) || closed.length === 0) {
+        if (body) body.innerHTML = '<tr><td colspan="7" class="empty">No data</td></tr>';
+        return;
+    }
+    const scanners = {};
+    closed.forEach(t => {
+        const sc = t.setup_type || t.scanner || "unknown";
+        if (!scanners[sc]) scanners[sc] = {trades:0, wins:0, pnl:0, rs:[]};
+        const d = scanners[sc];
+        d.trades++;
+        if ((t.pnl_usd||0) > 0) d.wins++;
+        d.pnl += (t.pnl_usd||0);
+        d.rs.push(t.exit_r || t.r_multiple || 0);
+    });
+    const sorted = Object.entries(scanners).sort((a,b) => b[1].trades - a[1].trades);
+    body.innerHTML = sorted.map(([sc, d]) => {
+        const wr = d.trades > 0 ? (d.wins/d.trades*100) : 0;
+        const avgR = d.rs.length > 0 ? d.rs.reduce((a,b)=>a+b,0)/d.rs.length : 0;
+        const bestR = d.rs.length > 0 ? Math.max(...d.rs) : 0;
+        const worstR = d.rs.length > 0 ? Math.min(...d.rs) : 0;
+        return '<tr><td style="font-weight:600;color:' + (SCANNER_COLORS[sc]||'var(--text)') + '">' + esc(sc) + '</td>' +
+            '<td>' + d.trades + '</td>' +
+            '<td class="' + (wr>=50?'green':'red') + '">' + wr.toFixed(1) + '%</td>' +
+            '<td class="' + (d.pnl>=0?'pnl-pos':'pnl-neg') + '">$' + d.pnl.toFixed(2) + '</td>' +
+            '<td class="' + (avgR>=0?'green':'red') + '">' + avgR.toFixed(3) + 'R</td>' +
+            '<td class="green">+' + bestR.toFixed(2) + 'R</td>' +
+            '<td class="red">' + worstR.toFixed(2) + 'R</td></tr>';
+    }).join("");
+}
+
+// ── #13 DAILY PNL BAR CHART ──────────────────────────────
+let dailyPnlChart = null;
+function updateDailyPnlChart(closed) {
+    if (!closed || !Array.isArray(closed) || closed.length === 0) return;
+    const daily = {};
+    closed.forEach(t => {
+        const d = (t.closed_at || t.exit_time || "").substring(0, 10);
+        if (!d) return;
+        if (!daily[d]) daily[d] = 0;
+        daily[d] += (t.pnl_usd || 0);
+    });
+    const days = Object.keys(daily).sort();
+    const values = days.map(d => daily[d]);
+    const colors = values.map(v => v >= 0 ? "rgba(0,255,157,.7)" : "rgba(255,59,92,.7)");
+    const borderColors = values.map(v => v >= 0 ? "#00ff9d" : "#ff3b5c");
+    const ctx = document.getElementById("daily-pnl-chart");
+    if (!ctx) return;
+    if (dailyPnlChart) dailyPnlChart.destroy();
+    dailyPnlChart = new Chart(ctx.getContext("2d"), {
+        type: "bar",
+        data: {
+            labels: days.map(d => d.substring(5)),
+            datasets: [{label:"Daily PnL ($)", data:values, backgroundColor:colors, borderColor:borderColors, borderWidth:1, borderRadius:2}]
+        },
+        options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins:{legend:{display:false},tooltip:{backgroundColor:"rgba(22,26,37,.95)",borderColor:"rgba(99,148,255,.15)",borderWidth:1}},
+            scales:{x:{grid:{display:false},ticks:{color:"#5f6a7d",font:{size:9}}},y:{grid:{color:"rgba(255,255,255,.03)"},ticks:{color:"#5f6a7d",font:{size:9},callback:v=>"$"+v.toFixed(0)}}}
+        }
+    });
+}
+
+// ── #8 FEE IMPACT UPDATE ─────────────────────────────────
+function updateFeeImpact(closed) {
+    if (!closed || !Array.isArray(closed) || closed.length === 0) return;
+    let totalFees = 0, grossPnl = 0;
+    closed.forEach(t => {
+        totalFees += (t.total_fees_usd || 0);
+        grossPnl += Math.abs(t.pnl_usd || 0);
+    });
+    const feePct = grossPnl > 0 ? (totalFees / grossPnl * 100) : 0;
+    const avgFee = closed.length > 0 ? (totalFees / closed.length) : 0;
+    const el = id => document.getElementById(id);
+    if (el("fi-total-fees")) el("fi-total-fees").textContent = "$" + totalFees.toFixed(2);
+    if (el("fi-fee-pct")) el("fi-fee-pct").textContent = feePct.toFixed(1) + "%";
+    if (el("fi-avg-fee")) el("fi-avg-fee").textContent = "$" + avgFee.toFixed(3);
+}
+
+// ── #5 ML ACCURACY TRACKER ──────────────────────────────
+function updateMLAccuracy(closed) {
+    if (!closed || !Array.isArray(closed) || closed.length === 0) return;
+    let takeWins = 0, takeTrades = 0, weakWins = 0, weakTrades = 0;
+    closed.forEach(t => {
+        const mlVerdict = (t.metadata && t.metadata.ml_verdict) || "";
+        const mlProb = (t.metadata && t.metadata.ml_probability) || 0;
+        const isWin = (t.pnl_usd || 0) > 0;
+        if (mlVerdict.toLowerCase().includes("take") || mlProb >= 0.6) {
+            takeTrades++;
+            if (isWin) takeWins++;
+        } else if (mlVerdict.toLowerCase().includes("weak") || (mlProb > 0 && mlProb < 0.45)) {
+            weakTrades++;
+            if (isWin) weakWins++;
+        }
+    });
+    const takeWR = takeTrades > 0 ? (takeWins/takeTrades*100) : 0;
+    const weakWR = weakTrades > 0 ? (weakWins/weakTrades*100) : 0;
+    const el = id => document.getElementById(id);
+    if (el("ml-take-wr")) el("ml-take-wr").textContent = takeTrades > 0 ? takeWR.toFixed(1) + "%" : "--";
+    if (el("ml-take-count")) el("ml-take-count").textContent = takeTrades + " trades";
+    if (el("ml-weak-wr")) el("ml-weak-wr").textContent = weakTrades > 0 ? weakWR.toFixed(1) + "%" : "--";
+    if (el("ml-weak-count")) el("ml-weak-count").textContent = weakTrades + " trades";
+    // Color coding
+    if (el("ml-take-wr")) el("ml-take-wr").style.color = takeWR >= 55 ? "var(--green)" : takeWR >= 45 ? "var(--yellow)" : "var(--red)";
+    if (el("ml-weak-wr")) el("ml-weak-wr").style.color = weakWR < 40 ? "var(--green)" : weakWR < 50 ? "var(--yellow)" : "var(--red)";
+}
+
+// ── #12 TRADE CORRELATION (Paper vs Real) ────────────────
+function updateTradeCorrelation(closed, realStatus) {
+    // Paper stats
+    if (closed && Array.isArray(closed) && closed.length > 0) {
+        let pWins = 0, pTotal = 0, pRs = [];
+        closed.forEach(t => {
+            pTotal++;
+            if ((t.pnl_usd||0) > 0) pWins++;
+            pRs.push(t.exit_r || t.r_multiple || 0);
+        });
+        const pWR = pTotal > 0 ? (pWins/pTotal*100) : 0;
+        const pAvgR = pRs.length > 0 ? pRs.reduce((a,b)=>a+b,0)/pRs.length : 0;
+        const el = id => document.getElementById(id);
+        if (el("corr-paper-wr")) el("corr-paper-wr").textContent = pWR.toFixed(1) + "%";
+        if (el("corr-paper-r")) el("corr-paper-r").textContent = pAvgR.toFixed(3) + "R";
+    }
+    // Real stats from closed real trades
+    const realTrades = (realStatus && (realStatus.live_trades || realStatus.recent_trades)) || [];
+    if (realTrades.length > 0) {
+        let rWins = 0, rTotal = 0, rPnls = [];
+        realTrades.forEach(t => {
+            rTotal++;
+            if ((t.pnl_usd||0) > 0) rWins++;
+            rPnls.push(t.pnl_pct || 0);
+        });
+        const rWR = rTotal > 0 ? (rWins/rTotal*100) : 0;
+        const rAvgR = rPnls.length > 0 ? rPnls.reduce((a,b)=>a+b,0)/rPnls.length : 0;
+        const el = id => document.getElementById(id);
+        if (el("corr-real-wr")) el("corr-real-wr").textContent = rWR.toFixed(1) + "%";
+        if (el("corr-real-r")) el("corr-real-r").textContent = rAvgR.toFixed(2) + "%";
+    }
 }
 
 // Load config when tab is switched

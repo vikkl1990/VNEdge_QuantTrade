@@ -565,12 +565,13 @@ class ScalpStrategy(BaseStrategy):
             if last_vwap > 0 and _atr_for_vwap > 0:
                 vwap_dist = abs(last_close - last_vwap) / _atr_for_vwap
                 if vwap_dist < 0.12:
-                    # True noise zone — hard block (was 0.25, too aggressive)
+                    # Near-VWAP zone — soft penalty instead of hard block
+                    # vwap_mean_revert WANTS to trade here, so don't block entirely
                     context["vwap_zone"] = "noise"
                     context["vwap_dist_atr"] = round(vwap_dist, 3)
-                    return {"pass": False, "confidence_adj": 0,
-                            "reason": f"VWAP HARD BLOCK: dist={vwap_dist:.3f} ATR < 0.12 (noise zone)",
-                            "context": context}
+                    confidence_adj -= 25  # heavy penalty but not a hard block
+                    reasons.append(f"VWAP noise zone ({vwap_dist:.3f} ATR, -25)")
+                    # Note: vwap_mean_revert scanner handles its own VWAP logic
                 elif vwap_dist < 0.25:
                     confidence_adj -= 20
                     reasons.append(f"VWAP penalty zone ({vwap_dist:.2f} ATR, -20)")
@@ -1191,6 +1192,25 @@ class ScalpStrategy(BaseStrategy):
                     confs = list(result.confirmations)
                     penalties = []
 
+                    # ── Score normalization: newer scanners score lower naturally ──
+                    # structure_bounce has many confirmation sources (S/R, wick, volume,
+                    # HTF, confluence) giving it 75-90 scores. Newer scanners have fewer
+                    # sources giving 40-65. Add a base boost so they can compete fairly.
+                    _score_boost = {
+                        "rsi_divergence": 12,
+                        "cvd_divergence": 12,
+                        "vwap_mean_revert": 10,
+                        "ema_momentum": 8,
+                        "trend_continuation": 8,
+                        "liquidity_sweep": 5,
+                        "bos_choch": 5,
+                    }
+                    boost = _score_boost.get(setup_name, 0)
+                    if boost > 0:
+                        weighted += boost
+                        confs.append(f"Score boost +{boost} (scanner normalization)")
+                        tier = _tier_from_score(weighted)
+
                     # ── Soft penalty: ema_momentum SHORT (33% WR historically) ──
                     if setup_name == "ema_momentum" and result.side == OrderSide.SHORT:
                         weighted *= 0.5
@@ -1405,10 +1425,16 @@ class ScalpStrategy(BaseStrategy):
                           symbol, best_sr.confidence, best_sr.weighted_score)
             return []
 
-        # ── Setup strength veto: weak setups time out too often ──
-        # REVERTED to 65 from 55 — the 55 threshold let too many weak trades through
-        # causing WR drop from 84% to 74% in last 24h
-        MIN_SETUP_STRENGTH = 65
+        # ── Setup strength veto: adaptive per scanner ──
+        # structure_bounce needs 65 (proven). New scanners need 50 to get data.
+        # Confluence-boosted signals get lower threshold (already proven multi-scanner)
+        has_confluence = any("confluence" in c.lower() for c in best_sr.confirmations)
+        if has_confluence:
+            MIN_SETUP_STRENGTH = 50  # confluence already validates quality
+        elif best_sr.scanner_name in ("structure_bounce", "order_block_entry"):
+            MIN_SETUP_STRENGTH = 65  # proven scanners — strict
+        else:
+            MIN_SETUP_STRENGTH = 55  # new scanners — give them a chance
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
@@ -1709,32 +1735,31 @@ class ScalpStrategy(BaseStrategy):
                 if dist_from_ema8 > _chase_atr * 0.7:
                     vetos.append(f"NO CHASE: stretched {dist_from_ema8:.2f} > 0.7×ATR from EMA8")
 
-        # VETO 9: Regime + Scanner mismatch (Tier 2 — strict routing)
+        # VETO 9: Regime + Scanner mismatch
+        # REMOVED the hard whitelist — the REGIME_SCANNER_ROUTING already controls
+        # which scanners run per regime. If a scanner triggered, it was allowed to run.
+        # Only block quiet regime (absolute no-trade rule).
         regime_scanner_ok = True
-        if regime in ("ranging", "sideways", "quiet"):
-            if best_sr.scanner_name not in ("structure_bounce", "vwap_mean_revert", "rsi_divergence"):
-                regime_scanner_ok = False
-                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
-        elif regime in ("trending_up", "trending_down"):
-            if best_sr.scanner_name not in ("trend_continuation", "ema_momentum", "structure_bounce"):
-                regime_scanner_ok = False
-                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
-        elif regime in ("volatile", "high_volatility"):
-            if best_sr.scanner_name not in ("structure_bounce", "bb_squeeze", "liquidity_sweep"):
-                regime_scanner_ok = False
-                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} not for {regime}")
-        elif regime in ("quiet",):
-            # Quiet market: only structure_bounce allowed (high-confidence only)
+        if regime in ("quiet",):
             if best_sr.scanner_name != "structure_bounce":
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} blocked in quiet market")
 
-        # VETO 10: Regime-Side conflict — block shorts in uptrend, longs in downtrend
-        # Data: SHORTS lost $35 while LONGS gained $6.49 in a bullish session
-        if regime in ("trending_up",) and best.side == OrderSide.SHORT:
-            vetos.append(f"REGIME SIDE: SHORT blocked in {regime} — counter-trend")
-        elif regime in ("trending_down",) and best.side == OrderSide.LONG:
-            vetos.append(f"REGIME SIDE: LONG blocked in {regime} — counter-trend")
+        # VETO 10: Regime-Side conflict — block counter-trend for momentum scanners
+        # Exception: mean-reversion scanners (rsi_divergence, cvd_divergence, vwap_mean_revert)
+        # are DESIGNED to trade counter-trend — don't block them
+        _reversion_scanners = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert")
+        if best_sr.scanner_name not in _reversion_scanners:
+            if regime in ("trending_up",) and best.side == OrderSide.SHORT:
+                vetos.append(f"REGIME SIDE: SHORT blocked in {regime} — counter-trend")
+            elif regime in ("trending_down",) and best.side == OrderSide.LONG:
+                vetos.append(f"REGIME SIDE: LONG blocked in {regime} — counter-trend")
+        else:
+            # Reversion scanners: soft penalty instead of hard veto
+            if regime in ("trending_up",) and best.side == OrderSide.SHORT:
+                soft_vetos.append(f"COUNTER-TREND REVERSION: {best_sr.scanner_name} SHORT in {regime} (-10)")
+            elif regime in ("trending_down",) and best.side == OrderSide.LONG:
+                soft_vetos.append(f"COUNTER-TREND REVERSION: {best_sr.scanner_name} LONG in {regime} (-10)")
 
         # VETO 11: VWAP Direction Filter — SOFTENED to confidence penalty (-15)
         # Was: hard block. Now: -15 confidence penalty (lets good setups through)
@@ -2787,20 +2812,24 @@ class ScalpStrategy(BaseStrategy):
             if pullback_depth > atr * 1.5:
                 return None
 
-        # --- STEP 3: Hold — price stayed above EMA21 (LONG) or below (SHORT) ---
+        # --- STEP 3: Hold — price mostly stayed above EMA21 (LONG) or below (SHORT) ---
+        # Relaxed: allow 1 bar to briefly violate (5m candles are noisy)
+        ema_violations = 0
         for pc in pullback_candles:
             if side == OrderSide.LONG:
                 pc_ema21 = pc.get("ema_21", ema21)
                 if np.isnan(pc_ema21):
                     pc_ema21 = ema21
-                if pc["close"] < pc_ema21 * 0.997:  # closed below EMA21 = trend broken
-                    return None
+                if pc["close"] < pc_ema21 * 0.995:
+                    ema_violations += 1
             else:
                 pc_ema21 = pc.get("ema_21", ema21)
                 if np.isnan(pc_ema21):
                     pc_ema21 = ema21
-                if pc["close"] > pc_ema21 * 1.003:
-                    return None
+                if pc["close"] > pc_ema21 * 1.005:
+                    ema_violations += 1
+        if ema_violations > 1:  # allow 1 brief dip, block 2+
+            return None
 
         # --- STEP 4: Trigger candle — directional close + volume ---
         rel_vol = last.get("rel_vol", 1.0)

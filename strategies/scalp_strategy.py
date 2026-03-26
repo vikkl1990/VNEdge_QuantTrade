@@ -682,6 +682,8 @@ class ScalpStrategy(BaseStrategy):
         htf_df = candles_dict.get(self.htf)
         # 5m df for trend/momentum scanners (they need cleaner signal than 1m)
         df_5m = candles_dict.get("5m")
+        # 1h df for macro trend filter (Phase 1 MTF chain)
+        df_1h = candles_dict.get("1h")
 
         # Track signal count per symbol (decoupled — BTC signals don't count against ETH)
         if symbol not in self._signal_count_hr:
@@ -766,6 +768,42 @@ class ScalpStrategy(BaseStrategy):
         # --- Determine HTF bias (simple: above/below EMA 50) ---
         htf_bias = self._get_htf_bias(htf_df)
         confirm_bias = self._get_htf_bias(confirm_df)
+
+        # --- 1H MACRO TREND FILTER (Phase 1 MTF chain) ---
+        # If 1h data available, compute macro trend direction
+        # This acts as a strong directional filter — don't fight the hourly trend
+        macro_bias = 0  # 0 = neutral, 1 = bullish, -1 = bearish
+        if df_1h is not None and len(df_1h) >= 20:
+            try:
+                h1_close = float(df_1h.iloc[-1]["close"])
+                h1_ema21 = float(df_1h.iloc[-1].get("ema_21", 0))
+                h1_ema50 = float(df_1h.iloc[-1].get("ema_50", 0))
+                if h1_ema21 > 0 and h1_ema50 > 0:
+                    if h1_close > h1_ema21 and h1_ema21 > h1_ema50:
+                        macro_bias = 1   # strong bullish
+                    elif h1_close < h1_ema21 and h1_ema21 < h1_ema50:
+                        macro_bias = -1  # strong bearish
+                    elif h1_close > h1_ema50:
+                        macro_bias = 1   # mild bullish
+                    elif h1_close < h1_ema50:
+                        macro_bias = -1  # mild bearish
+
+                # Calculate 1h EMA slope for trend strength
+                if len(df_1h) >= 5 and "ema_21" in df_1h.columns:
+                    h1_ema_now = float(df_1h.iloc[-1]["ema_21"])
+                    h1_ema_prev = float(df_1h.iloc[-4]["ema_21"])
+                    h1_atr = float(df_1h.iloc[-1].get("atr", 1))
+                    if h1_atr > 0 and not np.isnan(h1_ema_now) and not np.isnan(h1_ema_prev):
+                        h1_slope = (h1_ema_now - h1_ema_prev) / h1_atr
+                        # Strong 1h trend: amplify macro_bias
+                        if abs(h1_slope) > 0.5:
+                            macro_bias = 1 if h1_slope > 0 else -1
+            except Exception:
+                pass
+
+        # Store macro_bias for veto layer
+        indicators["macro_bias"] = macro_bias
+        indicators["macro_bias_str"] = "bullish" if macro_bias > 0 else "bearish" if macro_bias < 0 else "neutral"
 
         # --- Fibonacci & CHOCH on 5m (more reliable than 1m noise) ---
         fib_data = {}
@@ -1174,13 +1212,30 @@ class ScalpStrategy(BaseStrategy):
             self._funnel["scanned"] += 1
 
             try:
-                # trend_continuation and ema_momentum work better on 5m
-                # Use 5m df if available, else fall back to primary (1m)
+                # MTF scanner routing:
+                # trend_continuation + ema_momentum → 5m (need cleaner trends)
+                # All scanners also get a 15m pass for higher-quality setups
                 if scanner in (self._scan_trend_continuation, self._scan_ema_momentum) and df_5m is not None and len(df_5m) >= 50:
                     scanner_df = df_5m
                 else:
                     scanner_df = df
-                result = scanner(symbol, scanner_df, htf_bias, confirm_bias)
+
+                # Try 15m first for structure/bos scanners (higher TF = higher quality)
+                result = None
+                if scanner in (self._scan_structure_bounce, self._scan_bos_choch) and confirm_df is not None and len(confirm_df) >= 30:
+                    result = scanner(symbol, confirm_df, htf_bias, confirm_bias)
+                    if result is not None:
+                        # 15m signal gets a quality bonus
+                        result = _SetupResult(
+                            name=result.name, side=result.side,
+                            confidence=min(result.confidence + 10, 100),
+                            confirmations=result.confirmations + ["15m timeframe (+10 quality)"],
+                            entry_price=result.entry_price, stop_loss=result.stop_loss, atr=result.atr,
+                        )
+
+                # Fall back to primary TF if 15m didn't trigger
+                if result is None:
+                    result = scanner(symbol, scanner_df, htf_bias, confirm_bias)
 
                 if result is not None:
                     # Scanner triggered — compute weighted score
@@ -1760,6 +1815,17 @@ class ScalpStrategy(BaseStrategy):
                 soft_vetos.append(f"COUNTER-TREND REVERSION: {best_sr.scanner_name} SHORT in {regime} (-10)")
             elif regime in ("trending_down",) and best.side == OrderSide.LONG:
                 soft_vetos.append(f"COUNTER-TREND REVERSION: {best_sr.scanner_name} LONG in {regime} (-10)")
+
+        # VETO 10b: 1H MACRO TREND — block trades fighting hourly trend
+        # This is the highest-timeframe filter. If 1h is strongly bearish,
+        # don't go LONG even if 1m/5m show a bounce (it's counter-macro).
+        # Exception: reversion scanners get soft penalty instead
+        _macro = indicators.get("macro_bias", 0)
+        if _macro != 0 and best_sr.scanner_name not in _reversion_scanners:
+            if _macro < 0 and best.side == OrderSide.LONG:
+                soft_vetos.append(f"1H MACRO BEARISH: LONG against hourly trend (-15)")
+            elif _macro > 0 and best.side == OrderSide.SHORT:
+                soft_vetos.append(f"1H MACRO BULLISH: SHORT against hourly trend (-15)")
 
         # VETO 11: VWAP Direction Filter — SOFTENED to confidence penalty (-15)
         # Was: hard block. Now: -15 confidence penalty (lets good setups through)

@@ -1087,7 +1087,16 @@ class MLDashboard:
                     row_df[col] = 0.0
             row_df = row_df[feature_names].fillna(0)
 
-            prob = float(model.predict_proba(row_df)[0, 1])
+            # Handle both classifiers (predict_proba) and regressors (predict)
+            if hasattr(model, 'predict_proba'):
+                prob = float(model.predict_proba(row_df)[0, 1])
+            elif hasattr(model, 'predict'):
+                # Regressor: normalize prediction to 0-1 range using sigmoid
+                raw = float(model.predict(row_df)[0])
+                import math
+                prob = 1.0 / (1.0 + math.exp(-raw * 2))  # sigmoid scaling
+            else:
+                prob = 0.5
 
             # Rank bucket
             if prob >= 0.70:

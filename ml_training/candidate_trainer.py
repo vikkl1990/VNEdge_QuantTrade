@@ -702,7 +702,7 @@ class CandidateTrainer:
 
         self._regression = regression
         tscv = TimeSeriesSplit(n_splits=n_splits)
-        purge_gap = 5
+        purge_gap = 10  # 10 bars on 5m = 50min, covers BTC 27min scalper + safety margin
 
         fold_results = []
         all_probs = np.zeros(len(X))

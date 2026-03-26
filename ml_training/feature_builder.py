@@ -827,7 +827,7 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         1.0 - (current_body_atr / bos_disp.replace(0, np.nan)),
         0.0
     )
-    features["impulse_decay"] = np.clip(np.nan_to_num(impulse_decay_raw, 0), 0, 1.0)
+    features["bos_impulse_decay"] = np.clip(np.nan_to_num(impulse_decay_raw, 0), 0, 1.0)
 
     # HTF alignment with BOS direction
     if "htf_trend_bias" in features.columns:

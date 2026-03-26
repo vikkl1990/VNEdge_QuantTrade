@@ -5032,3 +5032,39 @@ class ScalpStrategy(BaseStrategy):
                 )
         else:
             setattr(self, key, 0)  # reset on win
+
+    # ==================================================================
+    # Setup Lifecycle — expose forming/near-trigger setups to dashboard
+    # ==================================================================
+
+    def get_setup_lifecycle(self) -> Dict[str, Any]:
+        """Return current forming setups from last scan status."""
+        candidates = []
+        for symbol, status in self.last_scan_status.items():
+            if not isinstance(status, dict):
+                continue
+            reason = status.get("reason", "")
+            signal = status.get("signal", False)
+            indicators = status.get("indicators", {})
+            funnel = status.get("funnel", {})
+
+            # Get regime and scanner info
+            regime = indicators.get("regime", "unknown")
+            atr_ratio = indicators.get("atr_ratio", 0)
+
+            # Build candidate info
+            candidate = {
+                "symbol": symbol,
+                "regime": regime,
+                "atr_ratio": round(atr_ratio, 2) if atr_ratio else 0,
+                "signal": signal,
+                "reason": reason[:80] if reason else "scanning",
+                "time": status.get("time", ""),
+                "scanners_checked": funnel.get("scanners_checked", 0),
+                "triggered": funnel.get("triggered", 0),
+                "vetoed": funnel.get("vetoed", 0),
+                "blocked_regime": funnel.get("blocked_regime", 0),
+            }
+            candidates.append(candidate)
+
+        return {"candidates": candidates}

@@ -549,7 +549,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
             <th style="text-align:left;padding:4px">Symbol</th><th style="text-align:left;padding:4px">Side</th>
             <th style="text-align:right;padding:4px">Entry</th><th style="text-align:right;padding:4px">Current</th>
-            <th style="text-align:right;padding:4px">UPNL</th><th style="text-align:right;padding:4px">SL</th>
+            <th style="text-align:right;padding:4px">UPNL</th><th style="text-align:right;padding:4px">SL</th><th style="text-align:right;padding:4px">TP1</th>
             <th style="text-align:right;padding:4px">Margin</th><th style="text-align:right;padding:4px">Position</th>
             <th style="text-align:center;padding:4px">Lev</th><th style="text-align:left;padding:4px">Scanner</th>
             <th style="text-align:center;padding:4px">ML</th><th style="text-align:right;padding:4px">Time</th>
@@ -1519,6 +1519,7 @@ async function refreshLive() {
                         "<td style='text-align:right'>" + num(p.entry_price,4) + "</td><td style='text-align:right'>" + num(p.current_price,4) + "</td>" +
                         "<td style='text-align:right;color:" + upnlColor + "'>$" + num(p.upnl_usd,2) + " (" + num(p.upnl_pct,2) + "%)</td>" +
                         "<td style='text-align:right;color:var(--red)'>" + num(p.stop_loss,4) + "</td>" +
+                        "<td style='text-align:right;color:var(--green)'>" + (p.tp1 ? num(p.tp1,4) : "--") + "</td>" +
                         "<td style='text-align:right'>$" + num(p.margin,2) + "</td><td style='text-align:right'>$" + num(p.position_usd,2) + "</td>" +
                         "<td style='text-align:center'>" + p.leverage + "x</td><td>" + (p.scanner||"--") + "</td>" +
                         "<td style='text-align:center'>" + (p.ml_prob ? num(p.ml_prob*100,0) + "%" : "--") + "</td>" +
@@ -1689,6 +1690,7 @@ async function refreshLive() {
     updateVetoStats(funnel);
     updateScalperCountdown(status);
     updatePerSymbolStatus(status, decision);
+    updateSetupLifecycle(status);
     updateRecentClosed(closed);
 
     // Execution Quality metrics (slippage tracking)
@@ -2008,6 +2010,36 @@ function updateSignals(signals) {
             ${s.metadata && s.metadata.ml_probability != null ? `<span style="font-size:.62rem;padding:2px 5px;border-radius:3px;background:${s.metadata.ml_probability >= 0.6 ? 'rgba(0,255,157,.1)' : s.metadata.ml_probability >= 0.45 ? 'rgba(255,215,0,.1)' : 'rgba(255,59,92,.1)'};color:${s.metadata.ml_probability >= 0.6 ? 'var(--green)' : s.metadata.ml_probability >= 0.45 ? 'var(--yellow)' : 'var(--red)'};font-weight:600;font-family:var(--font-mono)">ML:${(s.metadata.ml_probability * 100).toFixed(0)}%</span>` : ''}
             <div class="sig-conf-bar ${confClass}" style="width:${confWidth}%"></div>
         </div>`;
+    }).join("");
+}
+
+function updateSetupLifecycle(decision) {
+    const container = document.getElementById("setup-lifecycle-cards");
+    const countEl = document.getElementById("setup-lifecycle-count");
+    if (!container) return;
+
+    const candidates = (decision && decision.setup_candidates) || [];
+    if (countEl) countEl.textContent = candidates.length;
+
+    if (candidates.length === 0) {
+        container.innerHTML = '<div class="empty" style="font-size:11px">No forming setups</div>';
+        return;
+    }
+
+    container.innerHTML = candidates.map(c => {
+        const isSignal = c.signal;
+        const stateClass = isSignal ? "slc-active" : c.triggered > 0 ? "slc-forming" : "slc-scanning";
+        const stateLabel = isSignal ? "SIGNAL" : c.triggered > 0 ? "FORMING" : "SCANNING";
+        const stateColor = isSignal ? "var(--green)" : c.triggered > 0 ? "#eab308" : "var(--text-muted)";
+        const regimeColor = c.regime && c.regime.includes("trending") ? "var(--green)" : c.regime === "quiet" ? "var(--red)" : "var(--text-dim)";
+        return '<div class="slc-card ' + stateClass + '" style="padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.06);border-left:3px solid ' + stateColor + ';background:rgba(255,255,255,.03);min-width:140px">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
+            '<span style="font-weight:700;font-size:11px">' + c.symbol + '</span>' +
+            '<span class="badge" style="font-size:9px;background:rgba(255,255,255,.08);color:' + stateColor + '">' + stateLabel + '</span>' +
+            '</div>' +
+            '<div style="font-size:10px;color:' + regimeColor + '">' + (c.regime || "—") + ' | ATR:' + (c.atr_ratio || 0) + '</div>' +
+            '<div style="font-size:9px;color:var(--text-muted);margin-top:2px">' + (c.reason || "").substring(0, 40) + '</div>' +
+            '</div>';
     }).join("");
 }
 

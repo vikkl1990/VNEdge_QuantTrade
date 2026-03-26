@@ -91,3 +91,9 @@ class MultiStrategy(BaseStrategy):
                 "investment": self._investment.last_scan_status.get(symbol, {}),
             }
         return result
+
+    def get_setup_lifecycle(self):
+        """Delegate to ScalpStrategy's setup lifecycle."""
+        if hasattr(self._scalp, "get_setup_lifecycle"):
+            return self._scalp.get_setup_lifecycle()
+        return {"candidates": []}

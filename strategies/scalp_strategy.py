@@ -286,7 +286,7 @@ class ScalpStrategy(BaseStrategy):
         # ═══ STRUCTURE_BOUNCE_ONLY MODE ═══
         # Backtest proven: 68% WR, +164% PnL, +0.16R — ONLY profitable scanner
         # When True: only structure_bounce trades, everything else ML-only
-        self.structure_bounce_only: bool = True  # ← THE SWITCH
+        self.structure_bounce_only: bool = False  # ← DISABLED: all 8 scanners now active
 
         # Overrides when structure_bounce_only is active:
         # Was 82, now lowered to WEAK tier (50). Veto layer handles quality gating.

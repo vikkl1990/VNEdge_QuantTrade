@@ -223,6 +223,13 @@ class TrackedSignal:
     mae_r: float = 0.0              # Max Adverse Excursion in R (worst drawdown)
     mfe_r: float = 0.0              # Max Favorable Excursion in R (best unrealized)
 
+    # Smart exit tracking
+    peak_mfe_r: float = 0.0           # highest MFE reached (for MFE memory trail)
+    last_mfe_update_time: float = 0.0 # timestamp of last MFE new high
+    mfe_stale_seconds: float = 0.0    # seconds since last MFE improvement
+    partial_exit_done: bool = False    # whether 0.3R partial exit was taken
+    momentum_decay_count: int = 0     # consecutive candles with shrinking body
+
     # Slippage tracking
     signal_price: float = 0.0         # price at signal generation (before execution)
     fill_price: float = 0.0           # actual fill price from exchange
@@ -887,56 +894,98 @@ class SignalTracker:
                 else:
                     current_r_trail = (ts.entry_price - price) / ts.initial_risk
 
-                # PROGRESSIVE TRAIL — move SL as profit grows to protect gains.
-                # Lower levels lock breakeven/small profit to prevent giving
-                # back ALL unrealized profit on reversal. Even if net-of-fees
-                # is near zero, it's far better than a full -1.0R SL loss.
-                #
-                # Fee context: round-trip ~0.36% of position ≈ 0.4-0.5R
-                # So locks below 0.5R are roughly breakeven after fees,
-                # but STILL better than -1.0R loss.
-                # Wide trail for runners: give breathing room so trades can reach TP2/TP3
-                # Old levels locked 80% → too tight, pulled out on minor pullbacks
-                # New levels: lock 50-65% below 1.5R (let it breathe), tighten above 2R
-                trail_levels = [
-                    (4.0, 3.2),   # 80% locked — deep in profit, protect it
-                    (3.0, 2.3),   # 77% locked — solidly profitable runner
-                    (2.5, 1.8),   # 72% locked — approaching TP2 territory
-                    (2.0, 1.4),   # 70% locked — strong move, still room to run
-                    (1.5, 1.0),   # 67% locked — past TP1, give room for TP2
-                    (1.0, 0.5),   # 50% locked — 0.5R breathing room (was 0.2R)
-                    (0.7, 0.3),   # 43% locked — covers fees, lets trade develop
-                    (0.5, 0.1),   # 20% locked — just above breakeven
-                    (0.3, 0.0),   # Move SL to entry (breakeven)
-                ]
+                # ══════════════════════════════════════════════════
+                # SMART EXIT SYSTEM v2 — 5 improvements combined
+                # ══════════════════════════════════════════════════
 
-                for trigger_r, lock_r in trail_levels:
-                    if current_r_trail >= trigger_r:
-                        # Lock at least this much profit
-                        lock_dist = ts.initial_risk * lock_r
-                        # Also ensure we cover fees (0.28% of entry)
-                        fee_cover = ts.entry_price * 0.0028
-                        lock_dist = max(lock_dist, fee_cover)
+                # ── FIX #1: MFE MEMORY TRAIL ──
+                # Never give back more than X% of peak profit.
+                # Track peak MFE and set SL as percentage of peak.
+                now_ts = time.time()
+                if current_r_trail > ts.peak_mfe_r:
+                    ts.peak_mfe_r = current_r_trail
+                    ts.last_mfe_update_time = now_ts
+                    ts.mfe_stale_seconds = 0
+                elif ts.last_mfe_update_time > 0:
+                    ts.mfe_stale_seconds = now_ts - ts.last_mfe_update_time
 
-                        if is_long:
-                            new_sl = ts.entry_price + lock_dist
-                        else:
-                            new_sl = ts.entry_price - lock_dist
+                # MFE-based lock: protect percentage of peak profit
+                if ts.peak_mfe_r >= 0.15:
+                    if ts.peak_mfe_r >= 1.0:
+                        lock_pct = 0.75  # lock 75% of peak when >1R
+                    elif ts.peak_mfe_r >= 0.6:
+                        lock_pct = 0.65  # lock 65% when >0.6R
+                    elif ts.peak_mfe_r >= 0.3:
+                        lock_pct = 0.50  # lock 50% when >0.3R
+                    else:
+                        lock_pct = 0.0   # breakeven when >0.15R
 
-                        # Only tighten, never widen
-                        should_update = (
-                            (is_long and new_sl > ts.stop_loss) or
-                            (not is_long and new_sl < ts.stop_loss)
+                    # ── FIX #3: TIME-BASED TIGHTENING ──
+                    # If MFE hasn't improved in 10 min, tighten lock by 15%
+                    if ts.mfe_stale_seconds > 600 and ts.peak_mfe_r > 0.3:
+                        lock_pct = min(lock_pct + 0.15, 0.85)
+
+                    # ── FIX #4: REGIME-ADAPTIVE TRAIL ──
+                    _regime = ts.metadata.get("regime", "") if ts.metadata else ""
+                    if _regime in ("trending_up", "trending_down", "breakout"):
+                        lock_pct *= 0.85  # wider trail in trends (let it run)
+                    elif _regime in ("ranging", "sideways", "quiet"):
+                        lock_pct *= 1.15  # tighter in ranges (take what you can)
+                        lock_pct = min(lock_pct, 0.90)
+
+                    # ── FIX #5: MOMENTUM DECAY ──
+                    # If momentum is fading, tighten further
+                    if ts.momentum_decay_count >= 3 and ts.peak_mfe_r > 0.3:
+                        lock_pct = min(lock_pct + 0.10, 0.90)
+
+                    lock_r = ts.peak_mfe_r * lock_pct
+                    lock_dist = ts.initial_risk * lock_r
+                    fee_cover = ts.entry_price * 0.0028
+                    lock_dist = max(lock_dist, fee_cover)
+
+                    if is_long:
+                        new_sl = ts.entry_price + lock_dist
+                    else:
+                        new_sl = ts.entry_price - lock_dist
+
+                    should_update = (
+                        (is_long and new_sl > ts.stop_loss) or
+                        (not is_long and new_sl < ts.stop_loss)
+                    )
+                    if should_update:
+                        ts.stop_loss = new_sl
+                        if not ts.breakeven_set:
+                            ts.breakeven_set = True
+                        logger.info(
+                            "SMART TRAIL: %s %s @ %.2f | peak=%.2fR cur=%.2fR lock=%.0f%% → +%.2fR | SL → %.2f%s",
+                            ts.symbol, ts.side, price, ts.peak_mfe_r, current_r_trail,
+                            lock_pct * 100, lock_r, ts.stop_loss,
+                            " [STALE]" if ts.mfe_stale_seconds > 600 else "",
                         )
-                        if should_update:
-                            ts.stop_loss = new_sl
-                            if not ts.breakeven_set:
-                                ts.breakeven_set = True
-                            logger.info(
-                                "TRAIL: %s %s @ %.2f | +%.2fR → lock +%.1fR | SL → %.2f",
-                                ts.symbol, ts.side, price, current_r_trail, lock_r, ts.stop_loss,
-                            )
-                        break  # only apply highest matching level
+
+                # ── FIX #2: PARTIAL EXIT AT 0.3R ──
+                # Close 35% of position at 0.3R MFE (before TP1)
+                if current_r_trail >= 0.3 and not ts.partial_exit_done and not ts.tp1_hit:
+                    ts.partial_exit_done = True
+                    # Book 35% partial profit
+                    if is_long:
+                        partial_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
+                    else:
+                        partial_pnl = ((ts.entry_price - price) / ts.entry_price) * 100
+                    ts.position_remaining_pct = 0.65
+                    logger.info(
+                        "PARTIAL EXIT 0.3R: %s %s @ %.2f | +%.2fR | 35%% closed, 65%% running",
+                        ts.symbol, ts.side, price, current_r_trail,
+                    )
+
+                # ── FIX #5: MOMENTUM DECAY DETECTION ──
+                # If price hasn't made new MFE high and is stalling, increment decay
+                if ts.peak_mfe_r > 0.2 and current_r_trail < ts.peak_mfe_r * 0.85:
+                    # Price dropped from peak — potential momentum loss
+                    ts.momentum_decay_count = getattr(ts, 'momentum_decay_count', 0) + 1
+                elif current_r_trail >= ts.peak_mfe_r:
+                    # New high — reset decay
+                    ts.momentum_decay_count = 0
 
             # -- Check TP levels (in order) --
             if not ts.tp1_hit and ts.tp1:

@@ -510,6 +510,18 @@ class BotOrchestrator:
                                 overshoot, overshoot_pct, time_since_last,
                             )
 
+                    # ── SL UPDATE → sync to exchange ──
+                    if ev_type == "sl_updated" and hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                        try:
+                            trade_id = ev.get("trade_id", "")
+                            new_sl = ev.get("new_sl", 0)
+                            symbol = ev.get("symbol", "")
+                            if trade_id and new_sl > 0:
+                                await self._real_manager.update_exchange_sl(trade_id, symbol, new_sl)
+                        except Exception as exc:
+                            self._log.debug("Exchange SL sync failed: %s", exc)
+                        continue  # sl_updated is not a close event, skip rest
+
                     self._log.info("Fast Monitor: %s", msg)
                     try:
                         await self._alerts.send_system_alert(msg, level=level)

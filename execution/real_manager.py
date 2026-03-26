@@ -1069,6 +1069,60 @@ class RealTradingManager:
         except Exception as e:
             logger.warning("REAL: Position sync failed: %s", e)
 
+    async def update_exchange_sl(self, paper_trade_id: str, symbol: str, new_sl: float):
+        """Update SL on exchange when smart trail moves the stop."""
+        # Find the real trade mapped to this paper trade
+        real_trade_id = self.paper_to_real.get(paper_trade_id)
+        if not real_trade_id:
+            return  # no real mirror for this paper trade
+
+        trade = self.real_trades.get(real_trade_id)
+        if not trade:
+            return
+
+        try:
+            trading_ex = await self._get_trading_exchange()
+            if not trading_ex:
+                return
+
+            # Get product info
+            from exchange.delta_client import PRODUCT_MAP
+            prod = PRODUCT_MAP.get(symbol, {})
+            product_id = prod.get("demo_id" if self.dry_run else "prod_id")
+            if not product_id:
+                return
+
+            side = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+            sl_side = "sell" if side == "long" else "buy"
+
+            # Cancel existing SL order, place new one
+            try:
+                open_orders = trading_ex.get_live_orders()
+                if isinstance(open_orders, list):
+                    for o in open_orders:
+                        if (o.get("product_id") == product_id and
+                            o.get("reduce_only") == "true" and
+                            o.get("order_type") in ("stop_market_order", "stop_limit_order")):
+                            trading_ex.cancel_order(product_id, o.get("id"))
+                            logger.debug("REAL: Cancelled old SL order %s", o.get("id"))
+            except Exception as e:
+                logger.debug("REAL: Cancel old SL failed: %s", e)
+
+            # Place new SL
+            size = int(getattr(trade, "position_size", 0))
+            if size > 0:
+                trading_ex.place_stop_order(
+                    product_id=product_id,
+                    size=size,
+                    side=sl_side,
+                    stop_price=str(new_sl),
+                )
+                # Update local trade SL
+                trade.stop_loss = new_sl
+                logger.info("REAL SL SYNC: %s %s | SL → %.4f | exchange updated", symbol, side, new_sl)
+        except Exception as e:
+            logger.debug("REAL SL SYNC failed: %s %s | %s", symbol, new_sl, e)
+
     def get_status(self) -> Dict:
         """Return current real trading status for dashboard."""
         open_trades = []

@@ -953,6 +953,7 @@ class SignalTracker:
                         (not is_long and new_sl < ts.stop_loss)
                     )
                     if should_update:
+                        old_sl = ts.stop_loss
                         ts.stop_loss = new_sl
                         if not ts.breakeven_set:
                             ts.breakeven_set = True
@@ -962,6 +963,16 @@ class SignalTracker:
                             lock_pct * 100, lock_r, ts.stop_loss,
                             " [STALE]" if ts.mfe_stale_seconds > 600 else "",
                         )
+                        # Emit SL update event for exchange sync
+                        events.append({
+                            "type": "sl_updated",
+                            "trade_id": ts.trade_id,
+                            "symbol": ts.symbol,
+                            "side": ts.side,
+                            "new_sl": ts.stop_loss,
+                            "old_sl": old_sl,
+                            "peak_mfe_r": ts.peak_mfe_r,
+                        })
 
                 # ── FIX #2: PARTIAL EXIT AT 0.3R ──
                 # Close 35% of position at 0.3R MFE (before TP1)

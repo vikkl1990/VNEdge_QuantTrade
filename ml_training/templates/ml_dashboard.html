@@ -89,6 +89,7 @@ tr:hover{background:var(--accent-dim)}
 .drift-down{color:var(--red)}
 .warn-row{background:rgba(255,215,0,.05) !important}
 .block-row{background:rgba(255,59,92,.05) !important}
+#equity-sparkline{max-height:200px}
 @media(max-width:900px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
 </style>
 </head>
@@ -151,7 +152,7 @@ tr:hover{background:var(--accent-dim)}
       <!-- Equity Sparkline -->
       <div>
         <div style="color:var(--text-dim);font-size:.7rem;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Rolling Equity (Last 50 Trades)</div>
-        <div style="position:relative;height:100px;width:100%"><canvas id="equity-sparkline"></canvas></div>
+        <div style="position:relative;height:100px;max-height:200px;width:100%;overflow:hidden"><canvas id="equity-sparkline"></canvas></div>
       </div>
       <!-- Key KPIs -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -462,6 +463,16 @@ tr:hover{background:var(--accent-dim)}
     <h3>Pair x Scanner Matrix</h3>
     <div id="fb-matrix" style="overflow-x:auto">Loading...</div>
   </div>
+  <!-- Session Heatmap by Hour -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>Hourly Performance Heatmap</h3>
+    <p style="color:var(--text-dim);font-size:.75rem;margin-bottom:12px">
+      Trade performance bucketed by hour of day (UTC). Green = net positive, Red = net negative. Size = trade count.
+    </p>
+    <div id="fb-hour-heatmap" style="display:flex;gap:2px;flex-wrap:wrap;align-items:flex-end;min-height:80px">
+      <span style="color:var(--text-dim)">Loading...</span>
+    </div>
+  </div>
   <div class="card">
     <h3>Recent Trades</h3>
     <table>
@@ -476,6 +487,7 @@ tr:hover{background:var(--accent-dim)}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 let equityChart = null;
+let _recentTrades = [];
 
 // Tab switching
 document.querySelectorAll('.tab').forEach(tab => {
@@ -497,7 +509,7 @@ async function fetchJSON(url) {
       return null;
     }
     const data = await r.json();
-    if (data && data.error && !data.results && !data.total_trades && data.total_trades !== 0) {
+    if (data && data.error && !data.results && data.total_trades == null) {
       showError('API error (' + url.split('/api/')[1] + '): ' + data.error);
       return null;
     }
@@ -1241,20 +1253,53 @@ async function refreshLiveFeedback() {
     document.getElementById('fb-matrix').innerHTML = '<span style="color:var(--text-dim)">No matrix data yet</span>';
   }
 
+  // Hourly Heatmap
+  const recentAll = fb.recent || [];
+  const hourBuckets = {};
+  for (let h = 0; h < 24; h++) hourBuckets[h] = { trades: 0, wins: 0, pnl: 0, r_sum: 0 };
+  recentAll.forEach(t => {
+    const ts = t.closed_at || t.opened_at;
+    if (!ts) return;
+    const hour = new Date(ts).getUTCHours();
+    hourBuckets[hour].trades++;
+    if ((t.pnl_usd || 0) > 0) hourBuckets[hour].wins++;
+    hourBuckets[hour].pnl += t.pnl_usd || 0;
+    hourBuckets[hour].r_sum += t.exit_r || 0;
+  });
+  const maxTrades = Math.max(1, ...Object.values(hourBuckets).map(b => b.trades));
+  let hmHTML = '';
+  for (let h = 0; h < 24; h++) {
+    const b = hourBuckets[h];
+    const barH = b.trades > 0 ? Math.max(20, (b.trades / maxTrades) * 80) : 12;
+    const bg = b.trades === 0 ? 'rgba(255,255,255,.04)' : b.pnl >= 0 ? 'rgba(0,255,157,' + (0.15 + 0.35 * b.trades / maxTrades) + ')' : 'rgba(255,59,92,' + (0.15 + 0.35 * b.trades / maxTrades) + ')';
+    const wr = b.trades > 0 ? (b.wins / b.trades * 100).toFixed(0) : '--';
+    hmHTML += '<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:30px" title="' + h + ':00 UTC | ' + b.trades + ' trades | WR: ' + wr + '% | $' + b.pnl.toFixed(2) + '">';
+    hmHTML += '<div style="font-size:.6rem;color:' + (b.pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (b.trades > 0 ? b.trades : '') + '</div>';
+    hmHTML += '<div style="width:100%;height:' + barH + 'px;background:' + bg + ';border-radius:3px;position:relative">';
+    if (b.trades > 0) hmHTML += '<div style="position:absolute;bottom:2px;width:100%;text-align:center;font-size:.55rem;color:#fff">' + wr + '%</div>';
+    hmHTML += '</div>';
+    hmHTML += '<div style="font-size:.58rem;color:var(--text-muted)">' + String(h).padStart(2, '0') + '</div>';
+    hmHTML += '</div>';
+  }
+  document.getElementById('fb-hour-heatmap').innerHTML = hmHTML || '<span style="color:var(--text-dim)">No trade data for heatmap</span>';
+
   // Recent Trades
   const recent = fb.recent || [];
+  _recentTrades = recent;
   let recHTML = '';
-  recent.forEach(t => {
+  recent.forEach((t, idx) => {
     const side = t.side || '?';
     const sideColor = side.toLowerCase() === 'long' ? 'var(--green)' : 'var(--red)';
     const ttColor = t.trade_type === 'SCALP' ? 'var(--yellow)' : t.trade_type === 'INTRADAY' ? 'var(--purple)' : 'var(--green)';
     const dur = t.duration_sec ? (t.duration_sec < 60 ? t.duration_sec + 's' : Math.floor(t.duration_sec/60) + 'm') : '\u2014';
-    recHTML += '<tr>';
+    const scannerName = t.scanner || t.setup_type || '?';
+    const symbolName = t.symbol || '?';
+    recHTML += '<tr style="cursor:pointer" onclick="openTradeDetail(' + idx + ')">';
     recHTML += '<td style="font-size:.68rem">' + (t.closed_at ? new Date(t.closed_at).toLocaleString() : '\u2014') + '</td>';
-    recHTML += '<td style="color:var(--cyan)">' + (t.symbol || '?') + '</td>';
+    recHTML += '<td style="color:var(--cyan)">' + symbolName + '</td>';
     recHTML += '<td style="color:' + sideColor + '">' + side.toUpperCase() + '</td>';
     recHTML += '<td style="color:' + ttColor + '">' + (t.trade_type || '?') + '</td>';
-    recHTML += '<td>' + (t.scanner || t.setup_type || '?') + '</td>';
+    recHTML += '<td>' + scannerName + '</td>';
     recHTML += '<td>' + (t.ml_probability != null ? (t.ml_probability*100).toFixed(1) + '%' : '\u2014') + '</td>';
     recHTML += '<td>$' + (t.entry_price ? t.entry_price.toFixed(2) : '\u2014') + '</td>';
     recHTML += '<td>$' + (t.exit_price ? t.exit_price.toFixed(2) : '\u2014') + '</td>';
@@ -1511,6 +1556,83 @@ function exportScannerCSV() {
 document.getElementById('scanner-modal')?.addEventListener('click', function(e) {
   if (e.target === this) this.style.display = 'none';
 });
+
+// -------------------------------------------------------------------
+//  TRADE DETAIL MODAL
+// -------------------------------------------------------------------
+function openTradeDetail(idx) {
+  const t = _recentTrades[idx];
+  if (!t) return;
+  const modal = document.getElementById('scanner-modal');
+  const scannerName = t.scanner || t.setup_type || '?';
+  const symbolName = t.symbol || '?';
+  document.getElementById('modal-scanner-name').textContent = 'Trade Detail — ' + scannerName + ' / ' + symbolName;
+  modal.style.display = 'flex';
+
+  const side = t.side || '?';
+  const sideColor = side.toLowerCase() === 'long' ? 'var(--green)' : 'var(--red)';
+  const dur = t.duration_sec ? (t.duration_sec < 60 ? t.duration_sec + 's' : Math.floor(t.duration_sec/60) + 'm') : '\u2014';
+
+  let html = '<div class="grid grid-3" style="gap:12px;margin-bottom:16px">';
+  html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:' + sideColor + '">' + side.toUpperCase() + '</div><div style="color:var(--text-dim);font-size:.65rem">Side</div></div>';
+  html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700;color:' + (t.pnl_usd > 0 ? 'var(--green)' : 'var(--red)') + '">$' + (t.pnl_usd != null ? t.pnl_usd.toFixed(2) : '--') + '</div><div style="color:var(--text-dim);font-size:.65rem">PnL</div></div>';
+  html += '<div style="text-align:center;padding:12px;background:rgba(0,0,0,.3);border-radius:8px"><div style="font-size:1.3rem;font-weight:700">' + (t.ml_probability != null ? (t.ml_probability*100).toFixed(1) + '%' : '--') + '</div><div style="color:var(--text-dim);font-size:.65rem">ML Prob</div></div>';
+  html += '</div>';
+
+  html += '<table style="margin-bottom:16px">';
+  html += '<tr><td style="color:var(--text-dim)">Scanner</td><td style="color:var(--accent)">' + scannerName + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Symbol</td><td style="color:var(--cyan)">' + symbolName + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Type</td><td>' + (t.trade_type || '?') + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Entry</td><td>$' + (t.entry_price ? t.entry_price.toFixed(2) : '--') + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Exit</td><td>$' + (t.exit_price ? t.exit_price.toFixed(2) : '--') + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Exit R</td><td class="' + cls(t.exit_r) + '">' + (t.exit_r != null ? t.exit_r.toFixed(3) + 'R' : '--') + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Duration</td><td>' + dur + '</td></tr>';
+  html += '<tr><td style="color:var(--text-dim)">Closed At</td><td style="font-size:.72rem">' + (t.closed_at ? new Date(t.closed_at).toLocaleString() : '--') + '</td></tr>';
+  html += '</table>';
+
+  // Fetch calibration data for scanner verdict
+  const contentEl = document.getElementById('modal-content');
+  contentEl.innerHTML = html + '<div style="color:var(--text-dim);font-size:.75rem">Loading scanner details...</div>';
+
+  Promise.all([
+    fetchJSON('/api/calibration'),
+    fetchJSON('/api/features')
+  ]).then(([calibration, features]) => {
+    // Calibration verdict for this scanner
+    if (calibration) {
+      const calKey = Object.keys(calibration).find(k => !k.startsWith('_') && k.includes(scannerName));
+      if (calKey && calibration[calKey]) {
+        const cal = calibration[calKey];
+        html += '<div style="margin-bottom:12px"><h3 style="font-size:.8rem;color:var(--accent)">Calibration</h3>';
+        html += '<div class="metric"><span class="label">Verdict</span><span class="value"><span class="badge badge-' + (cal.verdict === 'USEFUL' ? 'useful' : 'marginal') + '">' + cal.verdict + '</span></span></div>';
+        html += '<div class="metric"><span class="label">Spread</span><span class="value">' + (cal.top_bottom_spread || 0).toFixed(1) + '%</span></div>';
+        html += '<div class="metric"><span class="label">Rank Corr</span><span class="value">' + (cal.rank_correlation || 0).toFixed(3) + '</span></div>';
+        html += '</div>';
+      }
+    }
+
+    // Top 5 features for this scanner
+    if (features) {
+      const featKey = Object.keys(features).find(k => !k.startsWith('_') && k.includes(scannerName));
+      const fi = featKey ? features[featKey] : null;
+      const featureMap = fi?.feature_importances || fi || {};
+      const sortedFeats = Object.entries(featureMap).filter(([k]) => typeof featureMap[k] === 'number').sort((a, b) => b[1] - a[1]).slice(0, 5);
+      if (sortedFeats.length > 0) {
+        const maxVal = sortedFeats[0][1];
+        html += '<div><h3 style="font-size:.8rem;color:var(--accent)">Top 5 Features (' + scannerName + ')</h3>';
+        sortedFeats.forEach(([name, imp]) => {
+          const w = (imp / maxVal * 100).toFixed(0);
+          html += '<div class="feature-bar"><span class="feature-name">' + name + '</span><div style="flex:1"><div class="feature-fill" style="width:' + w + '%"></div></div><span class="feature-val">' + (imp * 100).toFixed(1) + '%</span></div>';
+        });
+        html += '</div>';
+      }
+    }
+
+    contentEl.innerHTML = html || '<span style="color:var(--text-dim)">No additional data available</span>';
+  }).catch(() => {
+    contentEl.innerHTML = html;
+  });
+}
 
 // -------------------------------------------------------------------
 //  INIT

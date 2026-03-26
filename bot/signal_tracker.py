@@ -1352,8 +1352,24 @@ class SignalTracker:
         return [ts.to_dict() for ts in self._active.values()]
 
     def get_closed_signals(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return recent closed signals."""
-        return self._closed[-limit:]
+        """Return recent closed signals from persisted file + in-memory."""
+        all_closed = []
+        # Load from persisted file first
+        closed_file = _STORAGE_DIR / "closed_signals.json"
+        try:
+            if closed_file.exists():
+                data = json.loads(closed_file.read_text())
+                if isinstance(data, list):
+                    all_closed = data
+        except Exception:
+            pass
+        # Add any in-memory signals not yet in file
+        existing_ids = {s.get("trade_id") for s in all_closed if isinstance(s, dict)}
+        for s in self._closed:
+            sid = s.get("trade_id") if isinstance(s, dict) else getattr(s, "trade_id", None)
+            if sid and sid not in existing_ids:
+                all_closed.append(s if isinstance(s, dict) else s.to_dict() if hasattr(s, "to_dict") else s)
+        return all_closed[-limit:]
 
     def get_stats(self) -> Dict[str, Any]:
         """Return current performance statistics."""

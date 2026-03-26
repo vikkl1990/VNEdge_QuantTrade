@@ -418,6 +418,12 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 </header>
 
+<!-- ═══ MODE BANNER ════════════════════════════════════════ -->
+<div id="mode-banner" style="padding:6px 28px;font-size:.72rem;font-weight:700;letter-spacing:2px;text-align:center;display:flex;justify-content:space-between;align-items:center">
+  <span id="mode-label">LOADING...</span>
+  <span id="mode-stats" style="font-weight:500;letter-spacing:0;font-size:.68rem"></span>
+</div>
+
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
@@ -537,7 +543,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
       </div>
       <div id="real-positions-table-live" style="margin-top:12px;display:none">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">REAL POSITIONS</div>
+        <div id="real-positions-label" style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">POSITIONS</div>
         <table style="width:100%;font-size:.72rem;border-collapse:collapse">
           <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
             <th style="text-align:left;padding:4px">Symbol</th><th style="text-align:left;padding:4px">Side</th>
@@ -554,7 +560,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
     <!-- Active Trades -->
     <div class="panel live-span-2">
-      <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span></div>
+      <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span>
+        <span style="margin-left:8px;font-size:.6rem;color:var(--text-muted)">(All trades show <span style="color:var(--cyan);font-weight:600">PAPER</span> badge)</span>
+      </div>
       <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:8px">
         <div class="empty">No active trades</div>
       </div>
@@ -967,7 +975,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div class="panel-title" style="margin-bottom:0">Closed Trades</div>
       <div style="display:flex;gap:4px">
         <button id="tab-paper-closed" onclick="switchClosedTab('paper')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:var(--cyan);color:#000;border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
-        <button id="tab-real-closed" onclick="switchClosedTab('real')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DRY RUN</button>
+        <button id="tab-demo-closed" onclick="switchClosedTab('demo')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DEMO</button>
+        <button id="tab-real-closed" onclick="switchClosedTab('real')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">REAL</button>
       </div>
       <span class="badge" id="closed-count-badge">last 50</span>
       <button onclick="exportCSV()" style="padding:4px 12px;font-size:.7rem;border:1px solid rgba(0,255,157,.3);background:transparent;color:var(--green);border-radius:4px;cursor:pointer;margin-left:auto">Export CSV</button>
@@ -1390,11 +1399,32 @@ async function refreshLive() {
         const modeVal = !realStatus.enabled ? "disabled" : realStatus.dry_run ? "dry_run" : "live";
         const modeLabel = !realStatus.enabled ? "DISABLED" : realStatus.dry_run ? "DRY RUN" : "LIVE";
         const modeColor = !realStatus.enabled ? "var(--text-muted)" : realStatus.dry_run ? "var(--cyan)" : "var(--red)";
+
+        // ── MODE BANNER (persistent top strip) ──
+        const mb = document.getElementById("mode-banner");
+        if (mb) {
+            const bannerBg = modeVal === "live" ? "rgba(255,59,92,.12)" : modeVal === "dry_run" ? "rgba(0,212,255,.08)" : "rgba(0,100,255,.06)";
+            const bannerBorder = modeVal === "live" ? "rgba(255,59,92,.4)" : modeVal === "dry_run" ? "rgba(0,212,255,.3)" : "rgba(0,100,255,.15)";
+            const bannerText = modeVal === "live" ? "var(--red)" : modeVal === "dry_run" ? "var(--cyan)" : "rgba(100,180,255,.8)";
+            const icon = modeVal === "live" ? "\uD83D\uDD34" : modeVal === "dry_run" ? "\uD83D\uDFE1" : "\uD83D\uDFE2";
+            mb.style.background = bannerBg;
+            mb.style.borderBottom = "1px solid " + bannerBorder;
+            mb.style.color = bannerText;
+            const ml = document.getElementById("mode-label");
+            if (ml) ml.textContent = icon + " " + (modeVal === "live" ? "LIVE TRADING — REAL MONEY" : modeVal === "dry_run" ? "DRY RUN — DEMO EXCHANGE (TESTNET)" : "PAPER TRADING MODE");
+            const ms = document.getElementById("mode-stats");
+            const cb2 = realStatus.circuit_breaker || {};
+            if (ms) ms.innerHTML = "Balance: $" + (realStatus.balance||0).toFixed(2) + " | Today: " + (cb2.trade_count_today||0) + " trades | PnL: $" + (cb2.daily_pnl||0).toFixed(2);
+        }
         const bal = realStatus.balance || 0;
         const cb = realStatus.circuit_breaker || {};
         const dp = cb.daily_pnl || 0;
         const tp = cb.total_pnl || dp;
         const cbOk = !cb.is_tripped;
+
+        // Mode-specific styling
+        const panelBorderColor = modeVal === "live" ? "rgba(255,59,92,.5)" : modeVal === "dry_run" ? "rgba(0,212,255,.4)" : "rgba(90,112,144,.2)";
+        const posLabel = modeVal === "live" ? "LIVE POSITIONS" : modeVal === "dry_run" ? "DEMO POSITIONS (TESTNET)" : "POSITIONS";
 
         // Update both panel instances (analytics + live tab)
         for (const suffix of ["", "-live"]) {
@@ -1402,6 +1432,12 @@ async function refreshLive() {
             if (sel) sel.value = modeVal;
             const badge = document.getElementById("real-mode-badge" + suffix);
             if (badge) { badge.textContent = modeLabel; badge.style.color = modeColor; badge.style.borderColor = modeColor; }
+            // Update panel border color based on mode
+            const panel = document.getElementById("real-trading-panel" + suffix);
+            if (panel) panel.style.borderColor = panelBorderColor;
+            // Update positions label
+            const posLabelEl = document.getElementById("real-positions-label" + suffix);
+            if (posLabelEl) posLabelEl.textContent = posLabel;
             const balEl = document.getElementById("real-balance" + suffix);
             if (balEl) balEl.textContent = "$" + num(bal, 2);
             const dpEl = document.getElementById("real-daily-pnl" + suffix);
@@ -1514,6 +1550,7 @@ async function refreshLive() {
                 posTable.style.display = "none";
             }
             // Update real closed trades tab
+            _lastRealStatus = realStatus;  // cache for tab switching
             updateRealClosedTrades(realStatus);
         }
     }
@@ -1815,6 +1852,7 @@ function updateActiveTrades(trades) {
             <div class="tc-header">
                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                     <span style="font-weight:800;font-size:1rem">${esc(sym)}</span>
+                    <span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(0,212,255,.12);color:var(--cyan);font-weight:700;letter-spacing:.5px;border:1px solid rgba(0,212,255,.25)">PAPER</span>
                     <span class="sig-side ${side}" style="font-size:.78rem">${side}</span>
                     <span style="color:var(--yellow);font-weight:700;font-size:.85rem">${lev}x</span>
                     <span style="color:var(--text-muted);font-size:.73rem">${esc(t.setup_type || '')}</span>
@@ -2343,28 +2381,48 @@ function updateSessionHeatmap(data) {
 }
 
 let _currentClosedTab = "paper";
+let _lastRealStatus = null;  // cache for tab switching
 function switchClosedTab(tab) {
     _currentClosedTab = tab;
     document.getElementById("paper-closed-wrap").style.display = tab === "paper" ? "block" : "none";
-    document.getElementById("real-closed-wrap").style.display = tab === "real" ? "block" : "none";
+    document.getElementById("real-closed-wrap").style.display = (tab === "demo" || tab === "real") ? "block" : "none";
     const paperBtn = document.getElementById("tab-paper-closed");
+    const demoBtn = document.getElementById("tab-demo-closed");
     const realBtn = document.getElementById("tab-real-closed");
     paperBtn.style.background = tab === "paper" ? "var(--cyan)" : "transparent";
     paperBtn.style.color = tab === "paper" ? "#000" : "var(--text-muted)";
+    paperBtn.style.fontWeight = tab === "paper" ? "600" : "400";
+    demoBtn.style.background = tab === "demo" ? "rgba(0,212,255,.8)" : "transparent";
+    demoBtn.style.color = tab === "demo" ? "#000" : "var(--text-muted)";
+    demoBtn.style.fontWeight = tab === "demo" ? "600" : "400";
     realBtn.style.background = tab === "real" ? "var(--red)" : "transparent";
     realBtn.style.color = tab === "real" ? "#fff" : "var(--text-muted)";
+    realBtn.style.fontWeight = tab === "real" ? "600" : "400";
+    // Re-render the table with correct data for selected tab
+    if (_lastRealStatus && (tab === "demo" || tab === "real")) {
+        updateRealClosedTrades(_lastRealStatus);
+    }
 }
 
 function updateRealClosedTrades(realStatus) {
     const body = document.getElementById("real-closed-body");
     if (!body) return;
-    const trades = (realStatus && realStatus.recent_trades) || [];
+    // Use the correct trade set based on active tab
+    let trades;
+    if (_currentClosedTab === "demo") {
+        trades = (realStatus && realStatus.demo_trades) || [];
+    } else if (_currentClosedTab === "real") {
+        trades = (realStatus && realStatus.live_trades) || [];
+    } else {
+        trades = (realStatus && realStatus.recent_trades) || [];
+    }
+    const tabLabel = _currentClosedTab === "demo" ? "demo" : "real";
     if (trades.length === 0) {
-        body.innerHTML = '<tr><td colspan="12" class="empty">No dry run trades closed yet</td></tr>';
+        body.innerHTML = '<tr><td colspan="12" class="empty">No ' + tabLabel + ' trades closed yet</td></tr>';
         return;
     }
     const badge = document.getElementById("closed-count-badge");
-    if (_currentClosedTab === "real") badge.textContent = trades.length + " dry run";
+    if (_currentClosedTab !== "paper") badge.textContent = trades.length + " " + tabLabel;
     body.innerHTML = trades.slice().reverse().map(t => {
         const pnlColor = (t.pnl_usd || 0) >= 0 ? "var(--green)" : "var(--red)";
         const sideColor = t.side === "long" ? "var(--green)" : "var(--red)";

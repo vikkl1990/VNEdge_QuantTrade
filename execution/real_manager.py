@@ -1076,16 +1076,20 @@ class RealTradingManager:
             side = t.side.value if hasattr(t.side, "value") else str(t.side)
             entry = t.entry_price
             current = getattr(t, "current_price", entry) or entry
-            pos_size = getattr(t, "position_size", 0)
+            pos_size = getattr(t, "position_size", 0)  # lots (contracts)
             margin = getattr(t, "margin", 0)
             lev = getattr(t, "leverage", 1)
-            # UPNL calculation
+            # Get contract size for correct PnL calculation
+            contract_sizes = {"BTC/USDT": 0.001, "ETH/USDT": 0.01, "SOL/USDT": 1.0}
+            contract_size = contract_sizes.get(t.symbol, 1.0)
+            qty = pos_size * contract_size  # actual base currency amount
+            # UPNL calculation: price_diff × quantity (not lots!)
             if side == "long":
                 upnl_pct = ((current - entry) / entry * 100) if entry > 0 else 0
-                upnl_usd = (current - entry) * pos_size
+                upnl_usd = (current - entry) * qty
             else:
                 upnl_pct = ((entry - current) / entry * 100) if entry > 0 else 0
-                upnl_usd = (entry - current) * pos_size
+                upnl_usd = (entry - current) * qty
             # Time open
             opened = getattr(t, "opened_at", 0)
             duration_min = (time.time() - opened) / 60 if opened > 0 else 0

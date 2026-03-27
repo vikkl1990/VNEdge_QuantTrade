@@ -870,10 +870,15 @@ async function refreshAll() {
 async function refreshCommandCenter() {
   try {
     const fb = await fetchJSON('/api/live-feedback');
-    if (!fb || !fb.recent) return;
+    if (!fb) return;
 
+    // Use ALL trades for metrics, not just recent 20
+    // Reconstruct full trade list from by_scanner aggregate + recent for equity curve
     const trades = fb.recent || [];
-    if (trades.length === 0) return;
+    const totalTrades = fb.total_trades || trades.length;
+    const overallWR = totalTrades > 0 ? (fb.by_scanner ? Object.values(fb.by_scanner).reduce((a, s) => a + (s.wins || 0), 0) / totalTrades * 100 : 0) : 0;
+    const overallAvgR = fb.by_scanner ? Object.values(fb.by_scanner).reduce((a, s) => a + (s.r_sum || 0), 0) / Math.max(1, totalTrades) : 0;
+    if (trades.length === 0 && totalTrades === 0) return;
 
     // Build equity curve from trades
     let equity = [0];
@@ -915,10 +920,13 @@ async function refreshCommandCenter() {
       });
     }
 
-    // KPIs
+    // KPIs — use aggregate data for accuracy, recent for chart
     const n = rs.length;
-    const meanR = rs.reduce((a, b) => a + b, 0) / n;
-    const stdR = Math.sqrt(rs.reduce((a, b) => a + (b - meanR) ** 2, 0) / n);
+    const recentMeanR = n > 0 ? rs.reduce((a, b) => a + b, 0) / n : 0;
+    const recentStdR = n > 0 ? Math.sqrt(rs.reduce((a, b) => a + (b - recentMeanR) ** 2, 0) / n) : 0;
+    // Use overall avg R from all trades (not just recent 20)
+    const meanR = overallAvgR || recentMeanR;
+    const stdR = recentStdR || 1;
     const sharpe = stdR > 0 ? (meanR / stdR * Math.sqrt(252)).toFixed(1) : '--';
     const expR = meanR.toFixed(3);
 

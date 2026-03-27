@@ -1488,7 +1488,14 @@ class ScalpStrategy(BaseStrategy):
 
         # ── Block empty regime (no regime = no trade) ──
         if not regime or regime.strip() == "":
-            logger.info("FUNNEL %s | EMPTY REGIME BLOCK | no regime detected", symbol)
+            if pass_cnt <= 3 or pass_cnt % 50 == 0:
+                logger.info("FUNNEL %s | EMPTY REGIME BLOCK | no regime detected", symbol)
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": "EMPTY REGIME: no regime detected",
+                "indicators": {}, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
             return []
 
         # ── Disable bos_choch from live trading (shadow only until retrained) ──
@@ -1514,6 +1521,14 @@ class ScalpStrategy(BaseStrategy):
             MIN_SETUP_STRENGTH = 48  # confluence already validates quality
         else:
             MIN_SETUP_STRENGTH = SCANNER_MIN_CONF.get(best_sr.scanner_name, 55)
+
+        # Regime adjustment: trending_down is our strongest regime — be more permissive
+        if regime == "trending_down" and best_sr.scanner_name in ("liquidity_sweep", "cvd_divergence"):
+            MIN_SETUP_STRENGTH = max(MIN_SETUP_STRENGTH - 5, 45)
+        # trending_up LONG needs higher bar (64% WR vs 86% SHORT)
+        side_val = best_sr.side.value if hasattr(best_sr.side, 'value') else str(best_sr.side)
+        if regime == "trending_up" and side_val == "long":
+            MIN_SETUP_STRENGTH = max(MIN_SETUP_STRENGTH + 5, 60)
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
@@ -1691,6 +1706,29 @@ class ScalpStrategy(BaseStrategy):
                     if hasattr(best_sr, "weighted_score"):
                         best_sr.weighted_score = min(best_sr.weighted_score + 10, 100)
                         best_sr.confirmations = list(best_sr.confirmations) + ["[5M_BOOST: +10, slope=%.2f]" % slope_5m]
+
+        # VETO 2c: 15m Structure Confirmation for INTRADAY/RUNNER trades
+        # Higher timeframe must show structure agreement for larger trade types
+        trade_type = getattr(best_sr, '_trade_type', '') or ''
+        if not trade_type:
+            # Estimate trade type from confidence
+            _tt_conf = best.confidence if best else 50
+            trade_type = "RUNNER" if _tt_conf >= 85 else "INTRADAY" if _tt_conf >= 60 else "SCALP"
+        if trade_type in ("INTRADAY", "RUNNER") and htf_bias != 0:
+            # For longer trades, also check 15m EMA21 slope for structure confirmation
+            htf_df = candles_dict.get("15m") if candles_dict else None
+            if htf_df is not None and len(htf_df) >= 10 and "ema_21" in htf_df.columns:
+                ema21_15m = htf_df["ema_21"].dropna()
+                if len(ema21_15m) >= 5:
+                    _htf_atr = getattr(best, "atr", 1.0)
+                    slope_15m = (float(ema21_15m.iloc[-1]) - float(ema21_15m.iloc[-5])) / max(_htf_atr, 0.001)
+                    side_val = best.side.value if hasattr(best.side, "value") else str(best.side)
+                    _15m_opposes = (slope_15m < -0.15 and side_val == "long") or (slope_15m > 0.15 and side_val == "short")
+                    if _15m_opposes:
+                        soft_vetos.append("15m STRUCTURE: EMA21 slope=%.2f against %s (-12)" % (slope_15m, side_val))
+                        if hasattr(best_sr, "weighted_score"):
+                            best_sr.weighted_score = max(best_sr.weighted_score - 12, 20)
+                            best_sr.confirmations = list(best_sr.confirmations) + ["[15M_STRUCTURE_PENALTY: -12]"]
 
         # VETO 3: Session (architect-corrected)
         # 2-5 UTC: HARD BLOCK (genuinely low liquidity)
@@ -2058,6 +2096,12 @@ class ScalpStrategy(BaseStrategy):
             return []
 
         confidence_size_mult = calc_confidence_size_multiplier(best.confidence, best_sr.tier)
+
+        # ── Adaptive sizing: confluence bonus ──
+        if has_confluence:
+            confidence_size_mult *= 1.25  # 25% larger position on multi-scanner agreement
+            logger.info("CONFLUENCE SIZE BOOST: %s %s | mult=%.2f → %.2f (confluence)",
+                       symbol, best_sr.scanner_name, confidence_size_mult / 1.25, confidence_size_mult)
 
         # ══════════════════════════════════════════════════════
         # TIER 1: MINIMUM EDGE vs REAL COST GATE
@@ -3672,8 +3716,7 @@ class ScalpStrategy(BaseStrategy):
         if side is None:
             return None
 
-        # ── Step 3: Reclaim strength ──
-        # How strongly did price reclaim after the sweep?
+        # ── Step 3: Reclaim strength (TIGHTENED: require strong reclaim) ──
         body = abs(close - open_)
         candle_range = high - low if high > low else atr * 0.01
         body_ratio = body / candle_range
@@ -3682,11 +3725,27 @@ class ScalpStrategy(BaseStrategy):
         else:
             close_position = (high - close) / candle_range
 
-        if body_ratio > 0.5 and close_position > 0.6:
+        # Minimum reclaim body: 55% of candle range for quality sweeps
+        if body_ratio > 0.55 and close_position > 0.65:
             score += 15
             confs.append(f"Strong reclaim (body={body_ratio:.0%}, close_pos={close_position:.0%})")
-        elif body_ratio > 0.3:
-            score += 8  # boosted from 5
+        elif body_ratio > 0.4:
+            score += 5
+        elif body_ratio < 0.25:
+            score -= 10  # weak reclaim = probably not a real sweep
+            confs.append(f"Weak reclaim ({body_ratio:.0%}) — penalized")
+
+        # Minimum sweep depth: 0.35 ATR
+        if side == OrderSide.LONG:
+            sweep_depth = (sweep_level - low) / atr if atr > 0 else 0
+        else:
+            sweep_depth = (high - sweep_level) / atr if atr > 0 else 0
+        if sweep_depth < 0.35 and body_ratio < 0.55:
+            score -= 8  # shallow sweep + weak reclaim = noise
+            confs.append(f"Shallow sweep ({sweep_depth:.2f} ATR)")
+        elif sweep_depth > 0.5:
+            score += 5
+            confs.append(f"Deep sweep ({sweep_depth:.2f} ATR)")
 
         # ── Step 4: Displacement check ──
         # Body must show real directional intent

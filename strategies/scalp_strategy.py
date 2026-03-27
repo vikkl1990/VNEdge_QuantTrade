@@ -1217,9 +1217,13 @@ class ScalpStrategy(BaseStrategy):
 
             try:
                 # MTF scanner routing:
-                # trend_continuation + ema_momentum + bos_choch → 5m primary
-                # These scanners need cleaner data; 1m is too noisy
-                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum, self._scan_bos_choch) and df_5m is not None and len(df_5m) >= 50:
+                # All non-structure scanners → 5m primary (6-month backtest proves 5m is best)
+                # Only structure_bounce stays on 1m (it needs fast wick detection)
+                _5m_scanners = (
+                    self._scan_trend_continuation, self._scan_ema_momentum, self._scan_bos_choch,
+                    self._scan_cvd_divergence, self._scan_rsi_divergence, self._scan_vwap_mean_revert,
+                )
+                if scanner in _5m_scanners and df_5m is not None and len(df_5m) >= 50:
                     scanner_df = df_5m
                 else:
                     scanner_df = df
@@ -1505,16 +1509,26 @@ class ScalpStrategy(BaseStrategy):
         # bos_choch: re-enabled with strict quality (0.8 ATR displacement, 1.5x volume, 5m primary)
         # Previously 40% WR on 1m noise → now requires strong displacement + volume on 5m
 
+        # ── Reverse VWAP penalty for mean-reversion scanners ──
+        # These scanners WANT price near VWAP — the -25 penalty hurts them unfairly
+        _reversion_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence")
+        if best_sr.scanner_name in _reversion_names:
+            # Remove any VWAP noise penalty from confirmations
+            vwap_penalty = sum(1 for c in best_sr.confirmations if "VWAP" in c and "noise" in c.lower())
+            if vwap_penalty > 0:
+                best_sr.weighted_score += 25  # reverse the -25 penalty
+                best_sr.confirmations.append("[VWAP penalty reversed for mean-reversion]")
+
         # ── Setup strength veto: scanner-specific thresholds ──
         SCANNER_MIN_CONF = {
             "structure_bounce": 55,      # proven workhorse
             "order_block_entry": 55,
-            "liquidity_sweep": 50,       # allow if reclaim is strong
-            "trend_continuation": 58,
-            "ema_momentum": 55,
-            "vwap_mean_revert": 52,
-            "rsi_divergence": 55,
-            "cvd_divergence": 55,
+            "liquidity_sweep": 48,       # relaxed — +494R in backtest
+            "trend_continuation": 55,
+            "ema_momentum": 52,
+            "vwap_mean_revert": 48,      # relaxed — +265R, highest WR (44.1%)
+            "rsi_divergence": 50,        # relaxed — +353R in backtest
+            "cvd_divergence": 50,        # relaxed — +886R, #1 scanner in backtest
         }
         has_confluence = any("confluence" in c.lower() for c in best_sr.confirmations)
         if has_confluence:
@@ -3132,11 +3146,11 @@ class ScalpStrategy(BaseStrategy):
         rsi_diff_bull = rsi_now - rsi_at_min
         rsi_diff_bear = rsi_at_max - rsi_now
 
-        # Bullish divergence - relaxed for 5m crypto
-        if (close <= price_min * 1.003  # price near the recent low (relaxed from 1.001)
-            and rsi_diff_bull >= 5       # RSI 5+ points higher (relaxed from 8)
-            and rsi_now < 45             # RSI in oversold-ish territory (relaxed from 40)
-            and rsi_at_min < 30):        # Original RSI was truly oversold
+        # Bullish divergence - tuned for 5m crypto (6-month backtest: +353R, 40.6% WR)
+        if (close <= price_min * 1.005  # price near recent low (relaxed)
+            and rsi_diff_bull >= 4       # RSI 4+ points higher
+            and rsi_now < 48             # RSI below midpoint
+            and rsi_at_min < 38):        # Original RSI was low (relaxed from 30)
             side = OrderSide.LONG
             confs.append(f"Bullish RSI divergence ({rsi_at_min:.0f}→{rsi_now:.0f})")
             score += 35
@@ -3144,15 +3158,17 @@ class ScalpStrategy(BaseStrategy):
             if rsi_now < 30:
                 confs.append("RSI deep oversold")
                 score += 15
-            if rsi_diff_bull >= 15:
+            elif rsi_now < 35:
+                score += 8
+            if rsi_diff_bull >= 12:
                 confs.append("Strong divergence")
                 score += 10
 
-        # Bearish divergence - relaxed for 5m crypto
-        elif (close >= price_max * 0.997  # price near the recent high (relaxed from 0.999)
-              and rsi_diff_bear >= 5       # RSI 5+ points lower (relaxed from 8)
-              and rsi_now > 55             # RSI in overbought-ish territory (relaxed from 60)
-              and rsi_at_max > 62):        # Original RSI was elevated (relaxed from 70)
+        # Bearish divergence - tuned for 5m crypto
+        elif (close >= price_max * 0.995  # price near recent high (relaxed)
+              and rsi_diff_bear >= 4       # RSI 4+ points lower
+              and rsi_now > 52             # RSI above midpoint (relaxed from 55)
+              and rsi_at_max > 58):        # Original RSI was elevated (relaxed from 62)
             side = OrderSide.SHORT
             confs.append(f"Bearish RSI divergence ({rsi_at_max:.0f}→{rsi_now:.0f})")
             score += 35
@@ -4065,32 +4081,45 @@ class ScalpStrategy(BaseStrategy):
         score = 0
 
         # Bearish CVD divergence: price trending up but CVD trending down
-        if price_second > price_first * 1.001 and cvd_second < cvd_first * 0.8:
+        # RELAXED: was 1.001/0.8, now 1.0005/0.9 — matches 6-month backtest edge
+        price_up = price_second > price_first * 1.0005
+        cvd_down = cvd_second < cvd_first * 0.9 if cvd_first > 0 else cvd_second < 0
+
+        if price_up and cvd_down:
             # Price higher but CVD lower = hidden selling
-            if close < open_:  # current bar bearish (confirmation)
-                side = OrderSide.SHORT
-                div_strength = abs(cvd_first - cvd_second) / max(abs(cvd_first), 1)
-                confs.append(f"CVD bearish divergence (strength={div_strength:.1f})")
-                score += 30
-                if div_strength > 1.5:
-                    score += 15
-                    confs.append("Strong volume-price disconnect")
-                elif div_strength > 0.8:
-                    score += 8
+            # Don't require current bar bearish — the divergence IS the signal
+            side = OrderSide.SHORT
+            div_strength = abs(cvd_first - cvd_second) / max(abs(cvd_first), 1)
+            confs.append(f"CVD bearish divergence (strength={div_strength:.1f})")
+            score += 30
+            if div_strength > 1.5:
+                score += 15
+                confs.append("Strong volume-price disconnect")
+            elif div_strength > 0.5:
+                score += 8
+            # Bonus if current bar confirms
+            if close < open_:
+                score += 5
+                confs.append("Bearish confirmation candle")
 
         # Bullish CVD divergence: price trending down but CVD trending up
-        elif price_second < price_first * 0.999 and cvd_second > cvd_first * 1.2:
+        price_down = price_second < price_first * 0.9995
+        cvd_up = cvd_second > cvd_first * 1.1 if cvd_first > 0 else cvd_second > 0
+
+        if side is None and price_down and cvd_up:
             # Price lower but CVD higher = hidden buying
-            if close > open_:  # current bar bullish (confirmation)
-                side = OrderSide.LONG
-                div_strength = abs(cvd_second - cvd_first) / max(abs(cvd_first), 1)
-                confs.append(f"CVD bullish divergence (strength={div_strength:.1f})")
-                score += 30
-                if div_strength > 1.5:
-                    score += 15
-                    confs.append("Strong volume-price disconnect")
-                elif div_strength > 0.8:
-                    score += 8
+            side = OrderSide.LONG
+            div_strength = abs(cvd_second - cvd_first) / max(abs(cvd_first), 1)
+            confs.append(f"CVD bullish divergence (strength={div_strength:.1f})")
+            score += 30
+            if div_strength > 1.5:
+                score += 15
+                confs.append("Strong volume-price disconnect")
+            elif div_strength > 0.5:
+                score += 8
+            if close > open_:
+                score += 5
+                confs.append("Bullish confirmation candle")
 
         if side is None:
             return None

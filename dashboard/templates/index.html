@@ -604,11 +604,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- Setup Lifecycle -->
-  <div class="panel" id="setup-lifecycle-panel" style="margin-bottom:8px">
-    <div class="panel-title">Setup Lifecycle <span class="badge" id="setup-lifecycle-count">0</span></div>
-    <div id="setup-lifecycle-cards" style="display:flex;flex-wrap:wrap;gap:6px;min-height:32px">
-      <div class="empty" style="font-size:11px">No forming setups</div>
+  <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
+  <div class="panel" id="symbol-scanner-status" style="margin-bottom:8px">
+    <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
+    <div id="scanner-status-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">
     </div>
   </div>
 
@@ -2714,45 +2713,99 @@ function updateSignals(signals) {
     }).join("");
 }
 
-function updateSetupLifecycle(decision) {
-    const container = document.getElementById("setup-lifecycle-cards");
-    const countEl = document.getElementById("setup-lifecycle-count");
-    if (!container) return;
+function updateSetupLifecycle(status) {
+    const grid = document.getElementById("scanner-status-grid");
+    const countEl = document.getElementById("scanner-status-count");
+    if (!grid) return;
 
-    const candidates = (decision && decision.setup_candidates) || [];
-    // #4 Also show near-miss scanners from decision data
-    const nearMisses = (decision && decision.near_misses) || (decision && decision.forming_setups) || [];
-    const allCards = [...candidates];
-    // Add near misses that are not already in candidates
-    nearMisses.forEach(nm => {
-        if (!allCards.find(c => c.symbol === nm.symbol && c.scanner === nm.scanner)) {
-            allCards.push({...nm, is_near_miss: true});
-        }
-    });
-    if (countEl) countEl.textContent = allCards.length;
+    // Build per-symbol status from status.prices + status.per_symbol + funnel data
+    const prices = (status && status.prices) || {};
+    const symbols = Object.keys(prices).sort();
+    const perSym = (status && (status.per_symbol || status.symbol_status)) || {};
+    const regimes = (status && (status.regimes || status.symbol_regimes)) || {};
 
-    if (allCards.length === 0) {
-        container.innerHTML = '<div class="empty" style="font-size:11px">No forming setups</div>';
+    if (countEl) countEl.textContent = symbols.length;
+    if (symbols.length === 0) {
+        grid.innerHTML = '<div class="empty" style="font-size:11px">No symbols</div>';
         return;
     }
 
-    container.innerHTML = allCards.map(c => {
-        const isSignal = c.signal;
-        const isNearMiss = c.is_near_miss;
-        const score = c.score || c.confidence || 0;
-        const stateClass = isSignal ? "slc-active" : isNearMiss ? "slc-forming" : c.triggered > 0 ? "slc-forming" : "slc-scanning";
-        const stateLabel = isSignal ? "SIGNAL" : isNearMiss ? "FORMING" : c.triggered > 0 ? "FORMING" : "SCANNING";
-        const stateColor = isSignal ? "var(--green)" : isNearMiss ? "#eab308" : c.triggered > 0 ? "#eab308" : "var(--text-muted)";
-        const regimeColor = c.regime && c.regime.includes("trending") ? "var(--green)" : c.regime === "quiet" ? "var(--red)" : "var(--text-dim)";
-        const scannerName = c.scanner || c.setup_type || "";
-        return '<div class="slc-card ' + stateClass + '" style="padding:6px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.06);border-left:3px solid ' + stateColor + ';background:rgba(255,255,255,.03);min-width:140px">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">' +
-            '<span style="font-weight:700;font-size:11px">' + (c.symbol||"?") + '</span>' +
-            '<span class="badge" style="font-size:9px;background:rgba(255,255,255,.08);color:' + stateColor + '">' + stateLabel + '</span>' +
+    grid.innerHTML = symbols.map(sym => {
+        const base = sym.split("/")[0];
+        const price = prices[sym] || 0;
+        const symData = perSym[sym] || perSym[base] || {};
+        const regime = regimes[sym] || regimes[base] || symData.regime || "";
+        const reason = symData.reason || symData.block_reason || "";
+        const atrRatio = symData.atr_ratio || 0;
+        const lastScanner = symData.last_scanner || "";
+        const lastScore = symData.last_score || 0;
+        const hasSignal = symData.has_signal || symData.signal || false;
+
+        // Traffic light logic
+        let color, bg, border, label, dotColor;
+        const regLow = regime.toLowerCase();
+
+        if (hasSignal || lastScore >= 65) {
+            // GREEN: actively producing signals
+            color = "var(--green)";
+            bg = "rgba(0,255,157,.06)";
+            border = "rgba(0,255,157,.3)";
+            dotColor = "#00ff9d";
+            label = lastScanner ? lastScanner + " (" + lastScore + ")" : "SIGNAL";
+        } else if (regLow.includes("trending") && !reason.includes("BLOCK")) {
+            // AMBER: regime allows trading but no signal yet
+            color = "var(--yellow)";
+            bg = "rgba(255,215,0,.05)";
+            border = "rgba(255,215,0,.2)";
+            dotColor = "#ffd700";
+            label = regime;
+        } else if (regLow === "quiet" || reason.includes("quiet")) {
+            // RED: regime blocks all scanners
+            color = "var(--red)";
+            bg = "rgba(255,59,92,.04)";
+            border = "rgba(255,59,92,.15)";
+            dotColor = "#ff3b5c";
+            label = "quiet";
+        } else if (reason.includes("ATR PREFILTER") || reason.includes("extreme")) {
+            // RED: ATR too high
+            color = "var(--red)";
+            bg = "rgba(255,59,92,.04)";
+            border = "rgba(255,59,92,.15)";
+            dotColor = "#ff3b5c";
+            label = "ATR extreme";
+        } else if (reason.includes("VWAP")) {
+            // AMBER: VWAP noise zone
+            color = "var(--yellow)";
+            bg = "rgba(255,215,0,.05)";
+            border = "rgba(255,215,0,.2)";
+            dotColor = "#ffd700";
+            label = "VWAP noise";
+        } else if (regLow.includes("rang") || regLow.includes("volatile") || regLow.includes("breakout")) {
+            // AMBER: special regime
+            color = "var(--yellow)";
+            bg = "rgba(255,215,0,.05)";
+            border = "rgba(255,215,0,.2)";
+            dotColor = "#ffd700";
+            label = regime || "scanning";
+        } else {
+            // GREY: unknown / scanning
+            color = "var(--text-muted)";
+            bg = "rgba(255,255,255,.02)";
+            border = "rgba(255,255,255,.06)";
+            dotColor = "#5a7090";
+            label = reason ? reason.substring(0, 20) : "scanning";
+        }
+
+        const dec = price > 100 ? 2 : price > 1 ? 2 : 4;
+        const symColor = ({"BTC":"#f7931a","ETH":"#627eea","SOL":"#9945ff","DOGE":"#c3a634","LINK":"#2a5ada","XRP":"#00aae4","ADA":"#0033ad","LTC":"#bfbbbb","DOT":"#e6007a","TAO":"#00d4aa","BNB":"#f3ba2f","AVAX":"#e84142"})[base] || "#9ca3af";
+
+        return '<div style="padding:8px;border-radius:8px;background:' + bg + ';border:1px solid ' + border + ';text-align:center;transition:all .3s">' +
+            '<div style="display:flex;align-items:center;justify-content:center;gap:5px;margin-bottom:4px">' +
+            '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';box-shadow:0 0 6px ' + dotColor + '40;display:inline-block"></span>' +
+            '<span style="font-weight:800;font-size:.82rem;color:' + symColor + '">' + base + '</span>' +
             '</div>' +
-            (scannerName ? '<div style="font-size:9px;color:var(--cyan);font-weight:600">' + scannerName + (score > 0 ? ' (score ' + score + ')' : '') + '</div>' : '') +
-            '<div style="font-size:10px;color:' + regimeColor + '">' + (c.regime || "—") + ' | ATR:' + (c.atr_ratio || 0) + '</div>' +
-            '<div style="font-size:9px;color:var(--text-muted);margin-top:2px">' + (c.reason || "").substring(0, 40) + '</div>' +
+            '<div style="font-size:.7rem;font-family:var(--font-mono);color:var(--text-secondary);margin-bottom:3px">$' + price.toFixed(dec) + '</div>' +
+            '<div style="font-size:.58rem;color:' + color + ';font-weight:600;letter-spacing:.3px;text-transform:uppercase">' + esc(label) + '</div>' +
             '</div>';
     }).join("");
 }

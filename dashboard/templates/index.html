@@ -257,6 +257,31 @@ tr:hover{background:rgba(99,148,255,.02)}
 .logout-btn:hover{background:rgba(255,59,92,.12);border-color:rgba(255,59,92,.3)}
 .session-info{font-size:.65rem;color:var(--text-muted);margin-right:8px}
 
+/* ── PROFILE TAB ──────────────────────────────────────── */
+.profile-label{display:block;font-size:.68rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);font-weight:600;margin:10px 0 4px;padding-left:2px}
+.profile-label:first-child{margin-top:0}
+.pairs-checkboxes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.pair-check{display:flex;align-items:center;gap:4px;padding:5px 10px;border-radius:6px;background:rgba(255,255,255,.03);border:1px solid var(--border);font-size:.75rem;color:var(--text-secondary);cursor:pointer;transition:all .2s}
+.pair-check:hover{border-color:var(--border-active);background:rgba(0,255,157,.04)}
+.pair-check input[type="checkbox"]{accent-color:var(--green)}
+.profile-slider{width:100%;-webkit-appearance:none;appearance:none;height:5px;border-radius:3px;background:rgba(255,255,255,.06);outline:none;margin:6px 0 4px}
+.profile-slider::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--green);cursor:pointer;box-shadow:0 0 8px var(--green-glow)}
+.profile-slider::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:var(--green);cursor:pointer;border:none}
+.notif-toggles{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.notif-toggle{display:flex;align-items:center;gap:10px;font-size:.8rem;color:var(--text-secondary);cursor:pointer;padding:6px 0}
+.notif-toggle input[type="checkbox"]{width:36px;height:20px;-webkit-appearance:none;appearance:none;background:rgba(255,255,255,.08);border-radius:10px;position:relative;cursor:pointer;transition:background .2s;border:1px solid var(--border);flex-shrink:0}
+.notif-toggle input[type="checkbox"]::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;background:var(--text-muted);top:2px;left:2px;transition:all .2s}
+.notif-toggle input[type="checkbox"]:checked{background:rgba(0,255,157,.2);border-color:rgba(0,255,157,.3)}
+.notif-toggle input[type="checkbox"]:checked::after{background:var(--green);left:18px;box-shadow:0 0 6px var(--green-glow)}
+.api-key-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.api-key-info{display:flex;flex-direction:column;gap:2px}
+.api-key-label{font-size:.78rem;font-weight:600;color:var(--text)}
+.api-key-masked{font-size:.72rem;color:var(--text-muted);font-family:var(--font-mono);letter-spacing:1px}
+.api-key-actions{display:flex;gap:6px}
+.btn-sm{padding:4px 12px;font-size:.68rem;border-radius:4px;border:1px solid;cursor:pointer;font-weight:600;transition:all .2s;background:transparent}
+.btn-edit{color:var(--accent);border-color:rgba(0,255,157,.2)}.btn-edit:hover{background:rgba(0,255,157,.08)}
+.btn-del{color:var(--red);border-color:rgba(255,59,92,.2)}.btn-del:hover{background:rgba(255,59,92,.08)}
+
 /* ── EQUITY SPARKLINE (24h) ─────────────────────────────── */
 .equity-sparkline-wrap{width:100%;height:40px;background:transparent;border-bottom:1px solid var(--border);position:relative;margin-top:4px}
 .equity-sparkline-wrap canvas{width:100%;height:100%}
@@ -433,11 +458,34 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="login-title">VN EDGE</div>
     <div class="login-subtitle">Trade With Precision</div>
     <form id="login-form" onsubmit="return handleLogin(event)">
-      <input type="text" id="login-user" class="login-input" placeholder="Username" autocomplete="username" autofocus>
+      <input type="email" id="login-email" class="login-input" placeholder="Email Address" autocomplete="email" autofocus>
       <input type="password" id="login-pass" class="login-input" placeholder="Password" autocomplete="current-password">
       <button type="submit" class="login-btn">SIGN IN</button>
       <div class="login-error" id="login-error">Invalid credentials</div>
     </form>
+    <div style="margin-top:16px;font-size:.8rem;color:var(--text-muted)">
+      Don't have an account? <a href="#" onclick="switchToRegister();return false;" style="color:var(--green);font-weight:600">Create Account</a>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ REGISTER OVERLAY ══════════════════════════════════ -->
+<div class="login-overlay hidden" id="register-overlay">
+  <div class="login-box">
+    <img src="/static/logo-white.jpg" alt="VN Edge" class="login-logo">
+    <div class="login-title">VN EDGE</div>
+    <div class="login-subtitle">Create Your Account</div>
+    <form id="register-form" onsubmit="return handleRegister(event)">
+      <input type="text" id="reg-name" class="login-input" placeholder="Full Name" autocomplete="name" required>
+      <input type="email" id="reg-email" class="login-input" placeholder="Email Address" autocomplete="email" required>
+      <input type="password" id="reg-pass" class="login-input" placeholder="Password" autocomplete="new-password" required>
+      <input type="password" id="reg-pass-confirm" class="login-input" placeholder="Confirm Password" autocomplete="new-password" required>
+      <button type="submit" class="login-btn">CREATE ACCOUNT</button>
+      <div class="login-error" id="register-error">Registration failed</div>
+    </form>
+    <div style="margin-top:16px;font-size:.8rem;color:var(--text-muted)">
+      Already have an account? <a href="#" onclick="switchToLogin();return false;" style="color:var(--green);font-weight:600">Sign In</a>
+    </div>
   </div>
 </div>
 
@@ -477,6 +525,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
   <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
+  <button class="tab-btn" data-tab="profile" onclick="switchTab('profile')">Profile</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
@@ -1274,6 +1323,189 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
 </div>
 
+<!-- ═══ TAB: PROFILE ════════════════════════════════════════ -->
+<div class="tab-content" id="tab-profile">
+  <div class="grid-2">
+    <!-- LEFT COLUMN -->
+    <div>
+      <!-- Account Info -->
+      <div class="panel">
+        <div class="panel-title">&#128100; Account Information</div>
+        <form id="profile-form">
+          <label class="profile-label">Full Name</label>
+          <input type="text" id="prof-name" class="login-input" placeholder="Full Name">
+          <label class="profile-label">Email</label>
+          <input type="email" id="prof-email" class="login-input" placeholder="Email" readonly style="opacity:.6;cursor:not-allowed">
+          <label class="profile-label">Phone</label>
+          <input type="tel" id="prof-phone" class="login-input" placeholder="Phone Number">
+          <label class="profile-label">Timezone</label>
+          <select id="prof-timezone" class="login-input">
+            <option value="UTC">UTC</option>
+            <option value="America/New_York">Eastern (ET)</option>
+            <option value="America/Chicago">Central (CT)</option>
+            <option value="America/Denver">Mountain (MT)</option>
+            <option value="America/Los_Angeles">Pacific (PT)</option>
+            <option value="Europe/London">London (GMT)</option>
+            <option value="Europe/Berlin">Berlin (CET)</option>
+            <option value="Asia/Tokyo">Tokyo (JST)</option>
+            <option value="Asia/Shanghai">Shanghai (CST)</option>
+            <option value="Asia/Ho_Chi_Minh">Ho Chi Minh (ICT)</option>
+            <option value="Australia/Sydney">Sydney (AEST)</option>
+          </select>
+        </form>
+      </div>
+
+      <!-- Address -->
+      <div class="panel">
+        <div class="panel-title">&#127968; Address</div>
+        <label class="profile-label">Address Line 1</label>
+        <input type="text" id="prof-addr1" class="login-input" placeholder="Address Line 1">
+        <label class="profile-label">Address Line 2</label>
+        <input type="text" id="prof-addr2" class="login-input" placeholder="Address Line 2">
+        <div class="grid-2" style="gap:8px">
+          <div>
+            <label class="profile-label">City</label>
+            <input type="text" id="prof-city" class="login-input" placeholder="City">
+          </div>
+          <div>
+            <label class="profile-label">State / Province</label>
+            <input type="text" id="prof-state" class="login-input" placeholder="State">
+          </div>
+        </div>
+        <div class="grid-2" style="gap:8px">
+          <div>
+            <label class="profile-label">Country</label>
+            <input type="text" id="prof-country" class="login-input" placeholder="Country">
+          </div>
+          <div>
+            <label class="profile-label">Postal Code</label>
+            <input type="text" id="prof-postal" class="login-input" placeholder="Postal Code">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div>
+      <!-- API Keys -->
+      <div class="panel">
+        <div class="panel-title">&#128273; API Keys</div>
+        <div id="api-keys-list">
+          <div class="api-key-row">
+            <div class="api-key-info">
+              <span class="api-key-label">Demo Exchange</span>
+              <span class="api-key-masked" id="ak-demo-key">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+            </div>
+            <div class="api-key-actions">
+              <button class="btn-sm btn-edit" onclick="openApiKeyModal('demo')">Edit</button>
+              <button class="btn-sm btn-del" onclick="deleteApiKey('demo')">Delete</button>
+            </div>
+          </div>
+          <div class="api-key-row">
+            <div class="api-key-info">
+              <span class="api-key-label">Live Exchange</span>
+              <span class="api-key-masked" id="ak-live-key">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
+            </div>
+            <div class="api-key-actions">
+              <button class="btn-sm btn-edit" onclick="openApiKeyModal('live')">Edit</button>
+              <button class="btn-sm btn-del" onclick="deleteApiKey('live')">Delete</button>
+            </div>
+          </div>
+        </div>
+        <button class="login-btn" style="margin-top:12px;width:auto;padding:8px 20px;font-size:.75rem" onclick="openApiKeyModal('new')">+ Add Key</button>
+      </div>
+
+      <!-- Trading Settings -->
+      <div class="panel">
+        <div class="panel-title">&#9881; Trading Settings</div>
+        <label class="profile-label">Bot Mode</label>
+        <select id="prof-bot-mode" class="login-input">
+          <option value="paper">Paper Trading</option>
+          <option value="live">Live Trading</option>
+          <option value="signal">Signal Only</option>
+        </select>
+        <label class="profile-label">Trading Pairs</label>
+        <div class="pairs-checkboxes" id="prof-pairs">
+          <label class="pair-check"><input type="checkbox" value="BTC/USDT" checked> BTC</label>
+          <label class="pair-check"><input type="checkbox" value="ETH/USDT" checked> ETH</label>
+          <label class="pair-check"><input type="checkbox" value="SOL/USDT"> SOL</label>
+          <label class="pair-check"><input type="checkbox" value="XRP/USDT"> XRP</label>
+          <label class="pair-check"><input type="checkbox" value="DOGE/USDT"> DOGE</label>
+          <label class="pair-check"><input type="checkbox" value="ADA/USDT"> ADA</label>
+          <label class="pair-check"><input type="checkbox" value="AVAX/USDT"> AVAX</label>
+          <label class="pair-check"><input type="checkbox" value="LINK/USDT"> LINK</label>
+          <label class="pair-check"><input type="checkbox" value="DOT/USDT"> DOT</label>
+          <label class="pair-check"><input type="checkbox" value="MATIC/USDT"> MATIC</label>
+        </div>
+        <label class="profile-label">Leverage: <span id="prof-leverage-val">5</span>x</label>
+        <input type="range" id="prof-leverage" class="profile-slider" min="1" max="20" value="5" oninput="document.getElementById('prof-leverage-val').textContent=this.value">
+        <div class="grid-2" style="gap:8px;margin-top:8px">
+          <div>
+            <label class="profile-label">Risk per Trade (%)</label>
+            <input type="number" id="prof-risk" class="login-input" placeholder="1.0" step="0.1" min="0.1" max="10" value="1.0">
+          </div>
+          <div>
+            <label class="profile-label">Max Daily Loss (%)</label>
+            <input type="number" id="prof-max-loss" class="login-input" placeholder="5.0" step="0.5" min="1" max="50" value="5.0">
+          </div>
+        </div>
+        <label class="profile-label">Max Open Positions</label>
+        <input type="number" id="prof-max-pos" class="login-input" placeholder="3" min="1" max="20" value="3">
+      </div>
+
+      <!-- Notifications -->
+      <div class="panel">
+        <div class="panel-title">&#128276; Notifications</div>
+        <label class="profile-label">Telegram Chat ID</label>
+        <input type="text" id="prof-tg-chat" class="login-input" placeholder="Telegram Chat ID">
+        <div class="notif-toggles">
+          <label class="notif-toggle"><input type="checkbox" id="notif-signals" checked> <span class="toggle-slider"></span> Signal Alerts</label>
+          <label class="notif-toggle"><input type="checkbox" id="notif-trades" checked> <span class="toggle-slider"></span> Trade Execution</label>
+          <label class="notif-toggle"><input type="checkbox" id="notif-tp"> <span class="toggle-slider"></span> Take Profit Hit</label>
+          <label class="notif-toggle"><input type="checkbox" id="notif-sl"> <span class="toggle-slider"></span> Stop Loss Hit</label>
+          <label class="notif-toggle"><input type="checkbox" id="notif-system"> <span class="toggle-slider"></span> System Alerts</label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Account Status Row -->
+  <div class="panel" style="margin-top:var(--gap)">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span class="info-badge learning" id="prof-tier">FREE TIER</span>
+        <span style="font-size:.78rem;color:var(--text-secondary)">Verification: <span id="prof-verified" style="color:var(--yellow);font-weight:600">Pending</span></span>
+      </div>
+      <div style="display:flex;gap:20px;font-size:.75rem;color:var(--text-muted)">
+        <span>Member since: <span id="prof-member-since" style="color:var(--text-secondary)">--</span></span>
+        <span>Last login: <span id="prof-last-login" style="color:var(--text-secondary)">--</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save Button -->
+  <div style="text-align:center;margin-top:16px">
+    <button class="login-btn" style="width:auto;padding:12px 48px;font-size:.9rem" onclick="saveProfile()">SAVE CHANGES</button>
+    <div class="login-error" id="profile-save-error" style="display:none"></div>
+    <div id="profile-save-ok" style="display:none;color:var(--green);font-size:.8rem;margin-top:8px;font-weight:600">Profile saved successfully!</div>
+  </div>
+</div>
+
+<!-- ═══ API KEY MODAL ═══════════════════════════════════════ -->
+<div id="apikey-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div class="login-box" style="width:420px">
+    <div class="login-title" style="font-size:1.2rem;margin-bottom:20px" id="ak-modal-title">Add API Key</div>
+    <input type="text" id="ak-exchange" class="login-input" placeholder="Exchange (e.g. Binance)">
+    <input type="text" id="ak-label" class="login-input" placeholder="Label (e.g. Main Account)">
+    <input type="text" id="ak-key" class="login-input" placeholder="API Key">
+    <input type="password" id="ak-secret" class="login-input" placeholder="API Secret">
+    <input type="text" id="ak-passphrase" class="login-input" placeholder="Passphrase (optional)">
+    <input type="hidden" id="ak-edit-id">
+    <button class="login-btn" onclick="submitApiKey()">SAVE KEY</button>
+    <div class="login-error" id="ak-error" style="display:none"></div>
+  </div>
+</div>
+
 <!-- ═══ STATUS FOOTER (compact, kept for JS) ═════════════ -->
 <footer class="dash-footer">
   <span id="last-restart">Last Restart: --</span>
@@ -1369,7 +1601,7 @@ async function checkSession() {
 
 async function handleLogin(e) {
     e.preventDefault();
-    const user = document.getElementById("login-user").value;
+    const email = document.getElementById("login-email").value;
     const pass = document.getElementById("login-pass").value;
     const errEl = document.getElementById("login-error");
     errEl.style.display = "none";
@@ -1378,12 +1610,12 @@ async function handleLogin(e) {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             credentials: "same-origin",
-            body: JSON.stringify({username: user, password: pass})
+            body: JSON.stringify({email: email, password: pass})
         });
         if (r.ok) {
             document.getElementById("login-overlay").classList.add("hidden");
             document.getElementById("logout-btn").style.display = "";
-            document.getElementById("session-info").textContent = user;
+            document.getElementById("session-info").textContent = email;
             return false;
         }
         errEl.textContent = "Invalid credentials";
@@ -1404,6 +1636,244 @@ async function handleLogout() {
 
 // Check auth on page load
 checkSession();
+
+// ── REGISTER / LOGIN TOGGLE ──────────────────────────────
+function switchToRegister() {
+    document.getElementById("login-overlay").classList.add("hidden");
+    document.getElementById("register-overlay").classList.remove("hidden");
+}
+function switchToLogin() {
+    document.getElementById("register-overlay").classList.add("hidden");
+    document.getElementById("login-overlay").classList.remove("hidden");
+}
+
+async function handleRegister(e) {
+    e.preventDefault();
+    const name = document.getElementById("reg-name").value;
+    const email = document.getElementById("reg-email").value;
+    const pass = document.getElementById("reg-pass").value;
+    const passConfirm = document.getElementById("reg-pass-confirm").value;
+    const errEl = document.getElementById("register-error");
+    errEl.style.display = "none";
+    if (pass !== passConfirm) {
+        errEl.textContent = "Passwords do not match";
+        errEl.style.display = "block";
+        return false;
+    }
+    if (pass.length < 8) {
+        errEl.textContent = "Password must be at least 8 characters";
+        errEl.style.display = "block";
+        return false;
+    }
+    try {
+        const r = await fetch("/api/register", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({name: name, email: email, password: pass})
+        });
+        if (r.ok) {
+            switchToLogin();
+            document.getElementById("login-email").value = email;
+            document.getElementById("login-error").textContent = "Account created! Please sign in.";
+            document.getElementById("login-error").style.display = "block";
+            document.getElementById("login-error").style.color = "var(--green)";
+            return false;
+        }
+        const data = await r.json().catch(() => ({}));
+        errEl.textContent = data.error || "Registration failed";
+        errEl.style.display = "block";
+    } catch (err) {
+        errEl.textContent = "Connection failed";
+        errEl.style.display = "block";
+    }
+    return false;
+}
+
+// ── PROFILE FUNCTIONS ────────────────────────────────────
+async function loadProfile() {
+    try {
+        const r = await fetch("/api/user/profile", {credentials: "same-origin"});
+        if (!r.ok) return;
+        const p = await r.json();
+        const el = id => document.getElementById(id);
+        if (p.name) el("prof-name").value = p.name;
+        if (p.email) el("prof-email").value = p.email;
+        if (p.phone) el("prof-phone").value = p.phone;
+        if (p.timezone) el("prof-timezone").value = p.timezone;
+        if (p.address) {
+            if (p.address.line1) el("prof-addr1").value = p.address.line1;
+            if (p.address.line2) el("prof-addr2").value = p.address.line2;
+            if (p.address.city) el("prof-city").value = p.address.city;
+            if (p.address.state) el("prof-state").value = p.address.state;
+            if (p.address.country) el("prof-country").value = p.address.country;
+            if (p.address.postal) el("prof-postal").value = p.address.postal;
+        }
+        if (p.bot_mode) el("prof-bot-mode").value = p.bot_mode;
+        if (p.leverage) { el("prof-leverage").value = p.leverage; el("prof-leverage-val").textContent = p.leverage; }
+        if (p.risk_per_trade) el("prof-risk").value = p.risk_per_trade;
+        if (p.max_daily_loss) el("prof-max-loss").value = p.max_daily_loss;
+        if (p.max_positions) el("prof-max-pos").value = p.max_positions;
+        if (p.trading_pairs && Array.isArray(p.trading_pairs)) {
+            document.querySelectorAll("#prof-pairs input[type='checkbox']").forEach(cb => {
+                cb.checked = p.trading_pairs.includes(cb.value);
+            });
+        }
+        if (p.telegram_chat_id) el("prof-tg-chat").value = p.telegram_chat_id;
+        if (p.notifications) {
+            if (p.notifications.signals !== undefined) el("notif-signals").checked = p.notifications.signals;
+            if (p.notifications.trades !== undefined) el("notif-trades").checked = p.notifications.trades;
+            if (p.notifications.tp !== undefined) el("notif-tp").checked = p.notifications.tp;
+            if (p.notifications.sl !== undefined) el("notif-sl").checked = p.notifications.sl;
+            if (p.notifications.system !== undefined) el("notif-system").checked = p.notifications.system;
+        }
+        if (p.tier) el("prof-tier").textContent = p.tier.toUpperCase();
+        if (p.verified) el("prof-verified").textContent = p.verified ? "Verified" : "Pending";
+        if (p.verified) el("prof-verified").style.color = "var(--green)";
+        if (p.member_since) el("prof-member-since").textContent = p.member_since;
+        if (p.last_login) el("prof-last-login").textContent = p.last_login;
+    } catch (e) { console.warn("loadProfile error:", e); }
+}
+
+async function saveProfile() {
+    const el = id => document.getElementById(id);
+    const errEl = el("profile-save-error");
+    const okEl = el("profile-save-ok");
+    errEl.style.display = "none";
+    okEl.style.display = "none";
+    const pairs = [];
+    document.querySelectorAll("#prof-pairs input[type='checkbox']:checked").forEach(cb => pairs.push(cb.value));
+    const payload = {
+        name: el("prof-name").value,
+        phone: el("prof-phone").value,
+        timezone: el("prof-timezone").value,
+        address: {
+            line1: el("prof-addr1").value, line2: el("prof-addr2").value,
+            city: el("prof-city").value, state: el("prof-state").value,
+            country: el("prof-country").value, postal: el("prof-postal").value
+        },
+        bot_mode: el("prof-bot-mode").value,
+        trading_pairs: pairs,
+        leverage: parseInt(el("prof-leverage").value),
+        risk_per_trade: parseFloat(el("prof-risk").value),
+        max_daily_loss: parseFloat(el("prof-max-loss").value),
+        max_positions: parseInt(el("prof-max-pos").value),
+        telegram_chat_id: el("prof-tg-chat").value,
+        notifications: {
+            signals: el("notif-signals").checked,
+            trades: el("notif-trades").checked,
+            tp: el("notif-tp").checked,
+            sl: el("notif-sl").checked,
+            system: el("notif-system").checked
+        }
+    };
+    try {
+        const r = await fetch("/api/user/profile", {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify(payload)
+        });
+        if (r.ok) {
+            okEl.style.display = "block";
+            setTimeout(() => okEl.style.display = "none", 3000);
+        } else {
+            const data = await r.json().catch(() => ({}));
+            errEl.textContent = data.error || "Save failed";
+            errEl.style.display = "block";
+        }
+    } catch (err) {
+        errEl.textContent = "Connection failed";
+        errEl.style.display = "block";
+    }
+}
+
+async function loadApiKeys() {
+    try {
+        const r = await fetch("/api/user/api-keys", {credentials: "same-origin"});
+        if (!r.ok) return;
+        const keys = await r.json();
+        const container = document.getElementById("api-keys-list");
+        if (!keys || keys.length === 0) return;
+        container.innerHTML = "";
+        keys.forEach(k => {
+            const masked = k.key_masked || "\u2022".repeat(12);
+            container.innerHTML += `
+                <div class="api-key-row">
+                    <div class="api-key-info">
+                        <span class="api-key-label">${k.label || k.exchange}</span>
+                        <span class="api-key-masked">${masked}</span>
+                    </div>
+                    <div class="api-key-actions">
+                        <button class="btn-sm btn-edit" onclick="openApiKeyModal('${k.id}')">Edit</button>
+                        <button class="btn-sm btn-del" onclick="deleteApiKey('${k.id}')">Delete</button>
+                    </div>
+                </div>`;
+        });
+    } catch (e) { console.warn("loadApiKeys error:", e); }
+}
+
+function openApiKeyModal(id) {
+    const modal = document.getElementById("apikey-modal");
+    modal.style.display = "flex";
+    document.getElementById("ak-edit-id").value = id === "new" ? "" : id;
+    document.getElementById("ak-modal-title").textContent = id === "new" ? "Add API Key" : "Edit API Key";
+    if (id === "new") {
+        document.getElementById("ak-exchange").value = "";
+        document.getElementById("ak-label").value = "";
+        document.getElementById("ak-key").value = "";
+        document.getElementById("ak-secret").value = "";
+        document.getElementById("ak-passphrase").value = "";
+    }
+    document.getElementById("ak-error").style.display = "none";
+}
+
+async function submitApiKey() {
+    const editId = document.getElementById("ak-edit-id").value;
+    const errEl = document.getElementById("ak-error");
+    errEl.style.display = "none";
+    const payload = {
+        exchange: document.getElementById("ak-exchange").value,
+        label: document.getElementById("ak-label").value,
+        api_key: document.getElementById("ak-key").value,
+        api_secret: document.getElementById("ak-secret").value,
+        passphrase: document.getElementById("ak-passphrase").value
+    };
+    try {
+        const url = editId ? `/api/user/api-keys/${editId}` : "/api/user/api-keys";
+        const method = editId ? "PUT" : "POST";
+        const r = await fetch(url, {
+            method: method,
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify(payload)
+        });
+        if (r.ok) {
+            document.getElementById("apikey-modal").style.display = "none";
+            loadApiKeys();
+        } else {
+            const data = await r.json().catch(() => ({}));
+            errEl.textContent = data.error || "Save failed";
+            errEl.style.display = "block";
+        }
+    } catch (err) {
+        errEl.textContent = "Connection failed";
+        errEl.style.display = "block";
+    }
+}
+
+async function deleteApiKey(id) {
+    if (!confirm("Delete this API key?")) return;
+    try {
+        await fetch(`/api/user/api-keys/${id}`, {method: "DELETE", credentials: "same-origin"});
+        loadApiKeys();
+    } catch (e) { console.warn("deleteApiKey error:", e); }
+}
+
+function refreshProfile() {
+    loadProfile();
+    loadApiKeys();
+}
 
 // ── GLOBALS ──────────────────────────────────────────────
 let activeTab = "live";
@@ -3906,6 +4376,9 @@ switchTab = function(tab) {
     if (tab === "config") {
         populateConfigTab();
         loadTradeTypePerf();
+    }
+    if (tab === "profile") {
+        refreshProfile();
     }
 };
 

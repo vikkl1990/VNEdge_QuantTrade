@@ -713,11 +713,21 @@ class SignalTracker:
 
         Returns list of closure events (for alerting).
 
-        Thread safety: This method mutates self._active items in-place.
-        Safe in asyncio (single-threaded event loop with GIL) but must
-        NOT be called from multiple threads. The list() snapshot prevents
+        Thread safety: Uses snapshot of _active keys to prevent mutation
+        during iteration. The asyncio lock protects state mutations in
+        _close_signal and _save_active. The list() snapshot prevents
         dict-changed-during-iteration errors.
         """
+        # Re-entrancy guard: prevent concurrent calls from corrupting state
+        if getattr(self, '_updating_prices', False):
+            return []
+        self._updating_prices = True
+        try:
+            return self._update_prices_inner(prices)
+        finally:
+            self._updating_prices = False
+
+    def _update_prices_inner(self, prices: Dict[str, float]) -> List[Dict[str, Any]]:
         events = []
         to_close = []
 

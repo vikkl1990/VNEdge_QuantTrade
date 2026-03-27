@@ -357,15 +357,15 @@ class BotOrchestrator:
         if self._delta_ws:
             try:
                 await self._delta_ws.close()
-            except Exception:
-                pass
+            except Exception as _shutdown_exc:
+                self._log.debug("Shutdown cleanup: %s", _shutdown_exc)
 
         # Stop Latency Arb engine
         if self._latency_arb:
             try:
                 await self._latency_arb.stop()
-            except Exception:
-                pass
+            except Exception as _shutdown_exc:
+                self._log.debug("Shutdown cleanup: %s", _shutdown_exc)
 
         # Save final state
         try:
@@ -781,8 +781,8 @@ class BotOrchestrator:
                     "reason": reason,
                     "drawdown": self._trade_monitor._metrics.get("current_drawdown", 0),
                 }
-            except Exception:
-                pass
+            except Exception as _shutdown_exc:
+                self._log.debug("Shutdown cleanup: %s", _shutdown_exc)
 
             # Get EV data from strategy's EV engine
             ev_data = {}

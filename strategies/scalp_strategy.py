@@ -1480,16 +1480,40 @@ class ScalpStrategy(BaseStrategy):
                           symbol, best_sr.confidence, best_sr.weighted_score)
             return []
 
-        # ── Setup strength veto: adaptive per scanner ──
-        # structure_bounce needs 65 (proven). New scanners need 50 to get data.
-        # Confluence-boosted signals get lower threshold (already proven multi-scanner)
+        # ── Block momentum_trend / investment strategy signals ──
+        if best_sr.scanner_name in ("momentum_trend", "simple_bias", "investment"):
+            logger.info("FUNNEL %s | INVESTMENT BLOCK | scanner=%s — not allowed in scalp",
+                       symbol, best_sr.scanner_name)
+            return []
+
+        # ── Block empty regime (no regime = no trade) ──
+        if not regime or regime.strip() == "":
+            logger.info("FUNNEL %s | EMPTY REGIME BLOCK | no regime detected", symbol)
+            return []
+
+        # ── Disable bos_choch from live trading (shadow only until retrained) ──
+        # bos_choch: 40% WR, -$25.70 in last 12h — actively losing money
+        if best_sr.scanner_name == "bos_choch":
+            logger.info("FUNNEL %s | BOS_CHOCH SHADOW | score=%d — data collection only, not trading",
+                       symbol, best_sr.weighted_score)
+            return []
+
+        # ── Setup strength veto: scanner-specific thresholds ──
+        SCANNER_MIN_CONF = {
+            "structure_bounce": 55,      # proven workhorse
+            "order_block_entry": 55,
+            "liquidity_sweep": 50,       # allow if reclaim is strong
+            "trend_continuation": 58,
+            "ema_momentum": 55,
+            "vwap_mean_revert": 52,
+            "rsi_divergence": 55,
+            "cvd_divergence": 55,
+        }
         has_confluence = any("confluence" in c.lower() for c in best_sr.confirmations)
         if has_confluence:
-            MIN_SETUP_STRENGTH = 50  # confluence already validates quality
-        elif best_sr.scanner_name in ("structure_bounce", "order_block_entry"):
-            MIN_SETUP_STRENGTH = 65  # proven scanners — strict
+            MIN_SETUP_STRENGTH = 48  # confluence already validates quality
         else:
-            MIN_SETUP_STRENGTH = 55  # new scanners — give them a chance
+            MIN_SETUP_STRENGTH = SCANNER_MIN_CONF.get(best_sr.scanner_name, 55)
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
@@ -3795,17 +3819,19 @@ class ScalpStrategy(BaseStrategy):
             return None
 
         # ── Step 3: Displacement (body strength) ──
+        # TIGHTENED: Require strong displacement to avoid noise breaks
         displacement = body / atr if atr > 0 else 0
         if displacement > 1.0:
             score += 20
             confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.5:
+        elif displacement > 0.6:
             score += 12
             confs.append(f"Good displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.3:
-            score += 5
+        elif displacement > 0.4:
+            score += 3  # minimal credit
         else:
-            score -= 10
+            score -= 15  # hard penalty for weak breaks — this was causing losses
+            confs.append(f"Weak displacement ({displacement:.1f}x ATR) — penalized")
 
         # ── Step 4: Candle quality ──
         candle_range = high_val - low_val if high_val > low_val else atr * 0.01
@@ -3824,15 +3850,17 @@ class ScalpStrategy(BaseStrategy):
         if close_pos > 0.65:
             score += 5
 
-        # ── Step 5: Volume ──
+        # ── Step 5: Volume (TIGHTENED: require 1.3x for real breaks) ──
         rel_vol = float(last.get("rel_vol", 1.0))
         if not np.isnan(rel_vol) and rel_vol > 1.5:
             confs.append(f"Volume {rel_vol:.1f}x on break")
             score += 10
-        elif not np.isnan(rel_vol) and rel_vol > 1.0:
+        elif not np.isnan(rel_vol) and rel_vol > 1.3:
+            confs.append(f"Volume {rel_vol:.1f}x confirmed")
             score += 5
-        elif not np.isnan(rel_vol) and rel_vol < 0.5:
-            score -= 10
+        elif not np.isnan(rel_vol) and rel_vol < 0.7:
+            score -= 12  # low volume break = almost always fake
+            confs.append(f"LOW VOLUME break ({rel_vol:.1f}x) — likely fake")
 
         # ── Step 6: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):

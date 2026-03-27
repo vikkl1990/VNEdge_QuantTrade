@@ -2630,7 +2630,7 @@ function updateActiveTrades(trades) {
                         const pct = remain / windowSec * 100;
                         const color = pct > 50 ? 'var(--green)' : pct > 25 ? 'var(--yellow)' : 'var(--red)';
                         return '<span style="font-size:.65rem;padding:2px 6px;border-radius:4px;background:rgba(0,255,157,.08);color:'+color+';font-weight:700;font-family:var(--font-mono);border:1px solid '+color+'30">\u23F1 '+mins+':'+String(secs).padStart(2,'0')+' scalp</span>';
-                    })()
+                    })()}
                 </div>
             </div>
 

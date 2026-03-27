@@ -794,13 +794,16 @@ class SignalTracker:
                 trail_floor = None
 
                 if ts.mfe_r >= 1.5:
-                    trail_floor = ts.mfe_r * 0.75
+                    trail_floor = ts.mfe_r * 0.80
                     exit_reason_tag = "trail_lock_75pct"
                 elif ts.mfe_r >= 1.0:
+                    trail_floor = ts.mfe_r * 0.72
+                    exit_reason_tag = "trail_lock_65pct"
+                elif ts.mfe_r >= 0.7:
                     trail_floor = ts.mfe_r * 0.65
                     exit_reason_tag = "trail_lock_65pct"
                 elif ts.mfe_r >= 0.5:
-                    trail_floor = ts.mfe_r * 0.50
+                    trail_floor = ts.mfe_r * 0.55
                     exit_reason_tag = "trail_lock_50pct"
                 elif ts.mfe_r >= 0.3:
                     trail_floor = 0.15  # lock 0.15R minimum (covers fees)
@@ -913,15 +916,15 @@ class SignalTracker:
                 # More aggressive tiers — lock more as MFE grows
                 if ts.peak_mfe_r >= 0.15:
                     if ts.peak_mfe_r >= 1.5:
-                        lock_pct = 0.85  # lock 85% of peak when >1.5R
+                        lock_pct = 0.88  # lock 88% of peak when >1.5R
                     elif ts.peak_mfe_r >= 1.0:
-                        lock_pct = 0.80  # lock 80% when >1R
+                        lock_pct = 0.82  # lock 82% when >1R
                     elif ts.peak_mfe_r >= 0.75:
-                        lock_pct = 0.72  # lock 72% when >0.75R
+                        lock_pct = 0.75  # lock 75% when >0.75R
                     elif ts.peak_mfe_r >= 0.5:
-                        lock_pct = 0.65  # lock 65% when >0.5R
+                        lock_pct = 0.70  # lock 70% when >0.5R (was 0.65)
                     elif ts.peak_mfe_r >= 0.3:
-                        lock_pct = 0.55  # lock 55% when >0.3R
+                        lock_pct = 0.60  # lock 60% when >0.3R (was 0.55)
                     else:
                         lock_pct = 0.0   # breakeven when >0.15R
 
@@ -933,7 +936,7 @@ class SignalTracker:
                     # ── REGIME-ADAPTIVE TRAIL ──
                     _regime = ts.metadata.get("regime", "") if ts.metadata else ""
                     if _regime in ("trending_up", "trending_down", "breakout"):
-                        lock_pct *= 0.92  # slight discount in trends (was 0.85 — too loose)
+                        lock_pct *= 0.95  # minimal discount in trends (was 0.92 — letting too much slip)
                     elif _regime in ("ranging", "sideways", "quiet"):
                         lock_pct *= 1.10  # tighter in ranges
                         lock_pct = min(lock_pct, 0.92)

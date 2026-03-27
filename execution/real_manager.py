@@ -248,6 +248,12 @@ class RealTradingManager:
         if not self.enabled:
             return {"status": "disabled"}
 
+        # Block investment/momentum_trend signals from real/demo trading
+        scanner = signal.get("metadata", {}).get("setup_type", "") or signal.get("scanner", "")
+        if scanner in ("momentum_trend", "simple_bias", "investment", ""):
+            logger.info("REAL SKIP: %s — scanner '%s' blocked from real trading", symbol, scanner)
+            return {"status": "skipped", "reason": "blocked_scanner"}
+
         # Dedup: skip if this paper trade already has a dry run/real entry
         if paper_trade_id and paper_trade_id in self.paper_to_real:
             return {"status": "already_mirrored", "existing_id": self.paper_to_real[paper_trade_id]}
@@ -494,10 +500,24 @@ class RealTradingManager:
     ) -> Optional[Dict]:
         """
         Close the real position when paper trade closes.
+        Uses paper exit price for accurate PnL (not current market price).
         """
         real_trade_id = self.paper_to_real.get(paper_trade_id)
+
+        # Fallback: if mapping lost (restart), search by paper_trade_id in open trades
         if not real_trade_id:
-            return None  # No real trade for this paper trade
+            for tid, t in list(self.real_trades.items()):
+                if getattr(t, "paper_trade_id", "") == paper_trade_id:
+                    real_trade_id = tid
+                    break
+            if not real_trade_id:
+                for tid, t in list(self._open_positions.items()):
+                    pid = t.get("paper_trade_id", "") if isinstance(t, dict) else getattr(t, "paper_trade_id", "")
+                    if pid == paper_trade_id:
+                        real_trade_id = tid
+                        break
+        if not real_trade_id:
+            return None  # Truly no matching trade
 
         # Look up in real_trades first, then _open_positions (dry run)
         trade = self.real_trades.get(real_trade_id)
@@ -862,8 +882,15 @@ class RealTradingManager:
         except Exception as e:
             logger.error("Failed to save real trading state: %s", e)
 
-    def sync_with_paper(self, active_paper_ids: set):
-        """Close orphaned dry run positions whose paper trades are already closed."""
+    def sync_with_paper(self, active_paper_ids: set, closed_paper_trades: dict = None):
+        """Close orphaned dry run positions whose paper trades are already closed.
+
+        Args:
+            active_paper_ids: set of currently active paper trade IDs
+            closed_paper_trades: dict of {paper_id: {exit_price, exit_reason}} for recently closed
+        """
+        if closed_paper_trades is None:
+            closed_paper_trades = {}
         orphans = []
         for trade_id, trade in list(self.real_trades.items()):
             paper_id = getattr(trade, "paper_trade_id", "")
@@ -871,8 +898,10 @@ class RealTradingManager:
                 orphans.append(trade_id)
         for trade_id in orphans:
             trade = self.real_trades[trade_id]
-            # Close at last known price
-            exit_price = getattr(trade, "current_price", trade.entry_price)
+            paper_id = getattr(trade, "paper_trade_id", "")
+            # Use paper exit price if available (more accurate than current market)
+            paper_close = closed_paper_trades.get(paper_id, {})
+            exit_price = paper_close.get("exit_price") or getattr(trade, "current_price", trade.entry_price)
             side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
             if side_str == "long":
                 pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price else 0

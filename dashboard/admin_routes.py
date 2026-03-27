@@ -1,0 +1,128 @@
+"""Admin management endpoints — user list, role changes, audit log."""
+import logging
+from aiohttp import web
+from auth.middleware import require_role
+
+logger = logging.getLogger(__name__)
+
+
+def register_admin_routes(app: web.Application, auth_service, db_pool):
+    """Register admin-only routes."""
+    handler = AdminRouteHandler(auth_service, db_pool)
+
+    app.router.add_get("/api/admin/users", require_role("admin")(handler.handle_list_users))
+    app.router.add_put("/api/admin/users/{user_id}", require_role("admin")(handler.handle_update_user))
+    app.router.add_get("/api/admin/sessions", require_role("admin")(handler.handle_list_sessions))
+    app.router.add_delete("/api/admin/sessions/{token}", require_role("admin")(handler.handle_force_logout))
+    app.router.add_get("/api/admin/audit", require_role("admin")(handler.handle_audit_log))
+
+
+class AdminRouteHandler:
+    def __init__(self, auth_service, db_pool):
+        self.auth = auth_service
+        self.pool = db_pool
+
+    async def handle_list_users(self, request: web.Request) -> web.Response:
+        """GET /api/admin/users — list all users."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, email, role, tier, full_name, is_active,
+                          email_verified, id_verification_status,
+                          bot_mode, created_at, last_login
+                   FROM users ORDER BY created_at DESC"""
+            )
+        users = []
+        for row in rows:
+            u = dict(row)
+            u["id"] = str(u["id"])
+            for k in ["created_at", "last_login"]:
+                if u.get(k):
+                    u[k] = u[k].isoformat()
+            users.append(u)
+        return web.json_response({"users": users, "total": len(users)})
+
+    async def handle_update_user(self, request: web.Request) -> web.Response:
+        """PUT /api/admin/users/{user_id} — update role, tier, active status."""
+        user_id = request.match_info.get("user_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        allowed = {"role", "tier", "is_active", "id_verification_status"}
+        updates = {k: v for k, v in body.items() if k in allowed}
+        if not updates:
+            return web.json_response({"error": "no valid fields"}, status=400)
+
+        # Validate role
+        if "role" in updates and updates["role"] not in ("admin", "trader", "viewer"):
+            return web.json_response({"error": "invalid role"}, status=400)
+        if "tier" in updates and updates["tier"] not in ("free", "pro", "enterprise"):
+            return web.json_response({"error": "invalid tier"}, status=400)
+
+        set_parts = []
+        values = []
+        for i, (key, val) in enumerate(updates.items(), 1):
+            set_parts.append(f"{key} = ${i}")
+            values.append(val)
+        values.append(user_id)
+
+        sql = f"UPDATE users SET {', '.join(set_parts)}, updated_at = NOW() WHERE id = ${len(values)}"
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, *values)
+
+        logger.info("Admin updated user %s: %s", user_id, updates)
+        return web.json_response({"ok": True})
+
+    async def handle_list_sessions(self, request: web.Request) -> web.Response:
+        """GET /api/admin/sessions — all active sessions."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT s.token, s.ip_address, s.created_at, s.expires_at,
+                          s.last_activity, s.request_count, u.email, u.role
+                   FROM sessions s
+                   JOIN users u ON s.user_id = u.id
+                   WHERE s.expires_at > NOW()
+                   ORDER BY s.last_activity DESC"""
+            )
+        sessions = []
+        for row in rows:
+            s = dict(row)
+            s["token"] = s["token"][:8] + "..."  # Mask token
+            for k in ["created_at", "expires_at", "last_activity"]:
+                if s.get(k):
+                    s[k] = s[k].isoformat()
+            sessions.append(s)
+        return web.json_response({"sessions": sessions})
+
+    async def handle_force_logout(self, request: web.Request) -> web.Response:
+        """DELETE /api/admin/sessions/{token} — force logout a user."""
+        token_prefix = request.match_info.get("token", "")
+        async with self.pool.acquire() as conn:
+            # Match by prefix (admin sees masked tokens)
+            result = await conn.execute(
+                "DELETE FROM sessions WHERE token LIKE $1",
+                token_prefix + "%",
+            )
+        return web.json_response({"ok": True})
+
+    async def handle_audit_log(self, request: web.Request) -> web.Response:
+        """GET /api/admin/audit — login history."""
+        limit = int(request.query.get("limit", "100"))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT lh.email, lh.ip_address, lh.success, lh.failure_reason,
+                          lh.created_at
+                   FROM login_history lh
+                   ORDER BY lh.created_at DESC
+                   LIMIT $1""",
+                min(limit, 500),
+            )
+        entries = []
+        for row in rows:
+            e = dict(row)
+            if e.get("created_at"):
+                e["created_at"] = e["created_at"].isoformat()
+            entries.append(e)
+        return web.json_response({"entries": entries, "total": len(entries)})

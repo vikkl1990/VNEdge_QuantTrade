@@ -513,6 +513,7 @@ class RealTradingManager:
 
     async def mirror_paper_exit(
         self, paper_trade_id: str, exit_price: float, reason: str,
+        paper_slippage_bps: float = 0.0,
     ) -> Optional[Dict]:
         """
         Close the real position when paper trade closes.
@@ -570,12 +571,19 @@ class RealTradingManager:
             fee_est = notional * 0.0015  # ~0.15% round trip (0.075% × 2)
             net_pnl = pnl_usd - fee_est
 
+            # Inherit paper slippage if demo has none
+            if paper_slippage_bps > 0 and getattr(trade, "slippage_bps", 0) == 0:
+                if isinstance(trade, dict):
+                    trade["slippage_bps"] = paper_slippage_bps
+                else:
+                    trade.slippage_bps = paper_slippage_bps
+
             logger.info(
                 "REAL [DRY RUN] EXIT: %s %s | entry=%.4f exit=%.4f | "
-                "gross=$%.2f fees=$%.2f net=$%.2f | margin=$%.2f lev=%dx | reason=%s",
+                "gross=$%.2f fees=$%.2f net=$%.2f | margin=$%.2f lev=%dx | slip=%.1fbps | reason=%s",
                 symbol, side_str,
                 entry_p, exit_price,
-                pnl_usd, fee_est, net_pnl, margin, leverage, reason,
+                pnl_usd, fee_est, net_pnl, margin, leverage, paper_slippage_bps, reason,
             )
 
             # Close position on Delta exchange (demo) immediately
@@ -842,7 +850,7 @@ class RealTradingManager:
             "ml_verdict": getattr(trade, "ml_verdict", ""),
             "regime": getattr(trade, "regime", ""),
             "trade_type": getattr(trade, "trade_type", ""),
-            "slippage_bps": getattr(trade, "slippage_bps", 0),
+            "slippage_bps": round(getattr(trade, "slippage_bps", 0), 2),
             "slippage_impact_r": getattr(trade, "slippage_impact_r", 0),
         }
         self.closed_real_trades.append(record)

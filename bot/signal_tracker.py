@@ -63,12 +63,12 @@ TRADE_TYPE_CONFIG = {
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 8,      # 8 bars (REVERTED from 12)
+        "time_stop_bars": 6,      # 6 bars — tighter (was 8, avg timeout was 17min)
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 300,    # 5 min (REVERTED from 420)
-        "early_kill_mfe": 0.15,   # standard (REVERTED from 0.18)
-        "trail_atr_mult": 1.0,   # standard trail (REVERTED from 1.5)
-        "max_age_sec": 1 * 3600,  # 1 hour max (REVERTED from 90)
+        "early_kill_sec": 120,    # 2 min — kill dead INTRADAY fast (was 300)
+        "early_kill_mfe": 0.08,   # lower threshold — need quick momentum (was 0.15)
+        "trail_atr_mult": 1.0,   # standard trail
+        "max_age_sec": 45 * 60,   # 45 min max (was 60)
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room

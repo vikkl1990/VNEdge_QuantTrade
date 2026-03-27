@@ -1550,6 +1550,25 @@ class ScalpStrategy(BaseStrategy):
         side_val = best_sr.side.value if hasattr(best_sr.side, 'value') else str(best_sr.side)
         if regime == "trending_up" and side_val == "long":
             MIN_SETUP_STRENGTH = max(MIN_SETUP_STRENGTH + 5, 60)
+
+        # ── Timeout prevention: require higher confidence for INTRADAY ──
+        # Timeouts avg conf=70, winners avg conf=81. Raise bar for INTRADAY.
+        trade_type_est = "INTRADAY"  # estimated — will be classified later
+        if best_sr.weighted_score >= 80:
+            trade_type_est = "RUNNER"
+        elif best_sr.weighted_score < 60:
+            trade_type_est = "SCALP"
+        if trade_type_est == "INTRADAY" and best_sr.weighted_score < 75:
+            # INTRADAY below 75 = high timeout risk
+            best_sr.confirmations.append("[INTRADAY_CONF_PENALTY: -8]")
+            best_sr.weighted_score -= 8
+
+        # ── Block dead hours: 11:00 UTC (10 timeouts, worst hour) ──
+        import time as _time
+        utc_hour = _time.gmtime().tm_hour
+        if utc_hour == 11:
+            best_sr.confirmations.append("[DEAD_HOUR_PENALTY: -12, 11UTC]")
+            best_sr.weighted_score -= 12
         if best_sr.weighted_score < MIN_SETUP_STRENGTH and not self._is_learning:
             self._funnel["weak_setup_veto"] = self._funnel.get("weak_setup_veto", 0) + 1
             if pass_cnt <= 5 or pass_cnt % 100 == 0:

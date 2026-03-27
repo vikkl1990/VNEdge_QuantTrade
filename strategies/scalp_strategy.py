@@ -1526,6 +1526,23 @@ class ScalpStrategy(BaseStrategy):
         else:
             MIN_SETUP_STRENGTH = SCANNER_MIN_CONF.get(best_sr.scanner_name, 55)
 
+        # ── Fibonacci confluence bonus ──
+        # If signal aligns with 0.618 or 0.786 Fib level, boost confidence
+        _fib_at = indicators.get("fib_at_level", False)
+        _fib_nearest = str(indicators.get("fib_nearest", ""))
+        if _fib_at and _fib_nearest in ("0.618", "0.786", "0.5"):
+            fib_bonus = 15 if _fib_nearest in ("0.618", "0.786") else 10
+            best_sr.weighted_score += fib_bonus
+            best_sr.confirmations.append(f"Fib confluence ({_fib_nearest}) +{fib_bonus}")
+
+        # ── Universal volume gate ──
+        # All scanners require minimum volume confirmation (rel_vol ≥ 1.2)
+        _rel_vol_gate = float(last_row.get("rel_vol", 1.0)) if not np.isnan(float(last_row.get("rel_vol", 1.0))) else 1.0
+        if _rel_vol_gate < 0.8 and best_sr.scanner_name not in ("structure_bounce",):
+            # Very low volume — penalize new scanners (structure_bounce exempt as workhorse)
+            best_sr.weighted_score -= 10
+            best_sr.confirmations.append(f"LOW VOL PENALTY: rel_vol={_rel_vol_gate:.1f} < 0.8")
+
         # Regime adjustment: trending_down is our strongest regime — be more permissive
         if regime == "trending_down" and best_sr.scanner_name in ("liquidity_sweep", "cvd_divergence"):
             MIN_SETUP_STRENGTH = max(MIN_SETUP_STRENGTH - 5, 45)

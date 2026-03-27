@@ -937,8 +937,8 @@ class RealTradingManager:
         # Also refresh balance
         try:
             await self._get_balance()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Balance refresh failed during price update: %s", e)
 
     def _load_state(self):
         """Load persisted state on startup, including toggle state."""
@@ -1052,8 +1052,8 @@ class RealTradingManager:
                         ) % (emoji, t_sym, getattr(t, "side", "?"),
                              entry, exit_price, pnl_usd, reason)
                         logger.info(msg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Position close recording failed: %s", e)
 
             # Now add any NEW exchange positions not locally tracked
             for p in positions:

@@ -146,7 +146,7 @@ class DashboardServer:
         self._auth_secret = os.getenv("DASHBOARD_SECRET_KEY", secrets.token_hex(32))
         if not self._auth_password:
             self._auth_password = secrets.token_hex(16)
-            logger.warning("DASHBOARD_PASSWORD not set — generated random: %s", self._auth_password)
+            logger.warning("DASHBOARD_PASSWORD not set — generated random password (check .env to set a permanent one)")
         self._auth_enabled = True  # always enabled
         self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> session data
         self._session_history: List[Dict[str, Any]] = []  # login history

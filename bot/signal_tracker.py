@@ -712,6 +712,11 @@ class SignalTracker:
         """Check all active signals against current prices.
 
         Returns list of closure events (for alerting).
+
+        Thread safety: This method mutates self._active items in-place.
+        Safe in asyncio (single-threaded event loop with GIL) but must
+        NOT be called from multiple threads. The list() snapshot prevents
+        dict-changed-during-iteration errors.
         """
         events = []
         to_close = []
@@ -1594,6 +1599,18 @@ class SignalTracker:
             }
             with open(self._live_feedback_file, "a") as f:
                 f.write(json.dumps(feedback, default=str) + "\n")
+
+            # Rotate feedback file if > 10K lines (keep last 8K)
+            try:
+                if self._live_feedback_file.exists():
+                    with open(self._live_feedback_file) as rf:
+                        lines = rf.readlines()
+                    if len(lines) > 10000:
+                        with open(self._live_feedback_file, "w") as wf:
+                            wf.writelines(lines[-8000:])
+                        logger.info("Feedback file rotated: %d → 8000 lines", len(lines))
+            except Exception:
+                pass  # rotation failure is non-critical
 
             logger.info(
                 "ML FEEDBACK: %s %s %s | %s | pnl=%+.2f%% r=%+.2fR mfe=%.2fR | ml=%.2f %s | %s %dm",

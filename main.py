@@ -170,8 +170,31 @@ async def build_components(config, mode, symbols, logger):
     # -- Trade journal --
     journal = TradeJournal(config_dict)
 
+    # -- Database + Auth (multi-user SaaS) --
+    auth_service = None
+    db_pool = None
+    database_url = os.getenv("DATABASE_URL", "")
+    if database_url and database_url.startswith("postgresql"):
+        try:
+            from db import init_db, get_pool, run_migrations
+            from auth.service import AuthService
+            from auth.crypto import init_fernet
+            await init_db(database_url)
+            db_pool = get_pool()
+            if db_pool:
+                await run_migrations()
+                init_fernet()
+                auth_service = AuthService(db_pool)
+                logger.info("Multi-user auth initialized (PostgreSQL + Fernet)")
+        except Exception as e:
+            logger.warning("Multi-user auth failed to init: %s — falling back to single-user", e)
+            auth_service = None
+            db_pool = None
+    else:
+        logger.info("No DATABASE_URL set — using single-user auth mode")
+
     # -- Dashboard --
-    dashboard = DashboardServer()
+    dashboard = DashboardServer(auth_service=auth_service, db_pool=db_pool)
     dashboard._real_manager = real_manager  # Wire for /api/real/toggle
 
     # -- Persistent state --

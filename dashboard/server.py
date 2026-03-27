@@ -85,10 +85,12 @@ class DashboardServer:
     }
     _PUBLIC_PREFIXES = ("/static/",)
 
-    def __init__(self) -> None:
+    def __init__(self, auth_service=None, db_pool=None) -> None:
         cfg = get_config()
         dash_cfg = cfg.get("dashboard", {})
         bot_cfg = cfg.get("bot", {})
+        self._auth_service = auth_service  # DB-backed auth (multi-user)
+        self._db_pool = db_pool
 
         self.bot_name: str = bot_cfg.get("name", "CryptoAlgoBot")
         self.bot_version: str = bot_cfg.get("version", "1.0.0")
@@ -429,14 +431,28 @@ class DashboardServer:
         self._bot_status = "running"
 
         middlewares = []
-        if self._auth_enabled:
+        if self._auth_service:
+            # Multi-user mode: use DB-backed auth
+            from auth.middleware import AuthMiddleware
+            auth_mw = AuthMiddleware(self._auth_service)
+            middlewares.append(auth_mw.middleware)
+            logger.info("Dashboard auth ENABLED (multi-user, DB-backed)")
+        elif self._auth_enabled:
             middlewares.append(self._auth_middleware)
-            logger.info("Dashboard auth ENABLED (user=%s)", self._auth_user)
+            logger.info("Dashboard auth ENABLED (single-user, user=%s)", self._auth_user)
         else:
             logger.warning("Dashboard auth DISABLED — set DASHBOARD_PASSWORD in .env to enable")
 
         self._app = web.Application(middlewares=middlewares)
         self._register_routes(self._app)
+
+        # Register multi-user routes if DB is available
+        if self._auth_service and self._db_pool:
+            from dashboard.user_routes import register_user_routes
+            from dashboard.admin_routes import register_admin_routes
+            register_user_routes(self._app, self._auth_service, self._db_pool)
+            register_admin_routes(self._app, self._auth_service, self._db_pool)
+            logger.info("Multi-user routes registered (user profile, API keys, admin)")
 
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()

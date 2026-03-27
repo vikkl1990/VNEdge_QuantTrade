@@ -3307,7 +3307,7 @@ function updateRealClosedTrades(realStatus) {
         const pnlColor = netPnl >= 0 ? "var(--green)" : "var(--red)";
         const sideColor = t.side === "long" ? "var(--green)" : "var(--red)";
         const dec = (t.symbol || "").includes("BTC") ? 2 : 4;
-        const ts = (t.timestamp || "").replace("T", " ").substring(0, 19);
+        const ts = formatTime(t.timestamp || "");
         const slip = t.slippage_bps || 0;
         const slipColor = slip <= 1.5 ? "var(--green)" : slip <= 3 ? "var(--yellow)" : "var(--red)";
         return `<tr>

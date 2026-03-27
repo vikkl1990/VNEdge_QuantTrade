@@ -1489,6 +1489,86 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="login-error" id="profile-save-error" style="display:none"></div>
     <div id="profile-save-ok" style="display:none;color:var(--green);font-size:.8rem;margin-top:8px;font-weight:600">Profile saved successfully!</div>
   </div>
+
+  <!-- Admin Panel (visible to admin users only) -->
+  <div class="panel" style="margin-top:16px;border-color:rgba(167,139,250,.3)" id="admin-panel">
+    <div class="panel-title" style="color:var(--purple)">&#128272; Admin Panel <span class="badge" style="background:rgba(167,139,250,.15);color:var(--purple)">admin only</span></div>
+
+    <!-- System Overview -->
+    <div class="grid-4" style="margin-bottom:16px">
+      <div class="stat-card"><div class="stat-value blue" id="admin-total-users">1</div><div class="stat-label">Total Users</div></div>
+      <div class="stat-card"><div class="stat-value green" id="admin-active-users">1</div><div class="stat-label">Active</div></div>
+      <div class="stat-card"><div class="stat-value yellow" id="admin-total-trades">0</div><div class="stat-label">Total Trades</div></div>
+      <div class="stat-card"><div class="stat-value" id="admin-uptime">--</div><div class="stat-label">Bot Uptime</div></div>
+    </div>
+
+    <!-- Registered Users Table -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Registered Users</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr><th>Email</th><th>Name</th><th>Role</th><th>API Keys</th><th>Pairs</th><th>Leverage</th><th>Status</th><th>Last Login</th></tr>
+          </thead>
+          <tbody id="admin-users-body">
+            <tr>
+              <td style="font-weight:600">admin@vnedge.com</td>
+              <td>Admin</td>
+              <td><span class="badge" style="background:rgba(167,139,250,.15);color:var(--purple)">admin</span></td>
+              <td>Demo: &#10003; | Real: &#10003;</td>
+              <td>BTC, ETH, SOL + 7 more</td>
+              <td>10x</td>
+              <td style="color:var(--green)">Active</td>
+              <td id="admin-last-login">--</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Current Configuration Summary -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Current Bot Configuration</div>
+      <div class="grid-3" style="gap:8px">
+        <div style="padding:8px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Exchange</div>
+          <div style="font-weight:600;color:var(--cyan)">Delta India</div>
+          <div style="font-size:.65rem;color:var(--text-muted)">Demo: Testnet | Real: Production</div>
+        </div>
+        <div style="padding:8px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Trading Pairs</div>
+          <div style="font-weight:600;color:var(--green)" id="admin-pairs-count">10 pairs</div>
+          <div style="font-size:.65rem;color:var(--text-muted)">BTC ETH SOL XRP BNB DOGE LINK LTC ADA TAO</div>
+        </div>
+        <div style="padding:8px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Risk Limits</div>
+          <div style="font-weight:600;color:var(--yellow)">10x max leverage</div>
+          <div style="font-size:.65rem;color:var(--text-muted)">$25/day loss limit | 5 consec loss pause</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API Key Status -->
+    <div>
+      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">API Key Status</div>
+      <div class="grid-2" style="gap:8px">
+        <div style="padding:10px;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.15);border-radius:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:600;color:var(--cyan)">Demo (Testnet)</span>
+            <span style="color:var(--green);font-weight:600;font-size:.7rem">&#10003; Connected</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: bauW...USj9 | Balance: $199.19</div>
+        </div>
+        <div style="padding:10px;background:rgba(255,59,92,.04);border:1px solid rgba(255,59,92,.15);border-radius:6px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:600;color:var(--red)">Real (Production)</span>
+            <span style="color:var(--green);font-weight:600;font-size:.7rem">&#10003; Connected</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: 4Tgu...3Y | Balance: $117.42</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ API KEY MODAL ═══════════════════════════════════════ -->

@@ -736,6 +736,18 @@ class SignalTracker:
             if price is None:
                 continue
 
+            # ── Estimated Slippage (paper mode) ──
+            # On first price update after entry, capture the market price as
+            # "estimated fill" to simulate what slippage would have been
+            if ts.fill_price == ts.signal_price and ts.signal_price > 0 and ts.slippage_bps == 0:
+                # First price tick after entry — this is our estimated fill
+                est_slip = abs(price - ts.signal_price)
+                ts.fill_price = price  # "estimated fill" = first market price after signal
+                ts.slippage_bps = round(est_slip / ts.signal_price * 10000, 2)
+                ts.slippage_ticks = round(est_slip / (ts.signal_atr * 0.01) if ts.signal_atr > 0 else 0, 2)
+                if ts.initial_risk > 0:
+                    ts.slippage_impact_r = round(est_slip / ts.initial_risk, 4)
+
             # Update high/low watermarks
             if price > ts.highest_price:
                 ts.highest_price = price

@@ -509,6 +509,41 @@ class DeltaClient:
             logger.error("DELTA [%s] CANCEL ALL FAILED: %s", self.mode.upper(), e)
             return False
 
+    def close_position(self, symbol: str, close_side: str, lots: int) -> Optional[Dict]:
+        """Close a position by placing a market reduce-only order."""
+        try:
+            product_id = self._get_product_id(symbol)
+            if not product_id:
+                logger.warning("DELTA [%s] CLOSE: unknown symbol %s", self.mode.upper(), symbol)
+                return None
+
+            # Cancel any existing SL/TP orders first
+            try:
+                orders = self.get_open_orders()
+                for o in orders:
+                    if (o.get("product_id") == product_id and
+                        o.get("reduce_only") == "true"):
+                        self._client.cancel_order(product_id, o.get("id"))
+            except Exception:
+                pass
+
+            # Place market close order
+            order = self._client.place_order(
+                product_id=product_id,
+                size=lots,
+                side=close_side,
+                order_type=OrderType.MARKET,
+                reduce_only="true",
+            )
+            logger.info("DELTA [%s] CLOSE: %s %s %d lots | order=%s",
+                       self.mode.upper(), symbol, close_side, lots,
+                       order.get("id", "?") if order else "failed")
+            return order
+        except Exception as e:
+            logger.warning("DELTA [%s] CLOSE FAILED: %s %s — %s",
+                          self.mode.upper(), symbol, close_side, e)
+            return None
+
     # ==================================================================
     # Trade History
     # ==================================================================

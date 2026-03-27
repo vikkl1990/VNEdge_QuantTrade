@@ -77,6 +77,22 @@ class RealCircuitBreaker:
 
         self._check_trip()
 
+    def record_trade_with_reason(self, pnl_usd: float, reason: str = ""):
+        """Record trade but skip orphan_sync from consecutive loss count."""
+        self.daily_pnl += pnl_usd
+        self.total_pnl += pnl_usd
+        self.trade_count_today += 1
+
+        # Orphan sync losses are timing artifacts, not real losses
+        if reason == "orphan_sync" and pnl_usd < 0 and abs(pnl_usd) < 1.0:
+            pass  # Don't count tiny orphan losses toward consecutive
+        elif pnl_usd < 0:
+            self.consecutive_losses += 1
+        else:
+            self.consecutive_losses = 0
+
+        self._check_trip()
+
     def _check_trip(self):
         """Check if circuit breaker should trip."""
         if self.daily_pnl <= -self.daily_loss_limit:
@@ -149,7 +165,7 @@ class RealTradingManager:
 
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
-            max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 5),
+            max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 10),
         )
 
         # Delta SDK clients (replaces ccxt for order execution)
@@ -562,6 +578,18 @@ class RealTradingManager:
                 pnl_usd, fee_est, net_pnl, margin, leverage, reason,
             )
 
+            # Close position on Delta exchange (demo) immediately
+            try:
+                if hasattr(self, '_delta_demo') and self._delta_demo:
+                    close_side = "sell" if side_str == "long" else "buy"
+                    lots = int(pos_size) if pos_size else 0
+                    if lots > 0:
+                        self._delta_demo.close_position(symbol, close_side, lots)
+                        logger.info("REAL [DEMO CLOSE]: %s %s %d lots — synced with paper exit",
+                                   symbol, close_side, lots)
+            except Exception as close_err:
+                logger.debug("REAL: Demo exchange close failed (non-critical): %s", close_err)
+
             # Remove from open positions
             self._open_positions.pop(real_trade_id, None)
             self.paper_to_real.pop(paper_trade_id, None)
@@ -916,7 +944,7 @@ class RealTradingManager:
             net_pnl = max(net_pnl, -margin)
             logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | paper closed without mirror",
                         trade.symbol, side_str, net_pnl, margin, position_usd)
-            self.circuit_breaker.record_trade(net_pnl)
+            self.circuit_breaker.record_trade_with_reason(net_pnl, "orphan_sync")
             self._record_closed_trade(trade, exit_price, net_pnl, "orphan_sync", dry_run=True)
         if orphans:
             self._save_state()

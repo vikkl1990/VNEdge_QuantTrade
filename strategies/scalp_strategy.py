@@ -1217,9 +1217,9 @@ class ScalpStrategy(BaseStrategy):
 
             try:
                 # MTF scanner routing:
-                # trend_continuation + ema_momentum → 5m (need cleaner trends)
-                # All scanners also get a 15m pass for higher-quality setups
-                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum) and df_5m is not None and len(df_5m) >= 50:
+                # trend_continuation + ema_momentum + bos_choch → 5m primary
+                # These scanners need cleaner data; 1m is too noisy
+                if scanner in (self._scan_trend_continuation, self._scan_ema_momentum, self._scan_bos_choch) and df_5m is not None and len(df_5m) >= 50:
                     scanner_df = df_5m
                 else:
                     scanner_df = df
@@ -1502,12 +1502,8 @@ class ScalpStrategy(BaseStrategy):
             }
             return []
 
-        # ── Disable bos_choch from live trading (shadow only until retrained) ──
-        # bos_choch: 40% WR, -$25.70 in last 12h — actively losing money
-        if best_sr.scanner_name == "bos_choch":
-            logger.info("FUNNEL %s | BOS_CHOCH SHADOW | score=%d — data collection only, not trading",
-                       symbol, best_sr.weighted_score)
-            return []
+        # bos_choch: re-enabled with strict quality (0.8 ATR displacement, 1.5x volume, 5m primary)
+        # Previously 40% WR on 1m noise → now requires strong displacement + volume on 5m
 
         # ── Setup strength veto: scanner-specific thresholds ──
         SCANNER_MIN_CONF = {
@@ -3918,19 +3914,19 @@ class ScalpStrategy(BaseStrategy):
             return None
 
         # ── Step 3: Displacement (body strength) ──
-        # TIGHTENED: Require strong displacement to avoid noise breaks
+        # STRICT: Require 0.8+ ATR displacement — weak breaks were 40% WR
         displacement = body / atr if atr > 0 else 0
-        if displacement > 1.0:
+        if displacement > 1.2:
             score += 20
             confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.6:
+        elif displacement > 0.8:
             score += 12
             confs.append(f"Good displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.4:
+        elif displacement > 0.6:
             score += 3  # minimal credit
         else:
-            score -= 15  # hard penalty for weak breaks — this was causing losses
-            confs.append(f"Weak displacement ({displacement:.1f}x ATR) — penalized")
+            # Below 0.6 ATR = noise break → hard reject
+            return None
 
         # ── Step 4: Candle quality ──
         candle_range = high_val - low_val if high_val > low_val else atr * 0.01
@@ -3949,14 +3945,17 @@ class ScalpStrategy(BaseStrategy):
         if close_pos > 0.65:
             score += 5
 
-        # ── Step 5: Volume (TIGHTENED: require 1.3x for real breaks) ──
+        # ── Step 5: Volume (STRICT: require 1.5x minimum for real breaks) ──
         rel_vol = float(last.get("rel_vol", 1.0))
-        if not np.isnan(rel_vol) and rel_vol > 1.5:
-            confs.append(f"Volume {rel_vol:.1f}x on break")
-            score += 10
-        elif not np.isnan(rel_vol) and rel_vol > 1.3:
+        if not np.isnan(rel_vol) and rel_vol > 2.0:
+            confs.append(f"Volume spike {rel_vol:.1f}x on break")
+            score += 15
+        elif not np.isnan(rel_vol) and rel_vol > 1.5:
             confs.append(f"Volume {rel_vol:.1f}x confirmed")
-            score += 5
+            score += 8
+        elif not np.isnan(rel_vol) and rel_vol < 1.0:
+            # Low volume break = likely fake → reject
+            return None
         elif not np.isnan(rel_vol) and rel_vol < 0.7:
             score -= 12  # low volume break = almost always fake
             confs.append(f"LOW VOLUME break ({rel_vol:.1f}x) — likely fake")

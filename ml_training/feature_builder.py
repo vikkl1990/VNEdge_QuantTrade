@@ -905,6 +905,62 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     features["confluence_max"] = pd.concat([bull_signals, bear_signals], axis=1).max(axis=1)
 
     # ================================================================
+    # Section 30: Funding Rate Proxy
+    # ================================================================
+    # Funding rate approximation: premium/discount of close vs VWAP
+    # Positive = longs paying shorts, negative = shorts paying longs
+    if "vwap" in df.columns:
+        vwap = df["vwap"].values
+        funding_proxy = (closes - vwap) / vwap * 100  # premium in %
+        features["funding_proxy"] = funding_proxy
+        features["funding_proxy_ma5"] = pd.Series(funding_proxy).rolling(5).mean().values
+        features["funding_positive"] = (funding_proxy > 0).astype(float)  # longs paying
+    else:
+        features["funding_proxy"] = 0
+        features["funding_proxy_ma5"] = 0
+        features["funding_positive"] = 0
+
+    # ================================================================
+    # Section 31: Cross-Pair Correlation (BTC Dominance Proxy)
+    # ================================================================
+    # BTC dominance proxy: if BTC is moving stronger than the pair, alts follow
+    # Approximated by relative return: pair_return vs its own EMA momentum
+    ret_5 = features.get("return_5", pd.Series(0, index=df.index))
+    ema_slope = features.get("ema_slope_8", pd.Series(0, index=df.index))
+    if isinstance(ret_5, pd.Series) and isinstance(ema_slope, pd.Series):
+        # Momentum divergence: return moving one way, EMA slope the other = potential reversal
+        features["momentum_ema_divergence"] = ret_5 - ema_slope * 10
+        # Trend acceleration: is the move accelerating or decelerating?
+        ret_10 = features.get("return_10", pd.Series(0, index=df.index))
+        if isinstance(ret_10, pd.Series):
+            features["trend_acceleration"] = ret_5 - ret_10 * 0.5
+    else:
+        features["momentum_ema_divergence"] = 0
+        features["trend_acceleration"] = 0
+
+    # Volatility regime (high/low vol state)
+    atr_ratio = features.get("atr_ratio", pd.Series(1, index=df.index))
+    if isinstance(atr_ratio, pd.Series):
+        features["vol_regime_high"] = (atr_ratio > 1.5).astype(float)
+        features["vol_regime_low"] = (atr_ratio < 0.7).astype(float)
+    else:
+        features["vol_regime_high"] = 0
+        features["vol_regime_low"] = 0
+
+    # ================================================================
+    # Section 32: Price Level Context
+    # ================================================================
+    # Round number proximity (psychological S/R levels)
+    if closes[-1] > 100:  # BTC/ETH
+        round_level = round(closes[-1] / 1000) * 1000
+        features["dist_from_round_number"] = abs(closes - round_level) / closes * 100
+    elif closes[-1] > 1:  # SOL/XRP
+        round_level = round(closes[-1] / 10) * 10
+        features["dist_from_round_number"] = abs(closes - round_level) / closes * 100
+    else:
+        features["dist_from_round_number"] = 0
+
+    # ================================================================
     # CLEANUP: Replace NaN/inf, mark warmup period
     # ================================================================
     # Replace inf with NaN first

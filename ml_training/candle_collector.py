@@ -240,6 +240,59 @@ class CandleCollector:
         logger.info("Collected %d candles for %s %s", len(combined), symbol, timeframe)
         return combined
 
+    def collect_yfinance(self, symbol: str, timeframe: str, months: int = 6) -> Optional[pd.DataFrame]:
+        """Fetch historical data from yfinance as supplemental training data.
+
+        Maps Delta symbols (BTC/USDT) to yfinance tickers (BTC-USD).
+        Returns OHLCV DataFrame or None if unavailable.
+        """
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.debug("yfinance not installed — skipping supplemental data")
+            return None
+
+        # Map symbol to yfinance ticker
+        YFINANCE_MAP = {
+            "BTC/USDT": "BTC-USD", "ETH/USDT": "ETH-USD", "SOL/USDT": "SOL-USD",
+            "XRP/USDT": "XRP-USD", "DOGE/USDT": "DOGE-USD", "ADA/USDT": "ADA-USD",
+            "LINK/USDT": "LINK-USD", "DOT/USDT": "DOT-USD", "LTC/USDT": "LTC-USD",
+            "AVAX/USDT": "AVAX-USD", "BNB/USDT": "BNB-USD", "TAO/USDT": "TAO-USD",
+        }
+        yf_ticker = YFINANCE_MAP.get(symbol)
+        if not yf_ticker:
+            return None
+
+        # Map timeframe to yfinance interval
+        TF_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+        interval = TF_MAP.get(timeframe)
+        if not interval:
+            return None
+
+        # yfinance limits: 1m=7d, 5m=60d, 15m=60d, 1h=730d
+        period_map = {"1m": "7d", "5m": "60d", "15m": "60d", "1h": f"{months * 30}d", "4h": f"{months * 30}d", "1d": f"{months * 30}d"}
+        period = period_map.get(timeframe, "60d")
+
+        try:
+            ticker = yf.Ticker(yf_ticker)
+            df = ticker.history(period=period, interval=interval)
+            if df.empty:
+                return None
+
+            # Normalize column names to match our format
+            df = df.rename(columns={
+                "Open": "open", "High": "high", "Low": "low",
+                "Close": "close", "Volume": "volume",
+            })
+            df = df[["open", "high", "low", "close", "volume"]].copy()
+            df.index.name = "datetime"
+
+            logger.info("yfinance: %d candles for %s %s (%s)", len(df), symbol, timeframe, period)
+            return df
+        except Exception as e:
+            logger.debug("yfinance fetch failed for %s: %s", symbol, e)
+            return None
+
     async def collect_all(self) -> Dict[str, Dict[str, pd.DataFrame]]:
         """Download all symbols × all timeframes."""
         result = {}

@@ -1171,7 +1171,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div id="real-closed-wrap" class="tbl-wrap" style="max-height:400px;overflow-y:auto;display:none">
       <table>
         <thead>
-          <tr style="color:var(--text-muted)"><th>Date</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Margin</th><th>Position</th><th>Lev</th><th>PnL $</th><th>PnL %</th><th>Scanner</th><th>Reason</th></tr>
+          <tr style="color:var(--text-muted)"><th>Date</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Slip (bps)</th><th>Margin</th><th>Position</th><th>Lev</th><th>Gross $</th><th>Fees $</th><th>Net PnL $</th><th>PnL %</th><th>Scanner</th><th>Reason</th></tr>
         </thead>
         <tbody id="real-closed-body">
           <tr><td colspan="12" class="empty">No dry run trades closed</td></tr>
@@ -3292,26 +3292,37 @@ function updateRealClosedTrades(realStatus) {
     }
     const tabLabel = _currentClosedTab === "demo" ? "demo" : "real";
     if (trades.length === 0) {
-        body.innerHTML = '<tr><td colspan="12" class="empty">No ' + tabLabel + ' trades closed yet</td></tr>';
+        body.innerHTML = '<tr><td colspan="15" class="empty">No ' + tabLabel + ' trades closed yet</td></tr>';
         return;
     }
     const badge = document.getElementById("closed-count-badge");
     if (_currentClosedTab !== "paper") badge.textContent = trades.length + " " + tabLabel;
     body.innerHTML = trades.slice().reverse().map(t => {
-        const pnlColor = (t.pnl_usd || 0) >= 0 ? "var(--green)" : "var(--red)";
+        const netPnl = t.pnl_usd || 0;
+        const margin = t.margin || 0;
+        const lev = t.leverage || 1;
+        const notional = margin * lev;
+        const feeEst = notional * 0.0015;
+        const grossPnl = netPnl + feeEst;
+        const pnlColor = netPnl >= 0 ? "var(--green)" : "var(--red)";
         const sideColor = t.side === "long" ? "var(--green)" : "var(--red)";
         const dec = (t.symbol || "").includes("BTC") ? 2 : 4;
         const ts = (t.timestamp || "").replace("T", " ").substring(0, 19);
+        const slip = t.slippage_bps || 0;
+        const slipColor = slip <= 1.5 ? "var(--green)" : slip <= 3 ? "var(--yellow)" : "var(--red)";
         return `<tr>
             <td>${ts}</td>
             <td style="font-weight:600">${t.symbol || "?"}</td>
             <td style="color:${sideColor};font-weight:600;text-transform:uppercase">${t.side || "?"}</td>
             <td style="font-family:var(--font-mono)">${(t.entry_price || 0).toFixed(dec)}</td>
             <td style="font-family:var(--font-mono)">${(t.exit_price || 0).toFixed(dec)}</td>
-            <td style="font-family:var(--font-mono)">$${(t.margin || 0).toFixed(2)}</td>
-            <td style="font-family:var(--font-mono)">$${((t.margin || 0) * (t.leverage || 1)).toFixed(2)}</td>
-            <td>${t.leverage || 0}x</td>
-            <td style="color:${pnlColor};font-weight:600;font-family:var(--font-mono)">${(t.pnl_usd||0)>=0?"+":""}$${(t.pnl_usd || 0).toFixed(2)}</td>
+            <td style="font-family:var(--font-mono);color:${slipColor}">${slip > 0 ? slip.toFixed(1) : "--"}</td>
+            <td style="font-family:var(--font-mono)">$${margin.toFixed(2)}</td>
+            <td style="font-family:var(--font-mono)">$${notional.toFixed(2)}</td>
+            <td>${lev}x</td>
+            <td style="font-family:var(--font-mono)">${grossPnl>=0?"+":""}$${grossPnl.toFixed(2)}</td>
+            <td style="font-family:var(--font-mono);color:var(--yellow)">$${feeEst.toFixed(2)}</td>
+            <td style="color:${pnlColor};font-weight:600;font-family:var(--font-mono)">${netPnl>=0?"+":""}$${netPnl.toFixed(2)}</td>
             <td style="color:${pnlColor};font-family:var(--font-mono)">${(t.pnl_pct||0)>=0?"+":""}${(t.pnl_pct || 0).toFixed(1)}%</td>
             <td style="color:var(--cyan)">${t.scanner || "--"}</td>
             <td>${t.reason || "?"}</td>

@@ -331,19 +331,31 @@ class DashboardServer:
 
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler):
-        """Middleware that checks auth on every request except public paths."""
+        """Middleware: GET APIs are public (read-only). POST APIs require auth."""
         path = request.path
-        # Allow public paths
+        method = request.method
+
+        # Always allow public paths + static files
         if path in self._PUBLIC_PATHS or any(path.startswith(p) for p in self._PUBLIC_PREFIXES):
             return await handler(request)
-        # Check session
+
+        # Allow ALL GET/HEAD requests (read-only dashboard data)
+        if method in ("GET", "HEAD"):
+            session = self._verify_session(request)
+            if session:
+                request["session"] = session
+            return await handler(request)
+
+        # POST requests: require auth (state-changing operations)
         session = self._verify_session(request)
         if session:
             request["session"] = session
             return await handler(request)
-        # Not authenticated
+
+        # Not authenticated for POST
         if path.startswith("/api/"):
             return web.json_response({"error": "unauthorized"}, status=401)
+
         # For page requests, serve the index (login form will show)
         return await handler(request)
 
@@ -431,15 +443,12 @@ class DashboardServer:
         self._bot_status = "running"
 
         middlewares = []
+        # Always use the dashboard's own middleware (GET=public, POST=auth required)
+        middlewares.append(self._auth_middleware)
         if self._auth_service:
-            # Multi-user mode: use DB-backed auth
-            from auth.middleware import AuthMiddleware
-            auth_mw = AuthMiddleware(self._auth_service)
-            middlewares.append(auth_mw.middleware)
-            logger.info("Dashboard auth ENABLED (multi-user, DB-backed)")
+            logger.info("Dashboard auth ENABLED (multi-user, DB-backed, GET public)")
         elif self._auth_enabled:
-            middlewares.append(self._auth_middleware)
-            logger.info("Dashboard auth ENABLED (single-user, user=%s)", self._auth_user)
+            logger.info("Dashboard auth ENABLED (single-user, GET public, user=%s)", self._auth_user)
         else:
             logger.warning("Dashboard auth DISABLED — set DASHBOARD_PASSWORD in .env to enable")
 
@@ -519,11 +528,12 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
 
-        # Auth endpoints
-        app.router.add_post("/api/login", self._handle_login)
-        app.router.add_post("/api/logout", self._handle_logout)
-        app.router.add_get("/api/session", self._handle_session)
-        app.router.add_get("/api/usage", self._handle_usage)
+        # Auth endpoints (only register if NOT using multi-user DB auth)
+        if not self._auth_service:
+            app.router.add_post("/api/login", self._handle_login)
+            app.router.add_post("/api/logout", self._handle_logout)
+            app.router.add_get("/api/session", self._handle_session)
+            app.router.add_get("/api/usage", self._handle_usage)
 
         # Control endpoints
         app.router.add_post("/api/control/pause", self._handle_pause)

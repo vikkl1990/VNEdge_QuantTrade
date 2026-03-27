@@ -801,9 +801,9 @@ class ScalpStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # Store macro_bias for veto layer
-        indicators["macro_bias"] = macro_bias
-        indicators["macro_bias_str"] = "bullish" if macro_bias > 0 else "bearish" if macro_bias < 0 else "neutral"
+        # Store macro_bias for veto layer (indicators dict created later, use _macro_bias temp)
+        _macro_bias = macro_bias
+        _macro_bias_str = "bullish" if macro_bias > 0 else "bearish" if macro_bias < 0 else "neutral"
 
         # --- Fibonacci & CHOCH on 5m (more reliable than 1m noise) ---
         fib_data = {}
@@ -852,6 +852,10 @@ class ScalpStrategy(BaseStrategy):
             }
         except Exception:
             pass
+
+        # Add macro_bias to indicators (was computed earlier before dict existed)
+        indicators["macro_bias"] = _macro_bias
+        indicators["macro_bias_str"] = _macro_bias_str
 
         # --- Detect market regime + regime age tracking ---
         regime = self._regime_filter.detect_regime(indicators)

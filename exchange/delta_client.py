@@ -302,7 +302,6 @@ class DeltaClient:
                 "order_type": "market_order",
                 "stop_order_type": "stop_loss_order",
                 "reduce_only": "true",
-                "close_on_trigger": "true",
             }
             if client_order_id:
                 payload["client_order_id"] = client_order_id[:32]
@@ -347,7 +346,6 @@ class DeltaClient:
                 "order_type": "market_order",
                 "stop_order_type": "stop_loss_order",
                 "reduce_only": "true",
-                "close_on_trigger": "true",
             }
             if client_order_id:
                 payload["client_order_id"] = client_order_id[:32]
@@ -474,6 +472,15 @@ class DeltaClient:
                     except Exception as tp_err:
                         logger.debug("DELTA [%s] TP attempt %d failed: %s", self.mode.upper(), attempt + 1, tp_err)
                         time.sleep(1.0)
+
+            # Alert if SL placement failed after all retries — UNPROTECTED POSITION!
+            if not sl_result or sl_result.get("error"):
+                logger.critical(
+                    "DELTA [%s] BRACKET FALLBACK: SL FAILED after 3 retries! "
+                    "%s %s %d lots has NO STOP LOSS — UNPROTECTED!",
+                    self.mode.upper(), symbol, side, lots,
+                )
+                entry_result["sl_failed"] = True
 
             entry_result["sl_result"] = sl_result
             entry_result["bracket_fallback"] = True

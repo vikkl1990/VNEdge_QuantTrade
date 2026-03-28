@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from execution.engine import ExecutionEngine
 from execution.trade import Trade, TradeStatus
-from exchange.delta_client import DeltaClient
+from exchange.delta_client import DeltaClient, PRODUCT_MAP
 
 logger = logging.getLogger("bot.real_trading")
 
@@ -1264,7 +1264,6 @@ class RealTradingManager:
                 return
 
             # Fallback: cancel + replace
-            from exchange.delta_client import PRODUCT_MAP
             prod = PRODUCT_MAP.get(symbol, {})
             product_id = prod.get("demo_id" if self.dry_run else "prod_id")
             if not product_id:
@@ -1469,34 +1468,51 @@ class RealTradingManager:
         Cancels all orders (no rate limit), closes all positions,
         and clears local state to prevent further trading.
         """
-        logger.critical("🚨 EMERGENCY CLOSE-ALL triggered: %s", reason)
+        logger.critical("EMERGENCY CLOSE-ALL triggered: %s", reason)
+        n_trades = len(self.real_trades)
+
+        # Step 1: Try to close on exchange (best-effort, timeout-protected)
         try:
             delta = self._delta_demo if self.dry_run else self._delta_live
             if not delta.is_connected:
-                delta.connect()
+                try:
+                    delta.connect()
+                except Exception as conn_err:
+                    logger.error("EMERGENCY: Delta connect failed: %s — clearing local state only", conn_err)
+                    delta = None
 
-            # Step 1: Cancel ALL orders (no rate limit on cancels)
-            delta.cancel_all_orders_bulk()
-            logger.info("EMERGENCY: All orders cancelled")
+            if delta:
+                # Cancel ALL orders (no rate limit on cancels)
+                try:
+                    delta.cancel_all_orders_bulk()
+                    logger.info("EMERGENCY: All orders cancelled")
+                except Exception as cancel_err:
+                    logger.warning("EMERGENCY: Cancel failed: %s", cancel_err)
 
-            # Step 2: Close all positions via bulk endpoint
-            result = delta.close_all_positions()
-            logger.info("EMERGENCY: Close-all result: %s", str(result)[:200])
+                # Close all positions via bulk endpoint
+                try:
+                    result = delta.close_all_positions()
+                    logger.info("EMERGENCY: Close-all result: %s", str(result)[:200])
+                except Exception as close_err:
+                    logger.warning("EMERGENCY: Close-all failed: %s", close_err)
+        except Exception as e:
+            logger.error("EMERGENCY: Exchange ops failed: %s", e)
 
-            # Step 3: Record all local trades as closed
-            for trade_id, t in list(self.real_trades.items()):
+        # Step 2: ALWAYS clear local state (even if exchange ops failed)
+        for trade_id, t in list(self.real_trades.items()):
+            try:
                 entry_p = getattr(t, "entry_price", 0)
                 self._record_closed_trade(t, entry_p, 0, f"emergency_{reason}", dry_run=self.dry_run)
+            except Exception:
+                pass
 
-            # Step 4: Clear all state
-            self.real_trades.clear()
-            self._open_positions.clear()
-            self.paper_to_real.clear()
-            self._save_state()
+        self.real_trades.clear()
+        self._open_positions.clear()
+        self.paper_to_real.clear()
+        self._save_state()
 
-            logger.critical("🚨 EMERGENCY CLOSE-ALL completed: %d positions closed", len(self.real_trades))
-        except Exception as e:
-            logger.error("🚨 EMERGENCY CLOSE-ALL FAILED: %s", e)
+        logger.critical("EMERGENCY CLOSE-ALL completed: %d positions cleared | reason=%s",
+                        n_trades, reason)
 
     # ==================================================================
     # WebSocket Event Handlers (Tier 1)
@@ -1511,110 +1527,114 @@ class RealTradingManager:
         Called when a reduce_only order fills on exchange (SL or TP hit).
         This replaces the slow REST polling in sync_exchange_positions().
         """
-        logger.info(
-            "WS FILL: %s %s @ %.4f | coid=%s",
-            symbol, side, fill_price, client_order_id[:12] if client_order_id else "-",
-        )
+        try:
+            logger.info(
+                "WS FILL: %s %s @ %.4f | coid=%s",
+                symbol, side, fill_price, client_order_id[:12] if client_order_id else "-",
+            )
 
-        # Find the matching real trade via client_order_id or paper_to_real
-        real_trade_id = None
-        matched_paper_id = None
+            # Find the matching real trade via client_order_id or paper_to_real
+            real_trade_id = None
+            matched_paper_id = None
 
-        # Direct lookup: client_order_id == paper_trade_id[:32]
-        for pid, rid in list(self.paper_to_real.items()):
-            if pid[:32] == client_order_id[:32]:
-                real_trade_id = rid
-                matched_paper_id = pid
-                break
+            # Direct lookup: client_order_id == paper_trade_id[:32]
+            if client_order_id:
+                for pid, rid in list(self.paper_to_real.items()):
+                    if pid[:32] == client_order_id[:32]:
+                        real_trade_id = rid
+                        matched_paper_id = pid
+                        break
 
-        # Fallback: search real_trades by client_order_id attribute
-        if not real_trade_id:
-            for tid, t in list(self.real_trades.items()):
-                coid = getattr(t, "client_order_id", "")
-                if coid and coid == client_order_id[:32]:
-                    real_trade_id = tid
-                    break
+            # Fallback: search real_trades by client_order_id attribute
+            if not real_trade_id and client_order_id:
+                for tid, t in list(self.real_trades.items()):
+                    coid = getattr(t, "client_order_id", "")
+                    if coid and coid == client_order_id[:32]:
+                        real_trade_id = tid
+                        break
 
-        # Fallback: search by symbol
-        if not real_trade_id:
-            for tid, t in list(self.real_trades.items()):
-                t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
-                if t_sym == symbol:
-                    real_trade_id = tid
-                    break
+            # Fallback: search by symbol
+            if not real_trade_id:
+                for tid, t in list(self.real_trades.items()):
+                    t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
+                    if t_sym == symbol:
+                        real_trade_id = tid
+                        break
 
-        if not real_trade_id:
-            logger.debug("WS FILL: No matching trade for coid=%s sym=%s",
-                        client_order_id[:12] if client_order_id else "-", symbol)
-            return
+            if not real_trade_id:
+                logger.debug("WS FILL: No matching trade for coid=%s sym=%s",
+                            client_order_id[:12] if client_order_id else "-", symbol)
+                return
 
-        trade = self.real_trades.get(real_trade_id)
-        if not trade:
-            return
+            trade = self.real_trades.get(real_trade_id)
+            if not trade:
+                return
 
-        # Calculate PnL
-        if isinstance(trade, dict):
-            side_str = trade.get("side", "long")
-            entry_p = trade.get("entry_price", 0)
-            margin = trade.get("margin", 0)
-            leverage = trade.get("leverage", 1)
-        else:
-            side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
-            entry_p = trade.entry_price
-            margin = getattr(trade, "margin", 0)
-            leverage = getattr(trade, "leverage", 1)
+            # Calculate PnL
+            if isinstance(trade, dict):
+                side_str = trade.get("side", "long")
+                entry_p = trade.get("entry_price", 0)
+                margin = trade.get("margin", 0)
+                leverage = trade.get("leverage", 1)
+            else:
+                side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+                entry_p = getattr(trade, "entry_price", 0)
+                margin = getattr(trade, "margin", 0)
+                leverage = getattr(trade, "leverage", 1)
 
-        if side_str == "long":
-            pnl_pct = (fill_price - entry_p) / entry_p if entry_p else 0
-        else:
-            pnl_pct = (entry_p - fill_price) / entry_p if entry_p else 0
+            if side_str == "long":
+                pnl_pct = (fill_price - entry_p) / entry_p if entry_p else 0
+            else:
+                pnl_pct = (entry_p - fill_price) / entry_p if entry_p else 0
 
-        notional = margin * leverage
-        net_pnl = pnl_pct * notional - notional * 0.0015
+            notional = margin * leverage
+            net_pnl = pnl_pct * notional - notional * 0.0015
 
-        # Determine if SL or TP
-        reason = "ws_sl_hit" if net_pnl < 0 else "ws_tp_hit"
+            reason = "ws_sl_hit" if net_pnl < 0 else "ws_tp_hit"
 
-        logger.info(
-            "WS EXIT: %s %s | entry=%.4f exit=%.4f | pnl=$%.2f | %s",
-            symbol, side_str, entry_p, fill_price, net_pnl, reason,
-        )
+            logger.info(
+                "WS EXIT: %s %s | entry=%.4f exit=%.4f | pnl=$%.2f | %s",
+                symbol, side_str, entry_p, fill_price, net_pnl, reason,
+            )
 
-        # Record and clean up
-        self.circuit_breaker.record_trade(net_pnl)
-        self._record_closed_trade(trade, fill_price, net_pnl, reason, dry_run=self.dry_run)
+            # Record and clean up
+            self.circuit_breaker.record_trade(net_pnl)
+            self._record_closed_trade(trade, fill_price, net_pnl, reason, dry_run=self.dry_run)
 
-        self.real_trades.pop(real_trade_id, None)
-        self._open_positions.pop(real_trade_id, None)
-        if matched_paper_id:
-            self.paper_to_real.pop(matched_paper_id, None)
-        self._save_state()
+            self.real_trades.pop(real_trade_id, None)
+            self._open_positions.pop(real_trade_id, None)
+            if matched_paper_id:
+                self.paper_to_real.pop(matched_paper_id, None)
+            self._save_state()
+        except Exception as e:
+            logger.error("WS FILL handler error: %s", e)
 
     async def handle_exchange_position_close(self, symbol: str, pnl: float):
         """Handle position close notification from WS (catches liquidations).
 
         Fallback for positions that close without matching a client_order_id.
         """
-        # Find any open trade for this symbol
-        for tid, t in list(self.real_trades.items()):
-            t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
-            if t_sym == symbol:
-                entry_p = getattr(t, "entry_price", 0) if not isinstance(t, dict) else t.get("entry_price", 0)
-                logger.info(
-                    "WS POS CLOSE: %s | entry=%.4f | exchange_pnl=%.4f",
-                    symbol, entry_p, pnl,
-                )
-                self._record_closed_trade(t, entry_p, pnl, "exchange_closed", dry_run=self.dry_run)
-                self.real_trades.pop(tid, None)
-                self._open_positions.pop(tid, None)
+        try:
+            for tid, t in list(self.real_trades.items()):
+                t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
+                if t_sym == symbol:
+                    entry_p = getattr(t, "entry_price", 0) if not isinstance(t, dict) else t.get("entry_price", 0)
+                    logger.info(
+                        "WS POS CLOSE: %s | entry=%.4f | exchange_pnl=%.4f",
+                        symbol, entry_p, pnl,
+                    )
+                    self._record_closed_trade(t, entry_p, pnl, "exchange_closed", dry_run=self.dry_run)
+                    self.real_trades.pop(tid, None)
+                    self._open_positions.pop(tid, None)
 
-                # Clean up paper_to_real
-                for pid, rid in list(self.paper_to_real.items()):
-                    if rid == tid:
-                        self.paper_to_real.pop(pid, None)
-                        break
+                    for pid, rid in list(self.paper_to_real.items()):
+                        if rid == tid:
+                            self.paper_to_real.pop(pid, None)
+                            break
 
-                self._save_state()
-                return
+                    self._save_state()
+                    return
 
-        logger.debug("WS POS CLOSE: No matching trade for %s (may be already cleaned up)", symbol)
+            logger.debug("WS POS CLOSE: No matching trade for %s (may be already cleaned up)", symbol)
+        except Exception as e:
+            logger.error("WS POS CLOSE handler error: %s", e)

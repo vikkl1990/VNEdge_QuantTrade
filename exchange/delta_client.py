@@ -404,10 +404,30 @@ class DeltaClient:
                 return entry_result
 
             close_side = "sell" if side == "buy" else "buy"
-            sl_result = self.place_stop_loss(symbol, close_side, lots, stop_loss_price)
+
+            # Wait for position to settle before placing SL/TP
+            import time
+            time.sleep(1.5)
+
+            sl_result = None
+            for attempt in range(3):
+                try:
+                    sl_result = self.place_stop_loss(symbol, close_side, lots, stop_loss_price)
+                    if sl_result and not sl_result.get("error"):
+                        break
+                except Exception as sl_err:
+                    logger.debug("DELTA [%s] SL attempt %d failed: %s", self.mode.upper(), attempt + 1, sl_err)
+                    time.sleep(1.0)
 
             if take_profit_price > 0:
-                self.place_take_profit(symbol, close_side, lots, take_profit_price)
+                for attempt in range(3):
+                    try:
+                        tp_result = self.place_take_profit(symbol, close_side, lots, take_profit_price)
+                        if tp_result and not tp_result.get("error"):
+                            break
+                    except Exception as tp_err:
+                        logger.debug("DELTA [%s] TP attempt %d failed: %s", self.mode.upper(), attempt + 1, tp_err)
+                        time.sleep(1.0)
 
             entry_result["sl_result"] = sl_result
             entry_result["bracket_fallback"] = True
@@ -532,7 +552,7 @@ class DeltaClient:
                 product_id=product_id,
                 size=lots,
                 side=close_side,
-                order_type=OrderType.MARKET,
+                order_type="market_order",
                 reduce_only="true",
             )
             logger.info("DELTA [%s] CLOSE: %s %s %d lots | order=%s",

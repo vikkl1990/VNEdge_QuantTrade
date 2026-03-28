@@ -555,9 +555,13 @@ class BotOrchestrator:
                             exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
                             paper_slip = closed_sig.get("slippage_bps", closed_sig.get("metadata", {}).get("slippage_bps", 0)) or 0
                             if paper_id and exit_price:
+                                paper_symbol = closed_sig.get("symbol", "")
+                                paper_side_str = closed_sig.get("side", "")
                                 await self._real_manager.mirror_paper_exit(
                                     paper_id, exit_price, ev_type,
                                     paper_slippage_bps=float(paper_slip),
+                                    symbol=paper_symbol,
+                                    side=paper_side_str,
                                 )
                         except Exception as exc:
                             self._log.error("Real exit mirror failed: %s", exc)

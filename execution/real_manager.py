@@ -516,6 +516,7 @@ class RealTradingManager:
     async def mirror_paper_exit(
         self, paper_trade_id: str, exit_price: float, reason: str,
         paper_slippage_bps: float = 0.0,
+        symbol: str = "", side: str = "",
     ) -> Optional[Dict]:
         """
         Close the real position when paper trade closes.
@@ -536,29 +537,53 @@ class RealTradingManager:
                         real_trade_id = tid
                         break
 
-        # Fallback 2: match by symbol — find ANY open demo trade for this symbol
+        # Fallback 2: match by symbol — find open demo trade for SAME symbol+side
         # This catches cases where mapping was lost but demo position exists
         if not real_trade_id:
-            # Get symbol from the closed paper signal
-            paper_sym = None
-            for tid, t in list(self.real_trades.items()):
-                t_sym = getattr(t, "symbol", t.get("symbol", "")) if isinstance(t, dict) else getattr(t, "symbol", "")
-                if t_sym and not paper_sym:
-                    # We need the paper signal's symbol — get from orchestrator context
-                    pass
-            # Search all open real trades for matching symbol
+            # Use explicitly passed symbol/side first, then try parsing from trade_id
+            paper_sym = symbol or None
+            paper_side = side or None
+            if not paper_sym and paper_trade_id:
+                parts = paper_trade_id.split("_")
+                for p in parts:
+                    if "/" in p:
+                        paper_sym = p
+                        break
+                    elif p in ("BTC", "ETH", "SOL", "XRP", "LTC", "DOT", "DOGE", "TAO", "LINK", "ADA"):
+                        paper_sym = f"{p}/USDT"
+                        break
+            if not paper_side and paper_trade_id:
+                for p in paper_trade_id.split("_"):
+                    if p in ("long", "short"):
+                        paper_side = p
+                        break
+
+            # Search real_trades for matching symbol (and side if available)
             for tid, t in list(self.real_trades.items()):
                 t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
                 t_status = getattr(t, "status", "") if not isinstance(t, dict) else t.get("status", "")
+                t_side = getattr(t, "side", "") if not isinstance(t, dict) else t.get("side", "")
+                if hasattr(t_side, "value"):
+                    t_side = t_side.value
                 if t_status in ("open", "active", ""):
+                    # Must match symbol if we know it
+                    if paper_sym and t_sym and paper_sym != t_sym:
+                        continue
+                    # Prefer matching side too
+                    if paper_side and t_side and paper_side != str(t_side):
+                        continue
                     real_trade_id = tid
-                    logger.info("REAL EXIT: Fallback symbol match — paper=%s → real=%s (sym=%s)",
-                               paper_trade_id[:12] if paper_trade_id else "?", tid[:12], t_sym)
+                    logger.info("REAL EXIT: Fallback symbol match — paper=%s → real=%s (sym=%s side=%s)",
+                               paper_trade_id[:12] if paper_trade_id else "?", tid[:12], t_sym, t_side)
                     break
+
+            # Last resort: _open_positions with same symbol filter
             if not real_trade_id:
                 for tid, t in list(self._open_positions.items()):
-                    real_trade_id = tid
                     t_sym = t.get("symbol", "") if isinstance(t, dict) else getattr(t, "symbol", "")
+                    if paper_sym and t_sym and paper_sym != t_sym:
+                        continue
+                    real_trade_id = tid
                     logger.info("REAL EXIT: Fallback from _open_positions — paper=%s → real=%s (sym=%s)",
                                paper_trade_id[:12] if paper_trade_id else "?", tid[:12], t_sym)
                     break

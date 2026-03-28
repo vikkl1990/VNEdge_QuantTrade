@@ -618,6 +618,17 @@ class RealTradingManager:
                 leverage = getattr(trade, "leverage", 1)
                 symbol = getattr(trade, "symbol", "?")
 
+            # ── EXIT PRICE SANITY CHECK ──
+            # If exit_price deviates >20% from entry, it's a wrong-symbol price leak
+            if entry_p > 0 and exit_price > 0:
+                deviation = abs(exit_price - entry_p) / entry_p
+                if deviation > 0.20:
+                    logger.error(
+                        "EXIT PRICE SANITY FAIL: %s %s | entry=%.4f exit=%.4f | dev=%.1f%% — using entry as exit",
+                        symbol, side_str, entry_p, exit_price, deviation * 100,
+                    )
+                    exit_price = entry_p  # Flat close — better than -1000% bogus loss
+
             if side_str == "long":
                 pnl_pct = (exit_price - entry_p) / entry_p if entry_p else 0
             else:

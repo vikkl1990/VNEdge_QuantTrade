@@ -736,6 +736,17 @@ class SignalTracker:
             if price is None:
                 continue
 
+            # ── PRICE SANITY CHECK ──
+            # Reject prices that are wildly different from entry (wrong symbol leak)
+            if ts.entry_price > 0 and price > 0:
+                deviation = abs(price - ts.entry_price) / ts.entry_price
+                if deviation > 0.50:  # >50% deviation = impossible intraday move
+                    logger.error(
+                        "PRICE SANITY FAIL: %s %s | entry=%.4f price=%.4f | dev=%.1f%% — SKIPPING",
+                        ts.symbol, ts.side, ts.entry_price, price, deviation * 100,
+                    )
+                    continue
+
             # ── Estimated Slippage (paper mode) ──
             # On first price update after entry, capture the market price as
             # "estimated fill" to simulate what slippage would have been

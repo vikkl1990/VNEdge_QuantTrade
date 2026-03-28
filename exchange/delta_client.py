@@ -637,7 +637,7 @@ class DeltaClient:
                     orders = self.get_open_orders()
                     for o in orders:
                         if (o.get("product_id") == product_id and
-                            o.get("reduce_only") == "true"):
+                            str(o.get("reduce_only", "")).lower() in ("true", "1")):
                             self._client.cancel_order(product_id, o.get("id"))
                 except Exception:
                     pass

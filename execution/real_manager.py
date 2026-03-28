@@ -33,6 +33,44 @@ logger = logging.getLogger("bot.real_trading")
 STATE_FILE = Path("storage/real_trading_state.json")
 
 
+def _normalize_side(side) -> str:
+    """Normalize trade side to 'long' or 'short' string regardless of input type."""
+    if hasattr(side, "value"):
+        side = side.value
+    s = str(side).lower().strip()
+    if s in ("long", "buy"):
+        return "long"
+    if s in ("short", "sell"):
+        return "short"
+    return s  # fallback: return as-is
+
+
+def _safe_connect(delta, timeout_sec: float = 5.0) -> bool:
+    """Attempt to connect delta client with timeout protection.
+
+    Returns True if connected, False if failed.
+    """
+    if delta.is_connected:
+        return True
+    try:
+        import signal as _signal
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError("delta.connect() timed out")
+
+        old_handler = _signal.signal(_signal.SIGALRM, _timeout_handler)
+        _signal.alarm(int(timeout_sec))
+        try:
+            delta.connect()
+            return delta.is_connected
+        finally:
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, old_handler)
+    except (TimeoutError, Exception) as e:
+        logger.warning("Delta connect failed (%.1fs timeout): %s", timeout_sec, e)
+        return False
+
+
 class RealCircuitBreaker:
     """Daily loss limit + consecutive loss tracking for real trades."""
 
@@ -252,16 +290,6 @@ class RealTradingManager:
             # Use real exchange (already connected via main bot)
             return self.exchange
 
-        mode = "DRY RUN" if self.dry_run else "LIVE"
-        status = "ENABLED" if self.enabled else "DISABLED"
-        logger.info(
-            "RealTradingManager: %s (%s) | margin=$%.0f-$%.0f | "
-            "max_open=%d | daily_limit=$%.0f | leverage_cap=%dx",
-            status, mode, self.min_margin, self.max_margin,
-            self.max_open, self.circuit_breaker.daily_loss_limit,
-            self.leverage_cap,
-        )
-
     # ==================================================================
     # Mirror Entry
     # ==================================================================
@@ -287,6 +315,14 @@ class RealTradingManager:
         # Dedup: skip if this paper trade already has a dry run/real entry
         if paper_trade_id and paper_trade_id in self.paper_to_real:
             return {"status": "already_mirrored", "existing_id": self.paper_to_real[paper_trade_id]}
+
+        # Dedup: also check if any local trade already exists for this symbol+side
+        for _tid, _t in self.real_trades.items():
+            _t_sym = getattr(_t, "symbol", "") if not isinstance(_t, dict) else _t.get("symbol", "")
+            _t_side = _normalize_side(getattr(_t, "side", ""))
+            if _t_sym == symbol and _t_side == _normalize_side(signal.get("side", "")):
+                logger.info("REAL SKIP: %s %s — already has open trade %s", symbol, signal.get("side"), _tid[:12])
+                return {"status": "already_mirrored", "existing_id": _tid}
 
         # Pre-flight safety checks
         allowed, reason = await self._preflight_checks(symbol, signal)
@@ -314,9 +350,9 @@ class RealTradingManager:
             slippage_bps = 0.0
 
             try:
-                # Connect delta client if needed
-                if not self._delta_demo.is_connected:
-                    self._delta_demo.connect()
+                # Connect delta client if needed (timeout-protected)
+                if not _safe_connect(self._delta_demo):
+                    logger.warning("REAL: Demo delta connect failed — tracking locally only")
 
                 side_str = signal.get("side", "long")
                 order_side = "buy" if side_str in ("long", "buy") else "sell"
@@ -630,17 +666,17 @@ class RealTradingManager:
             return None
 
         if self.dry_run:
-            # For dry run trades stored as dicts
+            # For dry run trades stored as dicts or DryTrade objects
             if isinstance(trade, dict):
-                side_str = trade.get("side", "long")
+                side_str = _normalize_side(trade.get("side", "long"))
                 entry_p = trade.get("entry_price", 0)
                 pos_size = trade.get("position_size", 0)
                 margin = trade.get("margin", 0)
                 leverage = trade.get("leverage", 1)
                 symbol = trade.get("symbol", "?")
             else:
-                side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
-                entry_p = trade.entry_price
+                side_str = _normalize_side(getattr(trade, "side", "long"))
+                entry_p = getattr(trade, "entry_price", 0)
                 pos_size = getattr(trade, "position_size", 0)
                 margin = getattr(trade, "margin", 0)
                 leverage = getattr(trade, "leverage", 1)
@@ -665,7 +701,8 @@ class RealTradingManager:
             # Use margin × leverage as notional (same as paper trade sizing)
             notional = margin * leverage
             pnl_usd = pnl_pct * notional
-            fee_est = notional * 0.0015  # ~0.15% round trip (0.075% × 2)
+            # Delta India fees: 0.059% taker (GST-inclusive) × 2 sides = 0.118% round trip
+            fee_est = notional * 0.00118
             net_pnl = pnl_usd - fee_est
 
             # Inherit paper slippage if demo has none
@@ -716,7 +753,7 @@ class RealTradingManager:
 
             logger.info(
                 "🔴 REAL EXIT: %s %s | PnL=$%.2f fees=$%.2f | reason=%s | trade=%s",
-                trade.symbol, trade.side.value if hasattr(trade.side, "value") else str(trade.side), pnl_usd, fee, reason, trade.trade_id,
+                trade.symbol, _normalize_side(getattr(trade, "side", "?")), pnl_usd, fee, reason, trade.trade_id,
             )
 
             self._save_state()
@@ -765,7 +802,7 @@ class RealTradingManager:
         if hasattr(side, "value"):
             side = side.value
         for t in self.real_trades.values():
-            t_side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            t_side = _normalize_side(getattr(t, "side", ""))
             t_sym = getattr(t, "symbol", "")
             # Match both USDT and USD:USD formats
             sym_match = (t_sym == symbol or
@@ -894,8 +931,8 @@ class RealTradingManager:
 
         try:
             delta = self._delta_demo if self.dry_run else self._delta_live
-            if not delta.is_connected:
-                delta.connect()
+            if not _safe_connect(delta):
+                return self._cached_balance or 0
             usdt = delta.fetch_balance()
             self._cached_balance = float(usdt) if usdt else 0
             self._balance_ts = now
@@ -918,7 +955,7 @@ class RealTradingManager:
         2. State file (persisted)
         3. Real trade feedback file (for analytics)
         """
-        side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+        side_str = _normalize_side(getattr(trade, "side", "long"))
         entry = getattr(trade, "entry_price", 0)
         margin = getattr(trade, "margin", 0)
         leverage = getattr(trade, "leverage", 0)
@@ -975,7 +1012,7 @@ class RealTradingManager:
         # Serialize open trades (including dry run)
         open_trades_data = []
         for t in self.real_trades.values():
-            side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            side = _normalize_side(getattr(t, "side", "long"))
             open_trades_data.append({
                 "trade_id": t.trade_id,
                 "symbol": t.symbol,
@@ -997,6 +1034,7 @@ class RealTradingManager:
                 "ml_verdict": getattr(t, "ml_verdict", ""),
                 "regime": getattr(t, "regime", ""),
                 "paper_trade_id": getattr(t, "paper_trade_id", ""),
+                "client_order_id": getattr(t, "client_order_id", ""),
                 "current_price": getattr(t, "current_price", t.entry_price),
             })
         state = {
@@ -1035,7 +1073,7 @@ class RealTradingManager:
             # Use paper exit price if available (more accurate than current market)
             paper_close = closed_paper_trades.get(paper_id, {})
             exit_price = paper_close.get("exit_price") or getattr(trade, "current_price", trade.entry_price)
-            side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+            side_str = _normalize_side(getattr(trade, "side", "long"))
             if side_str == "long":
                 pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price else 0
             else:
@@ -1044,9 +1082,10 @@ class RealTradingManager:
             margin = getattr(trade, "margin", 0) or 15.10
             leverage = getattr(trade, "leverage", 10) or 10
             position_usd = margin * leverage
-            net_pnl = pnl_pct * position_usd - position_usd * 0.0015
-            # Safety cap: orphan PnL should never exceed margin
-            net_pnl = max(net_pnl, -margin)
+            # Delta India fees: 0.059% taker × 2 = 0.118% round trip
+            net_pnl = pnl_pct * position_usd - position_usd * 0.00118
+            # Safety cap: orphan PnL should never exceed notional (margin × leverage)
+            net_pnl = max(net_pnl, -position_usd)
             logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | paper closed without mirror",
                         trade.symbol, side_str, net_pnl, margin, position_usd)
             self.circuit_breaker.record_trade_with_reason(net_pnl, "orphan_sync")
@@ -1117,8 +1156,9 @@ class RealTradingManager:
         """
         try:
             delta = self._delta_demo if self.dry_run else self._delta_live
-            if not delta.is_connected:
-                delta.connect()
+            if not _safe_connect(delta):
+                logger.warning("SYNC: Delta connect failed — skipping position sync")
+                return
 
             positions = delta.get_all_positions()
 
@@ -1132,9 +1172,20 @@ class RealTradingManager:
             for trade_id in list(self.real_trades.keys()):
                 t = self.real_trades[trade_id]
                 t_sym = getattr(t, "symbol", "")
-                # Convert to exchange format for comparison
-                ex_sym = t_sym.replace("/USDT", "/USD:USD")
-                if ex_sym not in exchange_open and t_sym not in exchange_open:
+                # Check if this symbol is still open on exchange
+                # Compare using multiple formats (our format + exchange format)
+                sym_found = t_sym in exchange_open
+                if not sym_found:
+                    # Try common Delta formats
+                    for alt in [
+                        t_sym.replace("/USDT", "/USD:USD"),
+                        t_sym.replace("/USDT", "USD"),
+                        t_sym.replace("/", ""),
+                    ]:
+                        if alt in exchange_open:
+                            sym_found = True
+                            break
+                if not sym_found:
                     # Position closed on exchange! Record it.
                     entry = getattr(t, "entry_price", 0)
                     # Try to get exit price from recent trades
@@ -1251,10 +1302,10 @@ class RealTradingManager:
 
         try:
             delta = self._delta_demo if self.dry_run else self._delta_live
-            if not delta.is_connected:
-                delta.connect()
+            if not _safe_connect(delta):
+                return
 
-            side = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+            side = _normalize_side(getattr(trade, "side", "long"))
 
             # Try atomic bracket edit first (Tier 3: no protection gap)
             result = delta.edit_bracket(symbol, stop_loss_price=new_sl)
@@ -1290,20 +1341,14 @@ class RealTradingManager:
         """Return current real trading status for dashboard."""
         open_trades = []
         for t in self.real_trades.values():
-            side = t.side.value if hasattr(t.side, "value") else str(t.side)
+            side = _normalize_side(getattr(t, "side", "long"))
             entry = t.entry_price
             current = getattr(t, "current_price", entry) or entry
             pos_size = getattr(t, "position_size", 0)  # lots (contracts)
             margin = getattr(t, "margin", 0)
             lev = getattr(t, "leverage", 1)
-            # Get contract size for correct PnL calculation
-            contract_sizes = {
-                "BTC/USDT": 0.001, "ETH/USDT": 0.01, "SOL/USDT": 1.0,
-                "XRP/USDT": 1.0, "LTC/USDT": 0.1, "ADA/USDT": 1.0,
-                "DOT/USDT": 1.0, "TAO/USDT": 0.01, "DOGE/USDT": 1.0,
-                "LINK/USDT": 1.0, "AVAX/USDT": 1.0,
-            }
-            contract_size = contract_sizes.get(t.symbol, 1.0)
+            # Get contract size from PRODUCT_MAP (single source of truth)
+            contract_size = PRODUCT_MAP.get(t.symbol, {}).get("contract_size", 1.0)
             qty = pos_size * contract_size  # actual base currency amount
             # UPNL calculation: price_diff × quantity (not lots!)
             if side == "long":
@@ -1474,12 +1519,9 @@ class RealTradingManager:
         # Step 1: Try to close on exchange (best-effort, timeout-protected)
         try:
             delta = self._delta_demo if self.dry_run else self._delta_live
-            if not delta.is_connected:
-                try:
-                    delta.connect()
-                except Exception as conn_err:
-                    logger.error("EMERGENCY: Delta connect failed: %s — clearing local state only", conn_err)
-                    delta = None
+            if not _safe_connect(delta, timeout_sec=3.0):
+                logger.error("EMERGENCY: Delta connect failed — clearing local state only")
+                delta = None
 
             if delta:
                 # Cancel ALL orders (no rate limit on cancels)
@@ -1570,14 +1612,14 @@ class RealTradingManager:
             if not trade:
                 return
 
-            # Calculate PnL
+            # Calculate PnL with normalized side
             if isinstance(trade, dict):
-                side_str = trade.get("side", "long")
+                side_str = _normalize_side(trade.get("side", "long"))
                 entry_p = trade.get("entry_price", 0)
                 margin = trade.get("margin", 0)
                 leverage = trade.get("leverage", 1)
             else:
-                side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+                side_str = _normalize_side(getattr(trade, "side", "long"))
                 entry_p = getattr(trade, "entry_price", 0)
                 margin = getattr(trade, "margin", 0)
                 leverage = getattr(trade, "leverage", 1)
@@ -1588,7 +1630,7 @@ class RealTradingManager:
                 pnl_pct = (entry_p - fill_price) / entry_p if entry_p else 0
 
             notional = margin * leverage
-            net_pnl = pnl_pct * notional - notional * 0.0015
+            net_pnl = pnl_pct * notional - notional * 0.00118
 
             reason = "ws_sl_hit" if net_pnl < 0 else "ws_tp_hit"
 

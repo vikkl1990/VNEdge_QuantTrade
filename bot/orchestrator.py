@@ -483,6 +483,8 @@ class BotOrchestrator:
             interval, "YES" if ws_active else "NO",
         )
         last_check = time.monotonic()
+        _last_orphan_sync = time.monotonic()
+        _ORPHAN_SYNC_INTERVAL = 300  # 5 minutes — NOT per-request
 
         while not self._stop_event.is_set():
             try:
@@ -493,6 +495,16 @@ class BotOrchestrator:
 
                 if not self._running:
                     continue
+
+                # ── PERIODIC ORPHAN SYNC (every 5 min, NOT per dashboard poll) ──
+                if (time.monotonic() - _last_orphan_sync) >= _ORPHAN_SYNC_INTERVAL:
+                    _last_orphan_sync = time.monotonic()
+                    if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                        try:
+                            active_ids = {ts.trade_id for ts in self._signal_tracker._active.values()}
+                            self._real_manager.sync_with_paper(active_ids)
+                        except Exception as exc:
+                            self._log.debug("Periodic orphan sync failed: %s", exc)
                 # Grid bot runs ALWAYS (even with 0 active trades)
                 # Signal tracker only runs when there are active trades
 

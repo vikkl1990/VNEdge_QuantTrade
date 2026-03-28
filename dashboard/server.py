@@ -966,13 +966,10 @@ class DashboardServer:
                     orch = getattr(self, '_orchestrator', None)
                     if orch:
                         tracker = getattr(orch, '_signal_tracker', None)
-                if tracker and hasattr(mgr, 'sync_with_paper'):
-                    active_ids = set()
-                    for sig in tracker.get_active_signals():
-                        tid = sig.get("trade_id", "") if isinstance(sig, dict) else getattr(sig, "trade_id", "")
-                        if tid:
-                            active_ids.add(tid)
-                    mgr.sync_with_paper(active_ids)
+                # NOTE: sync_with_paper() REMOVED from dashboard endpoint.
+                # It was the ROOT CAUSE of orphan_sync — every dashboard refresh
+                # triggered orphan sweep BEFORE mirror_paper_exit could process.
+                # Orphan cleanup now happens only in orchestrator on a 5-min timer.
             except Exception:
                 pass
             return web.json_response(mgr.get_status())

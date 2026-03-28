@@ -932,9 +932,29 @@ class BotOrchestrator:
         if hasattr(signal_type, 'value'):
             signal_type = signal_type.value
 
-        # -- NO BLOCKING: All signals fire. Streak/drawdown tracked but not blocked --
-        # (Removed: trade_monitor.should_pause_trading and signal_learner.is_signal_blocked)
-        # Confidence scoring handles signal quality, not hard blocks.
+        # -- HARD BLOCKS: momentum_trend + dead zone + zero confidence --
+        meta = sig_dict.get("metadata", {})
+        scanner = meta.get("setup_type", meta.get("scanner", ""))
+
+        # Block momentum_trend / investment strategy signals
+        if scanner in ("momentum_trend", "simple_bias", "investment") or signal_type == "investment":
+            self._log.info("BLOCKED: %s %s — momentum_trend/investment not allowed", symbol, scanner)
+            return
+
+        # Block zero-confidence signals (unattributed)
+        if sig_dict.get("confidence", 0) <= 0 and scanner not in ("structure_bounce", "bos_choch", "liquidity_sweep", "cvd_divergence"):
+            self._log.info("BLOCKED: %s — zero confidence, scanner=%s", symbol, scanner)
+            return
+
+        # Dead zone filter: UTC 21-05 requires higher confidence
+        import datetime as _dt
+        _utc_hour = _dt.datetime.now(_dt.timezone.utc).hour
+        if _utc_hour >= 21 or _utc_hour < 5:
+            _dead_zone_min_conf = 75  # require higher confidence in dead hours
+            if sig_dict.get("confidence", 0) < _dead_zone_min_conf:
+                self._log.info("BLOCKED: %s — dead zone (UTC %d:00) conf=%d < %d",
+                             symbol, _utc_hour, sig_dict.get("confidence", 0), _dead_zone_min_conf)
+                return
 
         # -- Sync loss streak to AI learner for confidence reduction --
         try:

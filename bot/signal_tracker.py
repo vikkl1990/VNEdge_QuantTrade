@@ -65,8 +65,8 @@ TRADE_TYPE_CONFIG = {
         "tp3_rr": 3.0,            # small TP3
         "time_stop_bars": 6,      # 6 bars — tighter (was 8, avg timeout was 17min)
         "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 120,    # 2 min — kill dead INTRADAY fast (was 300)
-        "early_kill_mfe": 0.08,   # lower threshold — need quick momentum (was 0.15)
+        "early_kill_sec": 90,     # 90s — kill dead INTRADAY faster (was 120)
+        "early_kill_mfe": 0.05,   # lower threshold — if no movement by 90s, entry was wrong
         "trail_atr_mult": 1.0,   # standard trail
         "max_age_sec": 45 * 60,   # 45 min max (was 60)
     },

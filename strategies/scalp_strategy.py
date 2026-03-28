@@ -1458,7 +1458,7 @@ class ScalpStrategy(BaseStrategy):
             for side_val, group in side_groups.items():
                 if len(group) >= 2:
                     # Multiple scanners agree — boost all by +15 per extra scanner
-                    confluence_bonus = (len(group) - 1) * 15
+                    confluence_bonus = (len(group) - 1) * 18  # raised from 15 — multi-scanner = high conviction
                     scanner_names_list = [sr.scanner_name for sr in group]
                     for sr in group:
                         sr.weighted_score += confluence_bonus
@@ -3721,14 +3721,22 @@ class ScalpStrategy(BaseStrategy):
             sweep_level = eq_low_level
             sweep_size = (eq_low_level - low) / atr
             confs.append(f"Sweep below EQL ({eq_low_count} touches) at ${eq_low_level:.0f}")
-            score += 35  # boosted from 30 — sweep+reclaim is high-quality
+            score += 38  # base 38 — sweep+reclaim is high-quality
 
             # Sweep depth scoring
             if sweep_size > 0.5:
                 score += 15
                 confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.15:  # relaxed from 0.2
-                score += 10  # boosted from 8
+            elif sweep_size > 0.15:
+                score += 10
+
+            # Volume on reclaim candle (key confirmation)
+            rel_vol = float(last.get("rel_vol", 1.0))
+            if not np.isnan(rel_vol) and rel_vol > 1.3:
+                score += 10
+                confs.append(f"Volume reclaim {rel_vol:.1f}x")
+            elif not np.isnan(rel_vol) and rel_vol > 1.0:
+                score += 5
 
         # SHORT: Price raids above equal highs, closes back below
         if side is None and eq_high_level > 0 and high > eq_high_level and close < eq_high_level:
@@ -3736,13 +3744,21 @@ class ScalpStrategy(BaseStrategy):
             sweep_level = eq_high_level
             sweep_size = (high - eq_high_level) / atr
             confs.append(f"Sweep above EQH ({eq_high_count} touches) at ${eq_high_level:.0f}")
-            score += 35  # boosted from 30
+            score += 38  # base 38
 
             if sweep_size > 0.5:
                 score += 15
                 confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.15:  # relaxed from 0.2
-                score += 10  # boosted from 8
+            elif sweep_size > 0.15:
+                score += 10
+
+            # Volume on reclaim candle
+            rel_vol = float(last.get("rel_vol", 1.0))
+            if not np.isnan(rel_vol) and rel_vol > 1.3:
+                score += 10
+                confs.append(f"Volume reclaim {rel_vol:.1f}x")
+            elif not np.isnan(rel_vol) and rel_vol > 1.0:
+                score += 5
 
         # Fallback: rolling min/max sweep (simpler, more reliable)
         if side is None:

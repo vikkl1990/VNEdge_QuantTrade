@@ -1514,32 +1514,58 @@ class ScalpStrategy(BaseStrategy):
         # bos_choch: re-enabled with strict quality (0.8 ATR displacement, 1.5x volume, 5m primary)
         # Previously 40% WR on 1m noise → now requires strong displacement + volume on 5m
 
-        # ── Reverse VWAP penalty for mean-reversion scanners ──
-        # These scanners WANT price near VWAP — the -25 penalty hurts them unfairly
+        # ── Exempt mean-reversion scanners from VWAP proximity penalty ──
+        # These scanners WANT price near VWAP — penalizing them for being
+        # in the noise/penalty zone is the opposite of what they need.
+        # Uses stored prefilter context (vwap_zone) instead of string matching.
         _reversion_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence")
         if best_sr.scanner_name in _reversion_names:
-            # Remove any VWAP noise penalty from confirmations
-            vwap_penalty = sum(1 for c in best_sr.confirmations if "VWAP" in c and "noise" in c.lower())
-            if vwap_penalty > 0:
-                best_sr.weighted_score += 25  # reverse the -25 penalty
-                best_sr.confirmations.append("[VWAP penalty reversed for mean-reversion]")
+            _pf_result = getattr(self, '_prefilter_result', {})
+            _vwap_zone = _pf_result.get('context', {}).get('vwap_zone', 'clear')
+            if _vwap_zone in ('noise', 'penalty'):
+                # Undo the exact penalty that was applied: -25 for noise, -20 for penalty
+                _vwap_reversal = 25 if _vwap_zone == 'noise' else 20
+                best_sr.weighted_score += _vwap_reversal
+                best_sr.confirmations.append(
+                    f"[VWAP penalty reversed +{_vwap_reversal} for mean-reversion ({_vwap_zone} zone)]"
+                )
 
         # ── Setup strength veto: scanner-specific thresholds ──
+        # Tuned from 6-month backtest + live WR data.  Each scanner's
+        # threshold is the LOWEST score that still delivers edge.
         SCANNER_MIN_CONF = {
-            "structure_bounce": 55,      # proven workhorse
+            "structure_bounce": 50,      # relaxed from 55 — proven workhorse, more entries
             "order_block_entry": 55,
-            "liquidity_sweep": 48,       # relaxed — +494R in backtest
-            "trend_continuation": 55,
-            "ema_momentum": 52,
-            "vwap_mean_revert": 48,      # relaxed — +265R, highest WR (44.1%)
-            "rsi_divergence": 50,        # relaxed — +353R in backtest
-            "cvd_divergence": 50,        # relaxed — +886R, #1 scanner in backtest
+            "bos_choch": 48,             # reactivated — displacement+vol quality gates
+            "liquidity_sweep": 45,       # +494R 6mo, reclaim body+sweep depth gates
+            "trend_continuation": 52,    # relaxed from 55, regime-adjusted in trends
+            "ema_momentum": 50,          # relaxed from 52, regime-adjusted in trends
+            "vwap_mean_revert": 47,      # relaxed from 48, exempt from VWAP prefilter
+            "rsi_divergence": 50,        # +353R 6mo backtest, regime-adjusted in ranging
+            "cvd_divergence": 50,        # +886R 6mo backtest, #1 scanner
         }
         has_confluence = any("confluence" in c.lower() for c in best_sr.confirmations)
         if has_confluence:
             MIN_SETUP_STRENGTH = 48  # confluence already validates quality
         else:
             MIN_SETUP_STRENGTH = SCANNER_MIN_CONF.get(best_sr.scanner_name, 55)
+
+        # ── Regime-aware threshold adjustments ──
+        # Specific scanners perform better in specific regimes — lower the bar
+        # when the market context favors their setup type.
+        _REGIME_ADJ = {
+            "bos_choch":          {"trending_up": -5, "trending_down": -5, "breakout": -5},
+            "liquidity_sweep":    {"ranging": -5, "quiet": -5},
+            "trend_continuation": {"trending_up": -3, "trending_down": -3},
+            "ema_momentum":       {"trending_up": -3, "trending_down": -3},
+            "rsi_divergence":     {"ranging": -5, "quiet": -5},
+        }
+        _radj = _REGIME_ADJ.get(best_sr.scanner_name, {}).get(regime, 0)
+        if _radj != 0 and not has_confluence:
+            MIN_SETUP_STRENGTH = max(MIN_SETUP_STRENGTH + _radj, 40)  # floor 40
+            best_sr.confirmations.append(
+                f"[REGIME_ADJ: {_radj}, {regime} favors {best_sr.scanner_name}]"
+            )
 
         # ── Fibonacci confluence bonus ──
         # If signal aligns with 0.618 or 0.786 Fib level, boost confidence
@@ -2680,11 +2706,11 @@ class ScalpStrategy(BaseStrategy):
         if atr <= 0 or np.isnan(atr):
             return None
 
-        # --- STEP 1: Find EMA cross in last 12 candles (NOT current bar) ---
-        # Extended from 6 to 12 — crosses are rare on 5m candles
+        # --- STEP 1: Find EMA cross in last 15 candles (NOT current bar) ---
+        # Extended from 6→12→15 — crosses are rare on 5m, need wider window
         cross_idx = None
         cross_type = None  # "bullish" or "bearish"
-        for i in range(2, min(13, len(df))):
+        for i in range(2, min(16, len(df))):
             bar = df.iloc[-i]
             bar_prev = df.iloc[-i - 1] if (i + 1) <= len(df) else None
             if bar_prev is None:
@@ -2755,7 +2781,7 @@ class ScalpStrategy(BaseStrategy):
         else:
             if close >= open_:  # need bearish candle
                 return None
-        if rel_vol < 0.9:  # need at least near-average volume
+        if rel_vol < 0.8:  # relaxed from 0.9 — 5m volume can be patchy
             return None
 
         # --- ALL 4 STEPS PASSED: Build signal ---
@@ -2992,8 +3018,8 @@ class ScalpStrategy(BaseStrategy):
             bar_atr = bar.get("atr", atr)
             if bar_atr <= 0 or np.isnan(bar_atr):
                 bar_atr = atr
-            if bar_body < bar_atr * 0.35:
-                continue  # not impulsive enough (relaxed from 0.5 — 5m candles have smaller bodies)
+            if bar_body < bar_atr * 0.30:
+                continue  # relaxed 0.5→0.35→0.30 for 5m candles (smaller bodies)
             # Must be in trend direction
             if side == OrderSide.LONG and bar["close"] > bar["open"]:
                 impulse_idx = i
@@ -4027,12 +4053,10 @@ class ScalpStrategy(BaseStrategy):
         elif not np.isnan(rel_vol) and rel_vol > 1.5:
             confs.append(f"Volume {rel_vol:.1f}x confirmed")
             score += 8
-        elif not np.isnan(rel_vol) and rel_vol < 1.0:
-            # Low volume break = likely fake → reject
+        elif not np.isnan(rel_vol) and rel_vol < 1.3:
+            # Quality gate: breaks need ≥1.3× avg volume to be real
+            # (Displacement ≥0.6 ATR already enforced above + vol ≥1.3× = dual gate)
             return None
-        elif not np.isnan(rel_vol) and rel_vol < 0.7:
-            score -= 12  # low volume break = almost always fake
-            confs.append(f"LOW VOLUME break ({rel_vol:.1f}x) — likely fake")
 
         # ── Step 6: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):

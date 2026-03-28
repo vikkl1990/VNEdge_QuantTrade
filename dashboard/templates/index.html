@@ -183,18 +183,6 @@ tr:hover{background:rgba(99,148,255,.02)}
 /* ── GENERIC COLORS ──────────────────────────────────────── */
 .green{color:var(--green)}.red{color:var(--red)}.yellow{color:var(--yellow)}.blue{color:var(--accent)}
 
-/* ── SCALPER COUNTDOWN RING ──────────────────────────────── */
-.countdown-container{display:flex;gap:20px;justify-content:center;align-items:center;flex-wrap:wrap}
-.countdown-ring{position:relative;width:88px;height:88px}
-.countdown-ring svg{transform:rotate(-90deg);width:88px;height:88px}
-.countdown-ring .ring-bg{fill:none;stroke:rgba(255,255,255,.04);stroke-width:3.5}
-.countdown-ring .ring-progress{fill:none;stroke-width:3.5;stroke-linecap:round;transition:stroke-dashoffset .9s linear}
-.countdown-ring .ring-progress.btc{stroke:var(--yellow)}
-.countdown-ring .ring-progress.eth{stroke:var(--accent)}
-.countdown-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
-.countdown-label .cd-time{font-size:1.05rem;font-weight:800;font-family:var(--font-mono);color:var(--text)}
-.countdown-label .cd-sym{font-size:.52rem;text-transform:uppercase;color:var(--text-muted);letter-spacing:1.2px;margin-top:1px}
-
 /* ── VETO STATS ──────────────────────────────────────────── */
 .veto-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.03);font-size:.78rem}
 .veto-name{color:var(--text-secondary);flex:1}
@@ -373,7 +361,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
   .trade-card{grid-template-columns:1fr}
   .trade-card .tc-header{grid-column:span 1;flex-direction:column;gap:8px}
   .trade-card .tc-footer{grid-column:span 1;flex-wrap:wrap}
-  .countdown-container{gap:12px}
   .dash-footer{justify-content:center;text-align:center}
   .features-grid{grid-template-columns:1fr 1fr}
   .footer-grid{grid-template-columns:1fr}
@@ -503,7 +490,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <span class="dot on" id="hdr-dot"></span>
       <span id="hdr-status" style="font-weight:600;font-size:.72rem">Connecting</span>
     </div>
-    <span style="color:var(--text-muted);font-size:.72rem">Scalper: <span id="hdr-scalper" style="color:var(--green);font-weight:600;font-family:var(--font-mono)">--</span></span>
     <span class="header-version">v2.1</span>
     <a href="http://158.101.112.94:8081" target="_blank" style="padding:4px 10px;font-size:.65rem;border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.08);color:var(--purple);border-radius:4px;text-decoration:none;font-weight:600">ML Lab</a>
     <button onclick="emergencyStop()" id="emergency-btn" style="padding:4px 12px;font-size:.65rem;border:1px solid rgba(255,59,92,.5);background:rgba(255,59,92,.1);color:var(--red);border-radius:4px;cursor:pointer;font-weight:700;letter-spacing:1px">STOP</button>
@@ -710,17 +696,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div class="funnel-step" style="background:rgba(34,197,94,.06)"><div class="f-val" style="color:var(--green)" id="fn-valid">0</div><div class="f-lbl">Valid</div></div>
         <div class="funnel-step" style="background:var(--yellow-dim)"><div class="f-val" style="color:var(--yellow)" id="fn-weak">0</div><div class="f-lbl">Weak</div></div>
         <div class="funnel-step" style="background:var(--red-dim)"><div class="f-val" style="color:var(--red)" id="fn-blocked">0</div><div class="f-lbl">Blocked</div></div>
-      </div>
-    </div>
-
-    <!-- Scalper Countdown Timer (Per-Trade) -->
-    <div class="panel panel-accent-blue">
-      <div class="panel-title">Scalper Window <span class="badge" style="background:var(--cyan-dim);color:var(--cyan)">per trade</span></div>
-      <div class="countdown-container" id="countdown-container">
-        <div style="font-size:.75rem;color:var(--text-muted)" id="scalper-no-trades">No active trades</div>
-      </div>
-      <div style="font-size:.6rem;color:var(--text-muted);text-align:center;margin-top:6px">
-        <span style="color:var(--accent);font-weight:600">0% Close Fee</span> — close within window for zero exit fee
       </div>
     </div>
 
@@ -2126,9 +2101,6 @@ async function refreshLive() {
         api("/api/tracker/closed"), api("/api/real/status")
     ]);
 
-    // Cache active trades for scalper countdown
-    window._cachedActiveTrades = active || [];
-
     // Real Trading Panel — update BOTH analytics and live tab versions
     if (realStatus) {
         const modeVal = !realStatus.enabled ? "disabled" : realStatus.dry_run ? "dry_run" : "live";
@@ -2306,16 +2278,6 @@ async function refreshLive() {
         }
     }
 
-    // Update scalper in header
-    const hdrScalper = document.getElementById("hdr-scalper");
-    if (hdrScalper) {
-        const now = Date.now();
-        const btcR = BTC_WINDOW_MS - ((now - btcWindowStart) % BTC_WINDOW_MS);
-        const bm = Math.floor(btcR / 60000);
-        const bs = Math.floor((btcR % 60000) / 1000);
-        hdrScalper.textContent = `ACTIVE \u2022 ${bm}:${String(bs).padStart(2,"0")} BTC`;
-    }
-
     // Cache prices & update ticker
     if (status && status.prices) {
         const prevPrices = {...cachedPrices};
@@ -2369,7 +2331,6 @@ async function refreshLive() {
     updateFunnel(funnel);
     updateAlerts(alerts);
     updateVetoStats(funnel);
-    updateScalperCountdown(status);
     updatePerSymbolStatus(status, decision);
     updateSetupLifecycle(status);
     updateRecentClosed(closed);
@@ -3858,90 +3819,6 @@ function renderVetoRows(wrap, vetoData) {
         </div>`;
     }).join("");
 }
-
-// ── SCALPER COUNTDOWN ───────────────────────────────────
-let btcWindowStart = Date.now();
-let ethWindowStart = Date.now();
-const BTC_WINDOW_MS = 27 * 60 * 1000;
-const ETH_WINDOW_MS = 12 * 60 * 1000;
-const RING_CIRCUMFERENCE = 2 * Math.PI * 38;
-
-function updateScalperCountdown(activeTrades) {
-    const container = document.getElementById("countdown-container");
-    const noTrades = document.getElementById("scalper-no-trades");
-    if (!container) return;
-
-    // Get active trades from cached data
-    const trades = activeTrades || window._cachedActiveTrades || [];
-    if (!trades.length) {
-        if (noTrades) noTrades.style.display = "block";
-        container.querySelectorAll(".countdown-ring").forEach(el => el.remove());
-        return;
-    }
-    if (noTrades) noTrades.style.display = "none";
-
-    const now = Date.now();
-    const CIRC = 238.76;
-    let html = "";
-
-    trades.forEach((t, i) => {
-        const sym = (t.symbol || "").split("/")[0];
-        const entryTs = t.entry_time || (t.metadata && t.metadata.entry_time) || t.timestamp;
-        if (!entryTs) return;
-        const entryDate = new Date(entryTs);
-        const windowSec = sym === "BTC" ? 27 * 60 : 12 * 60;
-        const windowMs = windowSec * 1000;
-        const elapsed = now - entryDate.getTime();
-        const remain = Math.max(0, windowMs - elapsed);
-        const frac = remain / windowMs;
-        const offset = CIRC * (1 - frac);
-        const mins = Math.floor(remain / 60000);
-        const secs = Math.floor((remain % 60000) / 1000);
-        const color = frac > 0.5 ? "var(--green)" : frac > 0.25 ? "var(--yellow)" : "var(--red)";
-        const expired = remain <= 0;
-        const side = t.side || "";
-
-        html += '<div class="countdown-ring">' +
-            '<svg viewBox="0 0 90 90">' +
-            '<circle class="ring-bg" cx="45" cy="45" r="38"/>' +
-            '<circle fill="none" cx="45" cy="45" r="38" stroke-width="3.5" stroke-linecap="round" ' +
-            'stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + offset.toFixed(1) + '" ' +
-            'style="stroke:' + color + ';transform:rotate(-90deg);transform-origin:center;transition:stroke-dashoffset .9s linear"/>' +
-            '</svg>' +
-            '<div class="countdown-label">' +
-            '<div class="cd-time" style="color:' + (expired ? "var(--red)" : "var(--text)") + '">' +
-            (expired ? "EXPIRED" : mins + ":" + String(secs).padStart(2, "0")) + '</div>' +
-            '<div class="cd-sym">' + sym + " " + side.toUpperCase().charAt(0) + '</div>' +
-            '</div></div>';
-    });
-
-    // Only update if changed
-    const existingRings = container.querySelectorAll(".countdown-ring");
-    if (existingRings.length !== trades.length) {
-        container.innerHTML = (noTrades ? '<div id="scalper-no-trades" style="display:none"></div>' : '') + html;
-    } else {
-        // Just update times and rings
-        existingRings.forEach((ring, i) => {
-            const t = trades[i];
-            if (!t) return;
-            const sym = (t.symbol || "").split("/")[0];
-            const entryTs = t.entry_time || (t.metadata && t.metadata.entry_time) || t.timestamp;
-            if (!entryTs) return;
-            const windowSec = sym === "BTC" ? 27 * 60 : 12 * 60;
-            const remain = Math.max(0, windowSec * 1000 - (now - new Date(entryTs).getTime()));
-            const frac = remain / (windowSec * 1000);
-            const offset = CIRC * (1 - frac);
-            const mins = Math.floor(remain / 60000);
-            const secs = Math.floor((remain % 60000) / 1000);
-            const progressCircle = ring.querySelectorAll("circle")[1];
-            if (progressCircle) progressCircle.setAttribute("stroke-dashoffset", offset.toFixed(1));
-            const timeEl = ring.querySelector(".cd-time");
-            if (timeEl) timeEl.textContent = remain <= 0 ? "EXPIRED" : mins + ":" + String(secs).padStart(2, "0");
-        });
-    }
-}
-
-setInterval(() => { if (activeTab === "live") updateScalperCountdown(window._cachedActiveTrades); }, 1000);
 
 // ── SPARKLINES ──────────────────────────────────────────
 const priceHistory = {};

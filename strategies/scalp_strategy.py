@@ -1445,31 +1445,36 @@ class ScalpStrategy(BaseStrategy):
                 return []
 
         # ── Confluence bonus: boost when multiple scanners agree on same side ──
+        # Scale: 2 scanners = +18, 3 scanners = +22, 4+ scanners = +25
+        # structure_bounce is already dominant (82% WR) — cap its bonus at +8
+        # Goal: lift dormant scanners (CVD, RSI, vwap_mean_revert) past their min_conf threshold
         if len(tradeable) >= 2:
-            # Group by side
-            side_groups = {}
+            side_groups: Dict[str, List] = {}
             for sr in tradeable:
                 side_val = sr.side.value if sr.side else "none"
-                if side_val not in side_groups:
-                    side_groups[side_val] = []
-                side_groups[side_val].append(sr)
+                side_groups.setdefault(side_val, []).append(sr)
 
-            # Find the side with most agreement
             for side_val, group in side_groups.items():
                 if len(group) >= 2:
-                    # Multiple scanners agree — boost all by +15 per extra scanner
-                    confluence_bonus = (len(group) - 1) * 18  # raised from 15 — multi-scanner = high conviction
+                    n = len(group)
+                    # Tiered confluence bonus: more scanners = higher conviction
+                    confluence_bonus = 18 if n == 2 else 22 if n == 3 else 25
                     scanner_names_list = [sr.scanner_name for sr in group]
                     for sr in group:
-                        sr.weighted_score += confluence_bonus
+                        # structure_bounce doesn't need a big lift — it already dominates
+                        # Give it a small acknowledgment so its score still reflects confluence
+                        bonus_for_sr = min(8, confluence_bonus) if sr.scanner_name == "structure_bounce" else confluence_bonus
+                        sr.weighted_score += bonus_for_sr
                         sr.confirmations.append(
-                            f"Multi-scanner confluence ({'+'.join(scanner_names_list)}) +{confluence_bonus}"
+                            f"Multi-scanner confluence ({'+'.join(scanner_names_list)}) +{bonus_for_sr}"
                         )
                     if pass_cnt <= 5 or pass_cnt % 50 == 0:
+                        non_sb = [s for s in scanner_names_list if s != "structure_bounce"]
                         logger.info(
-                            "FUNNEL %s | CONFLUENCE #%d | %d scanners agree on %s: %s (+%d bonus)",
-                            symbol, pass_cnt, len(group), side_val,
-                            scanner_names_list, confluence_bonus,
+                            "FUNNEL %s | CONFLUENCE #%d | %d scanners agree on %s: %s "
+                            "(non-SB +%d, SB +%d)",
+                            symbol, pass_cnt, n, side_val, scanner_names_list,
+                            confluence_bonus, min(8, confluence_bonus),
                         )
 
         # Pick best by weighted score
@@ -1779,6 +1784,43 @@ class ScalpStrategy(BaseStrategy):
                         if hasattr(best_sr, "weighted_score"):
                             best_sr.weighted_score = max(best_sr.weighted_score - 12, 20)
                             best_sr.confirmations = list(best_sr.confirmations) + ["[15M_STRUCTURE_PENALTY: -12]"]
+
+        # VETO 2d: MTF HARD REQUIREMENT for INTRADAY / RUNNER
+        # Scalp trades can fire against macro — they close in <5 min anyway.
+        # INTRADAY (target: 1-4h hold) and RUNNER (4h+) need the macro behind them.
+        # Hard block:  1h macro DIRECTLY opposes signal side → trade will grind against trend
+        # Hard block:  15m structure (confirm_bias) DIRECTLY opposes signal side
+        # Soft (-10):  1h macro is neutral (no tailwind) → penalise but don't fully block
+        if trade_type in ("INTRADAY", "RUNNER"):
+            _side_str = best.side.value if hasattr(best.side, "value") else str(best.side)
+            _sig_long = _side_str == "long"
+
+            # --- 1H macro alignment ---
+            _1h_opposes = (_macro_bias < 0 and _sig_long) or (_macro_bias > 0 and not _sig_long)
+            _1h_neutral  = _macro_bias == 0
+
+            if _1h_opposes:
+                # 1h trend is actively running against the trade — hard veto
+                _mb_label = "bearish" if _macro_bias < 0 else "bullish"
+                vetos.append(
+                    f"MTF {trade_type}: 1h macro={_mb_label} directly opposes {_side_str}"
+                )
+            elif _1h_neutral and df_1h is not None:
+                # 1h ranging/neutral = no macro tailwind for a longer hold
+                if hasattr(best_sr, "weighted_score"):
+                    best_sr.weighted_score = max(best_sr.weighted_score - 10, 20)
+                    best_sr.confirmations = list(best_sr.confirmations) + [
+                        f"[1H_NEUTRAL_PENALTY: -10, {trade_type} needs macro tailwind]"
+                    ]
+
+            # --- 15m structure alignment (confirm_bias = 15m EMA50) ---
+            if confirm_bias != 0:
+                _15m_opposes = (confirm_bias < 0 and _sig_long) or (confirm_bias > 0 and not _sig_long)
+                if _15m_opposes:
+                    _cb_label = "bearish" if confirm_bias < 0 else "bullish"
+                    vetos.append(
+                        f"MTF {trade_type}: 15m structure={_cb_label} opposes {_side_str}"
+                    )
 
         # VETO 3: Session (architect-corrected)
         # 2-5 UTC: HARD BLOCK (genuinely low liquidity)

@@ -1250,55 +1250,99 @@ class SignalTracker:
                     early_kill_mfe = tt_cfg["early_kill_mfe"]
 
                     dead_trade = False
+                    kill_reason = ""
 
                     # ── EARLY KILL (SCALP + INTRADAY only, not RUNNER) ──
                     if early_kill_sec > 0 and age_sec >= early_kill_sec:
                         if max_fav_r < early_kill_mfe and current_r < -0.15:
                             dead_trade = True
+                            kill_reason = "early_kill_%ds" % int(age_sec)
                             logger.info(
                                 "EARLY KILL [%s]: %s %s | %ds with MFE %.2fR < %.2fR, current %.2fR",
                                 tt, ts.symbol, ts.side, int(age_sec),
                                 max_fav_r, early_kill_mfe, current_r,
                             )
 
+                    # ── 5-MINUTE MOMENTUM KILL (INTRADAY) ──
+                    # Catches dead entries that pass early kill but sit flat for 5+ min
+                    # Data shows 61/71 timeout trades had MFE < 0.10R — $131 lost
+                    if not dead_trade and tt == TRADE_TYPE_INTRADAY and age_sec >= 300:
+                        if max_fav_r < 0.10:
+                            dead_trade = True
+                            kill_reason = "momentum_kill_5m"
+                            logger.info(
+                                "5MIN MOMENTUM KILL [INTRADAY]: %s %s | %ds with MFE %.2fR < 0.10R — no momentum",
+                                ts.symbol, ts.side, int(age_sec), max_fav_r,
+                            )
+
+                    # ── 10-MINUTE MOMENTUM KILL (RUNNER) ──
+                    # Runners need to show real movement — if nothing after 10min, it's not a runner
+                    if not dead_trade and tt == TRADE_TYPE_RUNNER and age_sec >= 600:
+                        if max_fav_r < 0.20:
+                            dead_trade = True
+                            kill_reason = "momentum_kill_10m"
+                            logger.info(
+                                "10MIN MOMENTUM KILL [RUNNER]: %s %s | %ds with MFE %.2fR < 0.20R — not running",
+                                ts.symbol, ts.side, int(age_sec), max_fav_r,
+                            )
+
+                    # ── REGIME-AWARE TIMEOUT (stricter in weak regimes) ──
+                    regime = getattr(ts, 'metadata', {}).get('regime', '') if isinstance(getattr(ts, 'metadata', None), dict) else ''
+                    if not dead_trade and age_sec >= 180:  # after 3 min
+                        if regime in ('quiet', 'ranging', '') or not regime:
+                            # In quiet/empty regime: kill faster if no MFE
+                            if max_fav_r < 0.08 and current_r < -0.10:
+                                dead_trade = True
+                                kill_reason = "regime_kill_%s" % (regime or "empty")
+                                logger.info(
+                                    "REGIME KILL [%s]: %s %s | regime=%s, %ds with MFE %.2fR — weak regime, no momentum",
+                                    tt, ts.symbol, ts.side, regime or "empty", int(age_sec), max_fav_r,
+                                )
+
                     # ── TIME STOP LOGIC per trade type ──
                     if not dead_trade and time_stop_type == "hard":
                         # SCALP: Hard time stop — kill if not moving after N bars
                         base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
                         if age_sec >= base_time and current_r < 0.1:
-                            dead_trade = True  # not meaningfully profitable → kill
+                            dead_trade = True
+                            kill_reason = "hard_time_stop"
                         elif age_sec >= max_age:
-                            dead_trade = True  # absolute max
+                            dead_trade = True
+                            kill_reason = "max_age"
 
                     elif not dead_trade and time_stop_type == "soft":
                         # INTRADAY: Soft time stop — only if losing AND no progress
                         base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
 
-                        # Never time-stop if above entry
-                        if current_r >= 0:
+                        # Never time-stop if meaningfully above entry
+                        if current_r >= 0.05:
                             dead_trade = False
                         # If losing and never showed life
                         elif age_sec >= base_time and max_fav_r < 0.20 and current_r < -0.2:
                             dead_trade = True
+                            kill_reason = "soft_no_progress"
                         # If trade went positive but now retreating hard
                         elif age_sec >= base_time * 0.7 and max_fav_r >= 0.3 and current_r < -0.3:
                             dead_trade = True
+                            kill_reason = "soft_retreat"
                         # Hard backstop
                         elif age_sec >= max_age and current_r < 0:
                             dead_trade = True
+                            kill_reason = "max_age"
 
                     elif not dead_trade and time_stop_type == "none":
                         # RUNNER: No time stop — only hard backstop for safety
                         if age_sec >= max_age and current_r < -1.0:
-                            dead_trade = True  # only kill if deeply losing after 8h
+                            dead_trade = True
+                            kill_reason = "runner_max_age"
 
                     if dead_trade:
                         ts.exit_price = price
-                        ts.exit_reason = f"time_stop_{tt.lower()}"
+                        ts.exit_reason = kill_reason if kill_reason else f"time_stop_{tt.lower()}"
                         ts.exit_time = now_iso
                         ts.pnl_pct = self._calc_pnl(ts, price)
                         ts.time_stop_triggered = True
-                        ts.exit_reason_detailed = f"time_stop_{tt.lower()}_{int(age_sec/60)}m"
+                        ts.exit_reason_detailed = f"{kill_reason or 'time_stop'}_{tt.lower()}_{int(age_sec/60)}m"
                         ts.status = "expired"
                         to_close.append(tid)
                         logger.info(

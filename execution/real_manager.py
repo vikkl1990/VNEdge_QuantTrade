@@ -50,6 +50,7 @@ class RealCircuitBreaker:
         self.is_tripped: bool = False
         self.trip_reason: str = ""
         self.trade_count_today: int = 0
+        self.on_trip: Optional[callable] = None  # Emergency callback when CB trips
 
     def _maybe_reset_daily(self):
         """Reset daily counters at midnight UTC."""
@@ -96,7 +97,8 @@ class RealCircuitBreaker:
         self._check_trip()
 
     def _check_trip(self):
-        """Check if circuit breaker should trip."""
+        """Check if circuit breaker should trip. Fires emergency close on trip."""
+        was_tripped = self.is_tripped
         if self.daily_pnl <= -self.daily_loss_limit:
             self.is_tripped = True
             self.trip_reason = f"Daily loss ${abs(self.daily_pnl):.2f} exceeds ${self.daily_loss_limit} limit"
@@ -105,6 +107,13 @@ class RealCircuitBreaker:
             self.is_tripped = True
             self.trip_reason = f"{self.consecutive_losses} consecutive real losses"
             logger.critical("REAL CB TRIPPED: %s", self.trip_reason)
+
+        # Fire emergency close callback on FIRST trip (not repeated)
+        if self.is_tripped and not was_tripped and self.on_trip:
+            try:
+                self.on_trip(self.trip_reason)
+            except Exception as e:
+                logger.error("REAL CB: emergency callback failed: %s", e)
 
     def is_allowed(self) -> Tuple[bool, str]:
         """Check if a new real trade is allowed."""
@@ -196,6 +205,9 @@ class RealTradingManager:
 
         # Load persisted state (may override enabled/dry_run from saved toggle)
         self._load_state()
+
+        # Wire emergency close-all to circuit breaker
+        self.circuit_breaker.on_trip = self._emergency_close_all
 
     async def _get_trading_exchange(self):
         """Get the correct exchange client based on mode.
@@ -323,16 +335,31 @@ class RealTradingManager:
                 if tps:
                     tp1 = float(tps[0]) if isinstance(tps[0], (int, float)) else 0
 
+                # Set isolated margin mode on first trade
+                try:
+                    delta.set_margin_mode("isolated")
+                except Exception:
+                    pass
+
                 # ATOMIC BRACKET ORDER: entry + SL + TP in one call
+                # Pass paper_trade_id as client_order_id for perfect reconciliation
+                coid = paper_trade_id[:32] if paper_trade_id else None
                 order = delta.place_bracket_order(
                     symbol=symbol,
                     side=order_side,
                     lots=lots,
                     stop_loss_price=sl,
                     take_profit_price=tp1,
+                    client_order_id=coid,
                 )
 
                 if order and not order.get("error"):
+                    # Enable auto-topup to prevent liquidation
+                    try:
+                        delta.enable_auto_topup(symbol)
+                    except Exception:
+                        pass
+
                     # Extract fill data
                     order_id = order.get("id", order.get("order_id", ""))
                     demo_fill = float(order.get("average_fill_price", entry_price) or entry_price)
@@ -383,6 +410,7 @@ class RealTradingManager:
                 "ml_verdict": meta.get("ml_verdict", ""),
                 "regime": meta.get("regime", ""),
                 "paper_trade_id": paper_trade_id,
+                "client_order_id": paper_trade_id[:32] if paper_trade_id else "",
                 "current_price": demo_fill,
                 "slippage_bps": slippage_bps,
             })()
@@ -1209,56 +1237,53 @@ class RealTradingManager:
             logger.warning("REAL: Position sync failed: %s", e)
 
     async def update_exchange_sl(self, paper_trade_id: str, symbol: str, new_sl: float):
-        """Update SL on exchange when smart trail moves the stop."""
-        # Find the real trade mapped to this paper trade
+        """Update SL on exchange when smart trail moves the stop.
+
+        Tries atomic edit_bracket first (no gap), falls back to cancel+replace.
+        """
         real_trade_id = self.paper_to_real.get(paper_trade_id)
         if not real_trade_id:
-            return  # no real mirror for this paper trade
+            return
 
         trade = self.real_trades.get(real_trade_id)
         if not trade:
             return
 
         try:
-            trading_ex = await self._get_trading_exchange()
-            if not trading_ex:
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if not delta.is_connected:
+                delta.connect()
+
+            side = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+
+            # Try atomic bracket edit first (Tier 3: no protection gap)
+            result = delta.edit_bracket(symbol, stop_loss_price=new_sl)
+            if result and not result.get("error"):
+                trade.stop_loss = new_sl
+                logger.info("REAL SL SYNC [EDIT]: %s %s | SL → %.4f", symbol, side, new_sl)
                 return
 
-            # Get product info
+            # Fallback: cancel + replace
             from exchange.delta_client import PRODUCT_MAP
             prod = PRODUCT_MAP.get(symbol, {})
             product_id = prod.get("demo_id" if self.dry_run else "prod_id")
             if not product_id:
                 return
 
-            side = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
             sl_side = "sell" if side == "long" else "buy"
 
-            # Cancel existing SL order, place new one
+            # Cancel existing SL orders
             try:
-                open_orders = trading_ex.get_live_orders()
-                if isinstance(open_orders, list):
-                    for o in open_orders:
-                        if (o.get("product_id") == product_id and
-                            o.get("reduce_only") == "true" and
-                            o.get("order_type") in ("stop_market_order", "stop_limit_order")):
-                            trading_ex.cancel_order(product_id, o.get("id"))
-                            logger.debug("REAL: Cancelled old SL order %s", o.get("id"))
-            except Exception as e:
-                logger.debug("REAL: Cancel old SL failed: %s", e)
+                delta.cancel_all_orders_bulk(product_id)
+            except Exception:
+                pass
 
-            # Place new SL
+            # Place new SL with reduce_only + close_on_trigger
             size = int(getattr(trade, "position_size", 0))
             if size > 0:
-                trading_ex.place_stop_order(
-                    product_id=product_id,
-                    size=size,
-                    side=sl_side,
-                    stop_price=str(new_sl),
-                )
-                # Update local trade SL
+                delta.place_stop_loss(symbol, sl_side, size, new_sl)
                 trade.stop_loss = new_sl
-                logger.info("REAL SL SYNC: %s %s | SL → %.4f | exchange updated", symbol, side, new_sl)
+                logger.info("REAL SL SYNC [REPLACE]: %s %s | SL → %.4f", symbol, side, new_sl)
         except Exception as e:
             logger.debug("REAL SL SYNC failed: %s %s | %s", symbol, new_sl, e)
 
@@ -1433,3 +1458,163 @@ class RealTradingManager:
         except Exception as e:
             logger.error("RECONCILE ERROR: %s", e)
             return {"status": "error", "reason": str(e)}
+
+    # ==================================================================
+    # Emergency Controls (Tier 1)
+    # ==================================================================
+
+    def _emergency_close_all(self, reason: str):
+        """Called by circuit breaker on trip. Immediately close ALL positions.
+
+        Cancels all orders (no rate limit), closes all positions,
+        and clears local state to prevent further trading.
+        """
+        logger.critical("🚨 EMERGENCY CLOSE-ALL triggered: %s", reason)
+        try:
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if not delta.is_connected:
+                delta.connect()
+
+            # Step 1: Cancel ALL orders (no rate limit on cancels)
+            delta.cancel_all_orders_bulk()
+            logger.info("EMERGENCY: All orders cancelled")
+
+            # Step 2: Close all positions via bulk endpoint
+            result = delta.close_all_positions()
+            logger.info("EMERGENCY: Close-all result: %s", str(result)[:200])
+
+            # Step 3: Record all local trades as closed
+            for trade_id, t in list(self.real_trades.items()):
+                entry_p = getattr(t, "entry_price", 0)
+                self._record_closed_trade(t, entry_p, 0, f"emergency_{reason}", dry_run=self.dry_run)
+
+            # Step 4: Clear all state
+            self.real_trades.clear()
+            self._open_positions.clear()
+            self.paper_to_real.clear()
+            self._save_state()
+
+            logger.critical("🚨 EMERGENCY CLOSE-ALL completed: %d positions closed", len(self.real_trades))
+        except Exception as e:
+            logger.error("🚨 EMERGENCY CLOSE-ALL FAILED: %s", e)
+
+    # ==================================================================
+    # WebSocket Event Handlers (Tier 1)
+    # ==================================================================
+
+    async def handle_exchange_fill(
+        self, client_order_id: str, symbol: str,
+        fill_price: float, side: str,
+    ):
+        """Handle instant SL/TP fill notification from private WS channel.
+
+        Called when a reduce_only order fills on exchange (SL or TP hit).
+        This replaces the slow REST polling in sync_exchange_positions().
+        """
+        logger.info(
+            "WS FILL: %s %s @ %.4f | coid=%s",
+            symbol, side, fill_price, client_order_id[:12] if client_order_id else "-",
+        )
+
+        # Find the matching real trade via client_order_id or paper_to_real
+        real_trade_id = None
+        matched_paper_id = None
+
+        # Direct lookup: client_order_id == paper_trade_id[:32]
+        for pid, rid in list(self.paper_to_real.items()):
+            if pid[:32] == client_order_id[:32]:
+                real_trade_id = rid
+                matched_paper_id = pid
+                break
+
+        # Fallback: search real_trades by client_order_id attribute
+        if not real_trade_id:
+            for tid, t in list(self.real_trades.items()):
+                coid = getattr(t, "client_order_id", "")
+                if coid and coid == client_order_id[:32]:
+                    real_trade_id = tid
+                    break
+
+        # Fallback: search by symbol
+        if not real_trade_id:
+            for tid, t in list(self.real_trades.items()):
+                t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
+                if t_sym == symbol:
+                    real_trade_id = tid
+                    break
+
+        if not real_trade_id:
+            logger.debug("WS FILL: No matching trade for coid=%s sym=%s",
+                        client_order_id[:12] if client_order_id else "-", symbol)
+            return
+
+        trade = self.real_trades.get(real_trade_id)
+        if not trade:
+            return
+
+        # Calculate PnL
+        if isinstance(trade, dict):
+            side_str = trade.get("side", "long")
+            entry_p = trade.get("entry_price", 0)
+            margin = trade.get("margin", 0)
+            leverage = trade.get("leverage", 1)
+        else:
+            side_str = trade.side.value if hasattr(trade.side, "value") else str(trade.side)
+            entry_p = trade.entry_price
+            margin = getattr(trade, "margin", 0)
+            leverage = getattr(trade, "leverage", 1)
+
+        if side_str == "long":
+            pnl_pct = (fill_price - entry_p) / entry_p if entry_p else 0
+        else:
+            pnl_pct = (entry_p - fill_price) / entry_p if entry_p else 0
+
+        notional = margin * leverage
+        net_pnl = pnl_pct * notional - notional * 0.0015
+
+        # Determine if SL or TP
+        reason = "ws_sl_hit" if net_pnl < 0 else "ws_tp_hit"
+
+        logger.info(
+            "WS EXIT: %s %s | entry=%.4f exit=%.4f | pnl=$%.2f | %s",
+            symbol, side_str, entry_p, fill_price, net_pnl, reason,
+        )
+
+        # Record and clean up
+        self.circuit_breaker.record_trade(net_pnl)
+        self._record_closed_trade(trade, fill_price, net_pnl, reason, dry_run=self.dry_run)
+
+        self.real_trades.pop(real_trade_id, None)
+        self._open_positions.pop(real_trade_id, None)
+        if matched_paper_id:
+            self.paper_to_real.pop(matched_paper_id, None)
+        self._save_state()
+
+    async def handle_exchange_position_close(self, symbol: str, pnl: float):
+        """Handle position close notification from WS (catches liquidations).
+
+        Fallback for positions that close without matching a client_order_id.
+        """
+        # Find any open trade for this symbol
+        for tid, t in list(self.real_trades.items()):
+            t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
+            if t_sym == symbol:
+                entry_p = getattr(t, "entry_price", 0) if not isinstance(t, dict) else t.get("entry_price", 0)
+                logger.info(
+                    "WS POS CLOSE: %s | entry=%.4f | exchange_pnl=%.4f",
+                    symbol, entry_p, pnl,
+                )
+                self._record_closed_trade(t, entry_p, pnl, "exchange_closed", dry_run=self.dry_run)
+                self.real_trades.pop(tid, None)
+                self._open_positions.pop(tid, None)
+
+                # Clean up paper_to_real
+                for pid, rid in list(self.paper_to_real.items()):
+                    if rid == tid:
+                        self.paper_to_real.pop(pid, None)
+                        break
+
+                self._save_state()
+                return
+
+        logger.debug("WS POS CLOSE: No matching trade for %s (may be already cleaned up)", symbol)

@@ -231,12 +231,23 @@ class BotOrchestrator:
             self._ws_prices: Dict[str, float] = {}
             if _HAS_DELTA_WS:
                 try:
+                    import os
+                    # Pass API creds for private WS channels (orders, positions)
+                    _dry_run = getattr(self._real_manager, "dry_run", True) if self._real_manager else True
+                    _ws_api_key = os.getenv("DELTA_DEMO_API_KEY" if _dry_run else "DELTA_API_KEY", "")
+                    _ws_api_secret = os.getenv("DELTA_DEMO_API_SECRET" if _dry_run else "DELTA_API_SECRET", "")
+
                     self._delta_ws = DeltaWebSocket(
                         symbols=self._symbols,
                         on_price=self._on_ws_price,
+                        on_order_fill=self._on_ws_order_fill,
+                        on_position_update=self._on_ws_position_update,
+                        api_key=_ws_api_key,
+                        api_secret=_ws_api_secret,
+                        mode="demo" if _dry_run else "live",
                     )
                     await self._delta_ws.connect()
-                    self._log.info("DeltaWebSocket started for real-time prices")
+                    self._log.info("DeltaWebSocket started (prices + private channels)")
                 except Exception as exc:
                     self._log.warning("DeltaWebSocket failed to start: %s (falling back to REST)", exc)
                     self._delta_ws = None
@@ -422,6 +433,38 @@ class BotOrchestrator:
                 ev_type = ev.get("type", "")
                 level = AlertLevel.INFO if "TP" in ev_type.upper() else AlertLevel.WARNING
                 await self._alert_manager.send(msg, level=level)
+
+    async def _on_ws_order_fill(
+        self, symbol: str, order_id: str, client_order_id: str,
+        fill_price: float, side: str, size: int,
+    ) -> None:
+        """Private WS callback: SL/TP filled on exchange (instant detection)."""
+        self._log.info(
+            "WS ORDER FILL: %s %s %d @ %.4f | coid=%s",
+            symbol, side, size, fill_price,
+            client_order_id[:12] if client_order_id else "-",
+        )
+        if self._real_manager and self._real_manager.enabled:
+            try:
+                await self._real_manager.handle_exchange_fill(
+                    client_order_id=client_order_id,
+                    symbol=symbol,
+                    fill_price=fill_price,
+                    side=side,
+                )
+            except Exception as exc:
+                self._log.error("WS order fill handler failed: %s", exc)
+
+    async def _on_ws_position_update(
+        self, symbol: str, size: int, entry_price: float, pnl: float,
+    ) -> None:
+        """Private WS callback: position changed (catches liquidations)."""
+        if size == 0 and self._real_manager and self._real_manager.enabled:
+            self._log.info("WS POSITION CLOSED: %s | pnl=%.4f", symbol, pnl)
+            try:
+                await self._real_manager.handle_exchange_position_close(symbol, pnl)
+            except Exception as exc:
+                self._log.error("WS position close handler failed: %s", exc)
 
     async def _fast_trade_monitor_loop(self) -> None:
         """Dedicated loop for active trade monitoring.

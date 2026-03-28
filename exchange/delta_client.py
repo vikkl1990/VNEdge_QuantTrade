@@ -215,14 +215,19 @@ class DeltaClient:
 
     def place_market_order(
         self, symbol: str, side: str, lots: int, reduce_only: bool = False,
+        client_order_id: Optional[str] = None, post_only: bool = False,
+        limit_price: float = 0,
     ) -> Dict[str, Any]:
-        """Place a market order.
+        """Place a market or limit order.
 
         Args:
             symbol: e.g. "BTC/USDT"
             side: "buy" or "sell"
             lots: number of contracts/lots
             reduce_only: True for closing orders
+            client_order_id: optional 32-char tracking ID for reconciliation
+            post_only: True for maker-only limit orders (saves fees)
+            limit_price: if > 0, place limit order instead of market
 
         Returns:
             Order response dict with id, status, fill_price, etc.
@@ -232,16 +237,28 @@ class DeltaClient:
             return {"error": "unknown_symbol", "symbol": symbol}
 
         try:
-            result = self._client.place_order(
-                product_id=product_id,
-                size=lots,
-                side=side,
-                order_type="market_order",
-                reduce_only="true" if reduce_only else "false",
-            )
+            kwargs = {
+                "product_id": product_id,
+                "size": lots,
+                "side": side,
+                "order_type": "market_order",
+                "reduce_only": "true" if reduce_only else "false",
+            }
+            if client_order_id:
+                kwargs["client_order_id"] = client_order_id[:32]
+            if limit_price > 0:
+                info = self._get_product_info(symbol)
+                tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
+                kwargs["order_type"] = "limit_order"
+                kwargs["limit_price"] = str(round(limit_price / tick) * tick)
+                if post_only:
+                    kwargs["post_only"] = "true"
+
+            result = self._client.place_order(**kwargs)
             logger.info(
-                "DELTA [%s] ORDER: %s %s %d lots | product=%d | result=%s",
+                "DELTA [%s] ORDER: %s %s %d lots | product=%d | coid=%s | result=%s",
                 self.mode.upper(), side, symbol, lots, product_id,
+                client_order_id[:12] if client_order_id else "-",
                 str(result)[:200],
             )
             return result if isinstance(result, dict) else {"raw": result}
@@ -253,6 +270,7 @@ class DeltaClient:
 
     def place_stop_loss(
         self, symbol: str, side: str, lots: int, stop_price: float,
+        client_order_id: Optional[str] = None, trail_amount: float = 0,
     ) -> Dict[str, Any]:
         """Place a stop-loss order (reduce-only).
 
@@ -261,6 +279,8 @@ class DeltaClient:
             side: "buy" (to close short) or "sell" (to close long)
             lots: number of contracts
             stop_price: trigger price
+            client_order_id: optional tracking ID
+            trail_amount: if > 0, use Delta's native trailing stop
         """
         product_id = self._get_product_id(symbol)
         if not product_id:
@@ -273,16 +293,27 @@ class DeltaClient:
         stop_price = round(stop_price / tick) * tick
 
         try:
-            result = self._client.place_stop_order(
-                product_id=product_id,
-                size=lots,
-                side=side,
-                stop_price=str(stop_price),
-                order_type="market_order",
-            )
+            # Use raw request for full parameter control
+            payload = {
+                "product_id": product_id,
+                "size": int(lots),
+                "side": side,
+                "stop_price": str(stop_price),
+                "order_type": "market_order",
+                "stop_order_type": "stop_loss_order",
+                "reduce_only": "true",
+                "close_on_trigger": "true",
+            }
+            if client_order_id:
+                payload["client_order_id"] = client_order_id[:32]
+            if trail_amount > 0:
+                payload["trail_amount"] = str(round(trail_amount / tick) * tick)
+
+            result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
             logger.info(
-                "DELTA [%s] SL: %s %s %d lots @ %.4f | result=%s",
-                self.mode.upper(), side, symbol, lots, stop_price,
+                "DELTA [%s] SL: %s %s %d lots @ %.4f | trail=%.2f | coid=%s | result=%s",
+                self.mode.upper(), side, symbol, lots, stop_price, trail_amount,
+                client_order_id[:12] if client_order_id else "-",
                 str(result)[:200],
             )
             return result if isinstance(result, dict) else {"raw": result}
@@ -293,6 +324,7 @@ class DeltaClient:
 
     def place_take_profit(
         self, symbol: str, side: str, lots: int, stop_price: float,
+        client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Place a take-profit order (reduce-only stop at profit level).
 
@@ -307,16 +339,24 @@ class DeltaClient:
         stop_price = round(stop_price / tick) * tick
 
         try:
-            result = self._client.place_stop_order(
-                product_id=product_id,
-                size=lots,
-                side=side,
-                stop_price=str(stop_price),
-                order_type="market_order",
-            )
+            payload = {
+                "product_id": product_id,
+                "size": int(lots),
+                "side": side,
+                "stop_price": str(stop_price),
+                "order_type": "market_order",
+                "stop_order_type": "stop_loss_order",
+                "reduce_only": "true",
+                "close_on_trigger": "true",
+            }
+            if client_order_id:
+                payload["client_order_id"] = client_order_id[:32]
+
+            result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
             logger.info(
-                "DELTA [%s] TP: %s %s %d lots @ %.4f | result=%s",
+                "DELTA [%s] TP: %s %s %d lots @ %.4f | coid=%s | result=%s",
                 self.mode.upper(), side, symbol, lots, stop_price,
+                client_order_id[:12] if client_order_id else "-",
                 str(result)[:200],
             )
             return result if isinstance(result, dict) else {"raw": result}
@@ -332,7 +372,7 @@ class DeltaClient:
     def place_bracket_order(
         self, symbol: str, side: str, lots: int,
         stop_loss_price: float, take_profit_price: float = 0,
-        limit_price: float = 0,
+        limit_price: float = 0, client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Place an atomic bracket order: entry + SL + optional TP in one call.
 
@@ -346,6 +386,7 @@ class DeltaClient:
             stop_loss_price: SL trigger price
             take_profit_price: TP trigger price (0 to skip)
             limit_price: limit price for entry (0 for market)
+            client_order_id: optional 32-char tracking ID for reconciliation
         """
         product_id = self._get_product_id(symbol)
         if not product_id:
@@ -371,8 +412,12 @@ class DeltaClient:
             },
         }
 
+        if client_order_id:
+            bracket_payload["client_order_id"] = client_order_id[:32]
+
         if limit_price > 0:
             bracket_payload["limit_price"] = str(round(limit_price / tick) * tick)
+            bracket_payload["post_only"] = "true"  # Save fees on limit entries
 
         if take_profit_price > 0:
             bracket_payload["take_profit_order"] = {
@@ -399,7 +444,8 @@ class DeltaClient:
                 self.mode.upper(), e,
             )
             # Fallback: place entry + SL separately
-            entry_result = self.place_market_order(symbol, side, lots)
+            entry_result = self.place_market_order(symbol, side, lots,
+                                                    client_order_id=client_order_id)
             if entry_result.get("error"):
                 return entry_result
 
@@ -507,11 +553,19 @@ class DeltaClient:
             return []
 
     def cancel_all_orders(self, symbol: Optional[str] = None) -> bool:
-        """Cancel all open orders, optionally for a specific symbol."""
+        """Cancel all open orders, optionally for a specific symbol.
+
+        Uses bulk endpoint first (no rate limit), falls back to one-by-one.
+        """
         try:
+            product_id = self._get_product_id(symbol) if symbol else None
+            # Try bulk cancel first (Tier 3: no rate limit)
+            if self.cancel_all_orders_bulk(product_id):
+                return True
+
+            # Fallback: one-by-one
             orders = self.get_open_orders()
-            if symbol:
-                product_id = self._get_product_id(symbol)
+            if symbol and product_id:
                 orders = [o for o in orders if o.get("product_id") == product_id]
 
             for order in orders:
@@ -529,23 +583,57 @@ class DeltaClient:
             logger.error("DELTA [%s] CANCEL ALL FAILED: %s", self.mode.upper(), e)
             return False
 
+    def cancel_all_orders_bulk(self, product_id: Optional[int] = None) -> bool:
+        """Bulk cancel via DELETE /v2/orders/all (NO rate limit).
+
+        Much faster than individual cancellation for emergencies.
+        """
+        try:
+            payload = {}
+            if product_id:
+                payload["product_id"] = product_id
+            payload["contract_types"] = "perpetual_futures"
+            payload["cancel_limit_orders"] = "true"
+            payload["cancel_stop_orders"] = "true"
+            self._client.request("DELETE", "/v2/orders/all", payload=payload, auth=True)
+            logger.info("DELTA [%s] BULK CANCEL: product=%s", self.mode.upper(),
+                       product_id or "ALL")
+            return True
+        except Exception as e:
+            logger.debug("DELTA [%s] BULK CANCEL failed: %s", self.mode.upper(), e)
+            return False
+
     def close_position(self, symbol: str, close_side: str, lots: int) -> Optional[Dict]:
-        """Close a position by placing a market reduce-only order."""
+        """Close a position by placing a market reduce-only order.
+
+        Checks position exists before closing to avoid 'no_open_position' errors.
+        """
         try:
             product_id = self._get_product_id(symbol)
             if not product_id:
                 logger.warning("DELTA [%s] CLOSE: unknown symbol %s", self.mode.upper(), symbol)
                 return None
 
-            # Cancel any existing SL/TP orders first
+            # Verify position exists before attempting close
+            pos = self.get_position_realtime(symbol)
+            if not pos:
+                logger.info("DELTA [%s] CLOSE: no position to close for %s — skipping",
+                           self.mode.upper(), symbol)
+                return None
+
+            # Cancel any existing SL/TP orders first (no rate limit on cancels)
             try:
-                orders = self.get_open_orders()
-                for o in orders:
-                    if (o.get("product_id") == product_id and
-                        o.get("reduce_only") == "true"):
-                        self._client.cancel_order(product_id, o.get("id"))
+                self.cancel_all_orders_bulk(product_id)
             except Exception:
-                pass
+                # Fallback to individual cancel
+                try:
+                    orders = self.get_open_orders()
+                    for o in orders:
+                        if (o.get("product_id") == product_id and
+                            o.get("reduce_only") == "true"):
+                            self._client.cancel_order(product_id, o.get("id"))
+                except Exception:
+                    pass
 
             # Place market close order
             order = self._client.place_order(
@@ -610,3 +698,185 @@ class DeltaClient:
         if not info:
             return 0.0
         return info["contract_size"] * price
+
+    # ==================================================================
+    # Order Lookup & Reconciliation (Tier 1 + Tier 3)
+    # ==================================================================
+
+    def get_order_by_client_id(self, client_order_id: str) -> Optional[Dict]:
+        """Look up an order by client_order_id for perfect reconciliation.
+
+        This eliminates the need for fragile paper_to_real mapping.
+        """
+        try:
+            result = self._client.request(
+                "GET", f"/v2/orders/client_order_id/{client_order_id[:32]}",
+                auth=True,
+            )
+            if isinstance(result, dict) and result.get("id"):
+                return result
+            return None
+        except Exception as e:
+            logger.debug("DELTA [%s] ORDER LOOKUP by client_id failed: %s",
+                        self.mode.upper(), e)
+            return None
+
+    def get_order_history(self, product_id: Optional[int] = None,
+                          limit: int = 50) -> List[Dict]:
+        """Get order history for reconciliation (Tier 3).
+
+        Weight: 10 per call. Use sparingly.
+        """
+        try:
+            payload = {"page_size": limit}
+            if product_id:
+                payload["product_ids"] = str(product_id)
+            payload["contract_types"] = "perpetual_futures"
+            result = self._client.request("GET", "/v2/orders/history",
+                                          payload=payload, auth=True)
+            if isinstance(result, dict):
+                return result.get("result", result.get("data", []))
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            logger.warning("DELTA [%s] ORDER HISTORY: %s", self.mode.upper(), e)
+            return []
+
+    # ==================================================================
+    # Real-time Position (Tier 1)
+    # ==================================================================
+
+    def get_position_realtime(self, symbol: str) -> Optional[Dict]:
+        """Get real-time position via product-specific endpoint.
+
+        Uses GET /v2/positions (not /margined which has 10s delay).
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return None
+        try:
+            result = self._client.request(
+                "GET", "/v2/positions",
+                payload={"product_id": product_id},
+                auth=True,
+            )
+            pos = result if isinstance(result, dict) else {}
+            if pos and int(pos.get("size", 0) or 0) != 0:
+                return {
+                    "symbol": symbol,
+                    "side": "long" if pos.get("side") == "buy" else "short",
+                    "size": int(pos.get("size", 0)),
+                    "entry_price": float(pos.get("entry_price", 0)),
+                    "margin": float(pos.get("margin", 0)),
+                    "unrealized_pnl": float(pos.get("pnl", 0) or 0),
+                    "liquidation_price": float(pos.get("liquidation_price", 0) or 0),
+                }
+            return None
+        except Exception as e:
+            logger.debug("DELTA [%s] REALTIME POS: %s | %s", self.mode.upper(), symbol, e)
+            return None
+
+    # ==================================================================
+    # Emergency Controls (Tier 1)
+    # ==================================================================
+
+    def close_all_positions(self) -> Dict:
+        """Emergency close ALL positions via Delta bulk endpoint.
+
+        Called by circuit breaker on trip.
+        """
+        try:
+            result = self._client.request(
+                "POST", "/v2/positions/close_all",
+                payload={},
+                auth=True,
+            )
+            logger.critical("DELTA [%s] EMERGENCY CLOSE-ALL executed: %s",
+                           self.mode.upper(), str(result)[:200])
+            return result if isinstance(result, dict) else {"raw": result}
+        except Exception as e:
+            logger.error("DELTA [%s] EMERGENCY CLOSE-ALL FAILED: %s",
+                        self.mode.upper(), e)
+            return {"error": str(e)}
+
+    # ==================================================================
+    # Margin & Risk Controls (Tier 2)
+    # ==================================================================
+
+    def set_margin_mode(self, mode: str = "isolated") -> bool:
+        """Set account margin mode: 'isolated' or 'cross'.
+
+        Isolated recommended — limits risk to per-position margin.
+        """
+        try:
+            self._client.request(
+                "PUT", "/v2/account/margin-mode",
+                payload={"margin_mode": mode},
+                auth=True,
+            )
+            logger.info("DELTA [%s] MARGIN MODE: set to %s", self.mode.upper(), mode)
+            return True
+        except Exception as e:
+            logger.warning("DELTA [%s] MARGIN MODE failed: %s", self.mode.upper(), e)
+            return False
+
+    def enable_auto_topup(self, symbol: str) -> bool:
+        """Enable auto-topup for a position to prevent liquidation.
+
+        Automatically adds margin when position approaches liquidation.
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return False
+        try:
+            self._client.request(
+                "POST", "/v2/positions/auto_topup",
+                payload={"product_id": product_id, "auto_topup": True},
+                auth=True,
+            )
+            logger.info("DELTA [%s] AUTO-TOPUP: enabled for %s", self.mode.upper(), symbol)
+            return True
+        except Exception as e:
+            logger.debug("DELTA [%s] AUTO-TOPUP failed for %s: %s",
+                        self.mode.upper(), symbol, e)
+            return False
+
+    # ==================================================================
+    # Bracket Edit (Tier 3)
+    # ==================================================================
+
+    def edit_bracket(self, symbol: str, stop_loss_price: float = 0,
+                     take_profit_price: float = 0) -> Dict:
+        """Atomically update SL/TP on an existing position via PUT /v2/orders/bracket.
+
+        No gap where position is unprotected (vs cancel+replace).
+        """
+        product_id = self._get_product_id(symbol)
+        if not product_id:
+            return {"error": "unknown_symbol"}
+
+        info = self._get_product_info(symbol)
+        tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
+
+        payload = {"product_id": product_id}
+        if stop_loss_price > 0:
+            payload["stop_loss_order"] = {
+                "order_type": "market_order",
+                "stop_price": str(round(stop_loss_price / tick) * tick),
+            }
+        if take_profit_price > 0:
+            payload["take_profit_order"] = {
+                "order_type": "market_order",
+                "stop_price": str(round(take_profit_price / tick) * tick),
+            }
+
+        try:
+            result = self._client.request("PUT", "/v2/orders/bracket",
+                                          payload=payload, auth=True)
+            logger.info("DELTA [%s] EDIT BRACKET: %s SL=%.4f TP=%.4f | result=%s",
+                       self.mode.upper(), symbol, stop_loss_price, take_profit_price,
+                       str(result)[:200])
+            return result if isinstance(result, dict) else {"raw": result}
+        except Exception as e:
+            logger.warning("DELTA [%s] EDIT BRACKET failed: %s | %s",
+                          self.mode.upper(), symbol, e)
+            return {"error": str(e)}

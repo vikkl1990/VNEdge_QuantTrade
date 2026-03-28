@@ -115,7 +115,16 @@ PROD_BALANCE_ASSET_IDS = [5, 3, 1, 2, 4, 6, 7]
 
 
 class DeltaClient:
-    """Unified Delta Exchange client for real/demo trading."""
+    """Unified Delta Exchange client for real/demo trading.
+
+    Includes rate limiting, cancel tracking, and per-symbol order delay
+    to comply with Delta Exchange API usage policies.
+    """
+
+    # Rate limiting: max 150 requests/min (conservative buffer vs Delta's 300-500)
+    MAX_REQUESTS_PER_MIN = 150
+    MIN_ORDER_DELAY_MS = 400  # Minimum ms between orders on same symbol
+    CANCEL_RATE_ALERT_PCT = 15  # Alert if cancel rate > 15%
 
     def __init__(self, mode: str = "demo"):
         """
@@ -127,6 +136,21 @@ class DeltaClient:
         self._connected = False
         self._balance_cache: Optional[float] = None
         self._balance_ts: float = 0
+
+        # Rate limiting: track requests per minute
+        self._request_times: List[float] = []
+        self._request_count_total: int = 0
+
+        # Per-symbol order delay: last order time per symbol
+        self._last_order_time: Dict[str, float] = {}
+
+        # Cancel tracking: orders placed vs cancelled
+        self._orders_placed: int = 0
+        self._orders_cancelled: int = 0
+        self._cancel_log: List[Dict] = []  # last 50 cancellation records
+
+        # API failure monitoring
+        self._api_errors: List[float] = []  # timestamps of API errors
 
     def connect(self) -> bool:
         """Initialize the Delta REST client."""
@@ -163,6 +187,81 @@ class DeltaClient:
     def is_connected(self) -> bool:
         return self._connected and self._client is not None
 
+    # ==================================================================
+    # Rate Limiting & Compliance
+    # ==================================================================
+
+    def _rate_limit_check(self):
+        """Enforce rate limit: max 150 requests/minute. Sleeps if needed."""
+        now = time.time()
+        # Prune requests older than 60 seconds
+        self._request_times = [t for t in self._request_times if now - t < 60]
+        if len(self._request_times) >= self.MAX_REQUESTS_PER_MIN:
+            wait = 60 - (now - self._request_times[0]) + 0.1
+            logger.warning("DELTA [%s] RATE LIMIT: %d req/min — sleeping %.1fs",
+                          self.mode.upper(), len(self._request_times), wait)
+            time.sleep(max(wait, 0.2))
+        self._request_times.append(time.time())
+        self._request_count_total += 1
+
+    def _enforce_order_delay(self, symbol: str):
+        """Enforce minimum delay between orders on the same symbol."""
+        now = time.time()
+        last = self._last_order_time.get(symbol, 0)
+        elapsed_ms = (now - last) * 1000
+        if elapsed_ms < self.MIN_ORDER_DELAY_MS:
+            wait_s = (self.MIN_ORDER_DELAY_MS - elapsed_ms) / 1000
+            time.sleep(wait_s)
+        self._last_order_time[symbol] = time.time()
+
+    def _track_order_placed(self):
+        """Track order placement for cancel rate calculation."""
+        self._orders_placed += 1
+
+    def _track_cancel(self, symbol: str = "", reason: str = ""):
+        """Track cancellation for rate monitoring."""
+        self._orders_cancelled += 1
+        self._cancel_log.append({
+            "time": time.time(), "symbol": symbol, "reason": reason,
+        })
+        if len(self._cancel_log) > 50:
+            self._cancel_log = self._cancel_log[-50:]
+        # Check cancel rate
+        if self._orders_placed > 10:
+            cancel_pct = (self._orders_cancelled / self._orders_placed) * 100
+            if cancel_pct > self.CANCEL_RATE_ALERT_PCT:
+                logger.warning(
+                    "DELTA [%s] HIGH CANCEL RATE: %.1f%% (%d/%d) — may trigger exchange flags",
+                    self.mode.upper(), cancel_pct, self._orders_cancelled, self._orders_placed,
+                )
+
+    def _track_api_error(self):
+        """Track API error for failure monitoring."""
+        now = time.time()
+        self._api_errors.append(now)
+        self._api_errors = [t for t in self._api_errors if now - t < 300]  # last 5 min
+        if len(self._api_errors) > 5:
+            logger.critical(
+                "DELTA [%s] API FAILURE ALERT: %d errors in last 5 min",
+                self.mode.upper(), len(self._api_errors),
+            )
+
+    def get_compliance_stats(self) -> Dict:
+        """Return compliance metrics for dashboard/monitoring."""
+        now = time.time()
+        recent_requests = len([t for t in self._request_times if now - t < 60])
+        cancel_rate = (self._orders_cancelled / max(self._orders_placed, 1)) * 100
+        recent_errors = len([t for t in self._api_errors if now - t < 300])
+        return {
+            "requests_per_min": recent_requests,
+            "max_requests_per_min": self.MAX_REQUESTS_PER_MIN,
+            "orders_placed": self._orders_placed,
+            "orders_cancelled": self._orders_cancelled,
+            "cancel_rate_pct": round(cancel_rate, 1),
+            "api_errors_5min": recent_errors,
+            "total_requests": self._request_count_total,
+        }
+
     def _get_product_id(self, symbol: str) -> Optional[int]:
         """Get Delta product ID for a symbol. Returns None if not configured."""
         info = PRODUCT_MAP.get(symbol)
@@ -184,9 +283,9 @@ class DeltaClient:
     # ==================================================================
 
     def fetch_balance(self) -> float:
-        """Get available USDT/USD balance."""
+        """Get available USDT/USD balance. Cached for 60s."""
         now = time.time()
-        if self._balance_cache is not None and (now - self._balance_ts) < 30:
+        if self._balance_cache is not None and (now - self._balance_ts) < 60:
             return self._balance_cache
 
         try:
@@ -240,6 +339,9 @@ class DeltaClient:
         if not product_id:
             return {"error": "unknown_symbol", "symbol": symbol}
 
+        self._rate_limit_check()
+        self._enforce_order_delay(symbol)
+
         try:
             kwargs = {
                 "product_id": product_id,
@@ -259,6 +361,7 @@ class DeltaClient:
                     kwargs["post_only"] = "true"
 
             result = self._client.place_order(**kwargs)
+            self._track_order_placed()
             logger.info(
                 "DELTA [%s] ORDER: %s %s %d lots | product=%d | coid=%s | result=%s",
                 self.mode.upper(), side, symbol, lots, product_id,
@@ -268,6 +371,7 @@ class DeltaClient:
             return result if isinstance(result, dict) else {"raw": result}
 
         except Exception as e:
+            self._track_api_error()
             logger.error("DELTA [%s] ORDER FAILED: %s %s %d lots | %s",
                         self.mode.upper(), side, symbol, lots, e)
             return {"error": str(e)}
@@ -292,12 +396,12 @@ class DeltaClient:
 
         info = self._get_product_info(symbol)
         tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
-
-        # Round stop price to tick size
         stop_price = round(stop_price / tick) * tick
 
+        self._rate_limit_check()
+        self._enforce_order_delay(symbol)
+
         try:
-            # Use raw request for full parameter control
             payload = {
                 "product_id": product_id,
                 "size": int(lots),
@@ -313,6 +417,7 @@ class DeltaClient:
                 payload["trail_amount"] = str(round(trail_amount / tick) * tick)
 
             result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
+            self._track_order_placed()
             logger.info(
                 "DELTA [%s] SL: %s %s %d lots @ %.4f | trail=%.2f | coid=%s | result=%s",
                 self.mode.upper(), side, symbol, lots, stop_price, trail_amount,
@@ -322,6 +427,7 @@ class DeltaClient:
             return result if isinstance(result, dict) else {"raw": result}
 
         except Exception as e:
+            self._track_api_error()
             logger.error("DELTA [%s] SL FAILED: %s | %s", self.mode.upper(), symbol, e)
             return {"error": str(e)}
 
@@ -341,6 +447,9 @@ class DeltaClient:
         tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
         stop_price = round(stop_price / tick) * tick
 
+        self._rate_limit_check()
+        self._enforce_order_delay(symbol)
+
         try:
             payload = {
                 "product_id": product_id,
@@ -355,6 +464,7 @@ class DeltaClient:
                 payload["client_order_id"] = client_order_id[:32]
 
             result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
+            self._track_order_placed()
             logger.info(
                 "DELTA [%s] TP: %s %s %d lots @ %.4f | coid=%s | result=%s",
                 self.mode.upper(), side, symbol, lots, stop_price,
@@ -364,6 +474,7 @@ class DeltaClient:
             return result if isinstance(result, dict) else {"raw": result}
 
         except Exception as e:
+            self._track_api_error()
             logger.error("DELTA [%s] TP FAILED: %s | %s", self.mode.upper(), symbol, e)
             return {"error": str(e)}
 
@@ -393,6 +504,9 @@ class DeltaClient:
         product_id = self._get_product_id(symbol)
         if not product_id:
             return {"error": "unknown_symbol"}
+
+        self._rate_limit_check()
+        self._enforce_order_delay(symbol)
 
         info = self._get_product_info(symbol)
         tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
@@ -588,6 +702,8 @@ class DeltaClient:
                 except Exception:
                     pass
 
+            for _ in orders:
+                self._track_cancel(symbol=symbol or "ALL", reason="cancel_all")
             logger.info("DELTA [%s] CANCEL ALL: %d orders", self.mode.upper(), len(orders))
             return True
         except Exception as e:

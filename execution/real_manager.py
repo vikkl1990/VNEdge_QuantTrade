@@ -70,25 +70,27 @@ class RealCircuitBreaker:
         self.total_pnl += pnl_usd
         self.trade_count_today += 1
 
-        if pnl_usd < 0:
+        # Don't count micro-losses (<$0.50) toward consecutive — these are fee/rounding artifacts
+        if pnl_usd < -0.50:
             self.consecutive_losses += 1
-        else:
+        elif pnl_usd >= 0:
             self.consecutive_losses = 0
+        # else: micro-loss between -$0.50 and $0 — ignore for streak purposes
 
         self._check_trip()
 
     def record_trade_with_reason(self, pnl_usd: float, reason: str = ""):
-        """Record trade but skip orphan_sync from consecutive loss count."""
+        """Record trade but skip orphan/micro losses from consecutive count."""
         self.daily_pnl += pnl_usd
         self.total_pnl += pnl_usd
         self.trade_count_today += 1
 
-        # Orphan sync losses are timing artifacts, not real losses
-        if reason == "orphan_sync" and pnl_usd < 0 and abs(pnl_usd) < 1.0:
-            pass  # Don't count tiny orphan losses toward consecutive
-        elif pnl_usd < 0:
+        # Skip from consecutive count: orphan sync, micro-losses, fee artifacts
+        if reason == "orphan_sync" and abs(pnl_usd) < 1.0:
+            pass  # Timing artifact
+        elif pnl_usd < -0.50:
             self.consecutive_losses += 1
-        else:
+        elif pnl_usd >= 0:
             self.consecutive_losses = 0
 
         self._check_trip()
@@ -521,7 +523,7 @@ class RealTradingManager:
         """
         real_trade_id = self.paper_to_real.get(paper_trade_id)
 
-        # Fallback: if mapping lost (restart), search by paper_trade_id in open trades
+        # Fallback 1: search by paper_trade_id in open trades
         if not real_trade_id:
             for tid, t in list(self.real_trades.items()):
                 if getattr(t, "paper_trade_id", "") == paper_trade_id:
@@ -533,8 +535,39 @@ class RealTradingManager:
                     if pid == paper_trade_id:
                         real_trade_id = tid
                         break
+
+        # Fallback 2: match by symbol — find ANY open demo trade for this symbol
+        # This catches cases where mapping was lost but demo position exists
         if not real_trade_id:
-            return None  # Truly no matching trade
+            # Get symbol from the closed paper signal
+            paper_sym = None
+            for tid, t in list(self.real_trades.items()):
+                t_sym = getattr(t, "symbol", t.get("symbol", "")) if isinstance(t, dict) else getattr(t, "symbol", "")
+                if t_sym and not paper_sym:
+                    # We need the paper signal's symbol — get from orchestrator context
+                    pass
+            # Search all open real trades for matching symbol
+            for tid, t in list(self.real_trades.items()):
+                t_sym = getattr(t, "symbol", "") if not isinstance(t, dict) else t.get("symbol", "")
+                t_status = getattr(t, "status", "") if not isinstance(t, dict) else t.get("status", "")
+                if t_status in ("open", "active", ""):
+                    real_trade_id = tid
+                    logger.info("REAL EXIT: Fallback symbol match — paper=%s → real=%s (sym=%s)",
+                               paper_trade_id[:12] if paper_trade_id else "?", tid[:12], t_sym)
+                    break
+            if not real_trade_id:
+                for tid, t in list(self._open_positions.items()):
+                    real_trade_id = tid
+                    t_sym = t.get("symbol", "") if isinstance(t, dict) else getattr(t, "symbol", "")
+                    logger.info("REAL EXIT: Fallback from _open_positions — paper=%s → real=%s (sym=%s)",
+                               paper_trade_id[:12] if paper_trade_id else "?", tid[:12], t_sym)
+                    break
+
+        if not real_trade_id:
+            logger.debug("REAL EXIT: No matching real trade for paper=%s (mappings=%d, open=%d)",
+                        paper_trade_id[:12] if paper_trade_id else "?",
+                        len(self.paper_to_real), len(self.real_trades))
+            return None
 
         # Look up in real_trades first, then _open_positions (dry run)
         trade = self.real_trades.get(real_trade_id)

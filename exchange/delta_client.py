@@ -164,12 +164,16 @@ class DeltaClient:
         return self._connected and self._client is not None
 
     def _get_product_id(self, symbol: str) -> Optional[int]:
-        """Get Delta product ID for a symbol."""
+        """Get Delta product ID for a symbol. Returns None if not configured."""
         info = PRODUCT_MAP.get(symbol)
         if not info:
             logger.warning("DELTA: Unknown symbol %s", symbol)
             return None
-        return info["demo_id"] if self.mode == "demo" else info["prod_id"]
+        pid = info["demo_id"] if self.mode == "demo" else info["prod_id"]
+        if not pid or pid == 0:
+            logger.debug("DELTA: Product ID not configured for %s (%s mode)", symbol, self.mode)
+            return None
+        return pid
 
     def _get_product_info(self, symbol: str) -> Optional[Dict]:
         """Get full product info for a symbol."""

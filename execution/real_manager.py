@@ -32,6 +32,11 @@ logger = logging.getLogger("bot.real_trading")
 
 STATE_FILE = Path("storage/real_trading_state.json")
 
+# Delta India fee structure (GST-inclusive)
+# Taker: 0.059%, Maker: 0.0236%, Settlement: 0.059%
+# Round-trip worst case (taker entry + taker exit): 0.059% × 2 = 0.118%
+DELTA_ROUND_TRIP_FEE_PCT = 0.00118
+
 
 def _normalize_side(side) -> str:
     """Normalize trade side to 'long' or 'short' string regardless of input type."""
@@ -223,6 +228,10 @@ class RealTradingManager:
         self._delta_demo = DeltaClient(mode="demo")
         self._delta_live = DeltaClient(mode="live")
         self._delta_connected = False
+
+        # Legacy ccxt demo exchange (used by _get_trading_exchange fallback)
+        self._demo_exchange = None
+        self._demo_connected = False
 
         # Legacy engine (kept for compatibility, not used for real orders)
         self.engine = ExecutionEngine(exchange, config, risk_manager)
@@ -702,7 +711,7 @@ class RealTradingManager:
             notional = margin * leverage
             pnl_usd = pnl_pct * notional
             # Delta India fees: 0.059% taker (GST-inclusive) × 2 sides = 0.118% round trip
-            fee_est = notional * 0.00118
+            fee_est = notional * DELTA_ROUND_TRIP_FEE_PCT
             net_pnl = pnl_usd - fee_est
 
             # Inherit paper slippage if demo has none
@@ -1083,7 +1092,7 @@ class RealTradingManager:
             leverage = getattr(trade, "leverage", 10) or 10
             position_usd = margin * leverage
             # Delta India fees: 0.059% taker × 2 = 0.118% round trip
-            net_pnl = pnl_pct * position_usd - position_usd * 0.00118
+            net_pnl = pnl_pct * position_usd - position_usd * DELTA_ROUND_TRIP_FEE_PCT
             # Safety cap: orphan PnL should never exceed notional (margin × leverage)
             net_pnl = max(net_pnl, -position_usd)
             logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | paper closed without mirror",
@@ -1630,7 +1639,7 @@ class RealTradingManager:
                 pnl_pct = (entry_p - fill_price) / entry_p if entry_p else 0
 
             notional = margin * leverage
-            net_pnl = pnl_pct * notional - notional * 0.00118
+            net_pnl = pnl_pct * notional - notional * DELTA_ROUND_TRIP_FEE_PCT
 
             reason = "ws_sl_hit" if net_pnl < 0 else "ws_tp_hit"
 

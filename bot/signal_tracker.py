@@ -740,7 +740,7 @@ class SignalTracker:
             # Reject prices that are wildly different from entry (wrong symbol leak)
             if ts.entry_price > 0 and price > 0:
                 deviation = abs(price - ts.entry_price) / ts.entry_price
-                if deviation > 0.50:  # >50% deviation = impossible intraday move
+                if deviation > 0.15:  # >15% deviation = wrong symbol or data corruption
                     logger.error(
                         "PRICE SANITY FAIL: %s %s | entry=%.4f price=%.4f | dev=%.1f%% — SKIPPING",
                         ts.symbol, ts.side, ts.entry_price, price, deviation * 100,
@@ -1050,6 +1050,7 @@ class SignalTracker:
                     ts.tp1_hit = True
                     ts.tp1_time = now_iso
                     ts.status = "tp1_hit"
+                    ts.tp1_distance_r = abs(ts.tp1 - ts.entry_price) / ts.initial_risk if ts.initial_risk > 0 else 0
 
                     # Book partial profit: 60% of position at TP1
                     if is_long:

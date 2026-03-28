@@ -432,7 +432,10 @@ class BotOrchestrator:
                 msg = ev.get("message", "")
                 ev_type = ev.get("type", "")
                 level = AlertLevel.INFO if "TP" in ev_type.upper() else AlertLevel.WARNING
-                await self._alert_manager.send(msg, level=level)
+                try:
+                    await self._alerts.send_system_alert(msg, level=level)
+                except Exception:
+                    pass
 
     async def _on_ws_order_fill(
         self, symbol: str, order_id: str, client_order_id: str,

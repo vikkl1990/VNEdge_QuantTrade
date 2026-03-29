@@ -330,6 +330,18 @@ class DashboardServer:
         return session
 
     @web.middleware
+    async def _security_headers_middleware(self, request: web.Request, handler):
+        """Strip server info + add security headers to all responses."""
+        response = await handler(request)
+        # Remove server version leak (was: Python/3.x aiohttp/3.x)
+        if "Server" in response.headers:
+            del response.headers["Server"]
+        response.headers["Server"] = "VNEdge"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
+
+    @web.middleware
     async def _auth_middleware(self, request: web.Request, handler):
         """Middleware: GET APIs are public (read-only). POST APIs require auth."""
         path = request.path
@@ -443,6 +455,8 @@ class DashboardServer:
         self._bot_status = "running"
 
         middlewares = []
+        # Security headers first (outermost middleware)
+        middlewares.append(self._security_headers_middleware)
         # Always use the dashboard's own middleware (GET=public, POST=auth required)
         middlewares.append(self._auth_middleware)
         if self._auth_service:

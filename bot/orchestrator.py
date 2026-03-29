@@ -496,15 +496,10 @@ class BotOrchestrator:
                 if not self._running:
                     continue
 
-                # ── PERIODIC ORPHAN SYNC (every 5 min, NOT per dashboard poll) ──
-                if (time.monotonic() - _last_orphan_sync) >= _ORPHAN_SYNC_INTERVAL:
-                    _last_orphan_sync = time.monotonic()
-                    if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
-                        try:
-                            active_ids = {ts.trade_id for ts in self._signal_tracker._active.values()}
-                            self._real_manager.sync_with_paper(active_ids)
-                        except Exception as exc:
-                            self._log.debug("Periodic orphan sync failed: %s", exc)
+                # ── PERIODIC ORPHAN SYNC ──
+                # IMPORTANT: Runs AFTER event processing (below) to give mirror_paper_exit
+                # a chance to run first. This prevents the race condition where sync_with_paper
+                # orphan-closes trades before mirror_paper_exit can properly close them.
                 # Grid bot runs ALWAYS (even with 0 active trades)
                 # Signal tracker only runs when there are active trades
 
@@ -626,6 +621,18 @@ class BotOrchestrator:
 
                 # Record heartbeat
                 self._heartbeat.record_activity("fast_trade_monitor")
+
+                # ── PERIODIC ORPHAN SYNC (AFTER event processing) ──
+                # Runs after mirror_paper_exit has had a chance to handle exits properly.
+                # Only syncs every 5 minutes to avoid hammering.
+                if (time.monotonic() - _last_orphan_sync) >= _ORPHAN_SYNC_INTERVAL:
+                    _last_orphan_sync = time.monotonic()
+                    if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                        try:
+                            active_ids = {ts.trade_id for ts in self._signal_tracker._active.values()}
+                            self._real_manager.sync_with_paper(active_ids)
+                        except Exception as exc:
+                            self._log.debug("Periodic orphan sync failed: %s", exc)
 
             except asyncio.CancelledError:
                 raise

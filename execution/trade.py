@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -155,7 +155,7 @@ class Trade:
         if unrealized < self.max_adverse_excursion:
             self.max_adverse_excursion = unrealized
 
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     def _calc_unrealized(self, current_price: float) -> float:
         """Calculate unrealized PnL for the remaining open position."""
@@ -174,7 +174,7 @@ class Trade:
     def mark_filled(self, fill_price: float, fill_size: float, fee: float = 0.0) -> None:
         """Record an entry fill."""
         self.entry_price = fill_price
-        self.entry_time = datetime.utcnow()
+        self.entry_time = datetime.now(timezone.utc)
         self.filled_size = fill_size
         self.remaining_size = fill_size
         self.position_size = fill_size
@@ -183,7 +183,7 @@ class Trade:
         self.status = TradeStatus.OPEN
         self.highest_price_seen = fill_price
         self.lowest_price_seen = fill_price
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     def mark_partial_exit(
         self, exit_price: float, exit_size: float, fee: float = 0.0, reason: str = ""
@@ -208,14 +208,14 @@ class Trade:
         if self.remaining_size <= 0:
             self.status = TradeStatus.CLOSED
             self.exit_price = exit_price
-            self.exit_time = datetime.utcnow()
+            self.exit_time = datetime.now(timezone.utc)
             self.exit_reason = reason or self.exit_reason
         else:
             self.status = TradeStatus.PARTIAL
             if reason:
                 self.exit_reason = reason
 
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
         return chunk_pnl
 
     def mark_closed(self, exit_price: float, fee: float = 0.0, reason: str = "") -> float:
@@ -226,13 +226,13 @@ class Trade:
         """Cancel a pending trade that was never filled."""
         self.status = TradeStatus.CANCELLED
         self.exit_reason = reason or "cancelled"
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     def mark_failed(self, reason: str = "") -> None:
         """Mark trade as failed due to execution error."""
         self.status = TradeStatus.FAILED
         self.exit_reason = reason or "execution_failed"
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
     # TP / SL helpers
@@ -274,7 +274,7 @@ class Trade:
         """How long the trade has been / was open, in seconds."""
         if self.entry_time is None:
             return None
-        end = self.exit_time if self.exit_time else datetime.utcnow()
+        end = self.exit_time if self.exit_time else datetime.now(timezone.utc)
         return (end - self.entry_time).total_seconds()
 
     @property

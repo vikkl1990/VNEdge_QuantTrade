@@ -53,7 +53,7 @@ TRADE_TYPE_CONFIG = {
         "tp3_rr": 0.0,            # NO TP3 for scalps
         "time_stop_bars": 3,      # 3 bars — kill dead scalps fast (REVERTED from 5)
         "time_stop_type": "hard", # kill if not moving
-        "early_kill_sec": 120,    # 2 min early kill (REVERTED from 150)
+        "early_kill_sec": 60,     # 60s early kill — must be tighter than INTRADAY (90s)
         "early_kill_mfe": 0.10,   # need to show life quickly (REVERTED from 0.12)
         "trail_atr_mult": 0.6,   # tight trail for scalps (REVERTED from 0.8)
         "max_age_sec": 15 * 60,   # 15 min max (REVERTED from 20)

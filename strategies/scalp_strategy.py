@@ -2084,8 +2084,14 @@ class ScalpStrategy(BaseStrategy):
                 hard_vetos.append(v)
 
         # Track veto stats for debugging (exposed to dashboard)
+        # Reset every 15 minutes so dashboard shows CURRENT blocks, not lifetime cumulative
+        import time as _time
         if not hasattr(self, '_veto_stats'):
             self._veto_stats = {}
+            self._veto_stats_reset_at = _time.time()
+        if _time.time() - self._veto_stats_reset_at > 900:  # 15 min
+            self._veto_stats = {}
+            self._veto_stats_reset_at = _time.time()
         for v in vetos:
             veto_type = v.split(":")[0].strip()
             self._veto_stats[veto_type] = self._veto_stats.get(veto_type, 0) + 1

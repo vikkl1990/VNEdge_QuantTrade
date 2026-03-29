@@ -341,21 +341,21 @@ class TrackedSignal:
             paper_stake = 100.0
             lev_cap_source = "super_scalp_90+_75x"
         elif confidence >= 80:
-            max_lev = 50
+            max_lev = 60
             paper_stake = 100.0
-            lev_cap_source = "super_scalp_80+_50x"
+            lev_cap_source = "super_scalp_80+_60x"
         elif confidence >= 70:
-            max_lev = 30
+            max_lev = 45
             paper_stake = 80.0
-            lev_cap_source = "super_scalp_70+_30x"
+            lev_cap_source = "super_scalp_70+_45x"
         elif confidence >= 60:
-            max_lev = 20
+            max_lev = 30
             paper_stake = 60.0
-            lev_cap_source = "super_scalp_60+_20x"
+            lev_cap_source = "super_scalp_60+_30x"
         else:
-            max_lev = 10
+            max_lev = 20
             paper_stake = 50.0
-            lev_cap_source = "super_scalp_base_10x"
+            lev_cap_source = "super_scalp_base_20x"
 
         # Derive effective leverage from position size
         derived_lev = position_usd / paper_stake

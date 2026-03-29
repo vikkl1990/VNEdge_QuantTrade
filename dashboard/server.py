@@ -541,6 +541,7 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
+        app.router.add_get("/api/agents/status", self._handle_agents_status)
 
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
@@ -1200,6 +1201,94 @@ class DashboardServer:
             })
 
         return web.json_response(result, dumps=_safe_dumps)
+
+    async def _handle_agents_status(self, request: web.Request) -> web.Response:
+        """Return agent status, ML models, QA results, defects, and loss analysis."""
+        import json as _json
+        from pathlib import Path
+
+        storage = Path("storage")
+
+        # ML model results
+        ml_models = []
+        ml_summary = "No models loaded"
+        ml_last_run = "--"
+        try:
+            pf = storage / "ml_models" / "candidate_pair_family.json"
+            if pf.exists():
+                with open(pf) as f:
+                    pf_data = _json.load(f)
+                ml_last_run = pf_data.get("timestamp", "--")[:19].replace("T", " ")
+                results = pf_data.get("results", {})
+                for family, scanners in results.items():
+                    for scanner, data in scanners.items():
+                        agg = data.get("training", {}).get("aggregate_oos", {})
+                        ml_models.append({
+                            "scanner": scanner,
+                            "auc": agg.get("auc_roc", 0),
+                            "spread": agg.get("spread", 0),
+                            "candidates": data.get("training", {}).get("total_candidates", 0),
+                            "live": scanner == "structure_bounce",  # only structure_bounce is live-scored
+                        })
+                ml_models.sort(key=lambda x: -x["auc"])
+                best = ml_models[0] if ml_models else {}
+                ml_summary = f"{len(ml_models)} models | Best: {best.get('scanner','')} AUC={best.get('auc',0):.3f}"
+        except Exception:
+            pass
+
+        # QA results from storage
+        qa_results = {"unit": "--", "integration": "--", "api": "--", "data_integrity": "--", "pass_rate": "--"}
+        try:
+            qf = storage / "qa_reports" / "latest.json"
+            if qf.exists():
+                with open(qf) as f:
+                    qa_results = _json.load(f)
+        except Exception:
+            pass
+
+        # Defects from storage
+        defects = []
+        try:
+            df = storage / "qa_reports" / "defects.json"
+            if df.exists():
+                with open(df) as f:
+                    defects = _json.load(f)
+        except Exception:
+            pass
+
+        # Recent losses from closed trades
+        recent_losses = []
+        try:
+            if hasattr(self, '_real_manager') and self._real_manager:
+                status = await self._real_manager.get_status()
+                for t in reversed(status.get("recent_trades", [])):
+                    pnl = t.get("pnl_usd", 0)
+                    if isinstance(pnl, (int, float)) and pnl < -0.05:
+                        recent_losses.append({
+                            "symbol": t.get("symbol", "?"),
+                            "side": t.get("side", "?"),
+                            "pnl": f"${pnl:.2f}",
+                            "time": str(t.get("timestamp", ""))[-8:],
+                            "scanner": t.get("scanner", "?"),
+                            "reason": t.get("reason", "?"),
+                            "analysis": f"Entry={t.get('entry_price',0):.2f} Exit={t.get('exit_price',0):.2f} | {t.get('reason','')}"
+                        })
+                        if len(recent_losses) >= 10:
+                            break
+        except Exception:
+            pass
+
+        return web.json_response({
+            "agents": {
+                "qa": {"status": "IDLE", "last_run": "--", "summary": "QA suite available"},
+                "loss_analyzer": {"status": "IDLE", "last_run": "--", "summary": f"{len(recent_losses)} recent losses"},
+                "ml_trainer": {"status": "IDLE", "last_run": ml_last_run, "summary": ml_summary},
+            },
+            "ml_models": ml_models,
+            "qa_results": qa_results,
+            "defects": defects,
+            "recent_losses": recent_losses,
+        })
 
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""

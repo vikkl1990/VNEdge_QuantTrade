@@ -47,7 +47,7 @@ TRADE_TYPE_RUNNER = "RUNNER"        # High conviction trend, wide SL/TP, no time
 # Per-type exit parameters
 TRADE_TYPE_CONFIG = {
     TRADE_TYPE_SCALP: {
-        "sl_atr_mult": 0.9,       # tight SL
+        "sl_atr_mult": 0.8,       # tighter SL (was 0.9 — P4: fewer wide SL hits)
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
@@ -59,16 +59,16 @@ TRADE_TYPE_CONFIG = {
         "max_age_sec": 15 * 60,   # 15 min max (REVERTED from 20)
     },
     TRADE_TYPE_INTRADAY: {
-        "sl_atr_mult": 1.15,      # moderate SL
+        "sl_atr_mult": 1.0,       # tighter SL (was 1.15 — P4 fix: 8 SL hits = -7.48%)
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 6,      # 6 bars — tighter (was 8, avg timeout was 17min)
+        "time_stop_bars": 4,      # 4 bars (was 6 — P1 fix: 24 time_stop_intraday = 0% WR)
         "time_stop_type": "soft", # only exit if losing AND no progress
         "early_kill_sec": 90,     # 90s — kill dead INTRADAY faster (was 120)
-        "early_kill_mfe": 0.05,   # lower threshold — if no movement by 90s, entry was wrong
+        "early_kill_mfe": 0.08,   # raised from 0.05 — P1 fix: need stronger momentum signal
         "trail_atr_mult": 1.0,   # standard trail
-        "max_age_sec": 45 * 60,   # 45 min max (was 60)
+        "max_age_sec": 30 * 60,   # 30 min max (was 45 — P1 fix: less time to bleed)
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 1.5,       # wide SL — give room
@@ -616,6 +616,9 @@ class SignalTracker:
         self._paper_start_balance: float = 1000.0  # paper trading starting capital
         self._training_dataset = None  # set by orchestrator for ML feedback
         self._live_feedback_file = _STORAGE_DIR / "ml_live_feedback.jsonl"
+        # Recently closed trades: {paper_trade_id: {exit_price, exit_reason, symbol, side}}
+        # Used by orphan sync to get accurate exit prices instead of entry==exit
+        self._closed_recently: Dict[str, Dict] = {}
         self._load()
 
     def set_exchange_balance(self, balance: float) -> None:
@@ -1323,21 +1326,25 @@ class SignalTracker:
                             kill_reason = "max_age"
 
                     elif not dead_trade and time_stop_type == "soft":
-                        # INTRADAY: Soft time stop — only if losing AND no progress
+                        # INTRADAY: Soft time stop — P1 FIX: tighter (24 trades = 0% WR, -6.23%)
                         base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
 
                         # Never time-stop if meaningfully above entry
                         if current_r >= 0.05:
                             dead_trade = False
-                        # If losing and never showed life
-                        elif age_sec >= base_time and max_fav_r < 0.20 and current_r < -0.2:
+                        # If losing and never showed life (tightened: MFE < 0.15R from 0.20)
+                        elif age_sec >= base_time and max_fav_r < 0.15 and current_r < -0.15:
                             dead_trade = True
                             kill_reason = "soft_no_progress"
                         # If trade went positive but now retreating hard
                         elif age_sec >= base_time * 0.7 and max_fav_r >= 0.3 and current_r < -0.3:
                             dead_trade = True
                             kill_reason = "soft_retreat"
-                        # Hard backstop
+                        # NEW: if flat too long — no meaningful move after base_time
+                        elif age_sec >= base_time and abs(current_r) < 0.08 and max_fav_r < 0.15:
+                            dead_trade = True
+                            kill_reason = "soft_flat"
+                        # Hard backstop (tighter: exit if ANY loss after max_age)
                         elif age_sec >= max_age and current_r < 0:
                             dead_trade = True
                             kill_reason = "max_age"
@@ -1485,6 +1492,19 @@ class SignalTracker:
             ts = self._active.pop(tid)
             closed_dict = ts.to_dict()
             self._closed.append(closed_dict)
+
+            # Track recently closed for orphan sync (so it gets accurate exit prices)
+            self._closed_recently[tid] = {
+                "exit_price": ts.exit_price,
+                "exit_reason": ts.exit_reason,
+                "symbol": ts.symbol,
+                "side": ts.side,
+            }
+            # Cap _closed_recently to last 200 to prevent memory leak
+            if len(self._closed_recently) > 200:
+                oldest_keys = list(self._closed_recently.keys())[:-200]
+                for k in oldest_keys:
+                    del self._closed_recently[k]
 
             # ── ML FEEDBACK: update training dataset with outcome ──
             self._send_ml_feedback(ts)

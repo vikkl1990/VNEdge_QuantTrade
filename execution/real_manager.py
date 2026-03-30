@@ -1076,12 +1076,42 @@ class RealTradingManager:
             paper_id = getattr(trade, "paper_trade_id", "")
             if paper_id and paper_id not in active_paper_ids:
                 orphans.append(trade_id)
+
+        # Dedup: track which symbol+side combos we've already closed this cycle
+        _closed_this_cycle = set()
+        closed_count = 0
+
         for trade_id in orphans:
-            trade = self.real_trades[trade_id]
+            trade = self.real_trades.get(trade_id)
+            if not trade:
+                continue
             paper_id = getattr(trade, "paper_trade_id", "")
-            # Use paper exit price if available (more accurate than current market)
+
+            # DEDUP: skip if we already closed this exact symbol+side+entry combo
+            dedup_key = (trade.symbol, getattr(trade, "side", ""), trade.entry_price)
+            if dedup_key in _closed_this_cycle:
+                logger.debug("ORPHAN DEDUP: skipping duplicate %s %s entry=%s",
+                            trade.symbol, getattr(trade, "side", ""), trade.entry_price)
+                self.real_trades.pop(trade_id, None)
+                self.paper_to_real.pop(paper_id, None)
+                continue
+            _closed_this_cycle.add(dedup_key)
+
+            # Use paper exit price if available (CRITICAL: avoid entry==exit fee-only losses)
             paper_close = closed_paper_trades.get(paper_id, {})
-            exit_price = paper_close.get("exit_price") or getattr(trade, "current_price", trade.entry_price)
+            exit_price = paper_close.get("exit_price", 0)
+            exit_reason = paper_close.get("exit_reason", "orphan_sync")
+
+            # Fallback: use current_price (from WS ticker), NEVER use entry_price
+            if not exit_price or exit_price <= 0:
+                exit_price = getattr(trade, "current_price", 0)
+
+            # If still no valid exit price, skip this orphan — don't create fee-only losses
+            if not exit_price or exit_price <= 0 or exit_price == trade.entry_price:
+                logger.debug("ORPHAN SKIP: %s — no valid exit price (entry=%s, current=%s), waiting for price update",
+                            trade.symbol, trade.entry_price, getattr(trade, "current_price", 0))
+                continue
+
             side_str = _normalize_side(getattr(trade, "side", "long"))
             if side_str == "long":
                 pnl_pct = (exit_price - trade.entry_price) / trade.entry_price if trade.entry_price else 0
@@ -1095,11 +1125,16 @@ class RealTradingManager:
             net_pnl = pnl_pct * position_usd - position_usd * DELTA_ROUND_TRIP_FEE_PCT
             # Safety cap: orphan PnL should never exceed notional (margin × leverage)
             net_pnl = max(net_pnl, -position_usd)
-            logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | paper closed without mirror",
-                        trade.symbol, side_str, net_pnl, margin, position_usd)
-            self.circuit_breaker.record_trade_with_reason(net_pnl, "orphan_sync")
-            self._record_closed_trade(trade, exit_price, net_pnl, "orphan_sync", dry_run=True)
-        if orphans:
+
+            # Use paper exit reason if available for better tracking
+            close_reason = exit_reason if exit_reason != "orphan_sync" else "orphan_sync"
+            logger.info("REAL [DRY RUN] ORPHAN CLOSE: %s %s | pnl=$%.2f | margin=$%.2f pos=$%.2f | exit=%.4f | reason=%s",
+                        trade.symbol, side_str, net_pnl, margin, position_usd, exit_price, close_reason)
+            self.circuit_breaker.record_trade_with_reason(net_pnl, close_reason)
+            self._record_closed_trade(trade, exit_price, net_pnl, close_reason, dry_run=True)
+            closed_count += 1
+
+        if closed_count:
             self._save_state()
 
     async def update_prices(self):

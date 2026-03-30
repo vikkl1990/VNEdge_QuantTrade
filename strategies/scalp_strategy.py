@@ -2153,6 +2153,33 @@ class ScalpStrategy(BaseStrategy):
                     entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
                 )
 
+        # ── P2 FIX: Long-side confidence penalty ──
+        # Data shows: Long WR=73.9% vs Short WR=83.1% (+9.2% gap)
+        # Long PnL=+18.95% vs Short PnL=+38.85% (shorts 2x more profitable)
+        # Apply -8 penalty to longs in non-trending regimes
+        if not self._is_learning:
+            side_str = "long" if best.side == OrderSide.LONG else "short"
+            is_long = side_str == "long"
+            regime_str = str(regime).lower()
+            # Penalty for longs in quiet/ranging/unknown regimes
+            if is_long and regime_str not in ("trending_up", "breakout"):
+                _long_adj = -8
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=max(best.confidence + _long_adj, 30),
+                    confirmations=best.confirmations + [f"[LONG_PENALTY: {_long_adj}, regime={regime_str}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
+            # Bonus for shorts in trending_down (proven edge)
+            elif not is_long and regime_str == "trending_down":
+                _short_adj = +5
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=min(best.confidence + _short_adj, 100),
+                    confirmations=best.confirmations + [f"[SHORT_TREND_BOOST: +{_short_adj}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
+
         # ── Fibonacci confidence modifier ──
         if fib_data.get("at_fib", False):
             fib_trend = fib_data.get("trend", "unknown")
@@ -2452,6 +2479,7 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["penalties"] = best_sr.penalties
         signal.metadata["regime"] = regime
         signal.metadata["regime_age"] = regime_age
+        signal.metadata["timeframe"] = self.primary_tf  # P3 fix: track which TF triggered
         signal.metadata["regime_size_mult"] = 1.0  # no regime blocking
         signal.metadata["regime_sl_mult"] = 1.0
         signal.metadata["confidence_size_mult"] = confidence_size_mult

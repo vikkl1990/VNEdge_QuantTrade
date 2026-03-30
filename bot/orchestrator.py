@@ -630,7 +630,11 @@ class BotOrchestrator:
                     if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                         try:
                             active_ids = {ts.trade_id for ts in self._signal_tracker._active.values()}
-                            self._real_manager.sync_with_paper(active_ids)
+                            # Build closed paper trades dict with exit prices
+                            closed_paper = {}
+                            if hasattr(self._signal_tracker, '_closed_recently'):
+                                closed_paper = dict(self._signal_tracker._closed_recently)
+                            self._real_manager.sync_with_paper(active_ids, closed_paper)
                         except Exception as exc:
                             self._log.debug("Periodic orphan sync failed: %s", exc)
 

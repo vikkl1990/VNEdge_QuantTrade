@@ -280,6 +280,24 @@ class DashboardConfig:
     secret_key: str = ""
 
 
+@dataclass(frozen=True)
+class IndianMarketConfig:
+    """Indian Market Session Engine configuration.
+
+    Controls NSE open/close awareness, F&O expiry detection,
+    and regime overrides during Indian flow hours.
+    """
+    enabled: bool = False                  # Default OFF for backward compat
+    fno_expiry_day: str = "thursday"
+    fno_expiry_boost: int = 5              # +5 confidence on expiry flow hours
+    holiday_file: str = ""                 # Path to NSE holiday JSON (optional)
+    ranging_limited_scanners: List[str] = field(default_factory=lambda: [
+        "liquidity_sweep", "vwap_mean_revert", "structure_bounce", "rsi_divergence",
+    ])
+    windows: List[Dict[str, Any]] = field(default_factory=list)    # Indian market windows
+    sessions: List[Dict[str, Any]] = field(default_factory=list)   # Configurable legacy sessions
+
+
 # ---------------------------------------------------------------------------
 # Top-level Config
 # ---------------------------------------------------------------------------
@@ -303,6 +321,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     journal: JournalConfig = field(default_factory=JournalConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    indian_market: IndianMarketConfig = field(default_factory=IndianMarketConfig)
     database_url: str = "sqlite:///data/trading_bot.db"
 
     # --- dict-like API so modules using config.get("key") work ----------

@@ -210,12 +210,16 @@ class RealTradingManager:
         rt_cfg = config.get("real_trading", {})
         self.enabled: bool = rt_cfg.get("enabled", False)
         self.dry_run: bool = rt_cfg.get("dry_run", True)
+
+        exec_cfg = config.get("execution", {})
+        self._order_type: str = exec_cfg.get("order_type", "maker")  # "maker" | "taker" | "auto"
+        self._retry_taker_on_reject: bool = exec_cfg.get("retry_taker_on_reject", True)
         self.min_margin: float = rt_cfg.get("min_margin_per_trade", 10.0)
         self.max_margin: float = rt_cfg.get("max_margin_per_trade", 25.0)
         self.max_open: int = rt_cfg.get("max_open_positions", 5)
         self.reserve_pct: float = rt_cfg.get("balance_reserve_pct", 15) / 100.0
         self.min_balance: float = rt_cfg.get("min_balance_to_trade", 30.0)
-        self.leverage_cap: int = rt_cfg.get("leverage_cap", 10)
+        self.leverage_cap: int = rt_cfg.get("leverage_cap", 75)  # raised: demo uses 20x-75x per confidence tier
 
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
@@ -255,6 +259,22 @@ class RealTradingManager:
 
         # Wire emergency close-all to circuit breaker
         self.circuit_breaker.on_trip = self._emergency_close_all
+
+    def _resolve_post_only(self, signal: Dict[str, Any]) -> bool:
+        """Return True if the entry order should be placed as post_only (maker).
+
+        Respects the execution.order_type config:
+          maker — always post_only (saves ~0.036% per entry vs taker)
+          taker — always market (guaranteed fill)
+          auto  — maker if signal is within the Scalper fee window, taker otherwise
+        """
+        if self._order_type == "maker":
+            return True
+        if self._order_type == "taker":
+            return False
+        # auto: use the order_type the strategy already decided
+        meta = signal.get("metadata", {})
+        return meta.get("order_type", "market") == "post_only"
 
     async def _get_trading_exchange(self):
         """Get the correct exchange client based on mode.
@@ -389,14 +409,38 @@ class RealTradingManager:
                 # ATOMIC BRACKET ORDER: entry + SL + TP in one call
                 # Pass paper_trade_id as client_order_id for perfect reconciliation
                 coid = paper_trade_id[:32] if paper_trade_id else None
+                use_post_only = self._resolve_post_only(signal)
                 order = delta.place_bracket_order(
                     symbol=symbol,
                     side=order_side,
                     lots=lots,
                     stop_loss_price=sl,
                     take_profit_price=tp1,
+                    limit_price=entry_price if use_post_only else 0,
                     client_order_id=coid,
+                    post_only=use_post_only,
                 )
+                # Retry as taker if maker was rejected (price moved through the limit)
+                if (
+                    use_post_only
+                    and self._retry_taker_on_reject
+                    and order
+                    and order.get("error") in ("post_only_rejected", "order_rejected")
+                ):
+                    logger.info(
+                        "REAL [DEMO]: post_only rejected for %s — retrying as taker",
+                        symbol,
+                    )
+                    order = delta.place_bracket_order(
+                        symbol=symbol,
+                        side=order_side,
+                        lots=lots,
+                        stop_loss_price=sl,
+                        take_profit_price=tp1,
+                        limit_price=0,
+                        client_order_id=coid,
+                        post_only=False,
+                    )
 
                 if order and not order.get("error"):
                     # Enable auto-topup to prevent liquidation

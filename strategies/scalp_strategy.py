@@ -39,6 +39,8 @@ from pathlib import Path
 _IST = timezone(timedelta(hours=5, minutes=30))
 from typing import Any, Dict, List, Optional, Tuple
 
+from strategies.indian_market_session import IndianMarketSessionEngine, IndianSessionContext
+
 import numpy as np
 import pandas as pd
 
@@ -195,6 +197,21 @@ class ScalpStrategy(BaseStrategy):
         risk_cfg = config.get("risk", {})
         tf_cfg = config.get("timeframes", {})
 
+        exec_cfg = config.get("execution", {})
+        self._order_type: str = exec_cfg.get("order_type", "maker")  # "maker" | "taker" | "auto"
+
+        # --- Indian Market Session Engine ---
+        im_cfg = config.get("indian_market", {})
+        self._indian_market_enabled = im_cfg.get("enabled", False)
+        if self._indian_market_enabled:
+            self._indian_engine = IndianMarketSessionEngine(im_cfg)
+            logger.info("Indian Market Session Engine: ENABLED (windows=%d, fno_expiry=%s)",
+                        len(im_cfg.get("windows", [])), im_cfg.get("fno_expiry_day", "thursday"))
+        else:
+            self._indian_engine = None
+            logger.info("Indian Market Session Engine: DISABLED (using legacy sessions)")
+        self._session_configs = im_cfg.get("sessions", [])
+
         # --- Pair-specific ML thresholds (from config, falling back to class defaults) ---
         ml_cfg = config.get("ml", {})
         if ml_cfg.get("pair_thresholds"):
@@ -347,6 +364,7 @@ class ScalpStrategy(BaseStrategy):
             shadow_mode=ml_cfg.get("shadow_mode", True),  # Start shadow — log only, no veto
         )
         self._ml_shadow_mode: bool = ml_cfg.get("shadow_mode", True)
+        self._ml_veto_skip: bool = ml_cfg.get("veto_skip", True)  # block SKIP verdicts even in shadow
         self._last_ml_result: Dict[str, Any] = {}
 
         # Per-symbol ML probability thresholds (from calibration analysis)
@@ -703,33 +721,83 @@ class ScalpStrategy(BaseStrategy):
         # Use per-symbol funnel for this call
         self._funnel = self._funnels[symbol]
 
-        # ── SESSION-AWARE GATING ──
-        # Data from 112 trades: Asia Late 37% WR, Asia Early 50%, Europe 63%, US 57%
-        # Block the worst session, restrict the marginal one
+        # ── SESSION-AWARE GATING (config-driven + Indian Market Engine) ──
         # (Disabled in backtesting via _session_gate_enabled=False)
         if getattr(self, '_session_gate_enabled', True) is False:
             self._current_session = "europe"
             self._session_min_confidence = self.min_confidence
-        ist_now = datetime.now(_IST)
-        ist_hour = ist_now.hour + ist_now.minute / 60.0
-        # Session context — soft confidence adjustment (no blocking)
-        self._session_penalty: int = 0
-        if getattr(self, '_session_gate_enabled', True) and 2.5 <= ist_hour < 9.0:
-            self._current_session = "asia_late"    # 37% WR — penalty, NOT blocked
-            self._session_min_confidence = 65
-            self._session_penalty = -15            # reduces confidence score
-        elif 9.0 <= ist_hour < 13.5:
-            self._current_session = "asia_early"   # 50% WR
-            self._session_min_confidence = 65
-            self._session_penalty = -5
-        elif 13.5 <= ist_hour < 20.5:
-            self._current_session = "europe"        # 63% WR — best session, boost
-            self._session_min_confidence = 65
-            self._session_penalty = +5
-        else:
-            self._current_session = "us"            # 57% WR — decent
-            self._session_min_confidence = 65
             self._session_penalty = 0
+            self._indian_ctx = None
+        else:
+            ist_now = datetime.now(_IST)
+            ist_hour = ist_now.hour + ist_now.minute / 60.0
+
+            # --- Indian Market Session Engine (if enabled) ---
+            self._indian_ctx: Optional[IndianSessionContext] = None
+            if self._indian_engine is not None:
+                self._indian_ctx = self._indian_engine.evaluate(ist_now)
+
+                # Hard block during NSE auction noise (9:00-9:30 IST)
+                if self._indian_ctx.block:
+                    _im_block_key = f"_im_block_count_{symbol}"
+                    _im_cnt = getattr(self, _im_block_key, 0) + 1
+                    setattr(self, _im_block_key, _im_cnt)
+                    if _im_cnt <= 3 or _im_cnt % 50 == 0:
+                        logger.info("FUNNEL %s | INDIAN MARKET BLOCK #%d | %s: %s",
+                                    symbol, _im_cnt, self._indian_ctx.session_name,
+                                    self._indian_ctx.block_reason)
+                    self.last_scan_status[symbol] = {
+                        "time": now_iso, "signal": False,
+                        "reason": f"INDIAN MARKET BLOCK: {self._indian_ctx.block_reason}",
+                        "indicators": {}, "setups_checked": 0,
+                        "funnel": dict(self._funnel),
+                    }
+                    return []
+
+            # --- Determine session (config-driven or legacy fallback) ---
+            self._session_penalty: int = 0
+            self._session_min_confidence = 65
+            self._current_session = "unknown"
+
+            if self._session_configs:
+                # Config-driven session matching
+                for sess in self._session_configs:
+                    s = float(sess.get("start_hour", 0))
+                    e = float(sess.get("end_hour", 0))
+                    if e < s:  # wraps midnight (e.g. us: 20.5 → 2.5)
+                        in_window = ist_hour >= s or ist_hour < e
+                    else:
+                        in_window = s <= ist_hour < e
+                    if in_window:
+                        self._current_session = sess.get("name", "unknown")
+                        self._session_penalty = int(sess.get("confidence_adj", 0))
+                        self._session_min_confidence = int(sess.get("min_confidence", 65))
+                        break
+            else:
+                # Legacy hardcoded fallback (original behavior)
+                if 2.5 <= ist_hour < 9.0:
+                    self._current_session = "asia_late"
+                    self._session_min_confidence = 65
+                    self._session_penalty = -15
+                elif 9.0 <= ist_hour < 13.5:
+                    self._current_session = "asia_early"
+                    self._session_min_confidence = 65
+                    self._session_penalty = -5
+                elif 13.5 <= ist_hour < 20.5:
+                    self._current_session = "europe"
+                    self._session_min_confidence = 65
+                    self._session_penalty = +5
+                else:
+                    self._current_session = "us"
+                    self._session_min_confidence = 65
+                    self._session_penalty = 0
+
+            # --- Indian market overlay: flow hours override session penalty ---
+            if self._indian_ctx and self._indian_ctx.is_indian_flow_hour:
+                self._session_penalty = self._indian_ctx.confidence_adjustment
+                if self._indian_ctx.is_fno_expiry_day:
+                    self._session_penalty += self._indian_ctx.fno_expiry_boost
+                self._current_session = self._indian_ctx.session_name
 
         # --- Self-optimize from recent trades ---
         self._self_optimize()
@@ -1166,6 +1234,29 @@ class ScalpStrategy(BaseStrategy):
 
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
+
+        # ── Indian Market Regime Override ──
+        # During Indian flow hours, if regime is "quiet", override to allow
+        # a limited set of ranging scanners. Indian retail flow creates setups
+        # the regime detector misses. NEVER override trending/breakout/volatile.
+        indian_ctx = getattr(self, '_indian_ctx', None)
+        if indian_ctx and indian_ctx.regime_override == "ranging_limited" and not allowed_scanners:
+            if regime in ("quiet",):
+                _scanner_map = {
+                    "liquidity_sweep": self._scan_liquidity_sweep,
+                    "vwap_mean_revert": self._scan_vwap_mean_revert,
+                    "structure_bounce": self._scan_structure_bounce,
+                    "rsi_divergence": self._scan_rsi_divergence,
+                }
+                _ranging_names = self._indian_engine.get_ranging_limited_scanners() if self._indian_engine else []
+                allowed_scanners = [_scanner_map[s] for s in _ranging_names if s in _scanner_map]
+                _im_ovr_key = f"_im_override_count_{symbol}"
+                _im_ovr_cnt = getattr(self, _im_ovr_key, 0) + 1
+                setattr(self, _im_ovr_key, _im_ovr_cnt)
+                if _im_ovr_cnt <= 3 or _im_ovr_cnt % 100 == 0:
+                    logger.info("FUNNEL %s | INDIAN MARKET OVERRIDE #%d | quiet→ranging_limited | %s | scanners=%s",
+                                symbol, _im_ovr_cnt, indian_ctx.session_label,
+                                [s for s in _ranging_names if s in _scanner_map])
 
         # In paper_learning mode: STILL respect regime routing, but add
         # liquidity_sweep to all regimes for data collection.
@@ -1848,24 +1939,30 @@ class ScalpStrategy(BaseStrategy):
                         f"MTF {trade_type}: 15m structure={_cb_label} opposes {_side_str}"
                     )
 
-        # VETO 3: Session (architect-corrected)
-        # 2-5 UTC: HARD BLOCK (genuinely low liquidity)
-        # 10-11 UTC: SOFT PENALTY only (crypto is regime-dependent, sessions shift)
-        ist_now_check = datetime.now(_IST)
-        utc_hour = (ist_now_check.hour - 5) % 24
+        # VETO 3: Session (Indian Market aware)
+        # During Indian flow hours: skip dead-hour blocking (Indian flow overrides)
+        # Otherwise: 2-5 UTC hard block, 10-11 UTC soft penalty
+        _v3_indian_ctx = getattr(self, '_indian_ctx', None)
         if getattr(self, '_session_gate_enabled', True):
-            dead_hours_hard = {2, 3, 4, 5}    # genuinely dead — hard block
-            dead_hours_soft = {10, 11}         # soft penalty only
-            if utc_hour in dead_hours_hard:
-                vetos.append(f"DEAD SESSION: UTC hour {utc_hour} (2-5 UTC low liquidity)")
-            elif utc_hour in dead_hours_soft and not self._is_learning:
-                _session_penalty = -10
-                best = _SetupResult(
-                    name=best.name, side=best.side,
-                    confidence=max(best.confidence + _session_penalty, 30),
-                    confirmations=best.confirmations + [f"[SESSION_PENALTY: {_session_penalty}, UTC {utc_hour}]"],
-                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
-                )
+            if _v3_indian_ctx and _v3_indian_ctx.is_indian_flow_hour:
+                # Indian flow hour — confidence boost already applied via _session_penalty
+                # Do NOT apply dead-hour blocking during active Indian market flow
+                pass
+            else:
+                ist_now_check = datetime.now(_IST)
+                utc_hour = (ist_now_check.hour - 5) % 24
+                dead_hours_hard = {2, 3, 4, 5}    # genuinely dead — hard block
+                dead_hours_soft = {10, 11}         # soft penalty only
+                if utc_hour in dead_hours_hard:
+                    vetos.append(f"DEAD SESSION: UTC hour {utc_hour} (2-5 UTC low liquidity)")
+                elif utc_hour in dead_hours_soft and not self._is_learning:
+                    _session_penalty = -10
+                    best = _SetupResult(
+                        name=best.name, side=best.side,
+                        confidence=max(best.confidence + _session_penalty, 30),
+                        confirmations=best.confirmations + [f"[SESSION_PENALTY: {_session_penalty}, UTC {utc_hour}]"],
+                        entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                    )
 
         # VETO 4: Volatility STRICT (Tier 2 — ATR ≥ 0.88× avg, was 0.7)
         atr_ratio = getattr(self, '_atr_ratio', 1.0)
@@ -1974,8 +2071,12 @@ class ScalpStrategy(BaseStrategy):
         # REMOVED the hard whitelist — the REGIME_SCANNER_ROUTING already controls
         # which scanners run per regime. If a scanner triggered, it was allowed to run.
         # Only block quiet regime (absolute no-trade rule).
+        # Exception: during Indian flow hours, ranging_limited override already
+        # selected which scanners are allowed — don't re-block them here.
         regime_scanner_ok = True
-        if regime in ("quiet",):
+        _v9_indian_ctx = getattr(self, '_indian_ctx', None)
+        _v9_indian_override = _v9_indian_ctx and _v9_indian_ctx.regime_override == "ranging_limited"
+        if regime in ("quiet",) and not _v9_indian_override:
             if best_sr.scanner_name != "structure_bounce":
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} blocked in quiet market")
@@ -2409,14 +2510,7 @@ class ScalpStrategy(BaseStrategy):
                 _ml_conf_adj = 0
                 ml_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
                 if ml_prob < ml_threshold:
-                    # SHADOW ONLY — log but don't block (ML trained on garbage data)
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
-                    logger.info(
-                        "ML SHADOW (no block): %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
-                        best.side.value.upper() if best.side else "?",
-                        symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
-                    )
-                    # DO NOT return [] — let the signal through
                     # Log for ML retraining data collection
                     self._feature_logger.log_signal(
                         symbol=symbol, scanner=best_sr.scanner_name,
@@ -2428,7 +2522,21 @@ class ScalpStrategy(BaseStrategy):
                         scanner_weight=best_sr.scanner_weight,
                         scanner_expectancy=0, ev=0,
                     )
-                    # Was: return [] — removed, ML is shadow-only until retrained
+                    if self._ml_veto_skip:
+                        # SKIP veto active — block the trade
+                        logger.info(
+                            "ML SKIP VETO: %s %s prob=%.3f < %.2f threshold (scanner=%s) — BLOCKED",
+                            best.side.value.upper() if best.side else "?",
+                            symbol, ml_prob, ml_threshold, best_sr.scanner_name,
+                        )
+                        return []
+                    else:
+                        # Shadow only — log but don't block
+                        logger.info(
+                            "ML SHADOW (no block): %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
+                            best.side.value.upper() if best.side else "?",
+                            symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
+                        )
                 elif ml_prob < 0.55:
                     _ml_conf_adj = 0    # baseline, no adjustment
                 elif ml_prob >= 0.65:
@@ -2507,7 +2615,13 @@ class ScalpStrategy(BaseStrategy):
         coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
         signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 6 * 60)
         signal.metadata["structure_bounce_only"] = self.structure_bounce_only
-        signal.metadata["order_type"] = "post_only"  # always maker entry
+        # Determine entry order type from config
+        if self._order_type == "maker":
+            signal.metadata["order_type"] = "post_only"
+        elif self._order_type == "taker":
+            signal.metadata["order_type"] = "market"
+        else:  # auto: maker within scalper window (set at signal level, real_manager resolves)
+            signal.metadata["order_type"] = "post_only"
 
         # ── Log feature vector for ML training ──
         self._feature_logger.log_signal(
@@ -3886,24 +4000,26 @@ class ScalpStrategy(BaseStrategy):
         if side is None:
             return None
 
-        # ── Step 3: Reclaim strength (TIGHTENED: require strong reclaim) ──
+        # ── Step 3: Reclaim strength — HARD GATE at body ≥ 55% ──
+        # Weak-bodied reclaims are fakeouts. Data shows sub-55% body sweeps
+        # drag WR down. Hard reject instead of soft penalty.
         body = abs(close - open_)
         candle_range = high - low if high > low else atr * 0.01
         body_ratio = body / candle_range
+        if body_ratio < 0.55:
+            return None  # hard gate: weak reclaim = not a real sweep
+
         if side == OrderSide.LONG:
             close_position = (close - low) / candle_range
         else:
             close_position = (high - close) / candle_range
 
-        # Minimum reclaim body: 55% of candle range for quality sweeps
-        if body_ratio > 0.55 and close_position > 0.65:
+        if close_position > 0.65:
             score += 15
             confs.append(f"Strong reclaim (body={body_ratio:.0%}, close_pos={close_position:.0%})")
-        elif body_ratio > 0.4:
-            score += 5
-        elif body_ratio < 0.25:
-            score -= 10  # weak reclaim = probably not a real sweep
-            confs.append(f"Weak reclaim ({body_ratio:.0%}) — penalized")
+        else:
+            score += 8
+            confs.append(f"Reclaim candle (body={body_ratio:.0%})")
 
         # Minimum sweep depth: 0.35 ATR
         if side == OrderSide.LONG:
@@ -3969,7 +4085,25 @@ class ScalpStrategy(BaseStrategy):
         else:
             sl = high + atr * 0.15
 
-        return _SetupResult(
+        # ── Opposite liquidity pool as TP target ──
+        # After sweeping lows, target the equal highs (and vice versa).
+        # Clamp to 1R–4R range; fall back to default RR-based TPs if no pool
+        # or if pool is outside the clamp range.
+        risk = abs(close - sl)
+        opp_pool_tp = 0.0
+        if risk > 0:
+            if side == OrderSide.LONG and eq_high_level > close:
+                opp_dist_r = (eq_high_level - close) / risk
+                if 1.0 <= opp_dist_r <= 4.0:
+                    opp_pool_tp = eq_high_level
+                    confs.append(f"TP→ EQH pool ${eq_high_level:.0f} ({opp_dist_r:.1f}R)")
+            elif side == OrderSide.SHORT and eq_low_level > 0 and eq_low_level < close:
+                opp_dist_r = (close - eq_low_level) / risk
+                if 1.0 <= opp_dist_r <= 4.0:
+                    opp_pool_tp = eq_low_level
+                    confs.append(f"TP→ EQL pool ${eq_low_level:.0f} ({opp_dist_r:.1f}R)")
+
+        result = _SetupResult(
             name="liquidity_sweep",
             side=side,
             confidence=confidence,
@@ -3978,6 +4112,9 @@ class ScalpStrategy(BaseStrategy):
             stop_loss=sl,
             atr=atr,
         )
+        # Attach opposite pool TP for downstream TP override
+        result._opp_pool_tp = opp_pool_tp  # type: ignore[attr-defined]
+        return result
 
     # ==================================================================
     # BOS / CHOCH + Displacement Scanner
@@ -3986,59 +4123,65 @@ class ScalpStrategy(BaseStrategy):
     def _scan_bos_choch(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """Break of Structure / Change of Character with displacement.
+        """Break of Structure / Change of Character with displacement + confirmation.
 
-        Uses simple rolling high/low instead of swing detection.
-        Rolling max/min of last 10-20 bars = structure level.
-        Current bar breaks it with displacement = BOS.
+        Backward-looking confirmation candle pattern:
+          bar[-2]: the BREAK candle (closes beyond rolling high/low with displacement)
+          bar[-1]: the CONFIRMATION candle (closes in direction, body ≥ 55%)
+          bar[0] (current): entry candle (we enter at current close after confirmation)
+
+        This prevents premature entries on noise/false breaks that previously
+        produced 0% WR and triggered the hard_loss_cap at -2R.
         """
-        if len(df) < 20:
+        if len(df) < 22:
             return None
 
         atr = float(df.iloc[-1].get("atr", 0))
         if atr <= 0 or np.isnan(atr):
             return None
 
-        last = df.iloc[-1]
-        close = float(last["close"])
-        open_ = float(last["open"])
-        high_val = float(last["high"])
-        low_val = float(last["low"])
-        body = abs(close - open_)
+        # bar[-2] = break candle, bar[-1] = confirmation candle, bar[0] = entry
+        break_bar = df.iloc[-3]   # the candle that broke structure
+        confirm_bar = df.iloc[-2]  # the follow-through candle
+        entry_bar = df.iloc[-1]    # current candle (we enter here)
 
         # ── Step 1: Rolling structure levels ──
-        # Use bars 4-20 (skip last 3 to avoid detecting current move as structure)
-        structure_window = df.iloc[-20:-3]
+        # Use bars 5-22 (skip last 4 to avoid detecting break/confirm as structure)
+        structure_window = df.iloc[-22:-4]
         if len(structure_window) < 8:
             return None
 
         rolling_high = float(structure_window["high"].max())
         rolling_low = float(structure_window["low"].min())
 
-        # Recent 3 bars (the break zone)
-        recent = df.iloc[-3:]
-        recent_closes = [float(r["close"]) for _, r in recent.iterrows()]
-        recent_highs = [float(r["high"]) for _, r in recent.iterrows()]
-        recent_lows = [float(r["low"]) for _, r in recent.iterrows()]
+        # Pre-break bars must have been inside structure
+        pre_break = df.iloc[-5:-3]
+        pre_closes = [float(r["close"]) for _, r in pre_break.iterrows()]
+
+        break_close = float(break_bar["close"])
+        break_open = float(break_bar["open"])
+        break_high = float(break_bar["high"])
+        break_low = float(break_bar["low"])
+        break_body = abs(break_close - break_open)
 
         side = None
         confs = []
         score = 0
 
-        # ── Step 2: Detect break ──
-        # Bullish BOS: close above rolling high AND was below recently
-        if close > rolling_high and min(recent_closes[:-1]) <= rolling_high:
+        # ── Step 2: Detect break on bar[-2] ──
+        # Bullish BOS: break_bar closes above rolling high, pre-break was below
+        if break_close > rolling_high and min(pre_closes) <= rolling_high:
             side = OrderSide.LONG
-            break_dist = (close - rolling_high) / atr
+            break_dist = (break_close - rolling_high) / atr
             confs.append(f"BOS above {rolling_high:.2f} ({break_dist:.2f}x ATR)")
             score += 25
             if break_dist > 0.5:
                 score += 10
 
-        # Bearish BOS: close below rolling low AND was above recently
-        elif close < rolling_low and max(recent_closes[:-1]) >= rolling_low:
+        # Bearish BOS: break_bar closes below rolling low, pre-break was above
+        elif break_close < rolling_low and max(pre_closes) >= rolling_low:
             side = OrderSide.SHORT
-            break_dist = (rolling_low - close) / atr
+            break_dist = (rolling_low - break_close) / atr
             confs.append(f"BOS below {rolling_low:.2f} ({break_dist:.2f}x ATR)")
             score += 25
             if break_dist > 0.5:
@@ -4047,9 +4190,8 @@ class ScalpStrategy(BaseStrategy):
         if side is None:
             return None
 
-        # ── Step 3: Displacement (body strength) ──
-        # STRICT: Require 0.8+ ATR displacement — weak breaks were 40% WR
-        displacement = body / atr if atr > 0 else 0
+        # ── Step 3: Displacement on break candle ──
+        displacement = break_body / atr if atr > 0 else 0
         if displacement > 1.2:
             score += 20
             confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
@@ -4057,52 +4199,70 @@ class ScalpStrategy(BaseStrategy):
             score += 12
             confs.append(f"Good displacement ({displacement:.1f}x ATR)")
         elif displacement > 0.6:
-            score += 3  # minimal credit
+            score += 3
         else:
-            # Below 0.6 ATR = noise break → hard reject
-            return None
+            return None  # below 0.6 ATR = noise break
 
-        # ── Step 4: Candle quality ──
-        candle_range = high_val - low_val if high_val > low_val else atr * 0.01
-        body_ratio = body / candle_range
-        if body_ratio > 0.55:
+        # ── Step 4: CONFIRMATION CANDLE on bar[-1] ──
+        # Must close in the direction of the break with body ≥ 55%
+        conf_close = float(confirm_bar["close"])
+        conf_open = float(confirm_bar["open"])
+        conf_high = float(confirm_bar["high"])
+        conf_low = float(confirm_bar["low"])
+        conf_body = abs(conf_close - conf_open)
+        conf_range = conf_high - conf_low if conf_high > conf_low else atr * 0.01
+        conf_body_ratio = conf_body / conf_range
+
+        # Direction check: confirmation must close in break direction
+        if side == OrderSide.LONG and conf_close <= conf_open:
+            return None  # confirmation candle closed bearish — break not confirmed
+        if side == OrderSide.SHORT and conf_close >= conf_open:
+            return None  # confirmation candle closed bullish — break not confirmed
+
+        # Body quality: ≥ 55% required
+        if conf_body_ratio < 0.55:
+            return None  # weak confirmation candle — not enough conviction
+
+        # Confirmation must hold the break level
+        if side == OrderSide.LONG and conf_close < rolling_high:
+            return None  # closed back below structure — failed break
+        if side == OrderSide.SHORT and conf_close > rolling_low:
+            return None  # closed back above structure — failed break
+
+        score += 15
+        confs.append(f"Confirmed: follow-through candle ({conf_body_ratio:.0%} body)")
+
+        # ── Step 5: Break candle quality ──
+        break_range = break_high - break_low if break_high > break_low else atr * 0.01
+        break_body_ratio = break_body / break_range
+        if break_body_ratio > 0.55:
             score += 10
-            confs.append(f"Clean break candle ({body_ratio:.0%} body)")
-        elif body_ratio < 0.25:
+            confs.append(f"Clean break candle ({break_body_ratio:.0%} body)")
+        elif break_body_ratio < 0.25:
             score -= 10
 
-        # Close in direction of break
-        if side == OrderSide.LONG:
-            close_pos = (close - low_val) / candle_range
-        else:
-            close_pos = (high_val - close) / candle_range
-        if close_pos > 0.65:
-            score += 5
-
-        # ── Step 5: Volume (STRICT: require 1.5x minimum for real breaks) ──
-        rel_vol = float(last.get("rel_vol", 1.0))
-        if not np.isnan(rel_vol) and rel_vol > 2.0:
-            confs.append(f"Volume spike {rel_vol:.1f}x on break")
+        # ── Step 6: Volume on break candle ──
+        break_vol = float(break_bar.get("rel_vol", 1.0))
+        if not np.isnan(break_vol) and break_vol > 2.0:
+            confs.append(f"Volume spike {break_vol:.1f}x on break")
             score += 15
-        elif not np.isnan(rel_vol) and rel_vol > 1.5:
-            confs.append(f"Volume {rel_vol:.1f}x confirmed")
+        elif not np.isnan(break_vol) and break_vol > 1.5:
+            confs.append(f"Volume {break_vol:.1f}x confirmed")
             score += 8
-        elif not np.isnan(rel_vol) and rel_vol < 1.3:
-            # Quality gate: breaks need ≥1.3× avg volume to be real
-            # (Displacement ≥0.6 ATR already enforced above + vol ≥1.3× = dual gate)
-            return None
+        elif not np.isnan(break_vol) and break_vol < 1.3:
+            return None  # breaks need ≥1.3x volume
 
-        # ── Step 6: HTF alignment ──
+        # ── Step 7: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("HTF aligned")
             score += 15
         elif htf_bias == (-1 if side == OrderSide.LONG else 1):
             score -= 5
 
-        # ── Step 7: CHOCH detection (break against EMA trend) ──
+        # ── Step 8: CHOCH detection (break against EMA trend) ──
         if "ema_21" in df.columns and "ema_8" in df.columns:
-            ema8 = float(last.get("ema_8", 0))
-            ema21 = float(last.get("ema_21", 0))
+            ema8 = float(entry_bar.get("ema_8", 0))
+            ema21 = float(entry_bar.get("ema_21", 0))
             if ema8 > 0 and ema21 > 0:
                 if side == OrderSide.LONG and ema8 < ema21:
                     confs.append("CHOCH: bullish break in bearish EMA")
@@ -4113,18 +4273,23 @@ class ScalpStrategy(BaseStrategy):
 
         confidence = max(min(score, 100), 0)
 
+        # Entry at current bar close (after confirmation)
+        entry_close = float(entry_bar["close"])
+        entry_low = float(entry_bar["low"])
+        entry_high = float(entry_bar["high"])
+
         # SL: behind the structure level + buffer
         if side == OrderSide.LONG:
-            sl = min(low_val, rolling_high) - atr * 0.3
+            sl = min(entry_low, break_low, rolling_high) - atr * 0.3
         else:
-            sl = max(high_val, rolling_low) + atr * 0.3
+            sl = max(entry_high, break_high, rolling_low) + atr * 0.3
 
         return _SetupResult(
             name="bos_choch",
             side=side,
             confidence=confidence,
             confirmations=confs,
-            entry_price=close,
+            entry_price=entry_close,
             stop_loss=sl,
             atr=atr,
         )
@@ -5398,6 +5563,12 @@ class ScalpStrategy(BaseStrategy):
             tp2_rr *= 1.2
             tp3_rr *= 1.3
 
+        # Liquidity sweep: use opposite pool as TP1 if available and within range
+        opp_pool_tp = getattr(setup, "_opp_pool_tp", 0.0)
+        if setup.name == "liquidity_sweep" and opp_pool_tp > 0 and risk > 0:
+            tp1_rr = abs(opp_pool_tp - entry) / risk
+            tp1_rr = max(1.0, min(tp1_rr, 4.0))  # clamp 1R–4R
+
         # Calculate final TP levels
         if setup.side == OrderSide.LONG:
             tp1 = entry + risk * tp1_rr
@@ -5474,6 +5645,8 @@ class ScalpStrategy(BaseStrategy):
                 "would_block_rr": actual_rr < self.min_rr_ratio,
                 "would_block_liq": liq_buffer_pct < self.liq_min_buffer_pct,
                 "session": getattr(self, '_current_session', 'unknown'),
+                "indian_market": getattr(self, '_indian_ctx', None) and getattr(self, '_indian_ctx').session_label or "",
+                "indian_flow_hour": getattr(self, '_indian_ctx', None) and getattr(self, '_indian_ctx').is_indian_flow_hour or False,
                 "vwap_zone": getattr(self, '_prefilter_result', {}).get("context", {}).get("vwap_zone", "normal"),
                 "operating_mode": self.operating_mode,
             },

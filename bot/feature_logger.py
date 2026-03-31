@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 _IST = timezone(timedelta(hours=5, minutes=30))
 _STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 _FEATURE_FILE = _STORAGE_DIR / "feature_log.jsonl"
-_MAX_FILE_SIZE_MB = 50  # rotate at 50MB
+_MAX_FILE_SIZE_MB = 10  # rotate at 10MB (was 50 — D13 fix: 31MB in 30 days is too fast)
 
 
 class FeatureLogger:

@@ -26,6 +26,9 @@ logger = logging.getLogger("bot.delta_client")
 
 # Product ID mapping: symbol → {demo_id, prod_id, contract_size, tick_size}
 PRODUCT_MAP = {
+    # Prod IDs from: GET https://api.india.delta.exchange/v2/products (2026-03-31)
+    # Demo IDs from: GET https://cdn-ind.testnet.deltaex.org/v2/products (2026-03-31)
+    # Tick sizes verified against live API responses.
     "BTC/USDT": {
         "demo_id": 84,
         "prod_id": 27,
@@ -47,60 +50,60 @@ PRODUCT_MAP = {
         "prod_id": 14823,
         "symbol": "SOLUSD",
         "contract_size": 1.0,  # 1 lot = 1 SOL
-        "tick_size": 0.01,
+        "tick_size": 0.0001,       # prod API: 0.0001
         "tick_size_demo": 0.0001,
     },
     "XRP/USDT": {
-        "demo_id": 0,  # TODO: find testnet ID
-        "prod_id": 0,  # TODO: find prod ID via API
+        "demo_id": 93723,
+        "prod_id": 14969,
         "symbol": "XRPUSD",
         "contract_size": 1.0,  # 1 lot = 1 XRP
         "tick_size": 0.0001,
         "tick_size_demo": 0.0001,
     },
     "LTC/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 0,              # not on testnet
+        "prod_id": 15040,
         "symbol": "LTCUSD",
         "contract_size": 0.1,  # 1 lot = 0.1 LTC
         "tick_size": 0.01,
         "tick_size_demo": 0.01,
     },
     "ADA/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 101760,
+        "prod_id": 16614,
         "symbol": "ADAUSD",
         "contract_size": 1.0,  # 1 lot = 1 ADA
-        "tick_size": 0.0001,
-        "tick_size_demo": 0.0001,
+        "tick_size": 0.00001,      # prod API: 0.00001
+        "tick_size_demo": 0.00001,
     },
     "DOT/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 0,              # not on testnet
+        "prod_id": 15304,
         "symbol": "DOTUSD",
         "contract_size": 1.0,  # 1 lot = 1 DOT
         "tick_size": 0.001,
         "tick_size_demo": 0.001,
     },
     "TAO/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 0,              # not on testnet
+        "prod_id": 26540,
         "symbol": "TAOUSD",
         "contract_size": 0.01,  # 1 lot = 0.01 TAO
-        "tick_size": 0.01,
-        "tick_size_demo": 0.01,
+        "tick_size": 0.1,         # prod API: 0.1 (was 0.01 — FIXED)
+        "tick_size_demo": 0.1,
     },
     "DOGE/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 101555,
+        "prod_id": 14745,
         "symbol": "DOGEUSD",
         "contract_size": 1.0,
-        "tick_size": 0.00001,
-        "tick_size_demo": 0.00001,
+        "tick_size": 0.000001,     # prod API: 0.000001 (was 0.00001 — FIXED)
+        "tick_size_demo": 0.000001,
     },
     "LINK/USDT": {
-        "demo_id": 0,
-        "prod_id": 0,
+        "demo_id": 0,              # not on testnet
+        "prod_id": 15041,
         "symbol": "LINKUSD",
         "contract_size": 1.0,
         "tick_size": 0.001,
@@ -486,6 +489,7 @@ class DeltaClient:
         self, symbol: str, side: str, lots: int,
         stop_loss_price: float, take_profit_price: float = 0,
         limit_price: float = 0, client_order_id: Optional[str] = None,
+        post_only: bool = True,
     ) -> Dict[str, Any]:
         """Place an atomic bracket order: entry + SL + optional TP in one call.
 
@@ -533,7 +537,8 @@ class DeltaClient:
 
         if limit_price > 0:
             bracket_payload["limit_price"] = str(round(limit_price / tick) * tick)
-            bracket_payload["post_only"] = "true"  # Save fees on limit entries
+            if post_only:
+                bracket_payload["post_only"] = "true"
 
         if take_profit_price > 0:
             bracket_payload["take_profit_order"] = {

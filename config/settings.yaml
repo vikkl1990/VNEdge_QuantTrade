@@ -37,6 +37,31 @@ exchange:
   reconnect_attempts: 10
   reconnect_delay: 5
 
+execution:
+  # Order type for trade entries.
+  #   maker — post_only limit orders: pays maker fee (0.0236%), may miss fill if price
+  #           moves away before the order rests on the book. Best for range/structure setups.
+  #   taker — market orders: guaranteed immediate fill, pays taker fee (0.059%).
+  #           Use when speed of entry matters more than fee saving.
+  #   auto  — maker within the Scalper window (< 14m BTC / 6m others), taker outside.
+  #           Mirrors Delta's Scalper offer: free exit within window makes maker entry
+  #           the dominant choice; outside the window taker guarantees the fill.
+  order_type: "maker"
+  # If a maker (post_only) order is rejected by the exchange because it would
+  # immediately match (i.e. price moved through the limit before rest), retry once
+  # as a taker market order rather than skipping the trade entirely.
+  retry_taker_on_reject: true
+  # Maximum allowed entry slippage in basis points (paper mode: estimated from
+  # first market tick after signal; real mode: actual fill vs signal price).
+  # Trades exceeding this are force-closed immediately to prevent entering at
+  # prices beyond the theoretical edge. Set 0 to disable.
+  max_entry_slip_bps: 30
+  # Minimum seconds a trade must be open before trail-lock can activate.
+  # Prevents paper-mode artifacts where the first tick shows instant profit
+  # and the trail immediately locks, producing sub-5-second exits with
+  # only 41% MFE capture. Does not affect SL exits or time stops.
+  min_trail_hold_sec: 15
+
 real_trading:
   enabled: false               # master switch — set true to activate
   dry_run: true                # log orders without placing them
@@ -47,9 +72,13 @@ real_trading:
   max_open_positions: 2        # max 2 real positions simultaneously
   balance_reserve_pct: 15      # keep 15% of balance untouchable
   min_balance_to_trade: 30.0   # don't trade if balance < $30
-  leverage_cap: 10             # hard cap on leverage for real trades
+  leverage_cap: 75             # max leverage (demo: 20x-75x per confidence tier, real: will be capped separately)
 
 ml:
+  shadow_mode: true                # keep WEAK verdicts in shadow until retrained
+  veto_skip: true                  # block SKIP-verdict trades (prob < threshold)
+                                   # Data: 50 SKIP trades averaged $0.64/trade vs $1.77 TAKE.
+                                   # Blocking SKIP saves ~$58 in fees, loses $31 PnL = net +$26.
   # Pair-specific ML probability thresholds for the hard veto gate.
   # Well-calibrated majors can use a slightly lower threshold;
   # less liquid / meme pairs need higher conviction.
@@ -211,3 +240,83 @@ dashboard:
   enabled: true
   refresh_interval: 5
   max_alerts_display: 50
+
+# =============================================================================
+# Indian Market Session Engine
+# =============================================================================
+# NSE open/close awareness for crypto trading. Data-driven:
+#   9:00-9:30 IST  → BLOCK (57% WR = opening auction noise)
+#   9:45-11:00 IST → BOOST +12 (89.5% WR, post-open directional flow)
+#   3:00-4:00 PM   → BOOST +15 (91% WR, close rebalance = best hour)
+#   F&O Thursdays  → +5 extra during flow hours
+indian_market:
+  enabled: true
+  fno_expiry_day: "thursday"
+  fno_expiry_boost: 5
+  holiday_file: ""              # Optional: path to NSE holiday JSON ["2026-01-26", ...]
+  # Scanners allowed when regime=quiet is overridden during Indian flow hours
+  ranging_limited_scanners:
+    - "liquidity_sweep"
+    - "vwap_mean_revert"
+    - "structure_bounce"
+    - "rsi_divergence"
+  # Indian market time windows (IST decimal hours: 9.5 = 9:30, 9.75 = 9:45)
+  windows:
+    - name: "nse_open_auction"
+      start_hour: 9.0
+      end_hour: 9.5            # 9:00-9:30 — HARD BLOCK (57% WR whipsaw)
+      confidence_adj: 0
+      block: true
+      regime_override: ""
+    - name: "nse_open_settle"
+      start_hour: 9.5
+      end_hour: 9.75           # 9:30-9:45 — settling period, penalty
+      confidence_adj: -10
+      block: false
+      regime_override: ""
+    - name: "nse_post_open"
+      start_hour: 9.75
+      end_hour: 11.0           # 9:45-11:00 — FLOW HOUR (89.5% WR)
+      confidence_adj: 12
+      block: false
+      regime_override: "ranging_limited"
+    - name: "nse_midday"
+      start_hour: 11.0
+      end_hour: 14.5           # 11:00-14:30 — no special treatment
+      confidence_adj: 0
+      block: false
+      regime_override: ""
+    - name: "nse_pre_close"
+      start_hour: 14.5
+      end_hour: 15.0           # 14:30-15:00 — pre-close positioning
+      confidence_adj: 5
+      block: false
+      regime_override: ""
+    - name: "nse_close_rebalance"
+      start_hour: 15.0
+      end_hour: 16.0           # 15:00-16:00 — FLOW HOUR (91% WR, best!)
+      confidence_adj: 15
+      block: false
+      regime_override: "ranging_limited"
+  # Configurable legacy sessions (replaces hardcoded IST blocks in scalp_strategy)
+  sessions:
+    - name: "asia_late"
+      start_hour: 2.5
+      end_hour: 9.0
+      confidence_adj: -15
+      min_confidence: 65
+    - name: "asia_early"
+      start_hour: 9.0
+      end_hour: 13.5
+      confidence_adj: -5
+      min_confidence: 65
+    - name: "europe"
+      start_hour: 13.5
+      end_hour: 20.5
+      confidence_adj: 5
+      min_confidence: 65
+    - name: "us"
+      start_hour: 20.5
+      end_hour: 2.5            # wraps midnight
+      confidence_adj: 0
+      min_confidence: 65

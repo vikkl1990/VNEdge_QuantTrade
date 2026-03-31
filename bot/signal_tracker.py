@@ -368,6 +368,19 @@ class TrackedSignal:
             risk_amount = position_usd * sl_dist_pct / 100
             lev_cap_source = f"lev_capped_{max_lev}x"
 
+        # ── DEMO MIN LEVERAGE FLOOR: 20x minimum ──
+        # In demo/paper mode, enforce minimum 20x leverage for realistic testing
+        MIN_DEMO_LEV = 20
+        if lev < MIN_DEMO_LEV:
+            lev = MIN_DEMO_LEV
+            position_usd = paper_stake * lev
+            risk_amount = position_usd * sl_dist_pct / 100
+            lev_cap_source = f"demo_min_floor_{MIN_DEMO_LEV}x"
+            logger.info(
+                "DEMO LEV FLOOR: %s derived=%dx < %dx min → lev=%dx pos=$%.0f",
+                sig.get("symbol", ""), int(derived_lev), MIN_DEMO_LEV, lev, position_usd,
+            )
+
         # ── HARD MARGIN CAP: max $100 margin per trade ──
         margin_used = position_usd / max(lev, 1)
         if margin_used > MAX_MARGIN_PER_TRADE:
@@ -481,14 +494,18 @@ class TrackedSignal:
                 lev_cap_source = f"final_safety_cap_{max_lev}x"
 
         # ── FEE VIABILITY CHECK ──
-        # Compute fee drag and penalize/block fee-dominated trades
-        within_scalper = True  # assume scalper for entry (optimistic)
-        fee_check = SignalTracker.get_min_viable_move(
+        # Use realistic fee assumption: SCALP trades get scalper window rates,
+        # INTRADAY/RUNNER get standard rates (they typically exceed the window).
+        # This prevents 173 outside-scalper trades averaging only $0.32/trade.
+        pre_trade_type = classify_trade(sig)
+        within_scalper = pre_trade_type == TRADE_TYPE_SCALP
+        fee_check = self.get_min_viable_move(
             symbol=sig.get("symbol", ""),
             position_usd=position_usd,
             leverage=float(lev),
             sl_distance_pct=sl_dist_pct,
             within_scalper=within_scalper,
+            order_type=self._order_type,
         )
 
         if fee_check["fee_drag_r"] > 0.5:
@@ -503,15 +520,17 @@ class TrackedSignal:
             # Return a signal with confidence=0 to signal rejection upstream
             confidence = 0
         elif not fee_check["viable"]:
-            # fee_drag > 0.3 but <= 0.5: apply -10 confidence penalty
+            # fee_drag > 0.3 but <= 0.5: HARD BLOCK (D11 fix)
+            # Previously only applied a -10 penalty, but 23% of trades still executed
+            # at negative expected value. Blocking entirely saves ~$249/500 trades.
             logger.warning(
-                "FEE WARNING: %s %s | fee_drag=%.2fR (>0.3) | min_move=%.3f%% | "
-                "pos=$%.0f sl=%.3f%% — applying -10 confidence penalty",
+                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.3) | min_move=%.3f%% | "
+                "pos=$%.0f sl=%.3f%% — fee_viable=False, trade blocked",
                 sig.get("symbol", ""), sig.get("side", ""),
                 fee_check["fee_drag_r"], fee_check["min_move_pct"],
                 position_usd, sl_dist_pct,
             )
-            confidence = max(0, confidence - 10)
+            confidence = 0
 
         # Store fee analysis in metadata
         meta["fee_drag_r"] = fee_check["fee_drag_r"]
@@ -606,7 +625,7 @@ class TrackedSignal:
 class SignalTracker:
     """Tracks open signals for TP/SL closure and maintains P&L + win rate stats."""
 
-    def __init__(self) -> None:
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
         self._active: Dict[str, TrackedSignal] = {}  # trade_id -> TrackedSignal
         self._closed: List[Dict[str, Any]] = []
@@ -619,6 +638,12 @@ class SignalTracker:
         # Recently closed trades: {paper_trade_id: {exit_price, exit_reason, symbol, side}}
         # Used by orphan sync to get accurate exit prices instead of entry==exit
         self._closed_recently: Dict[str, Dict] = {}
+
+        exec_cfg = (config or {}).get("execution", {})
+        self._order_type: str = exec_cfg.get("order_type", "maker")  # "maker" | "taker" | "auto"
+        self._max_entry_slip_bps: float = exec_cfg.get("max_entry_slip_bps", 30)  # 0 = disabled
+        self._min_trail_hold_sec: float = exec_cfg.get("min_trail_hold_sec", 15)  # seconds before trail-lock
+
         self._load()
 
     def set_exchange_balance(self, balance: float) -> None:
@@ -752,15 +777,35 @@ class SignalTracker:
 
             # ── Estimated Slippage (paper mode) ──
             # On first price update after entry, capture the market price as
-            # "estimated fill" to simulate what slippage would have been
+            # "estimated fill" to simulate what slippage would have been.
+            # If slippage exceeds max_entry_slip_bps, cap it (maker mode:
+            # the order would have rested at signal_price, not filled worse).
             if ts.fill_price == ts.signal_price and ts.signal_price > 0 and ts.slippage_bps == 0:
-                # First price tick after entry — this is our estimated fill
                 est_slip = abs(price - ts.signal_price)
-                ts.fill_price = price  # "estimated fill" = first market price after signal
-                ts.slippage_bps = round(est_slip / ts.signal_price * 10000, 2)
+                est_slip_bps = est_slip / ts.signal_price * 10000
+
+                max_slip_bps = getattr(self, "_max_entry_slip_bps", 30)
+                if max_slip_bps > 0 and est_slip_bps > max_slip_bps:
+                    # Cap slippage: in maker mode the order rests at signal_price,
+                    # so worst realistic fill is signal + max_slip; beyond that the
+                    # order would not fill (and retry_taker_on_reject handles it).
+                    capped_slip = ts.signal_price * max_slip_bps / 10000
+                    is_long = ts.side == "long"
+                    ts.fill_price = ts.signal_price + (capped_slip if is_long else -capped_slip)
+                    ts.slippage_bps = round(max_slip_bps, 2)
+                    logger.warning(
+                        "SLIP CAP: %s %s | raw=%.1fbps capped=%.0fbps | signal=%.4f fill=%.4f",
+                        ts.symbol, ts.side, est_slip_bps, max_slip_bps,
+                        ts.signal_price, ts.fill_price,
+                    )
+                else:
+                    ts.fill_price = price
+                    ts.slippage_bps = round(est_slip_bps, 2)
+
                 ts.slippage_ticks = round(est_slip / (ts.signal_atr * 0.01) if ts.signal_atr > 0 else 0, 2)
                 if ts.initial_risk > 0:
-                    ts.slippage_impact_r = round(est_slip / ts.initial_risk, 4)
+                    actual_slip = abs(ts.fill_price - ts.signal_price)
+                    ts.slippage_impact_r = round(actual_slip / ts.initial_risk, 4)
 
             # Update high/low watermarks
             if price > ts.highest_price:
@@ -955,7 +1000,14 @@ class SignalTracker:
 
                 # MFE-based lock: protect percentage of peak profit
                 # More aggressive tiers — lock more as MFE grows
-                if ts.peak_mfe_r >= 0.15:
+                # Gate: minimum hold time prevents paper-mode sub-5-second exits
+                min_hold = getattr(self, "_min_trail_hold_sec", 15)
+                try:
+                    _entry_dt = datetime.fromisoformat(ts.entry_time)
+                    _trade_age = (datetime.now(timezone.utc) - _entry_dt).total_seconds()
+                except (ValueError, TypeError):
+                    _trade_age = 999  # fallback: allow trail
+                if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold:
                     if ts.peak_mfe_r >= 1.5:
                         lock_pct = 0.88  # lock 88% of peak when >1.5R
                     elif ts.peak_mfe_r >= 1.0:
@@ -1864,22 +1916,33 @@ class SignalTracker:
         except (ValueError, TypeError):
             pass
 
-        # Calculate fees based on Scalper eligibility
+        # Calculate fees based on Scalper eligibility and configured order type
+        order_type = getattr(self, "_order_type", "maker")
         if within_scalper:
-            # Scalper offer: maker entry (0.02%) + FREE exit (0%) + settlement (0.06%)
+            # Scalper offer: configured entry fee + FREE exit (0%) + settlement (0.06%)
+            entry_fee = (
+                SignalTracker.SCALPER_ENTRY_MAKER_PCT
+                if order_type in ("maker", "auto")
+                else SignalTracker.SCALPER_ENTRY_TAKER_PCT
+            )
             fee_pct = (
-                SignalTracker.SCALPER_ENTRY_MAKER_PCT  # 0.02% entry
-                + SignalTracker.SCALPER_EXIT_FEE_PCT   # 0.00% exit (FREE)
-                + SignalTracker.SETTLEMENT_FEE_PCT     # 0.06% settlement
-            )  # = 0.08% total
+                entry_fee                            # 0.02% maker or 0.05% taker
+                + SignalTracker.SCALPER_EXIT_FEE_PCT # 0.00% exit (FREE within window)
+                + SignalTracker.SETTLEMENT_FEE_PCT   # 0.06% settlement
+            )
             ts.fee_type = "scalper"
         else:
-            # Standard fees: taker entry + taker exit + settlement
+            # Standard fees: configured entry fee + taker exit + settlement
+            entry_fee = (
+                SignalTracker.MAKER_FEE_PCT
+                if order_type == "maker"
+                else SignalTracker.TAKER_FEE_PCT
+            )
             fee_pct = (
-                SignalTracker.TAKER_FEE_PCT        # 0.06% entry
-                + SignalTracker.TAKER_FEE_PCT      # 0.06% exit
-                + SignalTracker.SETTLEMENT_FEE_PCT # 0.06% settlement
-            )  # = 0.18% total
+                entry_fee                            # 0.0236% maker or 0.059% taker
+                + SignalTracker.TAKER_FEE_PCT        # 0.059% exit (always taker for stops)
+                + SignalTracker.SETTLEMENT_FEE_PCT   # 0.059% settlement
+            )
             ts.fee_type = "standard"
 
         ts.trade_duration_sec = trade_duration_sec
@@ -1941,6 +2004,7 @@ class SignalTracker:
         leverage: float,
         sl_distance_pct: float = 0.5,
         within_scalper: bool = True,
+        order_type: str = "maker",
     ) -> dict:
         """Calculate minimum price move needed to break even after all costs.
 
@@ -1979,14 +2043,22 @@ class SignalTracker:
         exit_slip = min(exit_slip, 0.15)
 
         if within_scalper:
-            # Scalper: 0.02% entry + 0% exit + 0.05% settlement + slippage both sides
-            entry_fee = SignalTracker.SCALPER_ENTRY_MAKER_PCT
-            exit_fee = SignalTracker.SCALPER_EXIT_FEE_PCT
+            # Scalper offer: configured entry fee + FREE exit + settlement
+            entry_fee = (
+                SignalTracker.SCALPER_ENTRY_MAKER_PCT
+                if order_type in ("maker", "auto")
+                else SignalTracker.SCALPER_ENTRY_TAKER_PCT
+            )
+            exit_fee = SignalTracker.SCALPER_EXIT_FEE_PCT   # 0% — free within window
             settlement = SignalTracker.SETTLEMENT_FEE_PCT
         else:
-            # Standard: 0.05% entry + 0.05% exit + 0.05% settlement + slippage
-            entry_fee = SignalTracker.TAKER_FEE_PCT
-            exit_fee = SignalTracker.TAKER_FEE_PCT
+            # Standard: configured entry fee + taker exit + settlement
+            entry_fee = (
+                SignalTracker.MAKER_FEE_PCT
+                if order_type == "maker"
+                else SignalTracker.TAKER_FEE_PCT
+            )
+            exit_fee = SignalTracker.TAKER_FEE_PCT  # exits are always market/taker
             settlement = SignalTracker.SETTLEMENT_FEE_PCT
 
         total_fees_pct = entry_fee + exit_fee + settlement + entry_slip + exit_slip

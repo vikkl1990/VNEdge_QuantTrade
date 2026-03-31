@@ -96,6 +96,8 @@ class BotOrchestrator:
         self._data_feed = data_feed
         self._strategy = strategy
         self._risk_manager = risk_manager
+        if risk_manager:
+            risk_manager.load_state()
         self._execution = execution_engine
         self._real_manager = real_manager
         self._alerts = alert_manager
@@ -120,7 +122,7 @@ class BotOrchestrator:
         self._max_symbol_errors = config.get("bot", {}).get("max_symbol_errors", 10)
 
         # Signal tracker for TP/SL monitoring and P&L/WR stats
-        self._signal_tracker = SignalTracker()
+        self._signal_tracker = SignalTracker(config)
 
         # Grid Bot — PAUSED (loses money in downtrends due to stale cleanup)
         # Will re-enable when regime detection can auto-pause in downtrends

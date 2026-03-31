@@ -8,10 +8,12 @@ volatility kill switches.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, date
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -528,6 +530,7 @@ class RiskManager:
             "consecutive_losses=%d",
             pnl, self.daily.pnl, self.consecutive_losses,
         )
+        self.save_state()
 
     def record_sl_hit(self, symbol: str) -> None:
         """Start a cooloff timer for *symbol* after a stop loss is hit."""
@@ -592,6 +595,53 @@ class RiskManager:
                 if (time.time() - ts) < self.cooloff_after_sl
             },
         }
+
+    # ==================================================================
+    # State persistence (D10 fix — survive restarts)
+    # ==================================================================
+
+    _STATE_FILE = Path(__file__).resolve().parent.parent / "storage" / "risk_state.json"
+
+    def save_state(self) -> None:
+        """Persist circuit breaker state to disk so it survives restarts."""
+        state = {
+            "consecutive_losses": self.consecutive_losses,
+            "circuit_breaker_until": self.circuit_breaker_until,
+            "daily_pnl": self.daily.pnl,
+            "daily_date": str(self.daily.date),
+            "daily_wins": self.daily.wins,
+            "daily_losses": self.daily.losses,
+            "daily_trades_closed": self.daily.trades_closed,
+            "saved_at": time.time(),
+        }
+        try:
+            self._STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self._STATE_FILE.write_text(json.dumps(state, indent=2))
+        except Exception as exc:
+            logger.warning("Failed to save risk state: %s", exc)
+
+    def load_state(self) -> None:
+        """Restore circuit breaker state from disk."""
+        if not self._STATE_FILE.exists():
+            return
+        try:
+            state = json.loads(self._STATE_FILE.read_text())
+            saved_date = state.get("daily_date", "")
+            today = str(datetime.utcnow().date())
+            if saved_date == today:
+                # Same day — restore daily counters
+                self.daily.pnl = state.get("daily_pnl", 0.0)
+                self.daily.wins = state.get("daily_wins", 0)
+                self.daily.losses = state.get("daily_losses", 0)
+                self.daily.trades_closed = state.get("daily_trades_closed", 0)
+            self.consecutive_losses = state.get("consecutive_losses", 0)
+            self.circuit_breaker_until = state.get("circuit_breaker_until", 0.0)
+            logger.info(
+                "Risk state restored: consec_losses=%d, cb_until=%.0f, daily_pnl=%.2f",
+                self.consecutive_losses, self.circuit_breaker_until, self.daily.pnl,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load risk state: %s", exc)
 
     def __repr__(self) -> str:
         return (

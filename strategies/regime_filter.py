@@ -217,6 +217,11 @@ class RegimeFilter:
         """Detect current market regime from indicator values.
 
         Returns: "trending_up", "trending_down", "ranging", "volatile", "quiet"
+
+        Fix (2026-03-31): bb_bandwidth < 0.015 was mis-classifying smooth
+        directional drifts (1-2% intraday moves) as "quiet" because Bollinger
+        Bands stay tight during steady grinds. Now checks price displacement
+        relative to EMA50 and EMA ordering before declaring quiet.
         """
         import math
         ema8 = indicators.get("ema_8", 0)
@@ -226,30 +231,58 @@ class RegimeFilter:
         atr = indicators.get("atr", 0)
         bb_bandwidth = indicators.get("bb_bandwidth", 0)
 
-        # Guard against NaN/None — return "quiet" (safest: blocks trading)
+        # Guard against NaN/None — return "ranging" (safer than "quiet" which
+        # blocks ALL scanners; ranging still allows mean-reversion setups)
         critical_vals = [ema8, ema21, ema50, close, bb_bandwidth]
         if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in critical_vals):
-            return "quiet"  # safest: no scanners allowed in quiet regime
+            return "ranging"
 
         # Full stack alignment = strong trend
         full_bull = ema8 > ema21 > ema50 and close > ema8
         full_bear = ema8 < ema21 < ema50 and close < ema8
 
-        # Check volatility via BB bandwidth
-        # High bandwidth (>0.04) = volatile/trending, Low (<0.015) = quiet/squeeze
-        is_volatile = bb_bandwidth > 0.04
-        is_quiet = bb_bandwidth < 0.015
+        # Partial trend: EMAs ordered but close hasn't fully committed
+        # This catches smooth drifts where close is near ema8
+        partial_bull = ema8 > ema21 > ema50
+        partial_bear = ema8 < ema21 < ema50
 
+        # Price displacement from EMA50 (catches directional drift even
+        # when Bollinger Bands are tight). A 0.3% displacement from the
+        # slow EMA means the market IS moving, not quiet.
+        ema50_displacement = abs(close - ema50) / ema50 if ema50 > 0 else 0
+        has_directional_drift = ema50_displacement > 0.003  # 0.3%
+
+        # Check volatility via BB bandwidth
+        # High bandwidth (>0.04) = volatile/trending
+        # Lowered quiet threshold: 0.015 → 0.008 (only truly dead markets)
+        is_volatile = bb_bandwidth > 0.04
+        is_quiet = bb_bandwidth < 0.008
+
+        # 1) Full EMA stack alignment = clear trend
         if full_bull and not is_volatile:
             return "trending_up"
         elif full_bear and not is_volatile:
             return "trending_down"
-        elif is_volatile:
+
+        # 2) Partial EMA alignment + directional drift = trend (even if tight BB)
+        #    This is the key fix: smooth 1-2% drifts have tight bands but are
+        #    clearly trending. EMAs ordered + displacement = NOT quiet.
+        if partial_bull and has_directional_drift:
+            return "trending_up"
+        elif partial_bear and has_directional_drift:
+            return "trending_down"
+
+        # 3) High volatility
+        if is_volatile:
             return "volatile"
-        elif is_quiet:
+
+        # 4) Quiet: only if BB bandwidth is very tight AND no directional drift
+        #    AND no EMA ordering. This is a truly dead, flat market.
+        if is_quiet and not has_directional_drift and not partial_bull and not partial_bear:
             return "quiet"
-        else:
-            return "ranging"
+
+        # 5) Everything else = ranging (has some movement, just no clear trend)
+        return "ranging"
 
     def get_action(self, regime: str, signal_side: str, signal_tier: str,
                    scanner_name: str) -> RegimeAction:

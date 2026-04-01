@@ -63,10 +63,10 @@ class TradeMonitorAgent:
             "max_loss_streak": 0,
             "rolling_20_wr": 0.0,        # Win rate of last 20 trades
             "rolling_20_pnl": 0.0,       # PnL of last 20 trades
-            "peak_balance": 100.0,
+            "peak_balance": 1000.0,
             "current_drawdown": 0.0,
             "max_drawdown": 0.0,
-            "paper_balance": 100.0,
+            "paper_balance": 1000.0,
         }
 
         # ── Loss cause counters ──
@@ -536,6 +536,62 @@ class TradeMonitorAgent:
                 })
 
         self._recommendations = recs
+
+
+    def sync_with_tracker(self, tracker_stats, closed_signals):
+        """Rebuild monitor metrics from signal tracker as source of truth.
+
+        Called on startup to ensure monitor and tracker agree on trade counts
+        and paper balance. The signal tracker is the authoritative source.
+        """
+        if not tracker_stats:
+            return
+
+        tracker_closed = tracker_stats.get("closed", 0)
+        tracker_balance = tracker_stats.get("paper_balance", 1000)
+        tracker_start = tracker_stats.get("paper_start_balance", 1000)
+        old_total = self._metrics["total_analyzed"]
+
+        if abs(old_total - tracker_closed) > 2 or abs(self._metrics["paper_balance"] - tracker_balance) > 5:
+            logger.info(
+                "TradeMonitor SYNC: monitor had %d trades (bal=$%.2f), tracker has %d (bal=$%.2f) -- rebuilding",
+                old_total, self._metrics["paper_balance"], tracker_closed, tracker_balance,
+            )
+
+            self._metrics = {
+                "total_analyzed": 0,
+                "total_wins": 0,
+                "total_losses": 0,
+                "current_streak": 0,
+                "max_win_streak": 0,
+                "max_loss_streak": 0,
+                "rolling_20_wr": 0.0,
+                "rolling_20_pnl": 0.0,
+                "peak_balance": tracker_start,
+                "current_drawdown": 0.0,
+                "max_drawdown": 0.0,
+                "paper_balance": tracker_start,
+            }
+            self._seen_ids.clear()
+            self._loss_causes.clear()
+            self._setup_losses.clear()
+            self._side_stats = {
+                "long": {"wins": 0, "losses": 0, "pnl": 0.0},
+                "short": {"wins": 0, "losses": 0, "pnl": 0.0},
+            }
+            self._hourly_stats = {h: {"wins": 0, "losses": 0, "pnl": 0.0} for h in range(24)}
+            self._analyzed_trades.clear()
+            self._loss_log.clear()
+            self._recent_trades.clear()
+            self._recommendations.clear()
+
+            for sig in closed_signals:
+                self.analyze_trade(sig)
+
+            logger.info(
+                "TradeMonitor SYNC complete: %d trades, bal=$%.2f",
+                self._metrics["total_analyzed"], self._metrics["paper_balance"],
+            )
 
     # ------------------------------------------------------------------
     # Dashboard API

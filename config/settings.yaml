@@ -46,7 +46,7 @@ execution:
   #   auto  — maker within the Scalper window (< 14m BTC / 6m others), taker outside.
   #           Mirrors Delta's Scalper offer: free exit within window makes maker entry
   #           the dominant choice; outside the window taker guarantees the fill.
-  order_type: "maker"
+  order_type: "auto"
   # If a maker (post_only) order is rejected by the exchange because it would
   # immediately match (i.e. price moved through the limit before rest), retry once
   # as a taker market order rather than skipping the trade entirely.

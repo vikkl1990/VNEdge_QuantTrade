@@ -39,8 +39,6 @@ from pathlib import Path
 _IST = timezone(timedelta(hours=5, minutes=30))
 from typing import Any, Dict, List, Optional, Tuple
 
-from strategies.indian_market_session import IndianMarketSessionEngine, IndianSessionContext
-
 import numpy as np
 import pandas as pd
 
@@ -200,18 +198,6 @@ class ScalpStrategy(BaseStrategy):
         exec_cfg = config.get("execution", {})
         self._order_type: str = exec_cfg.get("order_type", "maker")  # "maker" | "taker" | "auto"
 
-        # --- Indian Market Session Engine ---
-        im_cfg = config.get("indian_market", {})
-        self._indian_market_enabled = im_cfg.get("enabled", False)
-        if self._indian_market_enabled:
-            self._indian_engine = IndianMarketSessionEngine(im_cfg)
-            logger.info("Indian Market Session Engine: ENABLED (windows=%d, fno_expiry=%s)",
-                        len(im_cfg.get("windows", [])), im_cfg.get("fno_expiry_day", "thursday"))
-        else:
-            self._indian_engine = None
-            logger.info("Indian Market Session Engine: DISABLED (using legacy sessions)")
-        self._session_configs = im_cfg.get("sessions", [])
-
         # --- Pair-specific ML thresholds (from config, falling back to class defaults) ---
         ml_cfg = config.get("ml", {})
         if ml_cfg.get("pair_thresholds"):
@@ -364,7 +350,6 @@ class ScalpStrategy(BaseStrategy):
             shadow_mode=ml_cfg.get("shadow_mode", True),  # Start shadow — log only, no veto
         )
         self._ml_shadow_mode: bool = ml_cfg.get("shadow_mode", True)
-        self._ml_veto_skip: bool = ml_cfg.get("veto_skip", True)  # block SKIP verdicts even in shadow
         self._last_ml_result: Dict[str, Any] = {}
 
         # Per-symbol ML probability thresholds (from calibration analysis)
@@ -721,83 +706,33 @@ class ScalpStrategy(BaseStrategy):
         # Use per-symbol funnel for this call
         self._funnel = self._funnels[symbol]
 
-        # ── SESSION-AWARE GATING (config-driven + Indian Market Engine) ──
+        # ── SESSION-AWARE GATING ──
+        # Data from 112 trades: Asia Late 37% WR, Asia Early 50%, Europe 63%, US 57%
+        # Block the worst session, restrict the marginal one
         # (Disabled in backtesting via _session_gate_enabled=False)
         if getattr(self, '_session_gate_enabled', True) is False:
             self._current_session = "europe"
             self._session_min_confidence = self.min_confidence
-            self._session_penalty = 0
-            self._indian_ctx = None
-        else:
-            ist_now = datetime.now(_IST)
-            ist_hour = ist_now.hour + ist_now.minute / 60.0
-
-            # --- Indian Market Session Engine (if enabled) ---
-            self._indian_ctx: Optional[IndianSessionContext] = None
-            if self._indian_engine is not None:
-                self._indian_ctx = self._indian_engine.evaluate(ist_now)
-
-                # Hard block during NSE auction noise (9:00-9:30 IST)
-                if self._indian_ctx.block:
-                    _im_block_key = f"_im_block_count_{symbol}"
-                    _im_cnt = getattr(self, _im_block_key, 0) + 1
-                    setattr(self, _im_block_key, _im_cnt)
-                    if _im_cnt <= 3 or _im_cnt % 50 == 0:
-                        logger.info("FUNNEL %s | INDIAN MARKET BLOCK #%d | %s: %s",
-                                    symbol, _im_cnt, self._indian_ctx.session_name,
-                                    self._indian_ctx.block_reason)
-                    self.last_scan_status[symbol] = {
-                        "time": now_iso, "signal": False,
-                        "reason": f"INDIAN MARKET BLOCK: {self._indian_ctx.block_reason}",
-                        "indicators": {}, "setups_checked": 0,
-                        "funnel": dict(self._funnel),
-                    }
-                    return []
-
-            # --- Determine session (config-driven or legacy fallback) ---
-            self._session_penalty: int = 0
+        ist_now = datetime.now(_IST)
+        ist_hour = ist_now.hour + ist_now.minute / 60.0
+        # Session context — soft confidence adjustment (no blocking)
+        self._session_penalty: int = 0
+        if getattr(self, '_session_gate_enabled', True) and 2.5 <= ist_hour < 9.0:
+            self._current_session = "asia_late"    # 37% WR — penalty, NOT blocked
             self._session_min_confidence = 65
-            self._current_session = "unknown"
-
-            if self._session_configs:
-                # Config-driven session matching
-                for sess in self._session_configs:
-                    s = float(sess.get("start_hour", 0))
-                    e = float(sess.get("end_hour", 0))
-                    if e < s:  # wraps midnight (e.g. us: 20.5 → 2.5)
-                        in_window = ist_hour >= s or ist_hour < e
-                    else:
-                        in_window = s <= ist_hour < e
-                    if in_window:
-                        self._current_session = sess.get("name", "unknown")
-                        self._session_penalty = int(sess.get("confidence_adj", 0))
-                        self._session_min_confidence = int(sess.get("min_confidence", 65))
-                        break
-            else:
-                # Legacy hardcoded fallback (original behavior)
-                if 2.5 <= ist_hour < 9.0:
-                    self._current_session = "asia_late"
-                    self._session_min_confidence = 65
-                    self._session_penalty = -15
-                elif 9.0 <= ist_hour < 13.5:
-                    self._current_session = "asia_early"
-                    self._session_min_confidence = 65
-                    self._session_penalty = -5
-                elif 13.5 <= ist_hour < 20.5:
-                    self._current_session = "europe"
-                    self._session_min_confidence = 65
-                    self._session_penalty = +5
-                else:
-                    self._current_session = "us"
-                    self._session_min_confidence = 65
-                    self._session_penalty = 0
-
-            # --- Indian market overlay: flow hours override session penalty ---
-            if self._indian_ctx and self._indian_ctx.is_indian_flow_hour:
-                self._session_penalty = self._indian_ctx.confidence_adjustment
-                if self._indian_ctx.is_fno_expiry_day:
-                    self._session_penalty += self._indian_ctx.fno_expiry_boost
-                self._current_session = self._indian_ctx.session_name
+            self._session_penalty = -15            # reduces confidence score
+        elif 9.0 <= ist_hour < 13.5:
+            self._current_session = "asia_early"   # 50% WR
+            self._session_min_confidence = 65
+            self._session_penalty = -5
+        elif 13.5 <= ist_hour < 20.5:
+            self._current_session = "europe"        # 63% WR — best session, boost
+            self._session_min_confidence = 65
+            self._session_penalty = +5
+        else:
+            self._current_session = "us"            # 57% WR — decent
+            self._session_min_confidence = 65
+            self._session_penalty = 0
 
         # --- Self-optimize from recent trades ---
         self._self_optimize()
@@ -1235,29 +1170,6 @@ class ScalpStrategy(BaseStrategy):
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
 
-        # ── Indian Market Regime Override ──
-        # During Indian flow hours, if regime is "quiet", override to allow
-        # a limited set of ranging scanners. Indian retail flow creates setups
-        # the regime detector misses. NEVER override trending/breakout/volatile.
-        indian_ctx = getattr(self, '_indian_ctx', None)
-        if indian_ctx and indian_ctx.regime_override == "ranging_limited" and not allowed_scanners:
-            if regime in ("quiet",):
-                _scanner_map = {
-                    "liquidity_sweep": self._scan_liquidity_sweep,
-                    "vwap_mean_revert": self._scan_vwap_mean_revert,
-                    "structure_bounce": self._scan_structure_bounce,
-                    "rsi_divergence": self._scan_rsi_divergence,
-                }
-                _ranging_names = self._indian_engine.get_ranging_limited_scanners() if self._indian_engine else []
-                allowed_scanners = [_scanner_map[s] for s in _ranging_names if s in _scanner_map]
-                _im_ovr_key = f"_im_override_count_{symbol}"
-                _im_ovr_cnt = getattr(self, _im_ovr_key, 0) + 1
-                setattr(self, _im_ovr_key, _im_ovr_cnt)
-                if _im_ovr_cnt <= 3 or _im_ovr_cnt % 100 == 0:
-                    logger.info("FUNNEL %s | INDIAN MARKET OVERRIDE #%d | quiet→ranging_limited | %s | scanners=%s",
-                                symbol, _im_ovr_cnt, indian_ctx.session_label,
-                                [s for s in _ranging_names if s in _scanner_map])
-
         # In paper_learning mode: STILL respect regime routing, but add
         # liquidity_sweep to all regimes for data collection.
         # DO NOT override regime routing — that's what caused garbage trades.
@@ -1356,8 +1268,8 @@ class ScalpStrategy(BaseStrategy):
                         "vwap_mean_revert": 10,
                         "ema_momentum": 8,
                         "trend_continuation": 8,
-                        "liquidity_sweep": 5,
-                        "bos_choch": 5,
+                        "liquidity_sweep": 0,
+                        "bos_choch": 0,
                     }
                     boost = _score_boost.get(setup_name, 0)
                     if boost > 0:
@@ -1939,30 +1851,24 @@ class ScalpStrategy(BaseStrategy):
                         f"MTF {trade_type}: 15m structure={_cb_label} opposes {_side_str}"
                     )
 
-        # VETO 3: Session (Indian Market aware)
-        # During Indian flow hours: skip dead-hour blocking (Indian flow overrides)
-        # Otherwise: 2-5 UTC hard block, 10-11 UTC soft penalty
-        _v3_indian_ctx = getattr(self, '_indian_ctx', None)
+        # VETO 3: Session (architect-corrected)
+        # 2-5 UTC: HARD BLOCK (genuinely low liquidity)
+        # 10-11 UTC: SOFT PENALTY only (crypto is regime-dependent, sessions shift)
+        ist_now_check = datetime.now(_IST)
+        utc_hour = (ist_now_check.hour - 5) % 24
         if getattr(self, '_session_gate_enabled', True):
-            if _v3_indian_ctx and _v3_indian_ctx.is_indian_flow_hour:
-                # Indian flow hour — confidence boost already applied via _session_penalty
-                # Do NOT apply dead-hour blocking during active Indian market flow
-                pass
-            else:
-                ist_now_check = datetime.now(_IST)
-                utc_hour = (ist_now_check.hour - 5) % 24
-                dead_hours_hard = {2, 3, 4, 5}    # genuinely dead — hard block
-                dead_hours_soft = {10, 11}         # soft penalty only
-                if utc_hour in dead_hours_hard:
-                    vetos.append(f"DEAD SESSION: UTC hour {utc_hour} (2-5 UTC low liquidity)")
-                elif utc_hour in dead_hours_soft and not self._is_learning:
-                    _session_penalty = -10
-                    best = _SetupResult(
-                        name=best.name, side=best.side,
-                        confidence=max(best.confidence + _session_penalty, 30),
-                        confirmations=best.confirmations + [f"[SESSION_PENALTY: {_session_penalty}, UTC {utc_hour}]"],
-                        entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
-                    )
+            dead_hours_hard = {2, 3, 4, 5}    # genuinely dead — hard block
+            dead_hours_soft = {10, 11}         # soft penalty only
+            if utc_hour in dead_hours_hard:
+                vetos.append(f"DEAD SESSION: UTC hour {utc_hour} (2-5 UTC low liquidity)")
+            elif utc_hour in dead_hours_soft and not self._is_learning:
+                _session_penalty = -10
+                best = _SetupResult(
+                    name=best.name, side=best.side,
+                    confidence=max(best.confidence + _session_penalty, 30),
+                    confirmations=best.confirmations + [f"[SESSION_PENALTY: {_session_penalty}, UTC {utc_hour}]"],
+                    entry_price=best.entry_price, stop_loss=best.stop_loss, atr=best.atr,
+                )
 
         # VETO 4: Volatility STRICT (Tier 2 — ATR ≥ 0.88× avg, was 0.7)
         atr_ratio = getattr(self, '_atr_ratio', 1.0)
@@ -2071,12 +1977,8 @@ class ScalpStrategy(BaseStrategy):
         # REMOVED the hard whitelist — the REGIME_SCANNER_ROUTING already controls
         # which scanners run per regime. If a scanner triggered, it was allowed to run.
         # Only block quiet regime (absolute no-trade rule).
-        # Exception: during Indian flow hours, ranging_limited override already
-        # selected which scanners are allowed — don't re-block them here.
         regime_scanner_ok = True
-        _v9_indian_ctx = getattr(self, '_indian_ctx', None)
-        _v9_indian_override = _v9_indian_ctx and _v9_indian_ctx.regime_override == "ranging_limited"
-        if regime in ("quiet",) and not _v9_indian_override:
+        if regime in ("quiet",):
             if best_sr.scanner_name != "structure_bounce":
                 regime_scanner_ok = False
                 vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} blocked in quiet market")
@@ -2510,7 +2412,14 @@ class ScalpStrategy(BaseStrategy):
                 _ml_conf_adj = 0
                 ml_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
                 if ml_prob < ml_threshold:
+                    # SHADOW ONLY — log but don't block (ML trained on garbage data)
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
+                    logger.info(
+                        "ML SHADOW (no block): %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
+                        best.side.value.upper() if best.side else "?",
+                        symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
+                    )
+                    # DO NOT return [] — let the signal through
                     # Log for ML retraining data collection
                     self._feature_logger.log_signal(
                         symbol=symbol, scanner=best_sr.scanner_name,
@@ -2522,21 +2431,7 @@ class ScalpStrategy(BaseStrategy):
                         scanner_weight=best_sr.scanner_weight,
                         scanner_expectancy=0, ev=0,
                     )
-                    if self._ml_veto_skip:
-                        # SKIP veto active — block the trade
-                        logger.info(
-                            "ML SKIP VETO: %s %s prob=%.3f < %.2f threshold (scanner=%s) — BLOCKED",
-                            best.side.value.upper() if best.side else "?",
-                            symbol, ml_prob, ml_threshold, best_sr.scanner_name,
-                        )
-                        return []
-                    else:
-                        # Shadow only — log but don't block
-                        logger.info(
-                            "ML SHADOW (no block): %s %s prob=%.3f < %.2f threshold (scanner=%s verdict=%s)",
-                            best.side.value.upper() if best.side else "?",
-                            symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
-                        )
+                    # Was: return [] — removed, ML is shadow-only until retrained
                 elif ml_prob < 0.55:
                     _ml_conf_adj = 0    # baseline, no adjustment
                 elif ml_prob >= 0.65:
@@ -3870,21 +3765,47 @@ class ScalpStrategy(BaseStrategy):
     # STRUCTURE SCANNER 2: Liquidity Sweep
     # ==================================================================
 
+
+    def _is_mss_candle(self, bar, side, atr: float) -> bool:
+        """Check if a bar qualifies as Market Structure Shift confirmation.
+
+        Requirements:
+        - Body ratio >= 0.55 of candle range (no dojis/indecision)
+        - Close in the trade direction (bullish for LONG, bearish for SHORT)
+        """
+        close = float(bar["close"])
+        open_ = float(bar["open"])
+        high = float(bar["high"])
+        low = float(bar["low"])
+        candle_range = high - low
+        if candle_range <= 0:
+            return False
+        body = abs(close - open_)
+        body_ratio = body / candle_range
+        if body_ratio < 0.55:
+            return False
+        # Close must be in trade direction
+        if side == OrderSide.LONG:
+            return close > open_  # bullish close
+        else:
+            return close < open_  # bearish close
+
     def _scan_liquidity_sweep(
         self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
     ) -> Optional[_SetupResult]:
-        """Liquidity sweep: price raids equal highs/lows, fails, snaps back with displacement.
+        """Liquidity sweep with Sweep -> Shift -> Fill sequence.
 
-        Better than plain structure_bounce because it encodes:
-        - Trapped breakout traders (stop run)
-        - Reversal intent (reclaim + displacement)
-        - Structural confluence (sweep into FVG/OB)
+        ICT methodology:
+        1. SWEEP: Price raids past equal highs/lows (bars [-5] to [-2])
+        2. RETRACE: Price pulls back toward swept level
+        3. FILL (MSS): Current bar confirms reversal with strong body in direction
+
+        This avoids entering on the sweep candle itself (old 30% WR problem).
         """
         if len(df) < 30:
             return None
 
         last = df.iloc[-1]
-        prev = df.iloc[-2]
         close = float(last["close"])
         open_ = float(last["open"])
         low = float(last["low"])
@@ -3893,159 +3814,164 @@ class ScalpStrategy(BaseStrategy):
         if atr <= 0 or np.isnan(atr):
             return None
 
-        lookback = min(50, len(df) - 2)
-        window = df.iloc[-(lookback + 1):-1]  # exclude current bar
+        lookback = min(50, len(df) - 6)
+        window = df.iloc[-(lookback + 6):-1]  # exclude current bar
 
         # ── Step 1: Find equal highs/lows clusters ──
-        # At least 2 touches within tolerance = liquidity pool
-        # Relaxed tolerance: 0.25 ATR (was 0.15 — too tight for 1m candles)
         tolerance = atr * 0.25
         highs = window["high"].values
         lows = window["low"].values
 
-        # Equal highs: cluster of 2+ bars with highs within tolerance
         eq_high_level = 0.0
         eq_high_count = 0
         for i in range(len(highs) - 1, max(-1, len(highs) - 30), -1):
             h = highs[i]
             touches = sum(1 for j in range(len(highs)) if j != i and abs(highs[j] - h) < tolerance)
-            if touches >= 1 and h > eq_high_level:  # Relaxed: 1 touch = 2 bars
+            if touches >= 1 and h > eq_high_level:
                 eq_high_level = h
                 eq_high_count = touches + 1
                 break
 
-        # Equal lows: cluster of 2+ bars with lows within tolerance
         eq_low_level = 0.0
         eq_low_count = 0
         for i in range(len(lows) - 1, max(-1, len(lows) - 30), -1):
             l_val = lows[i]
             touches = sum(1 for j in range(len(lows)) if j != i and abs(lows[j] - l_val) < tolerance)
-            if touches >= 1 and (eq_low_level == 0 or l_val < eq_low_level):  # Relaxed
+            if touches >= 1 and (eq_low_level == 0 or l_val < eq_low_level):
                 eq_low_level = l_val
                 eq_low_count = touches + 1
                 break
 
+        # ── Step 2: Search bars [-5] to [-2] for sweep event ──
         side = None
         confs = []
         score = 0
         sweep_level = 0.0
+        sweep_bar = None
+        sweep_bar_offset = 0
 
-        # ── Step 2: Detect sweep ──
-        # LONG: Price raids below equal lows, closes back above
-        if eq_low_level > 0 and low < eq_low_level and close > eq_low_level:
-            side = OrderSide.LONG
-            sweep_level = eq_low_level
-            sweep_size = (eq_low_level - low) / atr
-            confs.append(f"Sweep below EQL ({eq_low_count} touches) at ${eq_low_level:.0f}")
-            score += 38  # base 38 — sweep+reclaim is high-quality
+        for offset in range(2, min(6, len(df))):
+            bar = df.iloc[-offset]
+            bar_low = float(bar["low"])
+            bar_high = float(bar["high"])
+            bar_close = float(bar["close"])
 
-            # Sweep depth scoring
-            if sweep_size > 0.5:
-                score += 15
-                confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.15:
-                score += 10
+            # LONG: sweep below equal lows + close back above
+            if eq_low_level > 0 and bar_low < eq_low_level and bar_close > eq_low_level:
+                side = OrderSide.LONG
+                sweep_level = eq_low_level
+                sweep_bar = bar
+                sweep_bar_offset = offset
+                sweep_size = (eq_low_level - bar_low) / atr
+                confs.append(f"Sweep below EQL ({eq_low_count} touches) at ${eq_low_level:.0f}")
+                score += 35
+                if sweep_size > 0.5:
+                    score += 15
+                    confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
+                elif sweep_size > 0.15:
+                    score += 10
+                break
 
-            # Volume on reclaim candle (key confirmation)
-            rel_vol = float(last.get("rel_vol", 1.0))
-            if not np.isnan(rel_vol) and rel_vol > 1.3:
-                score += 10
-                confs.append(f"Volume reclaim {rel_vol:.1f}x")
-            elif not np.isnan(rel_vol) and rel_vol > 1.0:
-                score += 5
+            # SHORT: sweep above equal highs + close back below
+            if eq_high_level > 0 and bar_high > eq_high_level and bar_close < eq_high_level:
+                side = OrderSide.SHORT
+                sweep_level = eq_high_level
+                sweep_bar = bar
+                sweep_bar_offset = offset
+                sweep_size = (bar_high - eq_high_level) / atr
+                confs.append(f"Sweep above EQH ({eq_high_count} touches) at ${eq_high_level:.0f}")
+                score += 35
+                if sweep_size > 0.5:
+                    score += 15
+                    confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
+                elif sweep_size > 0.15:
+                    score += 10
+                break
 
-        # SHORT: Price raids above equal highs, closes back below
-        if side is None and eq_high_level > 0 and high > eq_high_level and close < eq_high_level:
-            side = OrderSide.SHORT
-            sweep_level = eq_high_level
-            sweep_size = (high - eq_high_level) / atr
-            confs.append(f"Sweep above EQH ({eq_high_count} touches) at ${eq_high_level:.0f}")
-            score += 38  # base 38
-
-            if sweep_size > 0.5:
-                score += 15
-                confs.append(f"Deep sweep ({sweep_size:.2f}x ATR)")
-            elif sweep_size > 0.15:
-                score += 10
-
-            # Volume on reclaim candle
-            rel_vol = float(last.get("rel_vol", 1.0))
-            if not np.isnan(rel_vol) and rel_vol > 1.3:
-                score += 10
-                confs.append(f"Volume reclaim {rel_vol:.1f}x")
-            elif not np.isnan(rel_vol) and rel_vol > 1.0:
-                score += 5
-
-        # Fallback: rolling min/max sweep (simpler, more reliable)
+        # Fallback: rolling min/max sweep (bars [-5] to [-2])
         if side is None:
-            # Use rolling 15-bar high/low as structure
             recent_window = df.iloc[-18:-3]
             if len(recent_window) >= 8:
                 rolling_high = float(recent_window["high"].max())
                 rolling_low = float(recent_window["low"].min())
 
-                # Sweep below rolling low + reclaim
-                if low < rolling_low and close > rolling_low:
-                    side = OrderSide.LONG
-                    sweep_level = rolling_low
-                    confs.append(f"Sweep below rolling low {rolling_low:.2f}")
-                    score += 35  # boosted from 28 — rolling sweep still valid
-                # Sweep above rolling high + reclaim
-                elif high > rolling_high and close < rolling_high:
-                    side = OrderSide.SHORT
-                    sweep_level = rolling_high
-                    confs.append(f"Sweep above rolling high {rolling_high:.2f}")
-                    score += 35  # boosted from 28
+                for offset in range(2, min(6, len(df))):
+                    bar = df.iloc[-offset]
+                    bar_low = float(bar["low"])
+                    bar_high = float(bar["high"])
+                    bar_close = float(bar["close"])
 
-        if side is None:
+                    if bar_low < rolling_low and bar_close > rolling_low:
+                        side = OrderSide.LONG
+                        sweep_level = rolling_low
+                        sweep_bar = bar
+                        sweep_bar_offset = offset
+                        confs.append(f"Sweep below rolling low {rolling_low:.2f}")
+                        score += 30
+                        break
+                    elif bar_high > rolling_high and bar_close < rolling_high:
+                        side = OrderSide.SHORT
+                        sweep_level = rolling_high
+                        sweep_bar = bar
+                        sweep_bar_offset = offset
+                        confs.append(f"Sweep above rolling high {rolling_high:.2f}")
+                        score += 30
+                        break
+
+        if side is None or sweep_bar is None:
             return None
 
-        # ── Step 3: Reclaim strength — HARD GATE at body ≥ 55% ──
-        # Weak-bodied reclaims are fakeouts. Data shows sub-55% body sweeps
-        # drag WR down. Hard reject instead of soft penalty.
-        body = abs(close - open_)
-        candle_range = high - low if high > low else atr * 0.01
-        body_ratio = body / candle_range
-        if body_ratio < 0.55:
-            return None  # hard gate: weak reclaim = not a real sweep
+        # ── Step 3: Retrace check ──
+        # Between sweep bar and current bar, price must pull back toward swept level
+        retrace_found = False
+        retrace_quality = 0  # 0=none, 1=within 0.5ATR, 2=touched level
 
-        if side == OrderSide.LONG:
-            close_position = (close - low) / candle_range
-        else:
-            close_position = (high - close) / candle_range
+        for i in range(sweep_bar_offset - 1, 0, -1):
+            check_bar = df.iloc[-i]
+            if side == OrderSide.LONG:
+                # For LONG: retrace means price went back DOWN toward swept lows
+                bar_low_check = float(check_bar["low"])
+                dist_to_level = bar_low_check - sweep_level
+                if dist_to_level < atr * 0.5:
+                    retrace_found = True
+                    retrace_quality = 2 if dist_to_level < atr * 0.15 else 1
+                    break
+            else:
+                # For SHORT: retrace means price went back UP toward swept highs
+                bar_high_check = float(check_bar["high"])
+                dist_to_level = sweep_level - bar_high_check
+                if dist_to_level < atr * 0.5:
+                    retrace_found = True
+                    retrace_quality = 2 if dist_to_level < atr * 0.15 else 1
+                    break
 
-        if close_position > 0.65:
-            score += 15
-            confs.append(f"Strong reclaim (body={body_ratio:.0%}, close_pos={close_position:.0%})")
-        else:
-            score += 8
-            confs.append(f"Reclaim candle (body={body_ratio:.0%})")
+        # Special case: 2-bar sweep (sweep was bar[-2])
+        # Accept if current bar opens closer to level than sweep bar closed
+        if not retrace_found and sweep_bar_offset == 2:
+            if side == OrderSide.LONG and open_ < float(sweep_bar["close"]):
+                retrace_found = True
+                retrace_quality = 1
+            elif side == OrderSide.SHORT and open_ > float(sweep_bar["close"]):
+                retrace_found = True
+                retrace_quality = 1
 
-        # Minimum sweep depth: 0.35 ATR
-        if side == OrderSide.LONG:
-            sweep_depth = (sweep_level - low) / atr if atr > 0 else 0
-        else:
-            sweep_depth = (high - sweep_level) / atr if atr > 0 else 0
-        if sweep_depth < 0.35 and body_ratio < 0.55:
-            score -= 8  # shallow sweep + weak reclaim = noise
-            confs.append(f"Shallow sweep ({sweep_depth:.2f} ATR)")
-        elif sweep_depth > 0.5:
+        if not retrace_found:
+            return None
+
+        if retrace_quality == 2:
+            score += 10
+            confs.append("Retrace touched level")
+        elif retrace_quality == 1:
             score += 5
-            confs.append(f"Deep sweep ({sweep_depth:.2f} ATR)")
+            confs.append("Retrace within range")
 
-        # ── Step 4: Displacement check ──
-        # Body must show real directional intent
-        displacement = body / atr if atr > 0 else 0
-        if displacement > 0.6:  # relaxed from 0.8
-            score += 15
-            confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.4:
-            score += 8
-            confs.append(f"Moderate displacement ({displacement:.1f}x ATR)")
-        elif displacement < 0.2:
-            score -= 10  # weak reclaim, probably fake
+        # ── Step 4: MSS confirmation on current bar ──
+        if not self._is_mss_candle(last, side, atr):
+            return None
+        score += 20
+        confs.append("MSS confirmation candle")
 
-        # ── Step 5: Volume confirmation ──
+        # ── Step 5: Volume on current bar ──
         rel_vol = float(last.get("rel_vol", 1.0))
         if not np.isnan(rel_vol) and rel_vol > 1.5:
             confs.append(f"Volume spike {rel_vol:.1f}x")
@@ -4053,204 +3979,14 @@ class ScalpStrategy(BaseStrategy):
         elif not np.isnan(rel_vol) and rel_vol > 1.0:
             score += 5
 
-        # ── Step 6: Sweep into structural zone ──
-        sm = self._structure_map
-        if sm is not None:
-            # Check if sweep touched an order block
-            if side == OrderSide.LONG:
-                for ob in getattr(sm, 'demand_zones', []):
-                    if isinstance(ob, dict) and low <= ob.get('high', 0) and low >= ob.get('low', float('inf')):
-                        score += 10
-                        confs.append("Sweep into demand zone/OB")
-                        break
-            else:
-                for ob in getattr(sm, 'supply_zones', []):
-                    if isinstance(ob, dict) and high >= ob.get('low', float('inf')) and high <= ob.get('high', 0):
-                        score += 10
-                        confs.append("Sweep into supply zone/OB")
-                        break
-
-        # ── Step 7: HTF alignment ──
-        if htf_bias == (1 if side == OrderSide.LONG else -1):
-            confs.append("HTF aligned")
-            score += 15
-        elif htf_bias == (-1 if side == OrderSide.LONG else 1):
-            score -= 5  # counter-trend penalty but don't block
-
-        confidence = max(min(score, 100), 0)
-
-        # SL below/above the sweep wick + small buffer
-        if side == OrderSide.LONG:
-            sl = low - atr * 0.15
-        else:
-            sl = high + atr * 0.15
-
-        # ── Opposite liquidity pool as TP target ──
-        # After sweeping lows, target the equal highs (and vice versa).
-        # Clamp to 1R–4R range; fall back to default RR-based TPs if no pool
-        # or if pool is outside the clamp range.
-        risk = abs(close - sl)
-        opp_pool_tp = 0.0
-        if risk > 0:
-            if side == OrderSide.LONG and eq_high_level > close:
-                opp_dist_r = (eq_high_level - close) / risk
-                if 1.0 <= opp_dist_r <= 4.0:
-                    opp_pool_tp = eq_high_level
-                    confs.append(f"TP→ EQH pool ${eq_high_level:.0f} ({opp_dist_r:.1f}R)")
-            elif side == OrderSide.SHORT and eq_low_level > 0 and eq_low_level < close:
-                opp_dist_r = (close - eq_low_level) / risk
-                if 1.0 <= opp_dist_r <= 4.0:
-                    opp_pool_tp = eq_low_level
-                    confs.append(f"TP→ EQL pool ${eq_low_level:.0f} ({opp_dist_r:.1f}R)")
-
-        result = _SetupResult(
-            name="liquidity_sweep",
-            side=side,
-            confidence=confidence,
-            confirmations=confs,
-            entry_price=close,
-            stop_loss=sl,
-            atr=atr,
-        )
-        # Attach opposite pool TP for downstream TP override
-        result._opp_pool_tp = opp_pool_tp  # type: ignore[attr-defined]
-        return result
-
-    # ==================================================================
-    # BOS / CHOCH + Displacement Scanner
-    # ==================================================================
-
-    def _scan_bos_choch(
-        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
-    ) -> Optional[_SetupResult]:
-        """Break of Structure / Change of Character with displacement + confirmation.
-
-        Backward-looking confirmation candle pattern:
-          bar[-2]: the BREAK candle (closes beyond rolling high/low with displacement)
-          bar[-1]: the CONFIRMATION candle (closes in direction, body ≥ 55%)
-          bar[0] (current): entry candle (we enter at current close after confirmation)
-
-        This prevents premature entries on noise/false breaks that previously
-        produced 0% WR and triggered the hard_loss_cap at -2R.
-        """
-        if len(df) < 22:
-            return None
-
-        atr = float(df.iloc[-1].get("atr", 0))
-        if atr <= 0 or np.isnan(atr):
-            return None
-
-        # bar[-2] = break candle, bar[-1] = confirmation candle, bar[0] = entry
-        break_bar = df.iloc[-3]   # the candle that broke structure
-        confirm_bar = df.iloc[-2]  # the follow-through candle
-        entry_bar = df.iloc[-1]    # current candle (we enter here)
-
-        # ── Step 1: Rolling structure levels ──
-        # Use bars 5-22 (skip last 4 to avoid detecting break/confirm as structure)
-        structure_window = df.iloc[-22:-4]
-        if len(structure_window) < 8:
-            return None
-
-        rolling_high = float(structure_window["high"].max())
-        rolling_low = float(structure_window["low"].min())
-
-        # Pre-break bars must have been inside structure
-        pre_break = df.iloc[-5:-3]
-        pre_closes = [float(r["close"]) for _, r in pre_break.iterrows()]
-
-        break_close = float(break_bar["close"])
-        break_open = float(break_bar["open"])
-        break_high = float(break_bar["high"])
-        break_low = float(break_bar["low"])
-        break_body = abs(break_close - break_open)
-
-        side = None
-        confs = []
-        score = 0
-
-        # ── Step 2: Detect break on bar[-2] ──
-        # Bullish BOS: break_bar closes above rolling high, pre-break was below
-        if break_close > rolling_high and min(pre_closes) <= rolling_high:
-            side = OrderSide.LONG
-            break_dist = (break_close - rolling_high) / atr
-            confs.append(f"BOS above {rolling_high:.2f} ({break_dist:.2f}x ATR)")
-            score += 25
-            if break_dist > 0.5:
-                score += 10
-
-        # Bearish BOS: break_bar closes below rolling low, pre-break was above
-        elif break_close < rolling_low and max(pre_closes) >= rolling_low:
-            side = OrderSide.SHORT
-            break_dist = (rolling_low - break_close) / atr
-            confs.append(f"BOS below {rolling_low:.2f} ({break_dist:.2f}x ATR)")
-            score += 25
-            if break_dist > 0.5:
-                score += 10
-
-        if side is None:
-            return None
-
-        # ── Step 3: Displacement on break candle ──
-        displacement = break_body / atr if atr > 0 else 0
-        if displacement > 1.2:
-            score += 20
-            confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.8:
-            score += 12
-            confs.append(f"Good displacement ({displacement:.1f}x ATR)")
-        elif displacement > 0.6:
-            score += 3
-        else:
-            return None  # below 0.6 ATR = noise break
-
-        # ── Step 4: CONFIRMATION CANDLE on bar[-1] ──
-        # Must close in the direction of the break with body ≥ 55%
-        conf_close = float(confirm_bar["close"])
-        conf_open = float(confirm_bar["open"])
-        conf_high = float(confirm_bar["high"])
-        conf_low = float(confirm_bar["low"])
-        conf_body = abs(conf_close - conf_open)
-        conf_range = conf_high - conf_low if conf_high > conf_low else atr * 0.01
-        conf_body_ratio = conf_body / conf_range
-
-        # Direction check: confirmation must close in break direction
-        if side == OrderSide.LONG and conf_close <= conf_open:
-            return None  # confirmation candle closed bearish — break not confirmed
-        if side == OrderSide.SHORT and conf_close >= conf_open:
-            return None  # confirmation candle closed bullish — break not confirmed
-
-        # Body quality: ≥ 55% required
-        if conf_body_ratio < 0.55:
-            return None  # weak confirmation candle — not enough conviction
-
-        # Confirmation must hold the break level
-        if side == OrderSide.LONG and conf_close < rolling_high:
-            return None  # closed back below structure — failed break
-        if side == OrderSide.SHORT and conf_close > rolling_low:
-            return None  # closed back above structure — failed break
-
-        score += 15
-        confs.append(f"Confirmed: follow-through candle ({conf_body_ratio:.0%} body)")
-
-        # ── Step 5: Break candle quality ──
-        break_range = break_high - break_low if break_high > break_low else atr * 0.01
-        break_body_ratio = break_body / break_range
-        if break_body_ratio > 0.55:
+        # ── Step 6: Displacement (body strength of MSS candle) ──
+        body = abs(close - open_)
+        displacement = body / atr if atr > 0 else 0
+        if displacement > 0.6:
             score += 10
-            confs.append(f"Clean break candle ({break_body_ratio:.0%} body)")
-        elif break_body_ratio < 0.25:
-            score -= 10
-
-        # ── Step 6: Volume on break candle ──
-        break_vol = float(break_bar.get("rel_vol", 1.0))
-        if not np.isnan(break_vol) and break_vol > 2.0:
-            confs.append(f"Volume spike {break_vol:.1f}x on break")
-            score += 15
-        elif not np.isnan(break_vol) and break_vol > 1.5:
-            confs.append(f"Volume {break_vol:.1f}x confirmed")
-            score += 8
-        elif not np.isnan(break_vol) and break_vol < 1.3:
-            return None  # breaks need ≥1.3x volume
+            confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
+        elif displacement > 0.4:
+            score += 5
 
         # ── Step 7: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):
@@ -4259,10 +3995,215 @@ class ScalpStrategy(BaseStrategy):
         elif htf_bias == (-1 if side == OrderSide.LONG else 1):
             score -= 5
 
-        # ── Step 8: CHOCH detection (break against EMA trend) ──
+        confidence = max(min(score, 100), 0)
+
+        # SL below/above the sweep bar wick (structural invalidation)
+        sweep_bar_low = float(sweep_bar["low"])
+        sweep_bar_high = float(sweep_bar["high"])
+        if side == OrderSide.LONG:
+            sl = sweep_bar_low - atr * 0.15
+        else:
+            sl = sweep_bar_high + atr * 0.15
+
+        return _SetupResult(
+            name="liquidity_sweep",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # BOS / CHOCH + Displacement Scanner
+    # ==================================================================
+
+    def _scan_bos_choch(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Break of Structure / Change of Character with Sweep-Shift-Fill.
+
+        ICT methodology:
+        1. BREAK: Price breaks rolling structure (bars [-5] to [-3]) with displacement
+        2. RETRACE: Price pulls back toward broken level
+        3. MSS: Current bar confirms in break direction with strong body
+
+        Replaces naive "enter on break candle" with confirmed retrace + shift.
+        """
+        if len(df) < 20:
+            return None
+
+        atr = float(df.iloc[-1].get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        high_val = float(last["high"])
+        low_val = float(last["low"])
+
+        # ── Step 1: Search bars [-5] to [-3] for break event ──
+        side = None
+        confs = []
+        score = 0
+        break_bar = None
+        break_bar_offset = 0
+        broken_level = 0.0
+
+        for offset in range(3, min(6, len(df))):
+            bar = df.iloc[-offset]
+            bar_close = float(bar["close"])
+            bar_open = float(bar["open"])
+            bar_high = float(bar["high"])
+            bar_low = float(bar["low"])
+            bar_body = abs(bar_close - bar_open)
+
+            # Structure window: bars before the break bar
+            struct_end = offset + 1
+            struct_start = min(struct_end + 17, len(df))
+            if struct_start - struct_end < 8:
+                continue
+            structure_window = df.iloc[-struct_start:-struct_end]
+            rolling_high = float(structure_window["high"].max())
+            rolling_low = float(structure_window["low"].min())
+
+            # Check pre-break bars were inside structure
+            pre_break = df.iloc[-(offset+2):-offset]
+            if len(pre_break) < 1:
+                continue
+
+            # Displacement check on break bar
+            displacement = bar_body / atr if atr > 0 else 0
+            if displacement < 0.6:
+                continue  # weak break, skip
+
+            # Bullish BOS: break bar closes above rolling high
+            if bar_close > rolling_high:
+                pre_closes = [float(r["close"]) for _, r in pre_break.iterrows()]
+                if any(c <= rolling_high for c in pre_closes):
+                    side = OrderSide.LONG
+                    broken_level = rolling_high
+                    break_bar = bar
+                    break_bar_offset = offset
+                    break_dist = (bar_close - rolling_high) / atr
+                    confs.append(f"BOS above {rolling_high:.2f} ({break_dist:.2f}x ATR)")
+                    score += 25
+                    if break_dist > 0.5:
+                        score += 10
+                    # Displacement scoring
+                    if displacement > 1.2:
+                        score += 20
+                        confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
+                    elif displacement > 0.8:
+                        score += 12
+                        confs.append(f"Good displacement ({displacement:.1f}x ATR)")
+                    else:
+                        score += 3
+                    break
+
+            # Bearish BOS: break bar closes below rolling low
+            elif bar_close < rolling_low:
+                pre_closes = [float(r["close"]) for _, r in pre_break.iterrows()]
+                if any(c >= rolling_low for c in pre_closes):
+                    side = OrderSide.SHORT
+                    broken_level = rolling_low
+                    break_bar = bar
+                    break_bar_offset = offset
+                    break_dist = (rolling_low - bar_close) / atr
+                    confs.append(f"BOS below {rolling_low:.2f} ({break_dist:.2f}x ATR)")
+                    score += 25
+                    if break_dist > 0.5:
+                        score += 10
+                    if displacement > 1.2:
+                        score += 20
+                        confs.append(f"Strong displacement ({displacement:.1f}x ATR)")
+                    elif displacement > 0.8:
+                        score += 12
+                        confs.append(f"Good displacement ({displacement:.1f}x ATR)")
+                    else:
+                        score += 3
+                    break
+
+        if side is None or break_bar is None:
+            return None
+
+        # ── Step 2: Retrace check ──
+        # Between break bar and current bar, price must pull back toward broken level
+        retrace_found = False
+        retrace_bar = None
+
+        for i in range(break_bar_offset - 1, 0, -1):
+            check_bar = df.iloc[-i]
+            if side == OrderSide.LONG:
+                # Retrace DOWN toward the broken resistance (now support)
+                bar_low_check = float(check_bar["low"])
+                if bar_low_check < broken_level + atr * 0.5:
+                    retrace_found = True
+                    retrace_bar = check_bar
+                    if bar_low_check < broken_level + atr * 0.15:
+                        score += 10
+                        confs.append("Deep retrace to broken level")
+                    else:
+                        score += 5
+                        confs.append("Retrace toward broken level")
+                    break
+            else:
+                # Retrace UP toward the broken support (now resistance)
+                bar_high_check = float(check_bar["high"])
+                if bar_high_check > broken_level - atr * 0.5:
+                    retrace_found = True
+                    retrace_bar = check_bar
+                    if bar_high_check > broken_level - atr * 0.15:
+                        score += 10
+                        confs.append("Deep retrace to broken level")
+                    else:
+                        score += 5
+                        confs.append("Retrace toward broken level")
+                    break
+
+        if not retrace_found:
+            return None
+
+        # ── Step 3: MSS confirmation on current bar ──
+        if not self._is_mss_candle(last, side, atr):
+            return None
+
+        # Current bar must be back beyond the broken level
+        if side == OrderSide.LONG and close <= broken_level:
+            return None
+        if side == OrderSide.SHORT and close >= broken_level:
+            return None
+
+        score += 15
+        confs.append("MSS confirmation candle")
+
+        # ── Step 4: Volume (soft scale, not hard gate) ──
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol):
+            if rel_vol > 2.0:
+                confs.append(f"Volume spike {rel_vol:.1f}x")
+                score += 15
+            elif rel_vol > 1.5:
+                confs.append(f"Volume confirmed {rel_vol:.1f}x")
+                score += 8
+            elif rel_vol > 1.0:
+                score += 0  # neutral
+            else:
+                score -= 10  # low volume penalty
+
+        # ── Step 5: HTF alignment ──
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+        elif htf_bias == (-1 if side == OrderSide.LONG else 1):
+            score -= 5
+
+        # ── Step 6: CHOCH detection (break against EMA trend) ──
         if "ema_21" in df.columns and "ema_8" in df.columns:
-            ema8 = float(entry_bar.get("ema_8", 0))
-            ema21 = float(entry_bar.get("ema_21", 0))
+            ema8 = float(last.get("ema_8", 0))
+            ema21 = float(last.get("ema_21", 0))
             if ema8 > 0 and ema21 > 0:
                 if side == OrderSide.LONG and ema8 < ema21:
                     confs.append("CHOCH: bullish break in bearish EMA")
@@ -4273,23 +4214,25 @@ class ScalpStrategy(BaseStrategy):
 
         confidence = max(min(score, 100), 0)
 
-        # Entry at current bar close (after confirmation)
-        entry_close = float(entry_bar["close"])
-        entry_low = float(entry_bar["low"])
-        entry_high = float(entry_bar["high"])
-
-        # SL: behind the structure level + buffer
-        if side == OrderSide.LONG:
-            sl = min(entry_low, break_low, rolling_high) - atr * 0.3
+        # SL behind retrace extreme (tighter than behind break bar)
+        if retrace_bar is not None:
+            retrace_low = float(retrace_bar["low"])
+            retrace_high = float(retrace_bar["high"])
         else:
-            sl = max(entry_high, break_high, rolling_low) + atr * 0.3
+            retrace_low = low_val
+            retrace_high = high_val
+
+        if side == OrderSide.LONG:
+            sl = min(retrace_low, broken_level) - atr * 0.2
+        else:
+            sl = max(retrace_high, broken_level) + atr * 0.2
 
         return _SetupResult(
             name="bos_choch",
             side=side,
             confidence=confidence,
             confirmations=confs,
-            entry_price=entry_close,
+            entry_price=close,
             stop_loss=sl,
             atr=atr,
         )
@@ -5563,12 +5506,6 @@ class ScalpStrategy(BaseStrategy):
             tp2_rr *= 1.2
             tp3_rr *= 1.3
 
-        # Liquidity sweep: use opposite pool as TP1 if available and within range
-        opp_pool_tp = getattr(setup, "_opp_pool_tp", 0.0)
-        if setup.name == "liquidity_sweep" and opp_pool_tp > 0 and risk > 0:
-            tp1_rr = abs(opp_pool_tp - entry) / risk
-            tp1_rr = max(1.0, min(tp1_rr, 4.0))  # clamp 1R–4R
-
         # Calculate final TP levels
         if setup.side == OrderSide.LONG:
             tp1 = entry + risk * tp1_rr
@@ -5645,8 +5582,6 @@ class ScalpStrategy(BaseStrategy):
                 "would_block_rr": actual_rr < self.min_rr_ratio,
                 "would_block_liq": liq_buffer_pct < self.liq_min_buffer_pct,
                 "session": getattr(self, '_current_session', 'unknown'),
-                "indian_market": getattr(self, '_indian_ctx', None) and getattr(self, '_indian_ctx').session_label or "",
-                "indian_flow_hour": getattr(self, '_indian_ctx', None) and getattr(self, '_indian_ctx').is_indian_flow_hour or False,
                 "vwap_zone": getattr(self, '_prefilter_result', {}).get("context", {}).get("vwap_zone", "normal"),
                 "operating_mode": self.operating_mode,
             },

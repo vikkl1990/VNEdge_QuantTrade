@@ -705,9 +705,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- Per-Symbol Status removed (duplicate of Symbol Scanner Status above) -->
-    <div id="per-symbol-status" style="display:none"></div>
-
     <!-- Recent Alerts -->
     <div class="panel live-span-2">
       <div class="panel-title">Recent Alerts</div>
@@ -986,6 +983,29 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div class="stat-card"><div class="stat-value" id="eq-fill-rate">--</div><div class="stat-label">Fill Rate</div></div>
     </div>
     <div style="margin-top:8px;font-size:.7rem;color:var(--text-muted)">Paper mode: slippage = 0 (simulated fills at signal price). Real mode: measures actual exchange fill vs signal price.</div>
+  </div>
+
+  <!-- Risk-Return by Scanner -->
+  <div class="panel" style="border-color:rgba(0,170,255,.15)">
+    <div class="panel-title">Risk-Return by Scanner <span class="badge" style="background:rgba(0,170,255,.15);color:#00aaff">Scatter Data</span></div>
+    <div style="overflow-x:auto;margin-top:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:.72rem">
+        <thead>
+          <tr style="border-bottom:1px solid rgba(255,255,255,.06)">
+            <th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Scanner</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">Type</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">Trades</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Avg Return</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Volatility</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Sharpe</th>
+            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">WR</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Max DD</th>
+            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Total PnL</th>
+          </tr>
+        </thead>
+        <tbody id="risk-return-body"></tbody>
+      </table>
+    </div>
   </div>
 
   <!-- Exit Quality + AI Insights -->
@@ -1980,8 +2000,8 @@ async function submitApiKey() {
     const payload = {
         exchange: document.getElementById("ak-exchange").value,
         label: document.getElementById("ak-label").value,
-        api_key: document.getElementById("ak-key").value,
-        api_secret: document.getElementById("ak-secret").value,
+        key: document.getElementById("ak-key").value,
+        secret: document.getElementById("ak-secret").value,
         passphrase: document.getElementById("ak-passphrase").value
     };
     try {
@@ -2527,7 +2547,7 @@ async function refreshLive() {
     updateFunnel(funnel);
     updateAlerts(alerts);
     updateVetoStats(funnel);
-    updatePerSymbolStatus(status, decision);
+    // per-symbol status removed (consolidated into Symbol Scanner Status)
     updateSetupLifecycle(status);
     updateRecentClosed(closed);
     // #2 + #9 MTF chain
@@ -2557,14 +2577,14 @@ async function refreshLive() {
         setColor("eq-max-slip", maxSlip, 3.0, 5.0);
     }
 
-    // Mini bar
+    // Mini bar (tracker is source of truth for balance)
     try {
-        const mon = await api("/api/monitor/report");
-        if (mon) {
+        const tStats = await api("/api/tracker/stats");
+        if (tStats) {
             const ppEl = document.getElementById("paper-bal-mini");
-            if (ppEl) ppEl.textContent = "$" + (mon.paper_balance || 0).toLocaleString("en-US", {minimumFractionDigits:2});
+            if (ppEl) ppEl.textContent = "$" + (tStats.paper_balance || 0).toLocaleString("en-US", {minimumFractionDigits:2});
             const scEl = document.getElementById("signals-mini-count");
-            if (scEl) scEl.textContent = mon.total_analyzed || 0;
+            if (scEl) scEl.textContent = tStats.closed || 0;
         }
     } catch(e) {}
 
@@ -3013,39 +3033,6 @@ function updateRecentClosed(closed) {
     }).join("");
 }
 
-function updatePerSymbolStatus(status, decision) {
-    const container = document.getElementById("per-symbol-status");
-    if (!container || !status || !status.prices) return;
-    const prices = status.prices;
-    // #7 Extract per-symbol regime data
-    const regimes = status.regimes || status.symbol_regimes || {};
-    const perSymbol = status.per_symbol || {};
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">';
-    for (const sym of Object.keys(prices).sort()) {
-        const base = sym.split("/")[0];
-        const color = SYMBOL_COLORS[base] || "#9ca3af";
-        const price = prices[sym];
-        const decimals = price > 100 ? 2 : 4;
-        const isBest = decision && decision.best_symbol === sym;
-        const border = isBest ? "border:1px solid rgba(34,197,94,.2)" : "border:1px solid var(--border)";
-        // #7 Regime for this symbol
-        const regime = regimes[sym] || regimes[base] || (perSymbol[sym] && perSymbol[sym].regime) || (perSymbol[base] && perSymbol[base].regime) || "";
-        const regimeLower = regime.toLowerCase();
-        const regimeCls = regimeLower.includes("trending_up") || regimeLower.includes("up") ? "trending_up" :
-            regimeLower.includes("trending_down") || regimeLower.includes("down") ? "trending_down" :
-            regimeLower.includes("quiet") ? "quiet" :
-            regimeLower.includes("rang") ? "ranging" :
-            regimeLower.includes("volat") ? "volatile" : "quiet";
-        html += `<div style="padding:8px;border-radius:var(--radius);${border};text-align:center;background:var(--bg-card)">
-            <div style="font-weight:700;color:${color};font-size:.82rem">${base}</div>
-            <div style="font-size:.73rem;color:var(--text-secondary);font-family:var(--font-mono)">$${price.toFixed(decimals)}</div>
-            ${regime ? '<span class="regime-badge ' + regimeCls + '">' + esc(regime) + '</span>' : '<div style="font-size:.58rem;color:var(--text-muted);letter-spacing:.8px;text-transform:uppercase;margin-top:2px">Scanning</div>'}
-        </div>`;
-    }
-    html += '</div>';
-    container.innerHTML = html;
-}
-
 function updateAlerts(alerts) {
     const wrap = document.getElementById("alerts-list");
     if (!alerts || !Array.isArray(alerts) || alerts.length === 0) {
@@ -3093,6 +3080,38 @@ async function refreshAnalytics() {
     // #12 Trade correlation
     const realSt = await api("/api/real/status");
     updateTradeCorrelation(closed, realSt);
+    // Risk-return scatter table
+    refreshRiskReturn();
+}
+
+async function refreshRiskReturn() {
+    try {
+        const resp = await api('/api/risk-return');
+        if (!resp || !resp.scanners) return;
+        const tbody = document.getElementById('risk-return-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        for (const s of resp.scanners) {
+            const row = document.createElement('tr');
+            row.style.borderBottom = '1px solid rgba(255,255,255,.04)';
+            const typeColor = s.category === 'momentum' ? '#00aaff' : '#ff8800';
+            const avgClass = s.avg_return >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+            const sharpeClass = s.sharpe >= 0.5 ? 'color:var(--green)' : s.sharpe >= 0 ? 'color:var(--yellow)' : 'color:var(--red)';
+            const pnlClass = s.total_pnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+            row.innerHTML = `
+                <td style="padding:5px 8px;font-weight:600">${s.scanner}</td>
+                <td style="text-align:center;padding:5px 4px;color:${typeColor}">${s.category}</td>
+                <td style="text-align:center;padding:5px 4px">${s.trades}</td>
+                <td style="text-align:right;padding:5px 4px;${avgClass}">${(s.avg_return * 100).toFixed(3)}%</td>
+                <td style="text-align:right;padding:5px 4px">${(s.volatility * 100).toFixed(3)}%</td>
+                <td style="text-align:right;padding:5px 4px;${sharpeClass}">${s.sharpe}</td>
+                <td style="text-align:center;padding:5px 4px">${(s.win_rate * 100).toFixed(1)}%</td>
+                <td style="text-align:right;padding:5px 4px;color:var(--red)">${s.max_drawdown.toFixed(2)}%</td>
+                <td style="text-align:right;padding:5px 4px;${pnlClass}">${s.total_pnl.toFixed(2)}%</td>
+            `;
+            tbody.appendChild(row);
+        }
+    } catch(e) { console.error('Risk-return fetch error:', e); }
 }
 
 function updateEquityChart(closed) {

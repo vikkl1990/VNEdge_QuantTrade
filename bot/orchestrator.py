@@ -279,17 +279,32 @@ class BotOrchestrator:
             # 4. Start heartbeat monitor
             await self._heartbeat.start()
 
-            # 4b. Bootstrap trade monitor with existing closed signals
+            # 4b. Sync trade monitor with signal tracker (tracker is source of truth)
             try:
-                existing_closed = self._signal_tracker.get_closed_signals()
-                if existing_closed:
-                    self._trade_monitor.bulk_analyze(existing_closed)
+                existing_closed = self._signal_tracker.get_closed_signals(limit=5000)
+                tracker_stats = self._signal_tracker.get_stats()
+                self._trade_monitor.sync_with_tracker(tracker_stats, existing_closed)
+                self._log.info(
+                    "Trade Monitor synced with tracker: %d closed signals",
+                    len(existing_closed) if existing_closed else 0,
+                )
+            except Exception as exc:
+                self._log.warning("Trade Monitor sync failed: %s", exc)
+
+            # 4c. Immediately sync real_manager with paper tracker to clear ghost positions
+            try:
+                if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                    active_ids = {ts.trade_id for ts in self._signal_tracker._active.values()}
+                    closed_paper = {}
+                    if hasattr(self._signal_tracker, '_closed_recently'):
+                        closed_paper = dict(self._signal_tracker._closed_recently)
+                    self._real_manager.sync_with_paper(active_ids, closed_paper)
                     self._log.info(
-                        "Trade Monitor bootstrapped with %d existing closed signals",
-                        len(existing_closed),
+                        "Real manager startup sync: %d active signals, %d open real trades",
+                        len(active_ids), len(self._real_manager.real_trades),
                     )
             except Exception as exc:
-                self._log.warning("Trade Monitor bootstrap failed: %s", exc)
+                self._log.warning("Real manager startup sync failed: %s", exc)
 
             # 5. Start dashboard (non-blocking)
             # Wire signal tracker and AI learner to dashboard for API access
@@ -438,6 +453,46 @@ class BotOrchestrator:
                     await self._alerts.send_system_alert(msg, level=level)
                 except Exception:
                     pass
+
+                # Mirror exit to real exchange for ANY close event from WS path
+                if ev_type == "sl_updated":
+                    # SL updates: sync to exchange
+                    if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                        try:
+                            trade_id = ev.get("trade_id", "")
+                            new_sl = ev.get("new_sl", 0)
+                            ev_symbol = ev.get("symbol", "")
+                            if trade_id and new_sl > 0:
+                                await self._real_manager.update_exchange_sl(trade_id, ev_symbol, new_sl)
+                        except Exception:
+                            pass
+                else:
+                    # Close events: mirror exit + AI learning + monitor
+                    closed_sig = ev.get("signal", {})
+                    if closed_sig:
+                        try:
+                            self._signal_learner.learn_from_outcome(closed_sig)
+                        except Exception:
+                            pass
+                        try:
+                            self._trade_monitor.analyze_trade(closed_sig)
+                        except Exception:
+                            pass
+                        # Mirror exit to real
+                        if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                            try:
+                                paper_id = closed_sig.get("trade_id", "")
+                                exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
+                                paper_slip = closed_sig.get("slippage_bps", 0) or 0
+                                if paper_id and exit_price:
+                                    await self._real_manager.mirror_paper_exit(
+                                        paper_id, exit_price, ev_type,
+                                        paper_slippage_bps=float(paper_slip),
+                                        symbol=closed_sig.get("symbol", ""),
+                                        side=closed_sig.get("side", ""),
+                                    )
+                            except Exception as exc:
+                                self._log.error("WS exit mirror failed: %s", exc)
 
     async def _on_ws_order_fill(
         self, symbol: str, order_id: str, client_order_id: str,
@@ -793,33 +848,54 @@ class BotOrchestrator:
                         except Exception as exc:
                             self._log.debug("Trade monitor analysis failed: %s", exc)
 
-                # Update dashboard with tracker stats
-                stats = self._signal_tracker.get_stats()
-                await self._dashboard.update_performance(
-                    win_rate=stats.get("win_rate", 0),
-                    total_pnl=stats.get("total_pnl", 0),
-                    trades_today=stats.get("closed", 0),
-                    wins=stats.get("wins", 0),
-                    losses=stats.get("losses", 0),
-                )
-
-                # Update scanner weights from R-performance data
-                try:
-                    by_setup = stats.get("by_setup", {})
-                    if by_setup and hasattr(self._strategy, '_scalp'):
-                        wm = self._strategy._scalp._weight_manager
-                        wm.update_weights(by_setup)
-                        # Check shadow recovery for suppressed scanners
-                        try:
-                            recoveries = wm.check_shadow_recovery()
-                            if recoveries:
-                                self._log.info("Shadow recoveries: %s", recoveries)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
             except Exception as exc:
                 self._log.debug("Signal tracker update failed: %s", exc)
+
+        # Update dashboard with tracker stats (always, not just when active signals exist)
+        try:
+            stats = self._signal_tracker.get_stats()
+
+            # Calculate today's stats from daily_pnl breakdown
+            from datetime import datetime, timezone
+            _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            _daily = stats.get("daily_pnl", {}).get(_today_str, {})
+            _today_trades = _daily.get("trades", 0)
+            _today_pnl = _daily.get("net_pnl", 0.0)
+
+            # Max drawdown from monitor
+            _max_dd = 0.0
+            try:
+                _max_dd = self._trade_monitor._metrics.get("max_drawdown", 0.0)
+            except Exception:
+                pass
+
+            await self._dashboard.update_performance(
+                win_rate=stats.get("win_rate", 0),
+                total_pnl=stats.get("total_pnl", 0),
+                trades_today=_today_trades,
+                daily_pnl=_today_pnl,
+                max_drawdown=_max_dd,
+                wins=stats.get("wins", 0),
+                losses=stats.get("losses", 0),
+            )
+
+            # Update scanner weights from R-performance data
+            try:
+                by_setup = stats.get("by_setup", {})
+                if by_setup and hasattr(self._strategy, '_scalp'):
+                    wm = self._strategy._scalp._weight_manager
+                    wm.update_weights(by_setup)
+                    # Check shadow recovery for suppressed scanners
+                    try:
+                        recoveries = wm.check_shadow_recovery()
+                        if recoveries:
+                            self._log.info("Shadow recoveries: %s", recoveries)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception as exc:
+            self._log.debug("Tracker stats update failed: %s", exc)
 
         # -- Update Decision Engine --
         try:
@@ -1091,9 +1167,11 @@ class BotOrchestrator:
 
         # -- Track signal for TP/SL closure and P&L --
         try:
+            # Pass order_type so from_signal can compute fees correctly
+            sig_dict["_order_type"] = getattr(self._signal_tracker, "_order_type", "maker")
             self._signal_tracker.track_signal(sig_dict)
         except Exception as exc:
-            self._log.debug("Failed to track signal: %s", exc)
+            self._log.error("Failed to track signal: %s", exc, exc_info=True)
 
         # -- Alert on signal --
         try:

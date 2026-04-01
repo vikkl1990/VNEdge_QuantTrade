@@ -1815,22 +1815,8 @@
         updateAlerts(alerts);
         updateTrackerStats(trackerStats);
 
-        // Override paper balance from monitor report (tracker stats shows exchange balance, not paper tracking balance)
-        if (monitorReport && monitorReport.paper_balance) {
-            const balEl = document.querySelector("#pf-balance");
-            if (balEl) {
-                const bal = monitorReport.paper_balance;
-                balEl.textContent = "$" + bal.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
-                balEl.style.color = bal >= 1000 ? "var(--accent-buy)" : bal >= 900 ? "var(--accent-warn)" : "var(--accent-sell)";
-            }
-            const pnlEl = document.querySelector("#pf-pnl-usd");
-            if (pnlEl) {
-                const bal = monitorReport.paper_balance;
-                const pnlUsd = bal - 1000;
-                pnlEl.textContent = (pnlUsd >= 0 ? "+$" : "-$") + Math.abs(pnlUsd).toFixed(2);
-                pnlEl.className = "value mono " + (pnlUsd >= 0 ? "pnl-positive" : "pnl-negative");
-            }
-        }
+        // Paper balance: tracker is single source of truth (monitor syncs from tracker on startup)
+        // No monitor override needed — updateTrackerStats() already sets #pf-balance and #pf-pnl-usd
 
         // Exchange wallet balance (from tracker stats which reports real Delta India balance)
         if (trackerStats) {

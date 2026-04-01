@@ -499,13 +499,15 @@ class TrackedSignal:
         # This prevents 173 outside-scalper trades averaging only $0.32/trade.
         pre_trade_type = classify_trade(sig)
         within_scalper = pre_trade_type == TRADE_TYPE_SCALP
-        fee_check = self.get_min_viable_move(
+        # Fee check needs SignalTracker instance — defer to track_signal if in classmethod
+        _order_type = sig.get("_order_type", "maker")
+        fee_check = SignalTracker.get_min_viable_move(
             symbol=sig.get("symbol", ""),
             position_usd=position_usd,
             leverage=float(lev),
             sl_distance_pct=sl_dist_pct,
             within_scalper=within_scalper,
-            order_type=self._order_type,
+            order_type=_order_type,
         )
 
         if fee_check["fee_drag_r"] > 0.5:
@@ -660,10 +662,12 @@ class SignalTracker:
         DUPLICATE PREVENTION: Max 1 active position per symbol+side.
         This prevents the #1 loss cause — 13 identical entries burning $86+ in fees.
         """
+        logger.info("TRACK_ENTER: %s %s", signal_dict.get("symbol", "?"), signal_dict.get("side", "?"))
         ts = TrackedSignal.from_signal(signal_dict)
         if not ts.entry_price or not ts.stop_loss:
-            logger.warning("Cannot track signal %s: missing entry/SL", ts.trade_id)
+            logger.warning("Cannot track signal %s: missing entry/SL (entry=%s, sl=%s)", ts.trade_id, ts.entry_price, ts.stop_loss)
             return
+        logger.info("TRACK_HAS_PRICES: %s entry=%.4f sl=%.4f", ts.trade_id[:8], ts.entry_price, ts.stop_loss)
 
         # Inject computed sizing back into signal_dict so paper engine uses it
         # (paper engine reads position_size/leverage from the same dict)
@@ -673,7 +677,16 @@ class SignalTracker:
             signal_dict["leverage"] = ts.leverage
 
         if ts.trade_id in self._active:
+            logger.info("TRACK_SKIP: %s already in _active", ts.trade_id[:8])
             return  # already tracking
+
+        logger.info("TRACK_PASS_DEDUP: %s %s entry=%.4f sl=%.4f", ts.trade_id[:8], ts.symbol, ts.entry_price, ts.stop_loss)
+        logger.info(
+            "TRACK_DEBUG: %s %s %s | score=%s grade=%s conf=%s | checking filters...",
+            ts.trade_id[:8], ts.symbol, ts.side,
+            signal_dict.get("metadata", {}).get("weighted_score", "N/A"),
+            signal_dict.get("grade", "?"), signal_dict.get("confidence", "?"),
+        )
 
         # ── DUPLICATE PREVENTION: max 1 per symbol+side (active) ──
         for existing in list(self._active.values()):
@@ -696,7 +709,7 @@ class SignalTracker:
                 return
 
         # ── SETUP STRENGTH VETO: reject weak setups that tend to timeout ──
-        MIN_SETUP_STRENGTH = 65
+        MIN_SETUP_STRENGTH = 40  # Lowered: funnel already filters weak setups
         meta = signal_dict.get("metadata", {})
         setup_score = meta.get("weighted_score", 0)
         if setup_score and setup_score < MIN_SETUP_STRENGTH:
@@ -841,7 +854,7 @@ class SignalTracker:
                     ts.exit_time = now_iso
                     ts.exit_reason_detailed = "hard_loss_cap_2r"
                     ts.status = "stopped"
-                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                     to_close.append(tid)
                     events.append({
                         "type": "hard_loss_cap",
@@ -861,6 +874,9 @@ class SignalTracker:
             # -- DYNAMIC TRAILING PROFIT PROTECTION --
             # Continuously trails stop based on MFE. No more waiting for
             # fixed thresholds — every tick of profit is partially locked.
+            if ts.symbol == "BTC/USDT" and ts.trade_id[:8] == "fd7833bb":
+                logger.info("BTC_DEBUG: price=%.2f entry=%.2f sl=%.2f ir=%.2f mfe_r=%.2f peak=%.2f",
+                           price, ts.entry_price, ts.stop_loss, ts.initial_risk, ts.mfe_r, ts.peak_mfe_r)
             #
             # Trail levels:
             #   MFE 0.3R+  → trail floor = breakeven (0.0R)
@@ -895,6 +911,9 @@ class SignalTracker:
                     trail_floor = 0.15  # lock 0.15R minimum (covers fees)
                     exit_reason_tag = "trail_breakeven"
 
+                if ts.symbol == "BTC/USDT" and ts.trade_id[:8] == "fd7833bb":
+                    logger.info("BTC_TRAIL: cur_r=%.3f trail_floor=%s mfe_r=%.3f protect=%s",
+                               current_r, trail_floor, ts.mfe_r, trail_floor is not None and current_r <= trail_floor)
                 if trail_floor is not None and current_r <= trail_floor:
                     profit_protect = True
                     exit_detail = (
@@ -903,25 +922,29 @@ class SignalTracker:
                     )
 
                 if profit_protect:
-                    ts.exit_price = price
-                    ts.exit_reason = exit_reason_tag
-                    ts.exit_time = now_iso
-                    ts.exit_reason_detailed = exit_reason_tag
-                    ts.status = "breakeven" if current_r <= 0.05 else "partial_win"
-                    ts.pnl_pct = self._calc_pnl(ts, price)
-                    to_close.append(tid)
-                    events.append({
-                        "type": exit_reason_tag,
-                        "signal": ts.to_dict(),
-                        "message": (
-                            f"TRAIL STOP: {ts.symbol} {ts.side} @ {price:.2f} | "
-                            f"{exit_detail} | PnL: {ts.pnl_pct:+.2f}%"
-                        ),
-                    })
-                    logger.info(
-                        "Trail stop: %s %s @ %.2f | %s | PnL: %.2f%%",
-                        ts.symbol, ts.side, price, exit_detail, ts.pnl_pct,
-                    )
+                    logger.info("TRAIL_EXIT_FIRING: %s %s cur_r=%.3f floor=%.3f", ts.symbol, ts.side, current_r, trail_floor)
+                    try:
+                        ts.exit_price = price
+                        ts.exit_reason = exit_reason_tag
+                        ts.exit_time = now_iso
+                        ts.exit_reason_detailed = exit_reason_tag
+                        ts.status = "breakeven" if current_r <= 0.05 else "partial_win"
+                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
+                        to_close.append(tid)
+                        events.append({
+                            "type": exit_reason_tag,
+                            "signal": ts.to_dict(),
+                            "message": (
+                                f"TRAIL STOP: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                f"{exit_detail} | PnL: {ts.pnl_pct:+.2f}%"
+                            ),
+                        })
+                        logger.info(
+                            "Trail stop: %s %s @ %.2f | %s | PnL: %.2f%%",
+                            ts.symbol, ts.side, price, exit_detail, ts.pnl_pct,
+                        )
+                    except Exception as _pex:
+                        logger.error("TRAIL EXIT ERROR: %s -- %s", ts.symbol, _pex, exc_info=True)
                     continue
 
             # -- Check Stop Loss --
@@ -930,7 +953,7 @@ class SignalTracker:
                 ts.sl_hit = True
                 ts.exit_price = price
                 ts.exit_time = now_iso
-                ts.pnl_pct = self._calc_pnl(ts, price)
+                ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                 overshoot = abs(price - ts.stop_loss)
                 ts.stop_overshoot_pct = round((overshoot / ts.entry_price) * 100, 4) if ts.entry_price > 0 else 0
 
@@ -1192,7 +1215,7 @@ class SignalTracker:
                     ts.exit_price = price
                     ts.exit_reason = "tp3_full"
                     ts.exit_time = now_iso
-                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                     ts.exit_reason_detailed = "tp3_full_win"
                     ts.status = "tp3_hit"
                     to_close.append(tid)
@@ -1269,7 +1292,7 @@ class SignalTracker:
                         ts.exit_price = price
                         ts.exit_reason = "near_tp_protect_exit"
                         ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                         ts.exit_reason_detailed = "near_tp_protect_exit"
                         ts.status = "partial_win" if ts.pnl_pct > 0 else "stopped"
                         to_close.append(tid)
@@ -1411,7 +1434,7 @@ class SignalTracker:
                         ts.exit_price = price
                         ts.exit_reason = kill_reason if kill_reason else f"time_stop_{tt.lower()}"
                         ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                         ts.time_stop_triggered = True
                         ts.exit_reason_detailed = f"{kill_reason or 'time_stop'}_{tt.lower()}_{int(age_sec/60)}m"
                         ts.status = "expired"
@@ -1455,7 +1478,7 @@ class SignalTracker:
                         ts.exit_price = price
                         ts.exit_reason = "scalper_early_lock"
                         ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                         ts.exit_reason_detailed = f"scalper_early_lock_70pct_{int(scalper_window/60)}m"
                         ts.status = "expired"
                         to_close.append(tid)
@@ -1478,7 +1501,7 @@ class SignalTracker:
                         ts.exit_price = price
                         ts.exit_reason = "scalper_partial_75"
                         ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price)
+                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                         ts.exit_reason_detailed = f"scalper_partial_75pct_{int(scalper_window/60)}m"
                         ts.status = "expired"
                         to_close.append(tid)
@@ -1499,7 +1522,7 @@ class SignalTracker:
                     ts.exit_price = price
                     ts.exit_reason = "scalper_timeout"
                     ts.exit_time = now_iso
-                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                     ts.exit_reason_detailed = f"scalper_timeout_{int(scalper_window/60)}m"
                     ts.status = "expired"
                     to_close.append(tid)
@@ -1527,7 +1550,7 @@ class SignalTracker:
                     ts.exit_price = price
                     ts.exit_reason = "expired"
                     ts.exit_time = now_iso
-                    ts.pnl_pct = self._calc_pnl(ts, price)
+                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                     ts.exit_reason_detailed = f"expired_{_tt_expiry.lower()}_{int(age/60)}m"
                     ts.status = "expired"
                     to_close.append(tid)
@@ -1560,6 +1583,11 @@ class SignalTracker:
 
             # ── ML FEEDBACK: update training dataset with outcome ──
             self._send_ml_feedback(ts)
+
+            # ── ML FEEDBACK BLEND: every 50 trades, append batch to training file ──
+            self._live_trade_count = getattr(self, '_live_trade_count', 0) + 1
+            if self._live_trade_count % 50 == 0:
+                self._trigger_ml_feedback_blend()
 
         # Persist if anything changed
         if events or to_close:
@@ -1774,6 +1802,37 @@ class SignalTracker:
         except Exception as e:
             logger.error("ML feedback failed for %s: %s", ts.trade_id[:8], e)
 
+    def _trigger_ml_feedback_blend(self):
+        """Every 50 trades, append live outcomes to ML training dataset."""
+        feedback_file = _STORAGE_DIR / "ml_live_feedback_blend.jsonl"
+        closed_file = _CLOSED_FILE
+        try:
+            with open(closed_file) as f:
+                signals = json.load(f)
+            # Take last 50
+            recent = signals[-50:]
+            with open(feedback_file, "a") as f:
+                for sig in recent:
+                    meta = sig.get("metadata", {})
+                    feedback = {
+                        "symbol": sig.get("symbol"),
+                        "scanner": meta.get("setup_type", sig.get("setup_type", "")),
+                        "category": meta.get("scanner_category", "unknown"),
+                        "side": sig.get("side"),
+                        "pnl_pct": sig.get("pnl_pct", 0),
+                        "mfe_r": sig.get("mfe_r", 0),
+                        "mae_r": sig.get("mae_r", 0),
+                        "exit_reason": sig.get("exit_reason"),
+                        "confidence": sig.get("confidence", 0),
+                        "regime": meta.get("regime", ""),
+                        "timestamp": sig.get("exit_time", sig.get("timestamp", "")),
+                        "blend_batch": self._live_trade_count,
+                    }
+                    f.write(json.dumps(feedback, default=str) + "\n")
+            logger.info("ML FEEDBACK BLEND: %d trades written (batch #%d)", len(recent), self._live_trade_count)
+        except Exception as e:
+            logger.warning("ML feedback blend failed: %s", e)
+
     # ------------------------------------------------------------------
     # Regime-Aware Trailing Stops
     # ------------------------------------------------------------------
@@ -1858,7 +1917,7 @@ class SignalTracker:
     SCALPER_EXIT_FEE_PCT = 0.00      # FREE exit within Scalper window
 
     @staticmethod
-    def _calc_pnl(ts: TrackedSignal, exit_price: float) -> float:
+    def _calc_pnl(ts: TrackedSignal, exit_price: float, order_type: str = "maker") -> float:
         """Calculate P&L percentage for a signal (gross and net).
 
         Position split: 35% TP1, 35% TP2, 30% runner
@@ -1917,7 +1976,7 @@ class SignalTracker:
             pass
 
         # Calculate fees based on Scalper eligibility and configured order type
-        order_type = getattr(self, "_order_type", "maker")
+        # order_type is now passed as parameter (supports maker/taker/auto)
         if within_scalper:
             # Scalper offer: configured entry fee + FREE exit (0%) + settlement (0.06%)
             entry_fee = (

@@ -542,6 +542,7 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
         app.router.add_get("/api/agents/status", self._handle_agents_status)
+        app.router.add_get("/api/risk-return", self._handle_risk_return_scatter)
 
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
@@ -1289,6 +1290,61 @@ class DashboardServer:
             "defects": defects,
             "recent_losses": recent_losses,
         })
+
+    async def _handle_risk_return_scatter(self, request: web.Request) -> web.Response:
+        """Return risk-return data per scanner for scatter plot."""
+        import statistics
+        try:
+            closed_file = Path(__file__).resolve().parent.parent / "storage" / "closed_signals.json"
+            with open(closed_file) as f:
+                signals = json.load(f)
+        except Exception:
+            return web.json_response({"scanners": []})
+
+        scanner_stats: Dict[str, Dict] = {}
+        for sig in signals:
+            meta = sig.get("metadata", {})
+            scanner = meta.get("setup_type", sig.get("setup_type", sig.get("scanner", "unknown")))
+            pnl = sig.get("pnl_pct", 0)
+            if scanner not in scanner_stats:
+                scanner_stats[scanner] = {
+                    "pnls": [],
+                    "category": meta.get("scanner_category", "unknown"),
+                }
+            scanner_stats[scanner]["pnls"].append(pnl)
+
+        result = []
+        for scanner, data in scanner_stats.items():
+            pnls = data["pnls"]
+            if len(pnls) < 3:
+                continue
+            avg_return = sum(pnls) / len(pnls)
+            volatility = statistics.stdev(pnls) if len(pnls) > 1 else 0
+            wins = sum(1 for p in pnls if p > 0)
+            wr = wins / len(pnls)
+            # Max drawdown approximation
+            running = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for p in pnls:
+                running += p
+                peak = max(peak, running)
+                dd = peak - running
+                max_dd = max(max_dd, dd)
+
+            result.append({
+                "scanner": scanner,
+                "category": data["category"],
+                "trades": len(pnls),
+                "avg_return": round(avg_return, 4),
+                "volatility": round(volatility, 4),
+                "sharpe": round(avg_return / volatility, 3) if volatility > 0 else 0,
+                "win_rate": round(wr, 3),
+                "max_drawdown": round(max_dd, 3),
+                "total_pnl": round(sum(pnls), 2),
+            })
+
+        return web.json_response({"scanners": result}, dumps=_safe_dumps)
 
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""

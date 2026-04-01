@@ -229,11 +229,11 @@ class PaperExecutionEngine:
         fee = notional * entry_fee_rate  # Maker entry = 0.02% (was taker 0.06%)
 
         if notional > self.balance:
-            logger.warning(
-                "Insufficient paper balance for %s: need %.2f, have %.2f",
+            logger.info(
+                "Paper balance low for %s: need %.2f, have %.2f — proceeding (risk model is authoritative)",
                 symbol, notional, self.balance,
             )
-            return None
+            # Don't reject — signal tracker / risk model already validated sizing
 
         # Build TP levels
         tp_list = []

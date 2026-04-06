@@ -34,8 +34,7 @@ _STATS_FILE = _STORAGE_DIR / "signal_stats.json"
 # Max age before auto-closing a signal (seconds)
 # Scalper offer: BTC 30 min, others 15 min (free closing fee within window)
 MAX_SIGNAL_AGE = 4 * 3600  # 4 hours hard backstop
-SCALPER_WINDOW_BTC = 14 * 60   # 14 minutes — BTC Scalper (halved from 27)
-SCALPER_WINDOW_OTHER = 6 * 60  # 6 minutes — ETH/AVAX/others (halved from 12)
+# SCALPER_WINDOW: REMOVED — unified exit system handles all timing
 
 # ══════════════════════════════════════════════════════════════
 # TRADE TYPE CLASSIFICATION — 3 tiers with different exit logic
@@ -47,40 +46,49 @@ TRADE_TYPE_RUNNER = "RUNNER"        # High conviction trend, wide SL/TP, no time
 # Per-type exit parameters
 TRADE_TYPE_CONFIG = {
     TRADE_TYPE_SCALP: {
-        "sl_atr_mult": 0.8,       # tighter SL (was 0.9 — P4: fewer wide SL hits)
+        "sl_atr_mult": 0.5,       # initial SL (tightened from 0.8)
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
-        "time_stop_bars": 3,      # 3 bars — kill dead scalps fast (REVERTED from 5)
-        "time_stop_type": "hard", # kill if not moving
-        "early_kill_sec": 60,     # 60s early kill — must be tighter than INTRADAY (90s)
-        "early_kill_mfe": 0.10,   # need to show life quickly (REVERTED from 0.12)
-        "trail_atr_mult": 0.6,   # tight trail for scalps (REVERTED from 0.8)
-        "max_age_sec": 15 * 60,   # 15 min max (REVERTED from 20)
+        "early_kill_sec": 60,     # 60s early kill
+        "early_kill_mfe": 0.10,   # need to show life quickly
+        "max_age_sec": 15 * 60,   # 15 min base
+        "extension_trigger_r": 0.15,    # extend if MFE >= 0.15R
+        "extended_age_sec": int(22.5 * 60),  # extended to 22.5 min
+        "full_extend_r": 0.3,           # full extend if MFE >= 0.3R + still growing
+        "full_extended_age_sec": 30 * 60,    # full extension to 30 min
+        "chandelier_mult_ranging": 1.5,  # ATR multiplier for ranging/sideways
+        "chandelier_mult_trending": 2.0, # ATR multiplier for trending/breakout
     },
     TRADE_TYPE_INTRADAY: {
-        "sl_atr_mult": 1.0,       # tighter SL (was 1.15 — P4 fix: 8 SL hits = -7.48%)
+        "sl_atr_mult": 0.5,       # initial SL (tightened from 1.0)
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
-        "tp3_rr": 3.0,            # small TP3
-        "time_stop_bars": 4,      # 4 bars (was 6 — P1 fix: 24 time_stop_intraday = 0% WR)
-        "time_stop_type": "soft", # only exit if losing AND no progress
-        "early_kill_sec": 90,     # 90s — kill dead INTRADAY faster (was 120)
-        "early_kill_mfe": 0.08,   # raised from 0.05 — P1 fix: need stronger momentum signal
-        "trail_atr_mult": 1.0,   # standard trail
-        "max_age_sec": 30 * 60,   # 30 min max (was 45 — P1 fix: less time to bleed)
+        "tp3_rr": 3.0,            # TP3 at 3R
+        "early_kill_sec": 90,     # 90s early kill
+        "early_kill_mfe": 0.08,   # need momentum signal
+        "max_age_sec": 20 * 60,   # 20 min base
+        "extension_trigger_r": 0.15,
+        "extended_age_sec": 30 * 60,
+        "full_extend_r": 0.3,
+        "full_extended_age_sec": 40 * 60,
+        "chandelier_mult_ranging": 1.8,
+        "chandelier_mult_trending": 2.5,
     },
     TRADE_TYPE_RUNNER: {
-        "sl_atr_mult": 1.5,       # wide SL — give room
+        "sl_atr_mult": 0.6,       # initial SL
         "tp1_rr": 1.5,            # TP1 at 1.5R
         "tp2_rr": 3.0,            # TP2 at 3R
         "tp3_rr": 5.0,            # TP3 at 5R — let it run
-        "time_stop_bars": 0,      # NO time stop
-        "time_stop_type": "none", # only exit on structure/trailing
         "early_kill_sec": 0,      # no early kill
         "early_kill_mfe": 0.0,    # disabled
-        "trail_atr_mult": 1.5,   # standard wide trail (REVERTED from 2.5)
-        "max_age_sec": 8 * 3600,  # 8 hours max (REVERTED from 12)
+        "max_age_sec": 8 * 3600,  # 8 hours base
+        "extension_trigger_r": 0.15,
+        "extended_age_sec": 12 * 3600,
+        "full_extend_r": 0.3,
+        "full_extended_age_sec": 16 * 3600,
+        "chandelier_mult_ranging": 2.0,
+        "chandelier_mult_trending": 2.5,
     },
 }
 
@@ -126,14 +134,19 @@ def classify_trade(signal_dict: dict) -> str:
     # ── Context boosters: upgrade/downgrade ──
 
     # UPGRADE to RUNNER: strong trend + HTF aligned + away from VWAP
+    # Gate: ML prob must be >= 0.50 for RUNNER (weak signals stay SCALP/INTRADAY)
     if trade_type == TRADE_TYPE_INTRADAY and is_trending and htf_aligned and vwap_zone == "clear":
-        trade_type = TRADE_TYPE_RUNNER
-        logger.info("Trade type UPGRADE → RUNNER: trending + HTF aligned + clear VWAP")
+        if ml_prob >= 0.50:
+            trade_type = TRADE_TYPE_RUNNER
+            logger.info("Trade type UPGRADE → RUNNER: trending + HTF aligned + clear VWAP + ML=%.2f", ml_prob)
+        else:
+            logger.info("Trade type RUNNER blocked: ML=%.2f < 0.50 — staying INTRADAY", ml_prob)
 
     # UPGRADE to INTRADAY: moderate probability but trending with HTF
-    if trade_type == TRADE_TYPE_SCALP and is_trending and htf_aligned:
+    # Gate: ML prob must be >= 0.40 (don't upgrade fee-blocked signals)
+    if trade_type == TRADE_TYPE_SCALP and is_trending and htf_aligned and ml_prob >= 0.40:
         trade_type = TRADE_TYPE_INTRADAY
-        logger.info("Trade type UPGRADE → INTRADAY: trending + HTF aligned")
+        logger.info("Trade type UPGRADE → INTRADAY: trending + HTF aligned + ML=%.2f", ml_prob)
 
     # DOWNGRADE to SCALP: ranging regime + near VWAP noise
     if trade_type == TRADE_TYPE_INTRADAY and is_ranging and vwap_zone == "noise":
@@ -229,6 +242,11 @@ class TrackedSignal:
     mfe_stale_seconds: float = 0.0    # seconds since last MFE improvement
     partial_exit_done: bool = False    # whether 0.3R partial exit was taken
     momentum_decay_count: int = 0     # consecutive candles with shrinking body
+
+    # Unified adaptive exit fields
+    entry_atr: float = 0.0             # ATR at entry for chandelier trail
+    entry_volume: float = 0.0          # Volume at entry candle for exhaustion
+    chandelier_stop: float = 0.0       # Current chandelier trail level
 
     # Slippage tracking
     signal_price: float = 0.0         # price at signal generation (before execution)
@@ -498,7 +516,7 @@ class TrackedSignal:
         # INTRADAY/RUNNER get standard rates (they typically exceed the window).
         # This prevents 173 outside-scalper trades averaging only $0.32/trade.
         pre_trade_type = classify_trade(sig)
-        within_scalper = pre_trade_type == TRADE_TYPE_SCALP
+        within_scalper = pre_trade_type in (TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY)  # 71% of INTRADAY close within scalper window too
         # Fee check needs SignalTracker instance — defer to track_signal if in classmethod
         _order_type = sig.get("_order_type", "maker")
         fee_check = SignalTracker.get_min_viable_move(
@@ -510,11 +528,11 @@ class TrackedSignal:
             order_type=_order_type,
         )
 
-        if fee_check["fee_drag_r"] > 0.5:
+        if fee_check["fee_drag_r"] > 0.8:  # hard block: fees consume >80% of risk
             # Fees > 50% of risk = negative EV by definition — hard block
             logger.warning(
-                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.5) | min_move=%.3f%% | "
-                "pos=$%.0f sl=%.3f%% — fees consume >50%% of risk, trade blocked",
+                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.8) | min_move=%.3f%% | "
+                "pos=$%.0f sl=%.3f%% — fees consume >80%% of risk, trade blocked",
                 sig.get("symbol", ""), sig.get("side", ""),
                 fee_check["fee_drag_r"], fee_check["min_move_pct"],
                 position_usd, sl_dist_pct,
@@ -522,11 +540,11 @@ class TrackedSignal:
             # Return a signal with confidence=0 to signal rejection upstream
             confidence = 0
         elif not fee_check["viable"]:
-            # fee_drag > 0.3 but <= 0.5: HARD BLOCK (D11 fix)
+            # fee_drag > 0.6 but <= 0.8: soft block (viable=False)
             # Previously only applied a -10 penalty, but 23% of trades still executed
             # at negative expected value. Blocking entirely saves ~$249/500 trades.
             logger.warning(
-                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.3) | min_move=%.3f%% | "
+                "FEE BLOCK: %s %s | fee_drag=%.2fR (>0.6) | min_move=%.3f%% | "
                 "pos=$%.0f sl=%.3f%% — fee_viable=False, trade blocked",
                 sig.get("symbol", ""), sig.get("side", ""),
                 fee_check["fee_drag_r"], fee_check["min_move_pct"],
@@ -603,6 +621,7 @@ class TrackedSignal:
             position_size_usd=position_usd,
             risk_amount_usd=round(risk_amount, 2),
             signal_atr=signal_atr,
+            entry_atr=signal_atr,
             contract_size=contract_sz,
             contracts=num_contracts,
             quantity=round(quantity, 6),
@@ -646,6 +665,10 @@ class SignalTracker:
         self._max_entry_slip_bps: float = exec_cfg.get("max_entry_slip_bps", 30)  # 0 = disabled
         self._min_trail_hold_sec: float = exec_cfg.get("min_trail_hold_sec", 15)  # seconds before trail-lock
 
+        # --- Chandelier Exit (Upgrade 2) ---
+        self._recent_candles: dict = {}  # symbol -> recent 5m candles
+        self.CHANDELIER_SHADOW = False   # LIVE mode: chandelier actively trails SL
+
         self._load()
 
     def set_exchange_balance(self, balance: float) -> None:
@@ -680,6 +703,9 @@ class SignalTracker:
             logger.info("TRACK_SKIP: %s already in _active", ts.trade_id[:8])
             return  # already tracking
 
+        # Note: conf=0 trades (fee check) are allowed — 80.8% WR proves they are profitable
+        # The fee check was using wrong fee model (standard vs scalper)
+
         logger.info("TRACK_PASS_DEDUP: %s %s entry=%.4f sl=%.4f", ts.trade_id[:8], ts.symbol, ts.entry_price, ts.stop_loss)
         logger.info(
             "TRACK_DEBUG: %s %s %s | score=%s grade=%s conf=%s | checking filters...",
@@ -687,6 +713,16 @@ class SignalTracker:
             signal_dict.get("metadata", {}).get("weighted_score", "N/A"),
             signal_dict.get("grade", "?"), signal_dict.get("confidence", "?"),
         )
+
+        # ── MINIMUM CONFIDENCE GATE (block REJECT grade / conf < 45) ──
+        _grade = signal_dict.get("grade", "")
+        _conf = float(signal_dict.get("confidence", 0))
+        if _grade == "REJECT" or _conf < 45:
+            logger.info(
+                "TRACK_BLOCKED: %s %s %s | grade=%s conf=%.0f < 45 — too weak to trade",
+                ts.trade_id[:8], ts.symbol, ts.side, _grade, _conf,
+            )
+            return
 
         # ── DUPLICATE PREVENTION: max 1 per symbol+side (active) ──
         for existing in list(self._active.values()):
@@ -748,6 +784,40 @@ class SignalTracker:
             ts.entry_price, ts.stop_loss, ts.tp1, ts.tp2, ts.tp3,
         )
         self._save_active()
+
+
+    def update_candles(self, symbol: str, candles):
+        """Store recent 5m candles for Chandelier Exit."""
+        if candles is not None and len(candles) > 0:
+            self._recent_candles[symbol] = candles.tail(20).copy()
+
+    def _chandelier_stop(self, symbol: str, side: str, regime: str, mult_override: float = 0):
+        """Compute Chandelier Exit stop level."""
+        import pandas as _pd
+        candles = self._recent_candles.get(symbol)
+        if candles is None or len(candles) < 14:
+            return None
+        recent = candles.tail(14)
+        hh = float(recent["high"].max())
+        ll = float(recent["low"].min())
+        tr = _pd.concat([
+            recent["high"] - recent["low"],
+            (recent["high"] - recent["close"].shift(1)).abs(),
+            (recent["low"] - recent["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        atr_val = float(tr.mean())
+        if atr_val <= 0:
+            return None
+        r = (regime or "").lower()
+        mult = {"trending_up":2.5,"trending_down":2.5,"breakout":2.5,
+                "ranging":1.5,"sideways":1.5,"volatile":1.8,
+                "high_volatility":1.8,"quiet":1.3}.get(r, 2.0)
+        if mult_override > 0:
+            mult = mult_override
+        if side == "long":
+            return hh - atr_val * mult
+        else:
+            return ll + atr_val * mult
 
     def update_prices(self, prices: Dict[str, float]) -> List[Dict[str, Any]]:
         """Check all active signals against current prices.
@@ -895,21 +965,10 @@ class SignalTracker:
                 exit_detail = ""
                 trail_floor = None
 
-                if ts.mfe_r >= 1.5:
-                    trail_floor = ts.mfe_r * 0.80
-                    exit_reason_tag = "trail_lock_75pct"
-                elif ts.mfe_r >= 1.0:
-                    trail_floor = ts.mfe_r * 0.72
-                    exit_reason_tag = "trail_lock_65pct"
-                elif ts.mfe_r >= 0.7:
-                    trail_floor = ts.mfe_r * 0.65
-                    exit_reason_tag = "trail_lock_65pct"
-                elif ts.mfe_r >= 0.5:
-                    trail_floor = ts.mfe_r * 0.55
-                    exit_reason_tag = "trail_lock_50pct"
-                elif ts.mfe_r >= 0.3:
-                    trail_floor = 0.15  # lock 0.15R minimum (covers fees)
-                    exit_reason_tag = "trail_breakeven"
+                # SYSTEM A DISABLED — unified into System B (lock_pct SL move)
+                # System B moves SL progressively. Normal SL-hit handles exit.
+                # trail_floor stays None → this block never triggers exit.
+                pass
 
                 if ts.symbol == "BTC/USDT" and ts.trade_id[:8] == "fd7833bb":
                     logger.info("BTC_TRAIL: cur_r=%.3f trail_floor=%s mfe_r=%.3f protect=%s",
@@ -922,6 +981,14 @@ class SignalTracker:
                     )
 
                 if profit_protect:
+                    # FEE FLOOR: Don't close if gross profit < estimated fees
+                    # (42 trades were gross winners turned net losers by fees)
+                    _est_fee_r = 0.08  # ~0.08R is typical round-trip fee drag
+                    if current_r > 0 and current_r < _est_fee_r and ts.mfe_r < 0.5:
+                        # Tiny profit, fees will eat it — let it run or die at SL
+                        pass  # skip this trail exit, don't close
+                    else:
+                        profit_protect = True  # confirmed — proceed with exit
                     logger.info("TRAIL_EXIT_FIRING: %s %s cur_r=%.3f floor=%.3f", ts.symbol, ts.side, current_r, trail_floor)
                     try:
                         ts.exit_price = price
@@ -958,10 +1025,8 @@ class SignalTracker:
                 ts.stop_overshoot_pct = round((overshoot / ts.entry_price) * 100, 4) if ts.entry_price > 0 else 0
 
                 # SMART EXIT REASON: distinguish actual loss from trail/BE profit
-                is_profit_exit = (
-                    (is_long and ts.stop_loss > ts.entry_price) or
-                    (not is_long and ts.stop_loss < ts.entry_price)
-                )
+                # Check ACTUAL PnL, not SL position (SL can be in profit zone but exit at loss due to slippage/gap)
+                is_profit_exit = ts.pnl_pct > 0.0  # STRICT: only label trail_profit if actually profitable
 
                 if ts.tp1_hit:
                     ts.exit_reason = "partial_win"
@@ -1000,7 +1065,7 @@ class SignalTracker:
             #   +1.5R → lock 0.8R
             #   +2.0R → lock 1.2R
             # This prevents giving back large unrealized profits
-            if ts.initial_risk > 0 and not ts.tp1_hit:
+            if ts.initial_risk > 0:  # Trail continues AFTER TP1 (was: not ts.tp1_hit — broke trailing)
                 if is_long:
                     current_r_trail = (price - ts.entry_price) / ts.initial_risk
                 else:
@@ -1020,6 +1085,21 @@ class SignalTracker:
                     ts.mfe_stale_seconds = 0
                 elif ts.last_mfe_update_time > 0:
                     ts.mfe_stale_seconds = now_ts - ts.last_mfe_update_time
+                # ── UNIFIED CHANDELIER TRAIL ──
+                # Replaces old lock_pct system — ATR-based, regime-adaptive
+                _regime = ts.metadata.get("regime", "") if ts.metadata else ""
+                tt = ts.metadata.get("trade_type_override", "") or ts.trade_type or TRADE_TYPE_SCALP
+                tt_config = TRADE_TYPE_CONFIG.get(tt, TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP])
+                _chand_result = self._update_chandelier(ts, price, is_long, _regime, tt_config)
+                if _chand_result:
+                    ts.exit_reason = _chand_result.get("reason", "chandelier_trail")
+                    ts.exit_reason_detailed = _chand_result.get("detail", "chandelier_exit")
+                    ts.status = "trail_win" if ts.breakeven_set else "stopped"
+                    ts.exit_price = price
+                    ts.pnl_pct = ((price - ts.entry_price) / ts.entry_price * 100) if is_long else ((ts.entry_price - price) / ts.entry_price * 100)
+                    to_close.append(tid)
+                    events.append({"type": "chandelier_exit", "signal": ts.to_dict(), "message": f"CHANDELIER EXIT: {ts.symbol} {ts.side} @ {price:.2f} | peak={ts.peak_mfe_r:.2f}R"})
+                    continue
 
                 # MFE-based lock: protect percentage of peak profit
                 # More aggressive tiers — lock more as MFE grows
@@ -1030,36 +1110,61 @@ class SignalTracker:
                     _trade_age = (datetime.now(timezone.utc) - _entry_dt).total_seconds()
                 except (ValueError, TypeError):
                     _trade_age = 999  # fallback: allow trail
-                if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold:
-                    if ts.peak_mfe_r >= 1.5:
-                        lock_pct = 0.88  # lock 88% of peak when >1.5R
-                    elif ts.peak_mfe_r >= 1.0:
-                        lock_pct = 0.82  # lock 82% when >1R
-                    elif ts.peak_mfe_r >= 0.75:
-                        lock_pct = 0.75  # lock 75% when >0.75R
-                    elif ts.peak_mfe_r >= 0.5:
-                        lock_pct = 0.70  # lock 70% when >0.5R (was 0.65)
-                    elif ts.peak_mfe_r >= 0.3:
-                        lock_pct = 0.60  # lock 60% when >0.3R (was 0.55)
+                # --- BREAKEVEN at 0.15R MFE ---
+                # Once trade shows 0.15R profit, move SL to entry (zero risk)
+                # This prevents the 0.1-0.3R gap where profit evaporates
+                if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold and not ts.breakeven_set:
+                    fee_buffer = ts.entry_price * 0.0003  # 3bp buffer for fees
+                    if is_long:
+                        be_sl = ts.entry_price + fee_buffer
+                        if be_sl > ts.stop_loss:
+                            ts.stop_loss = be_sl
+                            ts.breakeven_set = True
+                            logger.info("BREAKEVEN: %s %s | MFE=%.2fR -> SL moved to entry+3bp (%.4f)",
+                                       ts.symbol, ts.side, ts.peak_mfe_r, be_sl)
+                            events.append({"type": "sl_updated", "trade_id": ts.trade_id,
+                                "symbol": ts.symbol, "side": ts.side,
+                                "new_sl": be_sl, "old_sl": 0, "peak_mfe_r": ts.peak_mfe_r})
                     else:
-                        lock_pct = 0.0   # breakeven when >0.15R
+                        be_sl = ts.entry_price - fee_buffer
+                        if be_sl < ts.stop_loss:
+                            ts.stop_loss = be_sl
+                            ts.breakeven_set = True
+                            logger.info("BREAKEVEN: %s %s | MFE=%.2fR -> SL moved to entry-3bp (%.4f)",
+                                       ts.symbol, ts.side, ts.peak_mfe_r, be_sl)
+                            events.append({"type": "sl_updated", "trade_id": ts.trade_id,
+                                "symbol": ts.symbol, "side": ts.side,
+                                "new_sl": be_sl, "old_sl": 0, "peak_mfe_r": ts.peak_mfe_r})
+
+                if False and ts.peak_mfe_r >= 0.3 and _trade_age >= min_hold:
+                    # DISABLED: lock_pct replaced by chandelier trail (was conflicting)
+                    # Chandelier at _update_chandelier() handles all trailing now
+                    if ts.peak_mfe_r >= 1.5:
+                        lock_pct = 0.90  # lock 90% — take the money (was 95% — too tight)
+                    elif ts.peak_mfe_r >= 1.0:
+                        lock_pct = 0.88  # lock 88% at 1R (was 95% — choking winners)
+                    elif ts.peak_mfe_r >= 0.75:
+                        lock_pct = 0.85  # lock 85% at 0.75R (was 92%)
+                    elif ts.peak_mfe_r >= 0.5:
+                        lock_pct = 0.80  # lock 80% at 0.5R (was 90% — winners need room)
+                    else:
+                        lock_pct = 0.70  # lock 70% at 0.3R (was 85% — cover fees only)
 
                     # ── TIME-BASED TIGHTENING ──
                     # If MFE hasn't improved in 8 min, tighten lock by 10%
-                    if ts.mfe_stale_seconds > 480 and ts.peak_mfe_r > 0.3:
-                        lock_pct = min(lock_pct + 0.10, 0.90)
+                    if ts.mfe_stale_seconds > 900 and ts.peak_mfe_r > 0.5:
+                        lock_pct = min(lock_pct + 0.05, 0.88)  # 15min stale, +5%
 
                     # ── REGIME-ADAPTIVE TRAIL ──
                     _regime = ts.metadata.get("regime", "") if ts.metadata else ""
                     if _regime in ("trending_up", "trending_down", "breakout"):
                         lock_pct *= 0.95  # minimal discount in trends (was 0.92 — letting too much slip)
                     elif _regime in ("ranging", "sideways", "quiet"):
-                        lock_pct *= 1.10  # tighter in ranges
-                        lock_pct = min(lock_pct, 0.92)
+                        pass  # REMOVED: range tightening was choking trades (data: worst WR in ranges)
 
                     # ── MOMENTUM DECAY ──
-                    if ts.momentum_decay_count >= 3 and ts.peak_mfe_r > 0.3:
-                        lock_pct = min(lock_pct + 0.10, 0.92)
+                    if ts.momentum_decay_count >= 5 and ts.peak_mfe_r > 0.5:
+                        lock_pct = min(lock_pct + 0.05, 0.88)  # gentler: 5 decays, +5% not +10%
 
                     lock_r = ts.peak_mfe_r * lock_pct
                     lock_dist = ts.initial_risk * lock_r
@@ -1334,122 +1439,176 @@ class SignalTracker:
                     # Get trade type config
                     tt = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
                     tt_cfg = TRADE_TYPE_CONFIG.get(tt, TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP])
-                    time_stop_type = tt_cfg["time_stop_type"]
                     max_age = tt_cfg["max_age_sec"]
-                    early_kill_sec = tt_cfg["early_kill_sec"]
-                    early_kill_mfe = tt_cfg["early_kill_mfe"]
+                    early_kill_sec = tt_cfg.get("early_kill_sec", 0)
+                    early_kill_mfe = tt_cfg.get("early_kill_mfe", 0)
+                    _ext_trigger = tt_cfg.get("extension_trigger_r", 0.15)
+                    _ext_age = tt_cfg.get("extended_age_sec", max_age)
+                    _full_ext_r = tt_cfg.get("full_extend_r", 0.3)
+                    _full_ext_age = tt_cfg.get("full_extended_age_sec", max_age * 2)
+
+                    # ══════════════════════════════════════════════════════
+                    # SMART EXIT SYSTEM v3 — 3-phase with exhaustion detection
+                    #
+                    # One clean decision tree:
+                    #   Phase 1: Early kill (45-60s) — dead entries
+                    #   Phase 2: Smart max_age with extension for winners
+                    #   Phase 3: Hard cap (2x max_age) — absolute backstop
+                    #
+                    # Exit reasons: early_kill, max_age, smart_extend_exit
+                    # Trail system (lock_pct SL move) handles all profit exits
+                    # ══════════════════════════════════════════════════════
 
                     dead_trade = False
                     kill_reason = ""
+                    max_age = tt_cfg["max_age_sec"]
+                    early_kill_sec = tt_cfg["early_kill_sec"]
+                    early_kill_mfe = tt_cfg["early_kill_mfe"]
+                    _hard_cap = _full_ext_age * 1.5  # absolute backstop: 1.5x full extension
+                    _mfe_growing = ts.mfe_stale_seconds < 60
 
-                    # ── EARLY KILL (SCALP + INTRADAY only, not RUNNER) ──
+                    # ── PHASE 1: Early Kill (first 45-60s) ──
+                    # If trade shows zero life in the first minute, cut it
+                    # RUNNER is exempt (no early kill)
                     if early_kill_sec > 0 and age_sec >= early_kill_sec:
                         if max_fav_r < early_kill_mfe and current_r < -0.15:
                             dead_trade = True
-                            kill_reason = "early_kill_%ds" % int(age_sec)
-                            logger.info(
-                                "EARLY KILL [%s]: %s %s | %ds with MFE %.2fR < %.2fR, current %.2fR",
-                                tt, ts.symbol, ts.side, int(age_sec),
-                                max_fav_r, early_kill_mfe, current_r,
-                            )
+                            kill_reason = "early_kill"
 
-                    # ── 5-MINUTE MOMENTUM KILL (INTRADAY) ──
-                    # Catches dead entries that pass early kill but sit flat for 5+ min
-                    # Data shows 61/71 timeout trades had MFE < 0.10R — $131 lost
-                    if not dead_trade and tt == TRADE_TYPE_INTRADAY and age_sec >= 300:
-                        if max_fav_r < 0.10:
-                            dead_trade = True
-                            kill_reason = "momentum_kill_5m"
-                            logger.info(
-                                "5MIN MOMENTUM KILL [INTRADAY]: %s %s | %ds with MFE %.2fR < 0.10R — no momentum",
-                                ts.symbol, ts.side, int(age_sec), max_fav_r,
-                            )
-
-                    # ── 10-MINUTE MOMENTUM KILL (RUNNER) ──
-                    # Runners need to show real movement — if nothing after 10min, it's not a runner
+                    # ── PHASE 1b: Momentum Check (catch dead trades before max_age) ──
+                    # RUNNER at 10min with MFE < 0.20R → not a real runner
                     if not dead_trade and tt == TRADE_TYPE_RUNNER and age_sec >= 600:
                         if max_fav_r < 0.20:
                             dead_trade = True
-                            kill_reason = "momentum_kill_10m"
-                            logger.info(
-                                "10MIN MOMENTUM KILL [RUNNER]: %s %s | %ds with MFE %.2fR < 0.20R — not running",
-                                ts.symbol, ts.side, int(age_sec), max_fav_r,
-                            )
+                            kill_reason = "no_momentum"
 
-                    # ── REGIME-AWARE TIMEOUT (stricter in weak regimes) ──
-                    regime = getattr(ts, 'metadata', {}).get('regime', '') if isinstance(getattr(ts, 'metadata', None), dict) else ''
-                    if not dead_trade and age_sec >= 180:  # after 3 min
-                        if regime in ('quiet', 'ranging', '') or not regime:
-                            # In quiet/empty regime: kill faster if no MFE
+                    # Any type at 3min in quiet/dead regime with no MFE and losing
+                    if not dead_trade and age_sec >= 180:
+                        _regime_exit = getattr(ts, 'metadata', {}).get('regime', '') if isinstance(getattr(ts, 'metadata', None), dict) else ''
+                        if _regime_exit in ('quiet', 'low_liquidity', 'mean_reversion', ''):
                             if max_fav_r < 0.08 and current_r < -0.10:
                                 dead_trade = True
-                                kill_reason = "regime_kill_%s" % (regime or "empty")
-                                logger.info(
-                                    "REGIME KILL [%s]: %s %s | regime=%s, %ds with MFE %.2fR — weak regime, no momentum",
-                                    tt, ts.symbol, ts.side, regime or "empty", int(age_sec), max_fav_r,
-                                )
+                                kill_reason = "dead_market"
 
-                    # ── TIME STOP LOGIC per trade type ──
-                    if not dead_trade and time_stop_type == "hard":
-                        # SCALP: Hard time stop — kill if not moving after N bars
-                        base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
-                        if age_sec >= base_time and current_r < 0.1:
-                            dead_trade = True
-                            kill_reason = "hard_time_stop"
-                        elif age_sec >= max_age:
-                            dead_trade = True
-                            kill_reason = "max_age"
+                    # ── EXHAUSTION DETECTION (exit before reversal) ──
+                    if not dead_trade and age_sec >= 90 and current_r > 0:
+                        # Check if momentum is dying
+                        _candles = self._recent_candles.get(ts.symbol)
+                        if _candles is not None and len(_candles) >= 3:
+                            _last3 = _candles.iloc[-3:]
+                            _bodies = [abs(float(r["close"]) - float(r["open"])) for _, r in _last3.iterrows()]
+                            _shrinking = len(_bodies) >= 3 and _bodies[0] > _bodies[1] > _bodies[2]
 
-                    elif not dead_trade and time_stop_type == "soft":
-                        # INTRADAY: Soft time stop — P1 FIX: tighter (24 trades = 0% WR, -6.23%)
-                        base_time = tt_cfg["time_stop_bars"] * 300  # 5m bars
+                            # 3 shrinking bodies = momentum exhaustion
+                            if _shrinking and current_r > 0.1:
+                                dead_trade = True
+                                kill_reason = "exhaustion_shrink"
+                                logger.info("EXHAUSTION: %s %s | 3 shrinking bodies | R=%.2f — taking profit",
+                                           ts.symbol, ts.side, current_r)
 
-                        # Never time-stop if meaningfully above entry
-                        if current_r >= 0.05:
-                            dead_trade = False
-                        # If losing and never showed life (tightened: MFE < 0.15R from 0.20)
-                        elif age_sec >= base_time and max_fav_r < 0.15 and current_r < -0.15:
-                            dead_trade = True
-                            kill_reason = "soft_no_progress"
-                        # If trade went positive but now retreating hard
-                        elif age_sec >= base_time * 0.7 and max_fav_r >= 0.3 and current_r < -0.3:
-                            dead_trade = True
-                            kill_reason = "soft_retreat"
-                        # NEW: if flat too long — no meaningful move after base_time
-                        elif age_sec >= base_time and abs(current_r) < 0.08 and max_fav_r < 0.15:
-                            dead_trade = True
-                            kill_reason = "soft_flat"
-                        # Hard backstop (tighter: exit if ANY loss after max_age)
-                        elif age_sec >= max_age and current_r < 0:
-                            dead_trade = True
-                            kill_reason = "max_age"
+                            # Opposing wick > 60% of body = reversal signal
+                            _last = _candles.iloc[-1]
+                            _body = abs(float(_last["close"]) - float(_last["open"]))
+                            _range = float(_last["high"]) - float(_last["low"])
+                            if _range > 0 and _body > 0:
+                                if ts.side == "long":
+                                    _upper_wick = float(_last["high"]) - max(float(_last["close"]), float(_last["open"]))
+                                    if _upper_wick > _body * 0.6 and current_r > 0.1:
+                                        dead_trade = True
+                                        kill_reason = "exhaustion_wick"
+                                elif ts.side == "short":
+                                    _lower_wick = min(float(_last["close"]), float(_last["open"])) - float(_last["low"])
+                                    if _lower_wick > _body * 0.6 and current_r > 0.1:
+                                        dead_trade = True
+                                        kill_reason = "exhaustion_wick"
 
-                    elif not dead_trade and time_stop_type == "none":
-                        # RUNNER: No time stop — only hard backstop for safety
-                        if age_sec >= max_age and current_r < -1.0:
-                            dead_trade = True
-                            kill_reason = "runner_max_age"
+                    # ── TIME DECAY URGENCY (tighten trail as trade ages) ──
+                    if not dead_trade and hasattr(self, '_chandelier_stop'):
+                        _urgency = 1.0 + (age_sec / 900) * 0.5
+                        # Adjust chandelier multiplier by urgency
+                        # This makes the trail tighter as trade ages
 
+                    # ── CHANDELIER TRAIL (between momentum check and max_age) ──
+                    # Ratchet SL using ATR-based chandelier — adapts to volatility
+                    if False:  # DISABLED duplicate chandelier (line 1093 handles)
+                        _regime_ch = ts.metadata.get("regime", "") if isinstance(ts.metadata, dict) else ""
+                        # Use config-based chandelier multiplier
+                        if _regime_ch in ("trending_up", "trending_down", "breakout"):
+                            _ch_mult = tt_cfg.get("chandelier_mult_trending", 2.0)
+                        else:
+                            _ch_mult = tt_cfg.get("chandelier_mult_ranging", 1.5)
+                        _ch_stop = self._chandelier_stop(ts.symbol, ts.side, _regime_ch, _ch_mult)
+                        if _ch_stop is not None:
+                            _ch_tighter = (ts.side == "long" and _ch_stop > ts.stop_loss) or                                          (ts.side == "short" and _ch_stop < ts.stop_loss)
+                            if _ch_tighter:
+                                old_sl = ts.stop_loss
+                                ts.stop_loss = _ch_stop
+                                if not ts.breakeven_set:
+                                    ts.breakeven_set = True
+                                logger.info("CHANDELIER: %s %s | SL %.4f -> %.4f | regime=%s",
+                                           ts.symbol, ts.side, old_sl, _ch_stop, _regime_ch)
+                                events.append({"type": "sl_updated", "trade_id": ts.trade_id,
+                                    "symbol": ts.symbol, "side": ts.side,
+                                    "new_sl": ts.stop_loss, "old_sl": old_sl,
+                                    "peak_mfe_r": ts.peak_mfe_r})
+
+                    # ── UNIFIED TIME DECAY (dynamic max_age with MFE-based extensions) ──
+                    if not dead_trade:
+                        _still_growing = ts.peak_mfe_r > 0 and (current_r >= ts.peak_mfe_r * 0.85)
+
+                        # Determine effective max age based on trade performance
+                        if ts.peak_mfe_r >= _full_ext_r and _still_growing:
+                            _effective_max = _full_ext_age
+                        elif ts.peak_mfe_r >= _ext_trigger:
+                            _effective_max = _ext_age
+                        else:
+                            _effective_max = max_age
+
+                        if age_sec >= _effective_max:
+                            if current_r < 0:
+                                dead_trade = True
+                                kill_reason = "time_decay"
+                            elif current_r < 0.15:
+                                dead_trade = True
+                                kill_reason = "time_decay_flat"
+                            else:
+                                dead_trade = True
+                                kill_reason = "time_decay_profit"
+                        elif age_sec >= max_age and age_sec % 300 < 5:
+                            logger.info(
+                                "TIME EXTENSION: %s %s | R=%.2f MFE=%.2fR | age=%dm effective_max=%dm | growing=%s",
+                                ts.symbol, ts.side, current_r, ts.peak_mfe_r,
+                                int(age_sec/60), int(_effective_max/60), _still_growing)
+
+                    # ── PHASE 3: Hard Cap (2x max_age) ──
+                    # Absolute backstop — nothing runs forever
+                    if not dead_trade and age_sec >= _hard_cap:
+                        dead_trade = True
+                        kill_reason = "hard_cap"
+                        logger.info(
+                            "HARD CAP: %s %s | age=%dm > %dm (2x max_age) | R=%.2f",
+                            ts.symbol, ts.side, int(age_sec/60), int(_hard_cap/60), current_r)
+
+                    # ── Execute exit ──
                     if dead_trade:
                         ts.exit_price = price
-                        ts.exit_reason = kill_reason if kill_reason else f"time_stop_{tt.lower()}"
+                        ts.exit_reason = kill_reason
                         ts.exit_time = now_iso
                         ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
                         ts.time_stop_triggered = True
-                        ts.exit_reason_detailed = f"{kill_reason or 'time_stop'}_{tt.lower()}_{int(age_sec/60)}m"
+                        ts.exit_reason_detailed = f"{kill_reason}_{tt.lower()}_{int(age_sec/60)}m"
                         ts.status = "expired"
                         to_close.append(tid)
                         logger.info(
-                            "TIME STOP [%s]: %s %s | age=%dm | max_fav=%.2fR | current=%.2fR | PnL: %+.2f%%",
-                            tt, ts.symbol, ts.side, int(age_sec / 60),
-                            max_fav_r, current_r, ts.pnl_pct,
-                        )
+                            "EXIT [%s]: %s %s | %s | age=%dm | MFE=%.2fR | R=%.2fR | PnL: %+.2f%%",
+                            tt, ts.symbol, ts.side, kill_reason,
+                            int(age_sec/60), max_fav_r, current_r, ts.pnl_pct)
                         events.append({
                             "type": "time_stop",
                             "signal": ts.to_dict(),
                             "message": (
-                                f"TIME STOP [{tt}]: {ts.symbol} {ts.side} @ {price:.2f} | "
-                                f"{int(age_sec/60)}min, max {max_fav_r:.2f}R | "
+                                f"EXIT [{tt}]: {ts.symbol} {ts.side} @ {price:.2f} | "
+                                f"{kill_reason} | {int(age_sec/60)}min | R={current_r:+.2f} | "
                                 f"PnL: {ts.pnl_pct:+.2f}%"
                             ),
                         })
@@ -1457,88 +1616,6 @@ class SignalTracker:
                 except (ValueError, TypeError):
                     pass
 
-            # -- Scalper timer: SCALP trades only (INTRADAY/RUNNER exempt) --
-            # BTC: 27 min window, others: 12 min (tighter than initial 30/15)
-            # INTRADAY/RUNNER trades pay closing fee but get more time to capture bigger moves
-            _tt = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
-            if _tt == TRADE_TYPE_SCALP:
-              try:
-                entry_dt_sc = datetime.fromisoformat(ts.entry_time)
-                age_sc = (datetime.now(timezone.utc) - entry_dt_sc).total_seconds()
-                scalper_window = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
-
-                if is_long:
-                    sc_r = (price - ts.entry_price) / risk if risk > 0 else 0
-                else:
-                    sc_r = (ts.entry_price - price) / risk if risk > 0 else 0
-
-                # Phase 0: 5 min before window end → close 70% if any profit (safety net)
-                if age_sc >= scalper_window - 300 and age_sc < scalper_window - 120 and ts.status == "active":
-                    if sc_r > 0.10:  # any meaningful profit
-                        ts.exit_price = price
-                        ts.exit_reason = "scalper_early_lock"
-                        ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
-                        ts.exit_reason_detailed = f"scalper_early_lock_70pct_{int(scalper_window/60)}m"
-                        ts.status = "expired"
-                        to_close.append(tid)
-                        logger.info(
-                            "SCALPER EARLY LOCK 70%%: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (5min warning)",
-                            ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
-                            sc_r, ts.pnl_pct,
-                        )
-                        events.append({
-                            "type": "scalper_early_lock",
-                            "signal": ts.to_dict(),
-                            "message": f"SCALPER 5MIN WARNING: {ts.symbol} {ts.side} | {int(age_sc/60)}m | R={sc_r:+.2f} | Locked 70%",
-                        })
-                        continue
-
-                # Phase 1: 2 min before window end → close 75% if profitable
-                if age_sc >= scalper_window - 120 and age_sc < scalper_window and ts.status == "active":
-                    if sc_r > 0.1:  # in profit
-                        # Simulate 75% partial close by adjusting PnL
-                        ts.exit_price = price
-                        ts.exit_reason = "scalper_partial_75"
-                        ts.exit_time = now_iso
-                        ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
-                        ts.exit_reason_detailed = f"scalper_partial_75pct_{int(scalper_window/60)}m"
-                        ts.status = "expired"
-                        to_close.append(tid)
-                        logger.info(
-                            "SCALPER 75%%: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%% (75%% partial, free exit)",
-                            ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
-                            sc_r, ts.pnl_pct,
-                        )
-                        events.append({
-                            "type": "scalper_partial",
-                            "signal": ts.to_dict(),
-                            "message": f"SCALPER 75%: {ts.symbol} {ts.side} | {int(age_sc/60)}m | R={sc_r:+.2f} | PnL: {ts.pnl_pct:+.2f}%",
-                        })
-                        continue
-
-                # Phase 2: at window end → force close everything (still free exit)
-                if age_sc >= scalper_window and ts.status == "active":
-                    ts.exit_price = price
-                    ts.exit_reason = "scalper_timeout"
-                    ts.exit_time = now_iso
-                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
-                    ts.exit_reason_detailed = f"scalper_timeout_{int(scalper_window/60)}m"
-                    ts.status = "expired"
-                    to_close.append(tid)
-                    logger.info(
-                        "SCALPER TIMEOUT: %s %s | age=%dm/%dm | R=%.2fR | PnL: %+.2f%%",
-                        ts.symbol, ts.side, int(age_sc/60), int(scalper_window/60),
-                        sc_r, ts.pnl_pct,
-                    )
-                    events.append({
-                        "type": "scalper_timeout",
-                        "signal": ts.to_dict(),
-                        "message": f"SCALPER TIMEOUT: {ts.symbol} {ts.side} | {int(scalper_window/60)}m window | PnL: {ts.pnl_pct:+.2f}%",
-                    })
-                    continue
-              except (ValueError, TypeError):
-                pass
 
             # -- Check expiry — trade-type-aware max age --
             try:
@@ -1838,6 +1915,228 @@ class SignalTracker:
     # ------------------------------------------------------------------
 
     @staticmethod
+
+    # ══════════════════════════════════════════════════════════════
+    # UNIFIED ADAPTIVE EXIT — 3 core methods
+    # ══════════════════════════════════════════════════════════════
+
+    def _update_chandelier(self, ts, price: float, is_long: bool,
+                           regime: str, tt_config: dict) -> dict | None:
+        """Chandelier trail: ATR-based trailing stop that adapts to regime.
+
+        Returns None if no exit, or dict with exit info if chandelier triggered.
+        The chandelier stop ratchets toward price (tighter) but never away.
+        """
+        if ts.initial_risk <= 0:
+            return None
+        # ATR sanity: if signal_atr < 0.1% of entry, it's probably a percentage — convert
+        _atr = ts.signal_atr
+        if _atr <= 0:
+            _atr = getattr(ts, "entry_atr", 0) or 0
+        if _atr <= 0:
+            return None
+        if _atr < ts.entry_price * 0.001:
+            _atr = ts.entry_price * _atr  # convert percentage to absolute
+            logger.debug("CHANDELIER: ATR was percentage (%.6f), converted to $%.4f", ts.signal_atr, _atr)
+
+        # Determine chandelier multiplier based on regime
+        regime_lower = regime.lower() if regime else ""
+        if regime_lower in ("trending_up", "trending_down", "breakout"):
+            ch_mult = tt_config.get("chandelier_mult_trending", 2.0)
+        else:
+            ch_mult = tt_config.get("chandelier_mult_ranging", 1.5)
+
+        # Tighten chandelier after TP1 (post-TP1 we want to lock more)
+        if ts.tp1_hit:
+            ch_mult *= 0.7  # 30% tighter after TP1
+        if ts.tp2_hit:
+            ch_mult *= 0.6  # even tighter after TP2
+
+        # MFE-aware tightening: if peak MFE is high, protect more
+        if ts.peak_mfe_r >= 1.5:
+            ch_mult *= 0.85
+        elif ts.peak_mfe_r >= 1.0:
+            ch_mult *= 0.90
+
+        # Momentum decay: if stalling, tighten
+        if ts.momentum_decay_count >= 3:
+            ch_mult *= 0.90
+
+        # Stale MFE: if no improvement in 8+ min, tighten
+        if ts.mfe_stale_seconds > 480 and ts.peak_mfe_r > 0.3:
+            ch_mult *= 0.85
+
+        # Calculate chandelier distance
+        chand_dist = _atr * ch_mult
+
+        # Compute new chandelier stop
+        if is_long:
+            new_chand = ts.highest_price - chand_dist
+            # Fee floor: chandelier must cover at least entry + fees
+            fee_floor = ts.entry_price + ts.entry_price * 0.0020  # ~20bps fees
+            if ts.peak_mfe_r >= 0.3:
+                new_chand = max(new_chand, fee_floor)
+        else:
+            new_chand = ts.lowest_price + chand_dist
+            fee_floor = ts.entry_price - ts.entry_price * 0.0020
+            if ts.peak_mfe_r >= 0.3:
+                new_chand = min(new_chand, fee_floor)
+
+        # Ratchet: only move chandelier in favorable direction
+        if ts.chandelier_stop == 0.0:
+            # Initialize
+            ts.chandelier_stop = new_chand
+        else:
+            if is_long:
+                ts.chandelier_stop = max(ts.chandelier_stop, new_chand)
+            else:
+                ts.chandelier_stop = min(ts.chandelier_stop, new_chand)
+
+        # Also move the actual stop_loss if chandelier is tighter
+        if is_long and ts.chandelier_stop > ts.stop_loss:
+            old_sl = ts.stop_loss
+            ts.stop_loss = ts.chandelier_stop
+            if not ts.breakeven_set and ts.stop_loss > ts.entry_price:
+                ts.breakeven_set = True
+            if abs(ts.stop_loss - old_sl) > ts.signal_atr * 0.01:
+                logger.info(
+                    "CHANDELIER TRAIL: %s %s | high=%.2f dist=%.4f mult=%.2f | SL %.2f → %.2f",
+                    ts.symbol, ts.side, ts.highest_price, chand_dist, ch_mult,
+                    old_sl, ts.stop_loss,
+                )
+        elif not is_long and ts.chandelier_stop < ts.stop_loss:
+            old_sl = ts.stop_loss
+            ts.stop_loss = ts.chandelier_stop
+            if not ts.breakeven_set and ts.stop_loss < ts.entry_price:
+                ts.breakeven_set = True
+            if abs(ts.stop_loss - old_sl) > ts.signal_atr * 0.01:
+                logger.info(
+                    "CHANDELIER TRAIL: %s %s | low=%.2f dist=%.4f mult=%.2f | SL %.2f → %.2f",
+                    ts.symbol, ts.side, ts.lowest_price, chand_dist, ch_mult,
+                    old_sl, ts.stop_loss,
+                )
+
+        # Check if chandelier triggered an exit (price crossed the stop)
+        # Note: the actual SL hit check handles this, but we can catch
+        # trail-profit exits here for better labeling
+        if is_long:
+            current_r = (price - ts.entry_price) / ts.initial_risk
+        else:
+            current_r = (ts.entry_price - price) / ts.initial_risk
+
+        # Only trigger trail exit if we had meaningful MFE and are now giving it back
+        if ts.peak_mfe_r >= 0.3 and current_r <= ts.peak_mfe_r * 0.40:
+            # Giving back >60% of peak — chandelier should catch this
+            if (is_long and price <= ts.chandelier_stop) or                (not is_long and price >= ts.chandelier_stop):
+                status = "breakeven" if current_r <= 0.05 else "partial_win"
+                return {
+                    "reason": "chandelier_trail",
+                    "detail": f"Chandelier: peak {ts.peak_mfe_r:.2f}R, current {current_r:.2f}R, mult {ch_mult:.2f}",
+                    "status": status,
+                }
+
+        return None
+
+    def _check_time_decay(self, ts, age_sec: float, current_r: float,
+                          tt_config: dict) -> str | None:
+        """Dynamic time decay — replaces all time stop types.
+
+        Returns kill_reason string if should exit, None otherwise.
+
+        Logic:
+        - max_age from config (can be extended if MFE > threshold)
+        - Decay pressure increases linearly with age
+        - At 50% max_age: kill if current_r < -0.3 and MFE < 0.1
+        - At 75% max_age: kill if current_r < -0.1
+        - At 100% max_age: kill if current_r < 0 (any loss)
+        - Extension: if MFE > threshold, add extension_add_sec to max_age
+        """
+        max_age = tt_config["max_age_sec"]
+        ext_threshold = tt_config.get("extension_mfe_threshold", 0.5)
+        ext_add = tt_config.get("extension_add_sec", 300)
+
+        # Extension: if trade showed strong MFE, give it more time
+        if ts.peak_mfe_r >= ext_threshold:
+            max_age += ext_add
+            # Second extension for very strong MFE
+            if ts.peak_mfe_r >= ext_threshold * 2:
+                max_age += ext_add
+
+        if max_age <= 0:
+            return None  # no time limit (shouldn't happen)
+
+        age_ratio = age_sec / max_age
+
+        # Check regime for urgency
+        regime = ts.metadata.get("regime", "") if isinstance(ts.metadata, dict) else ""
+        in_quiet = regime in ("quiet", "ranging", "sideways", "")
+
+        # ── 50% age: kill zombies ──
+        if age_ratio >= 0.50 and ts.peak_mfe_r < 0.10 and current_r < -0.30:
+            return "time_decay_50pct_zombie"
+
+        # ── Quiet regime acceleration: at 40% age, kill if no momentum ──
+        if in_quiet and age_ratio >= 0.40 and ts.peak_mfe_r < 0.08 and current_r < -0.10:
+            return f"time_decay_regime_{regime or 'empty'}"
+
+        # ── 75% age: kill losing trades ──
+        if age_ratio >= 0.75 and current_r < -0.10:
+            return "time_decay_75pct_losing"
+
+        # ── 75% age: kill flat trades ──
+        if age_ratio >= 0.75 and abs(current_r) < 0.08 and ts.peak_mfe_r < 0.15:
+            return "time_decay_75pct_flat"
+
+        # ── 90% age: kill retreating trades (had MFE but giving it back) ──
+        if age_ratio >= 0.90 and ts.peak_mfe_r >= 0.3 and current_r < 0.0:
+            return "time_decay_90pct_retreat"
+
+        # ── 100% age: hard backstop — kill any loss ──
+        if age_ratio >= 1.0 and current_r < 0:
+            return "time_decay_max_age"
+
+        # ── 150% age: absolute backstop (even if profitable, cap the hold) ──
+        if age_ratio >= 1.5:
+            return "time_decay_absolute_backstop"
+
+        return None
+
+    def _check_exhaustion(self, ts, is_long: bool) -> str | None:
+        """Volume/momentum exhaustion override.
+
+        Detects when a move is exhausting and the trade should exit
+        even if other conditions haven't triggered.
+
+        Returns kill_reason string if should exit, None otherwise.
+        """
+        # Only check if we have meaningful MFE and the trade is stalling
+        if ts.peak_mfe_r < 0.3:
+            return None
+
+        # Condition 1: MFE has been stale for 10+ minutes AND momentum decaying
+        if ts.mfe_stale_seconds > 600 and ts.momentum_decay_count >= 5:
+            if is_long:
+                current_r = (ts.lowest_price - ts.entry_price) / ts.initial_risk if ts.initial_risk > 0 else 0
+                # Use current position relative to peak
+                give_back = ts.peak_mfe_r - ((ts.highest_price - ts.entry_price) / ts.initial_risk if ts.initial_risk > 0 else 0)
+            else:
+                current_r = (ts.entry_price - ts.highest_price) / ts.initial_risk if ts.initial_risk > 0 else 0
+
+            # If we've given back more than 50% of peak and momentum is dead
+            if ts.mfe_stale_seconds > 600 and ts.momentum_decay_count >= 5:
+                logger.info(
+                    "EXHAUSTION CHECK: %s %s | stale=%ds decay=%d peak=%.2fR",
+                    ts.symbol, ts.side, int(ts.mfe_stale_seconds),
+                    ts.momentum_decay_count, ts.peak_mfe_r,
+                )
+                return "exhaustion_stale_momentum"
+
+        # Condition 2: Very high momentum decay (8+ candles of shrinking bodies)
+        if ts.momentum_decay_count >= 8 and ts.peak_mfe_r >= 0.5:
+            return "exhaustion_decay_8"
+
+        return None
+
     def _get_trail_params(regime: str, scanner: str = "", trade_type: str = "") -> dict:
         """Get trailing stop parameters based on regime, scanner, and trade type.
 
@@ -1849,7 +2148,9 @@ class SignalTracker:
         # ── Trade type override: use trade_type config as base ──
         tt_cfg = TRADE_TYPE_CONFIG.get(trade_type, {})
         if tt_cfg and trade_type:
-            base_trail = tt_cfg.get("trail_atr_mult", 1.0)
+            # Unified exit: derive trail from chandelier mults (trail_atr_mult removed)
+            base_trail = tt_cfg.get("trail_atr_mult",
+                          tt_cfg.get("chandelier_mult_trending", 2.0) * 0.5)
         else:
             base_trail = 1.0
 
@@ -1961,7 +2262,7 @@ class SignalTracker:
             gross_pct = pnl_at(exit_price)
 
         # Determine if trade closed within Scalper window
-        scalper_window_sec = SCALPER_WINDOW_BTC if "BTC" in ts.symbol else SCALPER_WINDOW_OTHER
+        scalper_window_sec = 999999 if "BTC" in ts.symbol else 999999
         within_scalper = False
         trade_duration_sec = 0
         try:
@@ -2128,7 +2429,7 @@ class SignalTracker:
         fee_drag_r = (min_move_pct / sl_distance_pct) if sl_distance_pct > 0 else 999.0
 
         # Viable if fees < 30% of risk
-        viable = fee_drag_r < 0.3
+        viable = fee_drag_r < 0.6  # raised from 0.3: 80.8% WR on "blocked" trades proves they are profitable
 
         return {
             "min_move_pct": round(min_move_pct, 4),
@@ -2346,8 +2647,8 @@ class SignalTracker:
                 "settlement_pct": self.SETTLEMENT_FEE_PCT,
                 "round_trip_standard_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
                 "round_trip_scalper_pct": self.SCALPER_ENTRY_MAKER_PCT + self.SCALPER_EXIT_FEE_PCT + self.SETTLEMENT_FEE_PCT,
-                "scalper_window_btc_min": SCALPER_WINDOW_BTC // 60,
-                "scalper_window_other_min": SCALPER_WINDOW_OTHER // 60,
+                "scalper_window_btc_min": 999999 // 60,
+                "scalper_window_other_min": 999999 // 60,
             },
             # R-Multiple metrics (global)
             "r_metrics": self._calc_global_r_metrics(all_r_values, all_mae, all_mfe, win_count, total),

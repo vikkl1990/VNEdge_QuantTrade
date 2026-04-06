@@ -114,7 +114,7 @@ PRODUCT_MAP = {
 # Demo balance asset ID (USD on testnet)
 DEMO_BALANCE_ASSET_ID = 3
 # Production balance asset IDs to check
-PROD_BALANCE_ASSET_IDS = [5, 3, 1, 2, 4, 6, 7]
+PROD_BALANCE_ASSET_IDS = [14, 5, 3, 1, 2, 4, 6, 7]  # 14=USD on Delta India production
 
 
 class DeltaClient:
@@ -158,7 +158,8 @@ class DeltaClient:
     def connect(self) -> bool:
         """Initialize the Delta REST client."""
         try:
-            from delta_rest_client import DeltaRestClient
+            from delta_rest_client import DeltaRestClient, OrderType
+            self._OrderType = OrderType  # store for use in other methods
 
             if self.mode == "demo":
                 api_key = os.getenv("DELTA_DEMO_API_KEY", "")
@@ -299,13 +300,32 @@ class DeltaClient:
                     self._balance_ts = now
                     return self._balance_cache
             else:
+                # Single API call - get_balances fetches all wallets internally
+                # Try primary asset_id first (14 = USD on Delta India)
+                try:
+                    bal = self._client.get_balances(14)
+                    if bal:
+                        avail = float(bal.get("available_balance", 0))
+                        total = float(bal.get("balance", 0))
+                        if avail > 0 or total > 0:
+                            self._balance_cache = avail
+                            self._balance_total = total
+                            self._balance_ts = now
+                            return self._balance_cache
+                except Exception:
+                    pass
+                # Fallback: try other asset IDs
                 for aid in PROD_BALANCE_ASSET_IDS:
+                    if aid == 14:
+                        continue  # already tried
                     try:
                         bal = self._client.get_balances(aid)
                         if bal:
                             avail = float(bal.get("available_balance", 0))
-                            if avail > 0:
+                            total = float(bal.get("balance", 0))
+                            if avail > 0 or total > 0:
                                 self._balance_cache = avail
+                                self._balance_total = total
                                 self._balance_ts = now
                                 return self._balance_cache
                     except Exception:
@@ -350,7 +370,7 @@ class DeltaClient:
                 "product_id": product_id,
                 "size": lots,
                 "side": side,
-                "order_type": "market_order",
+                "order_type": self._OrderType.MARKET,
                 "reduce_only": "true" if reduce_only else "false",
             }
             if client_order_id:
@@ -358,7 +378,7 @@ class DeltaClient:
             if limit_price > 0:
                 info = self._get_product_info(symbol)
                 tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
-                kwargs["order_type"] = "limit_order"
+                kwargs["order_type"] = self._OrderType.LIMIT
                 kwargs["limit_price"] = str(round(limit_price / tick) * tick)
                 if post_only:
                     kwargs["post_only"] = "true"
@@ -405,21 +425,14 @@ class DeltaClient:
         self._enforce_order_delay(symbol)
 
         try:
-            payload = {
-                "product_id": product_id,
-                "size": int(lots),
-                "side": side,
-                "stop_price": str(stop_price),
-                "order_type": "market_order",
-                "stop_order_type": "stop_loss_order",
-                "reduce_only": "true",
-            }
-            if client_order_id:
-                payload["client_order_id"] = client_order_id[:32]
-            if trail_amount > 0:
-                payload["trail_amount"] = str(round(trail_amount / tick) * tick)
-
-            result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
+            result = self._client.place_stop_order(
+                product_id=product_id,
+                size=int(lots),
+                side=side,
+                stop_price=str(stop_price),
+                stop_trigger_method="mark_price",
+                order_type=self._OrderType.MARKET,
+            )
             self._track_order_placed()
             logger.info(
                 "DELTA [%s] SL: %s %s %d lots @ %.4f | trail=%.2f | coid=%s | result=%s",
@@ -489,21 +502,13 @@ class DeltaClient:
         self, symbol: str, side: str, lots: int,
         stop_loss_price: float, take_profit_price: float = 0,
         limit_price: float = 0, client_order_id: Optional[str] = None,
-        post_only: bool = True,
+        post_only: bool = True, time_in_force: str = "",
     ) -> Dict[str, Any]:
-        """Place an atomic bracket order: entry + SL + optional TP in one call.
+        """Place entry + SL + optional TP in one atomic API call.
 
-        Uses Delta's /v2/orders/bracket endpoint.
-        If bracket fails, falls back to separate orders.
-
-        Args:
-            symbol: e.g. "BTC/USDT"
-            side: "buy" or "sell"
-            lots: number of contracts
-            stop_loss_price: SL trigger price
-            take_profit_price: TP trigger price (0 to skip)
-            limit_price: limit price for entry (0 for market)
-            client_order_id: optional 32-char tracking ID for reconciliation
+        Uses POST /v2/orders with inline bracket_stop_loss_price parameter.
+        This is the CORRECT Delta API way — NOT /v2/orders/bracket (which is
+        for attaching SL/TP to EXISTING positions only).
         """
         product_id = self._get_product_id(symbol)
         if not product_id:
@@ -515,66 +520,67 @@ class DeltaClient:
         info = self._get_product_info(symbol)
         tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
 
-        # Round prices to tick size
         stop_loss_price = round(stop_loss_price / tick) * tick
         if take_profit_price > 0:
             take_profit_price = round(take_profit_price / tick) * tick
 
-        # Build bracket order payload
-        bracket_payload = {
+        # Build inline bracket payload (single POST /v2/orders call)
+        payload = {
             "product_id": product_id,
             "size": int(lots),
             "side": side,
             "order_type": "market_order" if limit_price <= 0 else "limit_order",
-            "stop_loss_order": {
-                "order_type": "market_order",
-                "stop_price": str(stop_loss_price),
-            },
+            "bracket_stop_loss_price": str(stop_loss_price),
+            "bracket_stop_trigger_method": "mark_price",  # mark_price prevents wick hunts
         }
 
         if client_order_id:
-            bracket_payload["client_order_id"] = client_order_id[:32]
+            payload["client_order_id"] = client_order_id[:32]
 
         if limit_price > 0:
-            bracket_payload["limit_price"] = str(round(limit_price / tick) * tick)
-            if post_only:
-                bracket_payload["post_only"] = "true"
+            payload["limit_price"] = str(round(limit_price / tick) * tick)
+            if post_only and not time_in_force:
+                payload["post_only"] = "true"  # post_only conflicts with IOC
 
         if take_profit_price > 0:
-            bracket_payload["take_profit_order"] = {
-                "order_type": "market_order",
-                "stop_price": str(take_profit_price),
-            }
+            payload["bracket_take_profit_price"] = str(take_profit_price)
+
+        if time_in_force:
+            payload["time_in_force"] = time_in_force  # "ioc" = immediate or cancel
 
         try:
             result = self._client.request(
-                "POST", "/v2/orders/bracket",
-                payload=bracket_payload,
+                "POST", "/v2/orders",
+                payload=payload,
                 auth=True,
             )
+            # Parse response
+            if hasattr(result, 'json'):
+                result = result.json().get("result", result.json())
+            elif not isinstance(result, dict):
+                result = {"raw": str(result)}
+
             logger.info(
                 "DELTA [%s] BRACKET ORDER: %s %s %d lots | SL=%.4f TP=%.4f | result=%s",
                 self.mode.upper(), side, symbol, lots, stop_loss_price,
                 take_profit_price, str(result)[:200],
             )
-            return result if isinstance(result, dict) else {"raw": result}
+            return result
 
         except Exception as e:
             logger.warning(
-                "DELTA [%s] BRACKET FAILED: %s | falling back to separate orders",
+                "DELTA [%s] INLINE BRACKET FAILED: %s | falling back to separate orders",
                 self.mode.upper(), e,
             )
-            # Fallback: place entry + SL separately
+            # Fallback: entry + separate SL
             entry_result = self.place_market_order(symbol, side, lots,
                                                     client_order_id=client_order_id)
             if entry_result.get("error"):
                 return entry_result
 
             close_side = "sell" if side == "buy" else "buy"
-
-            # Wait for position to settle before placing SL/TP
             import time
-            time.sleep(1.5)
+            time.sleep(2)
 
             sl_result = None
             for attempt in range(3):
@@ -583,29 +589,23 @@ class DeltaClient:
                     if sl_result and not sl_result.get("error"):
                         break
                 except Exception as sl_err:
-                    logger.debug("DELTA [%s] SL attempt %d failed: %s", self.mode.upper(), attempt + 1, sl_err)
+                    logger.debug("SL attempt %d failed: %s", attempt + 1, sl_err)
                     time.sleep(1.0)
 
             if take_profit_price > 0:
-                for attempt in range(3):
-                    try:
-                        tp_result = self.place_take_profit(symbol, close_side, lots, take_profit_price)
-                        if tp_result and not tp_result.get("error"):
-                            break
-                    except Exception as tp_err:
-                        logger.debug("DELTA [%s] TP attempt %d failed: %s", self.mode.upper(), attempt + 1, tp_err)
-                        time.sleep(1.0)
+                logger.info("DELTA [%s] FALLBACK: placing TP for %s @ %.4f", self.mode.upper(), symbol, take_profit_price)
+                try:
+                    self.place_take_profit(symbol, close_side, lots, take_profit_price)
+                except Exception:
+                    pass
 
-            # Alert if SL placement failed after all retries — UNPROTECTED POSITION!
             if not sl_result or sl_result.get("error"):
                 logger.critical(
-                    "DELTA [%s] BRACKET FALLBACK: SL FAILED after 3 retries! "
-                    "%s %s %d lots has NO STOP LOSS — UNPROTECTED!",
+                    "DELTA [%s] SL FAILED! %s %s %d lots — UNPROTECTED!",
                     self.mode.upper(), symbol, side, lots,
                 )
                 entry_result["sl_failed"] = True
 
-            entry_result["sl_result"] = sl_result
             entry_result["bracket_fallback"] = True
             return entry_result
 
@@ -661,17 +661,43 @@ class DeltaClient:
             return None
 
     def get_all_positions(self) -> List[Dict]:
-        """Get all open positions."""
-        positions = []
-        for symbol in PRODUCT_MAP:
-            pos = self.get_position(symbol)
-            if pos:
-                positions.append(pos)
-        return positions
+        """Get all open positions in a single API call."""
+        try:
+            result = self._client.request("GET", "/v2/positions/margined", auth=True)
+            if hasattr(result, 'json'):
+                data = result.json().get("result", [])
+            elif isinstance(result, list):
+                data = result
+            elif isinstance(result, dict):
+                data = result.get("result", [result])
+            else:
+                data = []
+            return [p for p in data if isinstance(p, dict)]
+        except Exception as e:
+            logger.warning("DELTA [%s]: get_all_positions failed: %s", self.mode.upper(), e)
+            return []
 
     # ==================================================================
     # Orders
     # ==================================================================
+
+    def get_ticker(self, symbol: str) -> dict:
+        """Get current bid/ask/last for a symbol."""
+        try:
+            product_id = self._get_product_id(symbol)
+            # Use the REST API ticker endpoint
+            resp = self._client.request("GET", f"/v2/tickers/{product_id}")
+            if resp and isinstance(resp, dict):
+                return {
+                    "bid": float(resp.get("best_bid", 0) or 0),
+                    "ask": float(resp.get("best_ask", 0) or 0),
+                    "last": float(resp.get("close", 0) or resp.get("last_price", 0) or 0),
+                    "mark": float(resp.get("mark_price", 0) or 0),
+                }
+        except Exception as e:
+            logger.debug("get_ticker(%s) failed: %s", symbol, e)
+        return {}
+
 
     def get_open_orders(self) -> List[Dict]:
         """Get all open orders."""
@@ -772,7 +798,7 @@ class DeltaClient:
                 product_id=product_id,
                 size=lots,
                 side=close_side,
-                order_type="market_order",
+                order_type=self._OrderType.MARKET,
                 reduce_only="true",
             )
             logger.info("DELTA [%s] CLOSE: %s %s %d lots | order=%s",
@@ -918,7 +944,7 @@ class DeltaClient:
         """
         try:
             result = self._client.request(
-                "POST", "/v2/positions/close_all",
+                "DELETE", "/v2/positions/all",
                 payload={},
                 auth=True,
             )
@@ -961,7 +987,7 @@ class DeltaClient:
             return False
         try:
             self._client.request(
-                "POST", "/v2/positions/auto_topup",
+                "POST", "/v2/positions/auto-topup",
                 payload={"product_id": product_id, "auto_topup": True},
                 auth=True,
             )

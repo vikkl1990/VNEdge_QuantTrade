@@ -96,6 +96,7 @@ timeframes:
   higher: "15m"
   trigger: "1m"
   macro: "1h"          # 1h macro trend filter (Phase 1 MTF chain)
+  session: "4h"        # 4h session-level trend direction (Phase 2 MTF chain)
 
 strategy:
   active: "multi_strategy"           # Runs both investment + scalp

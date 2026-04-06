@@ -258,7 +258,9 @@ class BotOrchestrator:
             self._latency_arb = None
             if _HAS_LATENCY_ARB:
                 try:
-                    self._latency_arb = LatencyArbEngine(
+                    self._latency_arb = None  # DISABLED: negative edge, 2.4s latency, 0% tradeable
+                    if False and LatencyArbEngine:  # keep import for future
+                        self._latency_arb = LatencyArbEngine(
                         symbols=self._symbols,
                         on_signal=None,  # measure-only for now
                     )
@@ -274,6 +276,7 @@ class BotOrchestrator:
                     )
                 except Exception as exc:
                     self._log.warning("LatencyArb failed to start: %s", exc)
+                    pass  # end of disabled block
                     self._latency_arb = None
 
             # 4. Start heartbeat monitor
@@ -306,9 +309,41 @@ class BotOrchestrator:
             except Exception as exc:
                 self._log.warning("Real manager startup sync failed: %s", exc)
 
+            # 4d. STARTUP POSITION RECONCILIATION
+            # Import any exchange positions not in local state (ghost prevention)
+            try:
+                if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                    await self._real_manager.reconcile_exchange_positions()
+            except Exception as exc:
+                self._log.warning("Position reconciliation failed: %s", exc)
+
             # 5. Start dashboard (non-blocking)
             # Wire signal tracker and AI learner to dashboard for API access
             self._dashboard._signal_tracker = self._signal_tracker
+
+            # RL Shadow Agent — logs sizing/trail suggestions (shadow mode)
+            try:
+                from ml_training.rl_shadow_agent import RLShadowAgent
+                self._rl_agent = RLShadowAgent()
+                self._log.info("RL Shadow Agent loaded (shadow_mode=%s)", self._rl_agent.shadow_mode)
+            except Exception as _rl_err:
+                self._rl_agent = None
+                self._log.warning("RL Shadow Agent not available: %s", _rl_err)
+
+            # RCA Agent — monitors performance and auto-tunes parameters
+            try:
+                from bot.rca_agent import RCAAgent
+                self._rca_agent = RCAAgent(
+                    signal_tracker=self._signal_tracker,
+                    suggest_only=False,  # auto-apply within safe bounds
+                )
+                self._log.info("RCA Agent loaded (auto-tune enabled)")
+            except Exception as _rca_err:
+                self._rca_agent = None
+                self._log.warning("RCA Agent not available: %s", _rca_err)
+            # Wire signal tracker to real manager for smart WR lookup
+            if hasattr(self, "_real_manager") and self._real_manager:
+                self._real_manager._signal_tracker_ref = self._signal_tracker
             self._dashboard._signal_learner = self._signal_learner
             self._dashboard._trade_monitor = self._trade_monitor
             self._dashboard._strategy = self._strategy
@@ -463,17 +498,41 @@ class BotOrchestrator:
                             new_sl = ev.get("new_sl", 0)
                             ev_symbol = ev.get("symbol", "")
                             if trade_id and new_sl > 0:
-                                await self._real_manager.update_exchange_sl(trade_id, ev_symbol, new_sl)
+                                # Only sync paper SL if trade is NOT independently managed
+                                _sl_real_id = self._real_manager.paper_to_real.get(trade_id, "")
+                                _sl_real_t = self._real_manager.real_trades.get(_sl_real_id)
+                                if _sl_real_t and getattr(_sl_real_t, "independent_exit", False):
+                                    pass  # independent exit handles its own SL
+                                else:
+                                    await self._real_manager.update_exchange_sl(trade_id, ev_symbol, new_sl)
                         except Exception:
                             pass
                 else:
                     # Close events: mirror exit + AI learning + monitor
                     closed_sig = ev.get("signal", {})
                     if closed_sig:
+                        # PARTIAL TP SYNC: when paper hits TP, partial close real too
+                        if ev_type in ("tp1_hit", "tp2_hit") and hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                            try:
+                                _tp_paper_id = closed_sig.get("trade_id", "")
+                                _tp_level = 1 if ev_type == "tp1_hit" else 2
+                                _tp_close_pct = 0.35
+                                if _tp_paper_id:
+                                    await self._real_manager.partial_close_real(_tp_paper_id, _tp_level, _tp_close_pct)
+                            except Exception as _tp_err:
+                                self._log.debug("TP sync failed: %s", _tp_err)
+
                         try:
                             self._signal_learner.learn_from_outcome(closed_sig)
                         except Exception:
                             pass
+                        # RL agent learns from outcome
+                        if hasattr(self, '_rl_agent') and self._rl_agent:
+                            try:
+                                r_mult = closed_sig.get("mfe_r", closed_sig.get("pnl_pct", 0))
+                                self._rl_agent.record_outcome(closed_sig, float(r_mult))
+                            except Exception:
+                                pass
                         try:
                             self._trade_monitor.analyze_trade(closed_sig)
                         except Exception:
@@ -485,7 +544,13 @@ class BotOrchestrator:
                                 exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
                                 paper_slip = closed_sig.get("slippage_bps", 0) or 0
                                 if paper_id and exit_price:
-                                    await self._real_manager.mirror_paper_exit(
+                                    # Check if real trade manages its own exit
+                                    _real_id = self._real_manager.paper_to_real.get(paper_id, "")
+                                    _real_trade = self._real_manager.real_trades.get(_real_id)
+                                    if _real_trade and getattr(_real_trade, "independent_exit", False):
+                                        self._log.debug("SKIP MIRROR: %s has independent exit", paper_id[:12])
+                                    else:
+                                        await self._real_manager.mirror_paper_exit(
                                         paper_id, exit_price, ev_type,
                                         paper_slippage_bps=float(paper_slip),
                                         symbol=closed_sig.get("symbol", ""),
@@ -599,6 +664,13 @@ class BotOrchestrator:
                 events = self._signal_tracker.update_prices(prices)
                 last_check = now
 
+                # PARALLEL REAL EXIT: run real trade exit logic independently
+                if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                    try:
+                        await self._real_manager.update_real_trades(prices)
+                    except Exception as _rte:
+                        self._log.debug("Real trade update: %s", _rte)
+
                 for ev in events:
                     msg = ev.get("message", "")
                     ev_type = ev.get("type", "")
@@ -627,7 +699,13 @@ class BotOrchestrator:
                             new_sl = ev.get("new_sl", 0)
                             symbol = ev.get("symbol", "")
                             if trade_id and new_sl > 0:
-                                await self._real_manager.update_exchange_sl(trade_id, symbol, new_sl)
+                                # Skip SL sync if real trade manages its own exit
+                                _sl2_real_id = self._real_manager.paper_to_real.get(trade_id, "")
+                                _sl2_real_t = self._real_manager.real_trades.get(_sl2_real_id)
+                                if _sl2_real_t and getattr(_sl2_real_t, "independent_exit", False):
+                                    pass  # independent exit handles its own SL
+                                else:
+                                    await self._real_manager.update_exchange_sl(trade_id, symbol, new_sl)
                         except Exception as exc:
                             self._log.debug("Exchange SL sync failed: %s", exc)
                         continue  # sl_updated is not a close event, skip rest
@@ -665,19 +743,34 @@ class BotOrchestrator:
                             exit_price = closed_sig.get("metadata", {}).get("exit_price", 0) or closed_sig.get("exit_price", 0)
                             paper_slip = closed_sig.get("slippage_bps", closed_sig.get("metadata", {}).get("slippage_bps", 0)) or 0
                             if paper_id and exit_price:
-                                paper_symbol = closed_sig.get("symbol", "")
-                                paper_side_str = closed_sig.get("side", "")
-                                await self._real_manager.mirror_paper_exit(
-                                    paper_id, exit_price, ev_type,
-                                    paper_slippage_bps=float(paper_slip),
-                                    symbol=paper_symbol,
-                                    side=paper_side_str,
-                                )
+                                # Check if real trade manages its own exit
+                                _r2_id = self._real_manager.paper_to_real.get(paper_id, "")
+                                _r2_trade = self._real_manager.real_trades.get(_r2_id)
+                                if _r2_trade and getattr(_r2_trade, "independent_exit", False):
+                                    self._log.debug("SKIP MIRROR (fast): %s has independent exit", paper_id[:12])
+                                else:
+                                    paper_symbol = closed_sig.get("symbol", "")
+                                    paper_side_str = closed_sig.get("side", "")
+                                    await self._real_manager.mirror_paper_exit(
+                                        paper_id, exit_price, ev_type,
+                                        paper_slippage_bps=float(paper_slip),
+                                        symbol=paper_symbol,
+                                        side=paper_side_str,
+                                    )
                         except Exception as exc:
                             self._log.error("Real exit mirror failed: %s", exc)
 
                 # Record heartbeat
                 self._heartbeat.record_activity("fast_trade_monitor")
+
+                # RCA Agent — periodic performance analysis (every 30 min)
+                if hasattr(self, '_rca_agent') and self._rca_agent and self._rca_agent.should_run():
+                    try:
+                        rca_report = self._rca_agent.run_analysis()
+                        if rca_report.get("applied"):
+                            self._log.warning("RCA AUTO-TUNE: %d parameters adjusted", len(rca_report["applied"]))
+                    except Exception as _rca_err:
+                        self._log.debug("RCA analysis failed: %s", _rca_err)
 
                 # ── PERIODIC ORPHAN SYNC (AFTER event processing) ──
                 # Runs after mirror_paper_exit has had a chance to handle exits properly.
@@ -807,6 +900,18 @@ class BotOrchestrator:
                 if usd_total is not None and float(usd_total) > 0:
                     self._signal_tracker.set_exchange_balance(float(usd_total))
                     self._log.info("Exchange balance: $%.2f", float(usd_total))
+
+                # --- Periodic reconciliation (every 5 min) ---
+                _now_ts = time.time()
+                if not hasattr(self, "_last_reconcile_ts"):
+                    self._last_reconcile_ts = _now_ts
+                if _now_ts - self._last_reconcile_ts >= 60:  # every 60s (was 300s)  # 5 minutes
+                    self._last_reconcile_ts = _now_ts
+                    if hasattr(self, "_real_manager") and self._real_manager:
+                        try:
+                            await self._real_manager.reconcile_exchange_positions()
+                        except Exception as _rec_err:
+                            self._log.warning("Periodic reconcile failed: %s", _rec_err)
             except Exception as exc:
                 self._log.warning("Balance fetch failed: %s", exc)
 
@@ -987,6 +1092,15 @@ class BotOrchestrator:
     # Candle close handler
     # ------------------------------------------------------------------
 
+    async def _safe_mirror_trade(self, symbol, sig_dict, paper_trade_id):
+        """Mirror trade to real exchange — runs as background task."""
+        try:
+            await self._real_manager.mirror_paper_trade(
+                symbol, sig_dict, paper_trade_id,
+            )
+        except Exception as exc:
+            self._log.error("Real trade mirror failed (background): %s", exc)
+
     async def _on_candle_close(self, *, symbol: str, timeframe: str, candle: dict) -> None:
         """Callback invoked by the DataFeed when a candle closes.
 
@@ -1031,6 +1145,11 @@ class BotOrchestrator:
                     candles_dict[tf] = df
 
             # 3. Run strategy analysis (sync method)
+            # Upgrade 2: feed candles to signal tracker for Chandelier Exit
+            _df5m = candles_dict.get("5m")
+            if _df5m is not None and hasattr(self._signal_tracker, 'update_candles'):
+                self._signal_tracker.update_candles(symbol, _df5m)
+
             signals = self._strategy.analyze(symbol, candles_dict)
 
             if not signals:
@@ -1127,6 +1246,16 @@ class BotOrchestrator:
                     "AI adjusted confidence: %s %s | %d → %d | %s",
                     symbol, signal_type, original_conf, adjusted_conf, ai_reason,
                 )
+                # Recalculate grade based on boosted confidence
+                from config.constants import confidence_to_grade
+                new_grade = confidence_to_grade(adjusted_conf)
+                old_grade = sig_dict.get("grade", "")
+                if str(new_grade.value) != str(old_grade):
+                    sig_dict["grade"] = new_grade.value if hasattr(new_grade, "value") else str(new_grade)
+                    self._log.info(
+                        "Grade upgraded: %s %s | %s → %s (AI boosted conf %d → %d)",
+                        symbol, signal_type, old_grade, sig_dict["grade"], original_conf, adjusted_conf,
+                    )
         except Exception:
             pass
 
@@ -1170,6 +1299,19 @@ class BotOrchestrator:
             # Pass order_type so from_signal can compute fees correctly
             sig_dict["_order_type"] = getattr(self._signal_tracker, "_order_type", "maker")
             self._signal_tracker.track_signal(sig_dict)
+
+            # RL Shadow Agent — log sizing/trail suggestion
+            if hasattr(self, '_rl_agent') and self._rl_agent:
+                try:
+                    rl_pred = self._rl_agent.predict(sig_dict)
+                    self._log.info(
+                        "RL SHADOW: %s %s | sizing=%.2fx trail=%.2f | %s",
+                        symbol, sig_dict.get("side", "?"),
+                        rl_pred["sizing_mult"], rl_pred["trail_aggression"],
+                        "APPLIED" if not rl_pred["shadow_mode"] else "shadow_only",
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             self._log.error("Failed to track signal: %s", exc, exc_info=True)
 
@@ -1219,7 +1361,9 @@ class BotOrchestrator:
                 )
                 return
 
-        # -- Mirror to real exchange (if enabled) --
+        # -- Fire real trade in parallel (don't wait for paper to complete first) --
+        # This was sequential before — real trade started 300-700ms AFTER signal.
+        # Now both fire simultaneously, reducing entry delay to near-zero.
         if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
             try:
                 paper_trade_id = None
@@ -1227,8 +1371,10 @@ class BotOrchestrator:
                     paper_trade_id = order_result.trade_id
                 elif isinstance(order_result, dict):
                     paper_trade_id = order_result.get('trade_id')
-                await self._real_manager.mirror_paper_trade(
-                    symbol, sig_dict, paper_trade_id,
+                # Fire and forget — don't await, let it run in background
+                import asyncio
+                asyncio.create_task(
+                    self._safe_mirror_trade(symbol, sig_dict, paper_trade_id)
                 )
             except Exception as exc:
                 self._log.error("Real trade mirror failed (paper unaffected): %s", exc)

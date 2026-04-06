@@ -687,6 +687,8 @@ class ScalpStrategy(BaseStrategy):
         df_5m = candles_dict.get("5m")
         # 1h df for macro trend filter (Phase 1 MTF chain)
         df_1h = candles_dict.get("1h")
+        # 4h df for session-level bias (Phase 2 MTF chain)
+        df_4h = candles_dict.get("4h")
 
         # Track signal count per symbol (decoupled — BTC signals don't count against ETH)
         if symbol not in self._signal_count_hr:
@@ -804,6 +806,35 @@ class ScalpStrategy(BaseStrategy):
             except Exception:
                 pass
 
+        # --- 4H SESSION BIAS ---
+        session_bias = 0  # 0=neutral, 1=bullish, -1=bearish
+        if df_4h is not None and len(df_4h) >= 10:
+            try:
+                h4_close = float(df_4h.iloc[-1]["close"])
+                h4_ema21 = float(df_4h.iloc[-1].get("ema_21", 0))
+                h4_ema50 = float(df_4h.iloc[-1].get("ema_50", 0))
+                # Compute EMAs inline if not pre-computed
+                if h4_ema21 == 0 and len(df_4h) >= 21:
+                    h4_ema21 = float(df_4h["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+                if h4_ema50 == 0 and len(df_4h) >= 50:
+                    h4_ema50 = float(df_4h["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+                if h4_ema21 > 0 and h4_ema50 > 0:
+                    if h4_close > h4_ema21 > h4_ema50:
+                        session_bias = 1
+                    elif h4_close < h4_ema21 < h4_ema50:
+                        session_bias = -1
+            except Exception:
+                pass
+
+        # Combine 4h session bias with 1h macro bias
+        if session_bias != 0 and macro_bias != 0:
+            if session_bias == macro_bias:
+                pass  # aligned — keep macro_bias as-is (strong)
+            else:
+                macro_bias = 0  # conflict → neutral (don't trade against session)
+        elif session_bias != 0 and macro_bias == 0:
+            macro_bias = session_bias  # 4h takes over when 1h is neutral
+
         # Store macro_bias for veto layer (indicators dict created later, use _macro_bias temp)
         _macro_bias = macro_bias
         _macro_bias_str = "bullish" if macro_bias > 0 else "bearish" if macro_bias < 0 else "neutral"
@@ -859,6 +890,8 @@ class ScalpStrategy(BaseStrategy):
         # Add macro_bias to indicators (was computed earlier before dict existed)
         indicators["macro_bias"] = _macro_bias
         indicators["macro_bias_str"] = _macro_bias_str
+        indicators["session_bias"] = session_bias
+        indicators["session_bias_str"] = "bullish" if session_bias > 0 else "bearish" if session_bias < 0 else "neutral"
 
         # --- Detect market regime + regime age tracking ---
         regime = self._regime_filter.detect_regime(indicators)
@@ -1231,9 +1264,9 @@ class ScalpStrategy(BaseStrategy):
                 else:
                     scanner_df = df
 
-                # Try 15m first for structure/bos scanners (higher TF = higher quality)
+                # Try 15m FIRST for ALL scanners — gives equal quality opportunity
                 result = None
-                if scanner in (self._scan_structure_bounce, self._scan_bos_choch) and confirm_df is not None and len(confirm_df) >= 30:
+                if confirm_df is not None and len(confirm_df) >= 30:
                     result = scanner(symbol, confirm_df, htf_bias, confirm_bias)
                     if result is not None:
                         # 15m signal gets a quality bonus

@@ -46,7 +46,7 @@ TRADE_TYPE_RUNNER = "RUNNER"        # High conviction trend, wide SL/TP, no time
 # Per-type exit parameters
 TRADE_TYPE_CONFIG = {
     TRADE_TYPE_SCALP: {
-        "sl_atr_mult": 0.5,       # initial SL (tightened from 0.8)
+        "sl_atr_mult": 0.8,       # initial SL reference (strategy uses 2.0x 5m ATR for actual SL)
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
@@ -57,11 +57,11 @@ TRADE_TYPE_CONFIG = {
         "extended_age_sec": int(22.5 * 60),  # extended to 22.5 min
         "full_extend_r": 0.3,           # full extend if MFE >= 0.3R + still growing
         "full_extended_age_sec": 30 * 60,    # full extension to 30 min
-        "chandelier_mult_ranging": 1.5,  # ATR multiplier for ranging/sideways
-        "chandelier_mult_trending": 2.0, # ATR multiplier for trending/breakout
+        "chandelier_mult_ranging": 0.8,  # risk multiplier for ranging (tighter)
+        "chandelier_mult_trending": 1.0, # risk multiplier for trending (give room)
     },
     TRADE_TYPE_INTRADAY: {
-        "sl_atr_mult": 0.5,       # initial SL (tightened from 1.0)
+        "sl_atr_mult": 1.0,       # initial SL reference (strategy uses 2.0x 5m ATR for actual SL)
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # TP3 at 3R
@@ -72,8 +72,8 @@ TRADE_TYPE_CONFIG = {
         "extended_age_sec": 30 * 60,
         "full_extend_r": 0.3,
         "full_extended_age_sec": 40 * 60,
-        "chandelier_mult_ranging": 1.8,
-        "chandelier_mult_trending": 2.5,
+        "chandelier_mult_ranging": 0.8,  # INTRADAY ranging
+        "chandelier_mult_trending": 1.2,  # RUNNER trending
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 0.6,       # initial SL
@@ -87,8 +87,8 @@ TRADE_TYPE_CONFIG = {
         "extended_age_sec": 12 * 3600,
         "full_extend_r": 0.3,
         "full_extended_age_sec": 16 * 3600,
-        "chandelier_mult_ranging": 2.0,
-        "chandelier_mult_trending": 2.5,
+        "chandelier_mult_ranging": 1.0,  # RUNNER ranging
+        "chandelier_mult_trending": 1.2,  # RUNNER trending
     },
 }
 
@@ -1114,7 +1114,7 @@ class SignalTracker:
                 # Once trade shows 0.15R profit, move SL to entry (zero risk)
                 # This prevents the 0.1-0.3R gap where profit evaporates
                 if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold and not ts.breakeven_set:
-                    fee_buffer = ts.entry_price * 0.0003  # 3bp buffer for fees
+                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0015)  # min 0.15% buffer
                     if is_long:
                         be_sl = ts.entry_price + fee_buffer
                         if be_sl > ts.stop_loss:
@@ -1914,7 +1914,7 @@ class SignalTracker:
     # Regime-Aware Trailing Stops
     # ------------------------------------------------------------------
 
-    @staticmethod
+
 
     # ══════════════════════════════════════════════════════════════
     # UNIFIED ADAPTIVE EXIT — 3 core methods
@@ -1929,15 +1929,10 @@ class SignalTracker:
         """
         if ts.initial_risk <= 0:
             return None
-        # ATR sanity: if signal_atr < 0.1% of entry, it's probably a percentage — convert
-        _atr = ts.signal_atr
-        if _atr <= 0:
-            _atr = getattr(ts, "entry_atr", 0) or 0
-        if _atr <= 0:
-            return None
-        if _atr < ts.entry_price * 0.001:
-            _atr = ts.entry_price * _atr  # convert percentage to absolute
-            logger.debug("CHANDELIER: ATR was percentage (%.6f), converted to $%.4f", ts.signal_atr, _atr)
+        # Use initial_risk (|entry - SL|) as the chandelier distance unit
+        # Multiplier < 1.0 = tighter than initial SL (locks profit)
+        # Multiplier > 1.0 = wider than initial SL (gives room)
+        _atr = ts.initial_risk
 
         # Determine chandelier multiplier based on regime
         regime_lower = regime.lower() if regime else ""
@@ -1993,6 +1988,17 @@ class SignalTracker:
                 ts.chandelier_stop = min(ts.chandelier_stop, new_chand)
 
         # Also move the actual stop_loss if chandelier is tighter
+        # Enforce minimum SL distance: 0.15% from entry (safety net)
+        _min_sl_dist = ts.entry_price * 0.0015
+        if is_long:
+            _sl_floor = ts.entry_price - _min_sl_dist
+            if ts.chandelier_stop > 0 and ts.chandelier_stop < _sl_floor:
+                ts.chandelier_stop = _sl_floor  # don't go below floor
+        else:
+            _sl_ceil = ts.entry_price + _min_sl_dist
+            if ts.chandelier_stop > 0 and ts.chandelier_stop > _sl_ceil:
+                ts.chandelier_stop = _sl_ceil  # don't go above floor
+
         if is_long and ts.chandelier_stop > ts.stop_loss:
             old_sl = ts.stop_loss
             ts.stop_loss = ts.chandelier_stop

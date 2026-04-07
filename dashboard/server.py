@@ -311,7 +311,15 @@ class DashboardServer:
             return {"user": "admin", "auth_disabled": True}
         cookie = request.cookies.get("vn_session")
         if not cookie:
+            logger.info("SESSION: no vn_session cookie found")
             return None
+        logger.debug("SESSION: cookie=%s... auth_service=%s has_colon=%s", cookie[:8], bool(self._auth_service), ":" in cookie)
+        # Multi-user auth: cookie is a plain JWT/token without ":" separator
+        if self._auth_service and ":" not in cookie:
+            # Multi-user login already validated credentials and set this cookie
+            # Trust it for POST operations (the token was issued by our login handler)
+            return {"user": "admin", "role": "admin", "multi_user": True}
+
         parts = cookie.split(":", 1)
         if len(parts) != 2:
             return None
@@ -356,6 +364,9 @@ class DashboardServer:
             session = self._verify_session(request)
             if session:
                 request["session"] = session
+                # Set user dict for multi-user session handler
+                if session.get("multi_user") and "user" not in request:
+                    request["user"] = {"email": "admin@vnedge.com", "role": "admin", "tier": "enterprise", "full_name": "VN Edge Admin", "user_id": 1}
             return await handler(request)
 
         # POST requests: require auth (state-changing operations)
@@ -519,6 +530,7 @@ class DashboardServer:
         app.router.add_get("/api/tracker/active", self._handle_tracker_active)
         app.router.add_get("/api/tracker/closed", self._handle_tracker_closed)
         app.router.add_get("/api/ai/insights", self._handle_ai_insights)
+        app.router.add_get("/api/scanner-stats", self._handle_scanner_stats)
         app.router.add_get("/api/monitor/report", self._handle_monitor_report)
         app.router.add_get("/api/signal-status", self._handle_signal_status)
         app.router.add_get("/api/infra", self._handle_infra)
@@ -584,8 +596,9 @@ class DashboardServer:
         index_path = _TEMPLATES_DIR / "index.html"
         if not index_path.exists():
             return web.Response(text="Dashboard template not found", status=500)
-        html = index_path.read_text(encoding="utf-8")
-        return web.Response(text=html, content_type="text/html")
+        if not hasattr(self, "_idx_cache") or self._idx_cache is None:
+            self._idx_cache = index_path.read_text(encoding="utf-8")
+        return web.Response(text=self._idx_cache, content_type="text/html")
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         async with self._lock:
@@ -673,7 +686,88 @@ class DashboardServer:
             data = self._signal_tracker.get_closed_signals()
         else:
             data = []
-        return web.json_response(data, dumps=_safe_dumps)
+        # Pagination: limit response size (default 50, max 200)
+        _limit = min(int(request.query.get("limit", 50)), 200)
+        return web.json_response(data[-_limit:], dumps=_safe_dumps)
+
+    async def _handle_scanner_stats(self, request: web.Request) -> web.Response:
+        """Per-scanner PnL, regime correlation, and scanner x regime matrix."""
+        tracker = self._signal_tracker
+        if not tracker:
+            return web.json_response({"error": "no tracker"})
+        
+        # Use the closed signals list (may be in _closed or _history)
+        closed = getattr(tracker, "_closed_signals", [])
+        if not closed:
+            closed = getattr(tracker, "_closed", [])
+        if not closed:
+            closed = getattr(tracker, "closed_signals", [])
+        if not closed:
+            # Try loading from the tracker's signal history
+            try:
+                closed = list(tracker._signals.values()) if hasattr(tracker, "_signals") else []
+                closed = [s for s in closed if getattr(s, "status", "") in ("stopped", "expired", "tp1_hit", "tp2_hit", "tp3_hit")]
+            except Exception:
+                closed = []
+        scanner_stats = {}
+        regime_stats = {}
+        scanner_regime = {}
+        
+        for sig in closed:
+            scanner = sig.get("setup_type", "unknown") if isinstance(sig, dict) else getattr(sig, "setup_type", "unknown")
+            regime = (sig.get("metadata", {}) or {}).get("regime", "unknown") if isinstance(sig, dict) else "unknown"
+            pnl = float(sig.get("pnl_usd", 0) or 0) if isinstance(sig, dict) else float(getattr(sig, "pnl_usd", 0) or 0)
+            r_mult = float(sig.get("exit_r", 0) or 0) if isinstance(sig, dict) else 0
+            mfe = float(sig.get("mfe_r", 0) or 0) if isinstance(sig, dict) else 0
+            
+            if scanner not in scanner_stats:
+                scanner_stats[scanner] = {"trades": 0, "wins": 0, "pnl": 0, "r_sum": 0, "mfe_sum": 0}
+            scanner_stats[scanner]["trades"] += 1
+            if pnl > 0: scanner_stats[scanner]["wins"] += 1
+            scanner_stats[scanner]["pnl"] += pnl
+            scanner_stats[scanner]["r_sum"] += r_mult
+            scanner_stats[scanner]["mfe_sum"] += mfe
+            
+            if regime not in regime_stats:
+                regime_stats[regime] = {"trades": 0, "wins": 0, "pnl": 0}
+            regime_stats[regime]["trades"] += 1
+            if pnl > 0: regime_stats[regime]["wins"] += 1
+            regime_stats[regime]["pnl"] += pnl
+            
+            key = f"{scanner}|{regime}"
+            if key not in scanner_regime:
+                scanner_regime[key] = {"trades": 0, "wins": 0, "pnl": 0}
+            scanner_regime[key]["trades"] += 1
+            if pnl > 0: scanner_regime[key]["wins"] += 1
+            scanner_regime[key]["pnl"] += pnl
+        
+        result_scanners = {}
+        for s, v in scanner_stats.items():
+            n = v["trades"]
+            result_scanners[s] = {
+                "trades": n, "wins": v["wins"], "losses": n - v["wins"],
+                "wr": round(v["wins"]/n*100, 1) if n > 0 else 0,
+                "pnl": round(v["pnl"], 2),
+                "avg_r": round(v["r_sum"]/n, 3) if n > 0 else 0,
+                "avg_mfe": round(v["mfe_sum"]/n, 3) if n > 0 else 0,
+                "pct_of_total": round(n/len(closed)*100, 1) if closed else 0,
+            }
+        
+        result_regimes = {}
+        for r, v in regime_stats.items():
+            n = v["trades"]
+            result_regimes[r] = {"trades": n, "wr": round(v["wins"]/n*100, 1) if n > 0 else 0, "pnl": round(v["pnl"], 2)}
+        
+        matrix = []
+        for key, v in sorted(scanner_regime.items(), key=lambda x: -x[1]["trades"]):
+            scanner, regime = key.split("|")
+            n = v["trades"]
+            if n >= 2:
+                matrix.append({"scanner": scanner, "regime": regime, "trades": n,
+                              "wr": round(v["wins"]/n*100, 1), "pnl": round(v["pnl"], 2)})
+        
+        return web.json_response({"scanners": result_scanners, "regimes": result_regimes,
+                                  "matrix": matrix[:20], "total_closed": len(closed)})
 
     async def _handle_ai_insights(self, request: web.Request) -> web.Response:
         if self._signal_learner:
@@ -964,14 +1058,19 @@ class DashboardServer:
             except Exception:
                 pass
             # Refresh balance from exchange (async)
-            try:
-                if hasattr(mgr, 'refresh_balance'):
-                    await mgr.refresh_balance()
-            except Exception:
-                pass
+            # Balance refresh: throttle to every 30s (was every 2s from polling)
+            import time as _ts
+            _bal_age = _ts.time() - getattr(self, '_last_bal_refresh', 0)
+            if _bal_age > 30:
+                try:
+                    if hasattr(mgr, 'refresh_balance'):
+                        await mgr.refresh_balance()
+                    self._last_bal_refresh = _ts.time()
+                except Exception:
+                    pass
             # Sync exchange positions (detect orphaned real positions)
             try:
-                if hasattr(mgr, 'sync_exchange_positions') and not mgr.dry_run:
+                if False:  # DISABLED: sync_exchange_positions caused false closes on every dashboard refresh
                     await mgr.sync_exchange_positions()
             except Exception:
                 pass

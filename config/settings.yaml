@@ -1,106 +1,65 @@
-# =============================================================================
-# Crypto Trading Bot - Strategy & Runtime Configuration
-# =============================================================================
-
 bot:
-  name: "VN Edge"
-  version: "2.0.0"
-  mode: "paper"  # signal_only | paper | live | backtest | forward_test
-  operating_mode: "paper_enforced"  # paper_learning | paper_enforced | live
-  strict_mode: true  # Enforced: ML veto + regime routing active
-
+  name: VN Edge
+  version: 2.0.0
+  mode: paper
+  operating_mode: paper_enforced
+  strict_mode: true
 symbols:
-  # Tier 1: Anchors (highest liquidity)
-  - "BTC/USDT"
-  - "ETH/USDT"
-  # Tier 2: High-beta liquid
-  - "SOL/USDT"
-  - "XRP/USDT"     # NEW: $13.4M turnover, clean trends
-  # Tier 3: Mid-cap alts
-  - "LTC/USDT"     # NEW: classic crypto, clean structure
-  - "ADA/USDT"     # NEW: high volume alt, range trading
-  - "DOT/USDT"     # NEW: infra, good wick quality
-  - "TAO/USDT"     # NEW: AI narrative, strong trends
-  # Tier 4: Speculative
-  - "DOGE/USDT"
-  - "LINK/USDT"
-  # REMOVED: AVAX/USDT (too low volume on Delta India)
-
+- BTC/USDT
+- ETH/USDT
+- SOL/USDT
+- XRP/USDT
+- LTC/USDT
+- ADA/USDT
+- DOT/USDT
+- TAO/USDT
+- DOGE/USDT
+- LINK/USDT
 exchange:
-  name: "delta"            # binance | bybit | okx | delta
-  region: "india"          # "india" for Delta India (api.india.delta.exchange)
-  market_type: "futures"   # spot | futures
-  testnet: false           # Delta India doesn't have a testnet
+  name: delta
+  region: india
+  market_type: futures
+  testnet: false
   rate_limit: true
   websocket: true
   rest_fallback: true
   reconnect_attempts: 10
   reconnect_delay: 5
-
 execution:
-  # Order type for trade entries.
-  #   maker — post_only limit orders: pays maker fee (0.0236%), may miss fill if price
-  #           moves away before the order rests on the book. Best for range/structure setups.
-  #   taker — market orders: guaranteed immediate fill, pays taker fee (0.059%).
-  #           Use when speed of entry matters more than fee saving.
-  #   auto  — maker within the Scalper window (< 14m BTC / 6m others), taker outside.
-  #           Mirrors Delta's Scalper offer: free exit within window makes maker entry
-  #           the dominant choice; outside the window taker guarantees the fill.
-  order_type: "auto"
-  # If a maker (post_only) order is rejected by the exchange because it would
-  # immediately match (i.e. price moved through the limit before rest), retry once
-  # as a taker market order rather than skipping the trade entirely.
+  order_type: auto
   retry_taker_on_reject: true
-  # Maximum allowed entry slippage in basis points (paper mode: estimated from
-  # first market tick after signal; real mode: actual fill vs signal price).
-  # Trades exceeding this are force-closed immediately to prevent entering at
-  # prices beyond the theoretical edge. Set 0 to disable.
   max_entry_slip_bps: 30
-  # Minimum seconds a trade must be open before trail-lock can activate.
-  # Prevents paper-mode artifacts where the first tick shows instant profit
-  # and the trail immediately locks, producing sub-5-second exits with
-  # only 41% MFE capture. Does not affect SL exits or time stops.
   min_trail_hold_sec: 15
-
 real_trading:
-  enabled: false               # master switch — set true to activate
-  dry_run: true                # log orders without placing them
-  daily_loss_limit_usd: 25.0   # $25/day hard stop for real trades
-  max_consecutive_losses: 3    # pause after 3 consecutive real losses
-  min_margin_per_trade: 10.0   # minimum $10 margin per trade
-  max_margin_per_trade: 25.0   # maximum $25 margin per trade
-  max_open_positions: 2        # max 2 real positions simultaneously
-  balance_reserve_pct: 15      # keep 15% of balance untouchable
-  min_balance_to_trade: 30.0   # don't trade if balance < $30
-  leverage_cap: 75             # max leverage (demo: 20x-75x per confidence tier, real: will be capped separately)
-
+  enabled: true
+  dry_run: true
+  daily_loss_limit_usd: 15.0
+  max_consecutive_losses: 3
+  min_margin_per_trade: 50.0
+  max_margin_per_trade: 75.0
+  max_open_positions: 1
+  balance_reserve_pct: 15
+  min_balance_to_trade: 30.0
+  leverage_cap: 75
 ml:
-  shadow_mode: true                # keep WEAK verdicts in shadow until retrained
-  veto_skip: true                  # block SKIP-verdict trades (prob < threshold)
-                                   # Data: 50 SKIP trades averaged $0.64/trade vs $1.77 TAKE.
-                                   # Blocking SKIP saves ~$58 in fees, loses $31 PnL = net +$26.
-  # Pair-specific ML probability thresholds for the hard veto gate.
-  # Well-calibrated majors can use a slightly lower threshold;
-  # less liquid / meme pairs need higher conviction.
+  shadow_mode: true
+  veto_skip: true
   pair_thresholds:
-    BTC/USDT: 0.48
-    ETH/USDT: 0.48
-    SOL/USDT: 0.50
-    AVAX/USDT: 0.52
-    LINK/USDT: 0.52
-    DOGE/USDT: 0.55
-  default_threshold: 0.50
-
+    BTC/USDT: 0.4
+    ETH/USDT: 0.4
+    SOL/USDT: 0.42
+    AVAX/USDT: 0.45
+    LINK/USDT: 0.45
+    DOGE/USDT: 0.48
+  default_threshold: 0.42
 timeframes:
-  primary: "5m"
-  higher: "15m"
-  trigger: "1m"
-  macro: "1h"          # 1h macro trend filter (Phase 1 MTF chain)
-  session: "4h"        # 4h session-level trend direction (Phase 2 MTF chain)
-
+  primary: 5m
+  higher: 15m
+  trigger: 1m
+  macro: 1h
+  session: 4h
 strategy:
-  active: "multi_strategy"           # Runs both investment + scalp
-
+  active: multi_strategy
   indicators:
     ema:
       fast: 9
@@ -133,16 +92,14 @@ strategy:
     volume:
       spike_multiplier: 2.0
       lookback: 20
-
   filters:
-    min_confidence: 70           # raised from 55 — reject weak C-grade signals
-    min_grade: "B"               # raised from "C" — only B (65+) or better
-    chop_filter: false           # Allow signals in all regimes for scalps
+    min_confidence: 70
+    min_grade: B
+    chop_filter: false
     spread_max_pct: 0.15
-    cooldown_seconds: 180        # 3 min cooldown (was 2 — reduce whipsaw)
+    cooldown_seconds: 180
     duplicate_prevention: true
-    max_signals_per_hour: 12     # Quality > quantity (was 20)
-
+    max_signals_per_hour: 12
 risk:
   risk_per_trade_pct: 1.0
   max_position_size_usd: 100
@@ -152,26 +109,22 @@ risk:
   max_correlated_exposure_pct: 100.0
   default_leverage: 5
   max_leverage: 75
-
   stop_loss:
-    type: "atr"  # fixed | atr | structure
+    type: atr
     fixed_pct: 1.5
-    atr_multiplier: 1.8            # was 1.5 — wider SL to survive BTC noise wicks
-
+    atr_multiplier: 1.8
   take_profit:
-    tp1_rr: 1.5              # lowered from 1.8 — hit more often (61% → ~70%)
-    tp2_rr: 2.5              # lowered from 3.0 — realistic target
-    tp3_rr: 4.0              # runner target (only 15% of position)
-    tp1_close_pct: 60        # was 50 — lock in 60% at TP1 (biggest chunk)
-    tp2_close_pct: 25        # was 30 — close 25% at TP2
-    tp3_close_pct: 15        # was 20 — tiny runner, not worth risking more
-
+    tp1_rr: 1.5
+    tp2_rr: 2.5
+    tp3_rr: 4.0
+    tp1_close_pct: 60
+    tp2_close_pct: 25
+    tp3_close_pct: 15
   trailing:
     enabled: true
-    activation_rr: 0.8            # was 1.0 — start trailing earlier to protect gains
-    trail_pct: 0.4                # was 0.5 — tighter trail locks in more profit
+    activation_rr: 0.8
+    trail_pct: 0.4
     break_even_after_tp1: true
-
   safety:
     circuit_breaker_losses: 3
     circuit_breaker_cooldown: 3600
@@ -180,35 +133,30 @@ risk:
     max_api_failures: 5
     api_failure_cooldown: 300
     cooloff_after_sl: 180
-
 paper_trading:
   initial_balance: 1000
-  # SCALPER OFFER FEES (zero closing fee!)
-  maker_fee_rate: 0.0002        # Scalper maker: 0.02% (entry only, no close)
-  taker_fee_rate: 0.0005        # Scalper taker: 0.05% (entry only, no close)
-  fee_rate: 0.0005              # Default to scalper taker
-  settlement_fee_rate: 0.0006   # Delta settlement: 0.06% (unchanged)
+  maker_fee_rate: 0.0002
+  taker_fee_rate: 0.0005
+  fee_rate: 0.0005
+  settlement_fee_rate: 0.0006
   slippage_pct: 0.05
-
 grid:
   enabled: true
-  grid_pct: 0.003              # 0.3% spacing — wider for $15+/day target
-  num_levels: 15               # 15 levels — more coverage
-  position_usd: 50             # $50 base per level (DCA adjusts: $30-$100)
-  fee_rt: 0.0008               # Scalper maker: 0.02% entry + 0.00% close + 0.06% settlement = 0.08% RT
-  max_positions: 30            # max open buys per symbol
-  stale_pct: 0.025             # 2.5% — wider for 10x leverage
-  sma_period: 100              # grid center = 100-bar SMA
-  leverage: 10                 # 10x — more levels with same capital
-  smart_buys: true             # support-aware + momentum filter + DCA
-
+  grid_pct: 0.003
+  num_levels: 15
+  position_usd: 50
+  fee_rt: 0.0008
+  max_positions: 30
+  stale_pct: 0.025
+  sma_period: 100
+  leverage: 10
+  smart_buys: true
 backtest:
-  start_date: "2025-01-01"
-  end_date: "2025-12-31"
-  fee_rate: 0.00055           # SCALPER: entry 0.05% + exit 0.00% + settlement 0.06% = 0.11% RT / 2 sides
+  start_date: '2025-01-01'
+  end_date: '2025-12-31'
+  fee_rate: 0.00055
   slippage_pct: 0.05
   initial_balance: 10000
-
 alerts:
   telegram:
     enabled: true
@@ -222,102 +170,92 @@ alerts:
   console:
     enabled: true
     colored: true
-
 logging:
-  level: "INFO"
-  file_enabled: true
-  console_enabled: true
+  level: INFO
+  file_enabled: false
+  console_enabled: false
   max_file_size_mb: 50
   backup_count: 10
   log_indicator_values: false
   log_rejected_signals: true
-
 journal:
   enabled: true
   export_csv: true
   export_json: true
-
 dashboard:
   enabled: true
   refresh_interval: 5
   max_alerts_display: 50
-
-# =============================================================================
-# Indian Market Session Engine
-# =============================================================================
-# NSE open/close awareness for crypto trading. Data-driven:
-#   9:00-9:30 IST  → BLOCK (57% WR = opening auction noise)
-#   9:45-11:00 IST → BOOST +12 (89.5% WR, post-open directional flow)
-#   3:00-4:00 PM   → BOOST +15 (91% WR, close rebalance = best hour)
-#   F&O Thursdays  → +5 extra during flow hours
 indian_market:
   enabled: true
-  fno_expiry_day: "thursday"
+  fno_expiry_day: thursday
   fno_expiry_boost: 5
-  holiday_file: ""              # Optional: path to NSE holiday JSON ["2026-01-26", ...]
-  # Scanners allowed when regime=quiet is overridden during Indian flow hours
+  holiday_file: ''
   ranging_limited_scanners:
-    - "liquidity_sweep"
-    - "vwap_mean_revert"
-    - "structure_bounce"
-    - "rsi_divergence"
-  # Indian market time windows (IST decimal hours: 9.5 = 9:30, 9.75 = 9:45)
+  - liquidity_sweep
+  - vwap_mean_revert
+  - structure_bounce
+  - rsi_divergence
   windows:
-    - name: "nse_open_auction"
-      start_hour: 9.0
-      end_hour: 9.5            # 9:00-9:30 — HARD BLOCK (57% WR whipsaw)
-      confidence_adj: 0
-      block: true
-      regime_override: ""
-    - name: "nse_open_settle"
-      start_hour: 9.5
-      end_hour: 9.75           # 9:30-9:45 — settling period, penalty
-      confidence_adj: -10
-      block: false
-      regime_override: ""
-    - name: "nse_post_open"
-      start_hour: 9.75
-      end_hour: 11.0           # 9:45-11:00 — FLOW HOUR (89.5% WR)
-      confidence_adj: 12
-      block: false
-      regime_override: "ranging_limited"
-    - name: "nse_midday"
-      start_hour: 11.0
-      end_hour: 14.5           # 11:00-14:30 — no special treatment
-      confidence_adj: 0
-      block: false
-      regime_override: ""
-    - name: "nse_pre_close"
-      start_hour: 14.5
-      end_hour: 15.0           # 14:30-15:00 — pre-close positioning
-      confidence_adj: 5
-      block: false
-      regime_override: ""
-    - name: "nse_close_rebalance"
-      start_hour: 15.0
-      end_hour: 16.0           # 15:00-16:00 — FLOW HOUR (91% WR, best!)
-      confidence_adj: 15
-      block: false
-      regime_override: "ranging_limited"
-  # Configurable legacy sessions (replaces hardcoded IST blocks in scalp_strategy)
+  - name: nse_open_auction
+    start_hour: 9.0
+    end_hour: 9.5
+    confidence_adj: 0
+    block: true
+    regime_override: ''
+  - name: nse_open_settle
+    start_hour: 9.5
+    end_hour: 9.75
+    confidence_adj: -10
+    block: false
+    regime_override: ''
+  - name: nse_post_open
+    start_hour: 9.75
+    end_hour: 11.0
+    confidence_adj: 12
+    block: false
+    regime_override: ranging_limited
+  - name: nse_midday
+    start_hour: 11.0
+    end_hour: 14.5
+    confidence_adj: 0
+    block: false
+    regime_override: ''
+  - name: nse_pre_close
+    start_hour: 14.5
+    end_hour: 15.0
+    confidence_adj: 5
+    block: false
+    regime_override: ''
+  - name: nse_close_rebalance
+    start_hour: 15.0
+    end_hour: 16.0
+    confidence_adj: 15
+    block: false
+    regime_override: ranging_limited
   sessions:
-    - name: "asia_late"
-      start_hour: 2.5
-      end_hour: 9.0
-      confidence_adj: -15
-      min_confidence: 65
-    - name: "asia_early"
-      start_hour: 9.0
-      end_hour: 13.5
-      confidence_adj: -5
-      min_confidence: 65
-    - name: "europe"
-      start_hour: 13.5
-      end_hour: 20.5
-      confidence_adj: 5
-      min_confidence: 65
-    - name: "us"
-      start_hour: 20.5
-      end_hour: 2.5            # wraps midnight
-      confidence_adj: 0
-      min_confidence: 65
+  - name: asia_late
+    start_hour: 2.5
+    end_hour: 9.0
+    confidence_adj: -15
+    min_confidence: 65
+  - name: india_morning
+    start_hour: 9.0
+    end_hour: 11.0
+    confidence_adj: -5
+    min_confidence: 65
+  - name: india_midday
+    start_hour: 11.0
+    end_hour: 13.5
+    confidence_adj: 0
+    min_confidence: 60
+  - name: europe
+    start_hour: 13.5
+    end_hour: 20.5
+    confidence_adj: 5
+    min_confidence: 65
+  - name: us
+    start_hour: 20.5
+    end_hour: 2.5
+    confidence_adj: 0
+    min_confidence: 65

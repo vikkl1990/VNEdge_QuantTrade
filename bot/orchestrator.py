@@ -1219,7 +1219,7 @@ class BotOrchestrator:
         # Dead zone filter: UTC 21-05 requires higher confidence
         import datetime as _dt
         _utc_hour = _dt.datetime.now(_dt.timezone.utc).hour
-        if _utc_hour >= 21 or _utc_hour < 5:
+        if _utc_hour >= 22 or _utc_hour < 3:  # IST 3:30AM-8:30AM (was 2:30AM-10:30AM — blocked India morning)
             _dead_zone_min_conf = 75  # require higher confidence in dead hours
             if sig_dict.get("confidence", 0) < _dead_zone_min_conf:
                 self._log.info("BLOCKED: %s — dead zone (UTC %d:00) conf=%d < %d",

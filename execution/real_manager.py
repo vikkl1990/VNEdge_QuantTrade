@@ -650,8 +650,7 @@ class RealTradingManager:
 
             # NATIVE TRAILING STOP: replace fixed SL with trail
             # Delta trails automatically -- captures the trail_profit edge
-            import time as _t2
-            _t2.sleep(1)
+            time.sleep(1)
             try:
                 close_side = "sell" if side == "buy" else "buy"
                 trail_dist = abs(fill - sl) if fill > 0 and sl > 0 else 0
@@ -862,7 +861,7 @@ class RealTradingManager:
 
         # Wait for position to settle
         import time as _time
-        _time.sleep(2)
+        time.sleep(2)
 
         # Place SL (3 retries, emergency close if all fail)
         close_side = "sell" if side == "buy" else "buy"
@@ -876,7 +875,7 @@ class RealTradingManager:
                     break
             except Exception as sl_err:
                 logger.warning("REAL ENTRY: SL attempt %d failed: %s", attempt + 1, sl_err)
-                _time.sleep(1)
+                time.sleep(1)
 
         if not sl_placed:
             logger.critical(
@@ -1101,12 +1100,13 @@ class RealTradingManager:
             self._save_state()
             self._api_failures = 0
 
+            _sl_dist_bp = abs(fill_price - sl) / fill_price * 10000 if fill_price > 0 and sl > 0 else 0
             mode_tag = "DRY RUN" if self.dry_run else "LIVE"
             logger.info(
                 "REAL ENTRY [%s]: %s %s | margin=$%.2f lev=%dx lots=%d | "
-                "SL=%.4f TP=%.4f | signal=%.4f fill=%.4f slip=%.1fbps | id=%s",
+                "SL=%.4f TP=%.4f SL_dist=%.0fbp | signal=%.4f fill=%.4f slip=%.1fbps | id=%s",
                 mode_tag, symbol, side_str, margin, leverage, lots,
-                sl, tp, entry_price, fill_price, slippage_bps, trade_id,
+                sl, tp, _sl_dist_bp, entry_price, fill_price, slippage_bps, trade_id,
             )
 
             return {
@@ -1728,6 +1728,7 @@ class RealTradingManager:
 
 
     async def reconcile_exchange_positions(self):
+        return  # DISABLED: was creating ghost import loop
         """On startup: import exchange positions not in local state.
 
         Prevents ghost positions by ensuring every exchange position
@@ -2042,18 +2043,17 @@ class RealTradingManager:
                 continue
 
             # ── [2] CHANDELIER TRAIL (from real highest/lowest) ──
-            atr = getattr(t, "entry_atr", 0)
-            # ATR sanity: convert percentage to absolute if needed
-            if atr > 0 and atr < entry * 0.001:
-                atr = entry * atr
+            atr = getattr(t, "initial_risk", 0) or getattr(t, "entry_atr", 0) or 0
             if atr > 0:
                 if regime in ("trending_up", "trending_down", "breakout"):
                     mult = config.get("chandelier_mult_trending", 2.0)
                 else:
                     mult = config.get("chandelier_mult_ranging", 1.5)
 
+                _min_dist = entry * 0.0015  # minimum 0.15% from entry
                 if is_long:
                     new_stop = t.highest_price - (atr * mult)
+                    new_stop = max(new_stop, entry - _min_dist) if new_stop < entry else new_stop  # floor
                     if new_stop > getattr(t, "chandelier_stop", 0) and new_stop > entry:
                         t.chandelier_stop = new_stop
                         if new_stop > t.stop_loss:
@@ -2065,6 +2065,10 @@ class RealTradingManager:
                                        symbol, old_sl, new_stop, t.highest_price, atr, mult)
                 else:
                     new_stop = t.lowest_price + (atr * mult)
+                    # Floor: don't tighten closer than 0.15% from entry
+                    _sl_ceil = entry + entry * 0.0015
+                    if new_stop > _sl_ceil:
+                        new_stop = _sl_ceil
                     ch_stop = getattr(t, "chandelier_stop", 0)
                     if (ch_stop == 0 or new_stop < ch_stop) and new_stop < entry:
                         t.chandelier_stop = new_stop

@@ -507,7 +507,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
 <nav class="tab-bar">
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
-  <button class="tab-btn" data-tab="latency" onclick="switchTab('latency')">Latency Arb</button>
+  <button class="tab-btn" data-tab="latency" style="display:none" onclick="switchTab('latency')" style="display:none">Latency Arb</button>
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
   <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
@@ -534,7 +534,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <div class="info-bar">
   <div class="info-group">
     <span class="info-badge learning" id="mode-badge">PAPER LEARNING</span>
-    <span style="color:var(--text-muted)">Exchange: <span id="exchange-bal" style="color:var(--yellow);font-weight:600;font-family:var(--font-mono)">$118.46</span></span>
+    <span style="color:var(--text-muted)">Exchange: <span id="exchange-bal" style="color:var(--yellow);font-weight:600;font-family:var(--font-mono)">$--</span></span>
     <span style="color:var(--text-muted)">Paper: <span id="paper-bal-mini" style="color:var(--green);font-weight:600;font-family:var(--font-mono)">$1,000.00</span></span>
   </div>
   <div class="info-group">
@@ -548,43 +548,85 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content active" id="tab-live">
 
-  <!-- Command Center -->
+  <!-- Trading Dashboard (replaces old Command Center) -->
   <div class="panel live-span-2" id="cmd-panel">
-    <div class="panel-title">Command Center</div>
-    <div class="cmd-center">
-      <div class="cmd-action WAIT" id="cmd-action">WAIT</div>
-      <div class="cmd-meta">
-        <div class="cmd-row">
-          <span class="cmd-confidence" id="cmd-confidence">--</span>
-          <span class="cmd-grade" id="cmd-grade">--</span>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+
+      <!-- Today's Performance: Paper + Real -->
+      <div style="padding:12px;background:rgba(255,255,255,.02);border-radius:8px">
+        <!-- Paper -->
+        <div style="text-align:center;margin-bottom:10px">
+          <div style="font-size:.55rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:4px">Paper Trading</div>
+          <div id="cmd-today-pnl" style="font-size:1.6rem;font-weight:900;font-family:var(--font-mono);color:var(--green)">$0.00</div>
+          <div style="display:flex;justify-content:center;gap:12px;margin-top:4px;font-size:.7rem">
+            <span>WR: <b id="cmd-today-wr" style="color:var(--cyan)">--%</b></span>
+            <span>Trades: <b id="cmd-today-trades" style="color:var(--text-secondary)">0</b></span>
+            <span>Fees: <b id="cmd-today-fees" style="color:var(--yellow)">$0</b></span>
+          </div>
         </div>
-        <div class="cmd-reason" id="cmd-reason">Connecting...</div>
-        <div class="cmd-row">
-          <span class="cmd-tag regime" id="cmd-regime">--</span>
-          <span class="cmd-tag session" id="cmd-session">--</span>
-          <span class="cmd-tag ev" id="cmd-ev">--</span>
-          <span class="cmd-tag risk" id="cmd-risk">--</span>
-        </div>
-        <div id="cmd-blockers" style="margin-top:4px"></div>
-        <!-- #2 MTF Macro Bias Badge -->
-        <div style="margin-top:6px;display:flex;align-items:center;gap:8px">
-          <span style="font-size:.6rem;color:var(--text-muted);letter-spacing:1px;text-transform:uppercase;font-weight:600">1H MACRO:</span>
-          <span id="cmd-macro-bias" class="regime-badge neutral">--</span>
-        </div>
-        <!-- #9 MTF Confirmation Chain Visual -->
-        <div class="mtf-chain" id="mtf-chain">
-          <div class="mtf-node neutral" id="mtf-1h">1H --</div>
-          <span class="mtf-arrow">&rarr;</span>
-          <div class="mtf-node neutral" id="mtf-15m">15M --</div>
-          <span class="mtf-arrow">&rarr;</span>
-          <div class="mtf-node neutral" id="mtf-5m">5M --</div>
-          <span class="mtf-arrow">&rarr;</span>
-          <div class="mtf-node neutral" id="mtf-1m">1M signal</div>
+        <!-- Divider -->
+        <div style="border-top:1px solid rgba(255,255,255,.06);margin:8px 0"></div>
+        <!-- Real -->
+        <div style="text-align:center">
+          <div style="font-size:.55rem;color:var(--red);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:4px">Real Trading</div>
+          <div id="cmd-real-pnl" style="font-size:1.4rem;font-weight:900;font-family:var(--font-mono);color:var(--text-muted)">$--</div>
+          <div style="display:flex;justify-content:center;gap:12px;margin-top:4px;font-size:.7rem">
+            <span>Bal: <b id="cmd-real-bal" style="color:var(--yellow)">$--</b></span>
+            <span>Trades: <b id="cmd-real-trades" style="color:var(--text-secondary)">0</b></span>
+            <span>Total: <b id="cmd-real-total" style="color:var(--text-muted)">$--</b></span>
+          </div>
         </div>
       </div>
+
+      <!-- Market Status + Trade Diagnostic -->
+      <div style="padding:12px;background:rgba(255,255,255,.02);border-radius:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:2px;font-weight:600">Market & Trade Status</div>
+          <select id="real-mode-select-live" onchange="setRealMode(this.value)" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:.65rem;font-family:var(--font-mono);cursor:pointer">
+            <option value="disabled">Disabled</option>
+            <option value="dry_run">Dry Run</option>
+            <option value="live">LIVE</option>
+          </select>
+        </div>
+        <!-- Market info row -->
+        <div style="display:flex;justify-content:center;gap:16px;font-size:.72rem;margin-bottom:8px">
+          <span style="color:var(--text-muted)">4H Bias: <b id="cmd-macro-bias" style="color:var(--text-secondary)">--</b></span>
+          <span style="color:var(--text-muted)">Session: <b id="cmd-session" style="color:var(--cyan)">--</b></span>
+        </div>
+        <!-- Trade Diagnostic -->
+        <div style="border-top:1px solid rgba(255,255,255,.06);padding-top:8px">
+          <div style="font-size:.55rem;color:var(--yellow);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Why No Trades?</div>
+          <div id="trade-diagnostic" style="font-size:.68rem;color:var(--text-muted);text-align:center">Analyzing...</div>
+        </div>
+        <!-- hidden elements -->
+        <span id="cmd-regime" style="display:none">--</span>
+        <span id="cmd-regime-btc" style="display:none">--</span>
+        <span id="cmd-regime-eth" style="display:none">--</span>
+        <span id="cmd-regime-sol" style="display:none">--</span>
+        <span id="cmd-regime-xrp" style="display:none">--</span>
+      </div>
+
+      <!-- Last Trade: Paper + Real -->
+      <div style="padding:12px;background:rgba(255,255,255,.02);border-radius:8px">
+        <div style="text-align:center;margin-bottom:8px">
+          <div style="font-size:.55rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:4px">Last Paper</div>
+          <div id="cmd-last-trade" style="font-size:.8rem;color:var(--text-secondary)">--</div>
+        </div>
+        <div style="border-top:1px solid rgba(255,255,255,.06);margin:6px 0"></div>
+        <div style="text-align:center">
+          <div style="font-size:.55rem;color:var(--red);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:4px">Last Real</div>
+          <div id="cmd-last-real-trade" style="font-size:.8rem;color:var(--text-secondary)">--</div>
+        </div>
+      </div>
+
     </div>
-    <div class="equity-sparkline-wrap">
-      <canvas id="equity-sparkline-canvas" height="40"></canvas>
+    <!-- Market Highlight Bar -->
+    <div style="margin-top:8px;padding:8px 12px;background:rgba(255,255,255,.02);border-radius:6px;display:flex;justify-content:space-between;align-items:center;font-size:.7rem">
+      <span style="color:var(--text-muted)">Paper: <b id="mh-paper-bal" style="color:var(--green)">$--</b></span>
+      <span style="color:var(--text-muted)">Peak: <b id="mh-peak" style="color:var(--cyan)">$--</b></span>
+      <span style="color:var(--text-muted)">DD: <b id="mh-dd" style="color:var(--red)">--%</b></span>
+      <span style="color:var(--text-muted)">PF: <b id="mh-pf" style="color:var(--yellow)">--</b></span>
+      <span style="color:var(--text-muted)">Avg R: <b id="mh-avgr" style="color:var(--text-secondary)">--</b></span>
     </div>
   </div>
 
@@ -597,85 +639,43 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <div class="live-grid">
 
-    <!-- Real Trading Status (moved from Analytics to front page) -->
-    <div class="panel live-span-2" id="real-trading-panel-live" style="border:1px solid rgba(255,59,92,.3)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:3px;font-weight:600">
-          <span style="margin-right:6px">&#x1F534;</span> Real Trading
-        </div>
-        <span id="real-mode-badge-live" class="badge" style="font-size:.65rem">DISABLED</span>
-        <select id="real-mode-select-live" onchange="setRealMode(this.value)" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.7rem;font-family:var(--font-mono);cursor:pointer">
-          <option value="disabled">Disabled</option>
-          <option value="dry_run">Dry Run</option>
-          <option value="live">LIVE</option>
-        </select>
-      </div>
-      <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Balance</div>
-          <div id="real-balance-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Daily P&L</div>
-          <div id="real-daily-pnl-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div>
-          <div id="real-total-pnl-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Open</div>
-          <div id="real-open-count-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Closed Today</div>
-          <div id="real-closed-today-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
-        </div>
-        <div style="text-align:center">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Circuit Breaker</div>
-          <div id="real-cb-status-live" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">OK</div>
-        </div>
-      </div>
-      <div id="real-positions-table-live" style="margin-top:12px;display:none">
-        <div id="real-positions-label" style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">POSITIONS</div>
-        <table style="width:100%;font-size:.72rem;border-collapse:collapse">
-          <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
-            <th style="text-align:left;padding:4px">Symbol</th><th style="text-align:left;padding:4px">Side</th>
-            <th style="text-align:right;padding:4px">Entry</th><th style="text-align:right;padding:4px">Current</th>
-            <th style="text-align:right;padding:4px">UPNL</th><th style="text-align:right;padding:4px">SL</th><th style="text-align:right;padding:4px">TP1</th>
-            <th style="text-align:right;padding:4px">Margin</th><th style="text-align:right;padding:4px">Position</th>
-            <th style="text-align:center;padding:4px">Lev</th><th style="text-align:left;padding:4px">Scanner</th>
-            <th style="text-align:center;padding:4px">ML</th><th style="text-align:right;padding:4px">Time</th>
-          </tr></thead>
-          <tbody id="real-positions-body-live"></tbody>
-        </table>
-      </div>
-    </div>
 
-    <!-- Active Trades with Paper/Real tabs (#10) -->
+
+    <!-- Active Trades: Paper + Real side by side -->
     <div class="panel live-span-2">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-        <div class="panel-title" style="margin-bottom:0">Active Trades <span class="badge" id="active-trade-count"></span></div>
-        <div class="trade-tab-bar">
-          <button class="trade-tab-btn active" id="atab-paper" onclick="switchActiveTrades('paper')">PAPER</button>
-          <button class="trade-tab-btn" id="atab-real" onclick="switchActiveTrades('real')">REAL</button>
+      <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <!-- Paper trades -->
+        <div style="border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:8px">
+          <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Paper Trades</div>
+          <div id="active-trades-paper">
+            <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:6px">
+              <div class="empty" style="font-size:.7rem">No paper trades</div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div id="active-trades-paper">
-        <div id="active-trades-cards" style="display:flex;flex-direction:column;gap:8px">
-          <div class="empty">No active trades</div>
-        </div>
-      </div>
-      <div id="active-trades-real" style="display:none">
-        <div id="active-trades-real-cards" style="display:flex;flex-direction:column;gap:8px">
-          <div class="empty">No real positions</div>
+        <!-- Real trades -->
+        <div style="border:1px solid rgba(255,59,92,.15);border-radius:8px;padding:8px">
+          <div style="font-size:.6rem;color:var(--red);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Real Trades</div>
+          <div id="active-trades-real">
+            <div id="active-trades-real-cards" style="display:flex;flex-direction:column;gap:6px">
+              <div class="empty" style="font-size:.7rem">No real trades</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Signal Feed -->
-    <div class="panel">
-      <div class="panel-title">Signal Feed <span class="badge">last 10</span></div>
+    <!-- Signal Feed + Funnel (merged) -->
+    <div class="panel live-span-2">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div class="panel-title" style="margin:0">Signal Feed <span class="badge">last 10</span></div>
+        <div style="display:flex;gap:14px;font-size:.7rem;font-family:var(--font-mono)">
+          <span style="color:var(--text-muted)">Scanned: <b id="fn-scanned2" style="color:var(--cyan)">0</b></span>
+          <span style="color:var(--text-muted)">Passed: <b id="fn-strong2" style="color:var(--green)">0</b></span>
+          <span style="color:var(--text-muted)">Blocked: <b id="fn-blocked2" style="color:var(--red)">0</b></span>
+        </div>
+      </div>
       <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">
         <button class="filter-btn active" onclick="filterSignals('ALL')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:var(--accent-dim);color:var(--accent);border-radius:3px;cursor:pointer">ALL</button>
         <button class="filter-btn" onclick="filterSignals('BTC')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">BTC</button>
@@ -683,40 +683,29 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <button class="filter-btn" onclick="filterSignals('SOL')" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">SOL</button>
       </div>
       <div id="signal-feed"><div class="empty">No signals</div></div>
-    </div>
-
-    <!-- Signal Funnel -->
-    <div class="panel">
-      <div class="panel-title">Opportunity Funnel</div>
-      <div class="funnel" id="funnel">
-        <div class="funnel-step" style="background:rgba(99,148,255,.05)"><div class="f-val" style="color:var(--accent)" id="fn-scanned">0</div><div class="f-lbl">Scanned</div></div>
-        <div class="funnel-step" style="background:var(--green-dim)"><div class="f-val" style="color:var(--green)" id="fn-strong">0</div><div class="f-lbl">Strong</div></div>
-        <div class="funnel-step" style="background:rgba(34,197,94,.06)"><div class="f-val" style="color:var(--green)" id="fn-valid">0</div><div class="f-lbl">Valid</div></div>
-        <div class="funnel-step" style="background:var(--yellow-dim)"><div class="f-val" style="color:var(--yellow)" id="fn-weak">0</div><div class="f-lbl">Weak</div></div>
-        <div class="funnel-step" style="background:var(--red-dim)"><div class="f-val" style="color:var(--red)" id="fn-blocked">0</div><div class="f-lbl">Blocked</div></div>
+      <div style="margin-top:6px;padding:6px 0;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-size:.58rem;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:600">Blockers:</span>
+        <span id="veto-stats-body2" style="font-size:.65rem;color:var(--text-muted)">--</span>
       </div>
     </div>
 
-    <!-- Veto Stats -->
-    <div class="panel panel-accent-red">
-      <div class="panel-title">Veto Stats <span class="badge">signal blockers</span></div>
-      <div id="veto-stats-body">
-        <div class="empty">Loading veto data...</div>
-      </div>
-    </div>
 
-    <!-- Recent Alerts -->
+
+
+
+
+
+    <!-- Recent Closed Trades with Paper/Real toggle -->
     <div class="panel live-span-2">
-      <div class="panel-title">Recent Alerts</div>
-      <div id="alerts-list" style="max-height:240px;overflow-y:auto">
-        <div class="empty">No alerts</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">Recent Closed Trades <span class="badge">last 10</span></div>
+        <div style="display:flex;gap:4px">
+          <button id="rc-tab-paper" onclick="switchRecentClosed('paper')" style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.15);color:var(--cyan);border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
+          <button id="rc-tab-real" onclick="switchRecentClosed('real')" style="padding:3px 10px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">REAL</button>
+        </div>
       </div>
-    </div>
-
-    <!-- Recent Closed Trades -->
-    <div class="panel live-span-2">
-      <div class="panel-title">Recent Closed Trades <span class="badge">last 10</span></div>
-      <div class="tbl-wrap" style="max-height:320px;overflow-y:auto">
+      <!-- Paper closed -->
+      <div id="rc-paper-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto">
         <table>
           <thead>
             <tr>
@@ -732,6 +721,27 @@ textarea.contact-input{min-height:100px;resize:vertical}
           </thead>
           <tbody id="recent-closed-body">
             <tr><td colspan="8" class="empty">No closed trades</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Real closed -->
+      <div id="rc-real-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto;display:none">
+        <table>
+          <thead>
+            <tr style="color:var(--text-muted)">
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Slip</th>
+              <th>PnL $</th>
+              <th>Margin</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="recent-real-closed-body">
+            <tr><td colspan="9" class="empty">No real trades</td></tr>
           </tbody>
         </table>
       </div>
@@ -840,307 +850,222 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-analytics">
 
-  <!-- Mode Banner -->
-  <div style="background:var(--accent-dim);border:1px solid rgba(99,148,255,.1);border-radius:var(--radius);padding:8px 16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
-    <span style="color:var(--accent);font-weight:700;font-size:.82rem" id="analytics-mode">PAPER LEARNING MODE</span>
-    <span style="color:var(--text-muted);font-size:.73rem;font-family:var(--font-mono)" id="analytics-trades-count">-- trades</span>
-  </div>
-
-  <!-- Paper Balance -->
-  <div class="panel panel-accent-blue" style="text-align:center;padding:22px">
-    <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:3px;font-weight:600">Paper Trading Account</div>
-    <div id="paper-balance-hero" style="font-size:2.6rem;font-weight:900;margin:8px 0;font-family:var(--font-mono)">$1,000.00</div>
-    <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.82rem">
-      <span>Net P&L: <b id="paper-net-pnl" class="green">+$0.00</b></span>
-      <span>Return: <b id="paper-return-pct" class="green">+0.00%</b></span>
-      <span>Drawdown: <b id="paper-dd" class="red">0.0%</b></span>
-      <span>Peak: <b id="paper-peak">$1,000.00</b></span>
-      <span>Fees: <b id="paper-fees" style="color:var(--yellow)">$0.00</b></span>
-      <span>Trades/Day: <b id="paper-tpd" style="color:var(--text-secondary)">--</b></span>
+  <!-- ═══ SECTION 1: Paper + Real Portfolio Overview ═══ -->
+  <div style="display:grid;grid-template-columns:3fr 2fr;gap:12px;margin-bottom:12px">
+    <!-- Paper Account -->
+    <div style="border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:14px">
+      <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:10px;text-align:center">Paper Account</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px">
+        <div style="text-align:center">
+          <div id="an-balance" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--green)">$--</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Balance</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-return" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--green)">+0%</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Return</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-wr" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--cyan)">--%</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Win Rate</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-pf" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--yellow)">--</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">PF</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-trades" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--text-secondary)">0</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Trades</div>
+        </div>
+      </div>
+    </div>
+    <!-- Real Account -->
+    <div style="border:1px solid rgba(255,59,92,.15);border-radius:8px;padding:14px">
+      <div style="font-size:.6rem;color:var(--red);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:10px;text-align:center">Real Account (Delta Exchange)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="text-align:center">
+          <div id="an-real-bal" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--yellow)">$--</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Balance</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-real-pnl" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono)">$--</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Total PnL</div>
+        </div>
+        <div style="text-align:center">
+          <div id="an-real-trades" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--text-secondary)">0</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">Trades</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- Real Trading Status -->
-  <div class="panel" id="real-trading-panel" style="border:1px solid rgba(255,59,92,.3)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:3px;font-weight:600">
-        <span style="margin-right:6px">&#x1F534;</span> Real Trading
-      </div>
-      <span id="real-mode-badge" class="badge" style="font-size:.65rem">DISABLED</span>
-      <select id="real-mode-select" onchange="setRealMode(this.value)" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.7rem;font-family:var(--font-mono);cursor:pointer">
-        <option value="disabled">Disabled</option>
-        <option value="dry_run">Dry Run</option>
-        <option value="live">LIVE</option>
-      </select>
-    </div>
-    <div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;font-size:.85rem">
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Balance</div>
-        <div id="real-balance" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Daily P&L</div>
-        <div id="real-daily-pnl" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Total P&L</div>
-        <div id="real-total-pnl" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">$0.00</div>
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Open</div>
-        <div id="real-open-count" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Closed Today</div>
-        <div id="real-closed-today" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono)">0</div>
-      </div>
-      <div style="text-align:center">
-        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">Circuit Breaker</div>
-        <div id="real-cb-status" style="font-size:1.4rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">OK</div>
-      </div>
-    </div>
-    <!-- Dry Run Open Positions -->
-    <div id="real-positions-table" style="margin-top:12px;display:none">
-      <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">REAL POSITIONS</div>
-      <table style="width:100%;font-size:.72rem;border-collapse:collapse">
-        <thead><tr style="color:var(--text-muted);border-bottom:1px solid var(--border)">
-          <th style="text-align:left;padding:4px">Symbol</th>
-          <th style="text-align:left;padding:4px">Side</th>
-          <th style="text-align:right;padding:4px">Entry</th>
-          <th style="text-align:right;padding:4px">Current</th>
-          <th style="text-align:right;padding:4px">UPNL</th>
-          <th style="text-align:right;padding:4px">SL</th>
-          <th style="text-align:right;padding:4px">TP1</th>
-          <th style="text-align:right;padding:4px">Margin</th>
-          <th style="text-align:right;padding:4px">Position</th>
-          <th style="text-align:right;padding:4px">Contracts</th>
-          <th style="text-align:center;padding:4px">Lev</th>
-          <th style="text-align:left;padding:4px">Scanner</th>
-          <th style="text-align:center;padding:4px">ML</th>
-          <th style="text-align:left;padding:4px">Regime</th>
-          <th style="text-align:right;padding:4px">Time</th>
-        </tr></thead>
-        <tbody id="real-positions-body"></tbody>
-      </table>
-    </div>
+  <!-- Analytics context label -->
+  <div style="text-align:center;font-size:.6rem;color:var(--text-muted);margin-bottom:8px;padding:6px;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.1);border-radius:6px">
+    <span style="color:var(--cyan);font-weight:600">PAPER ANALYTICS</span> — Equity curve, metrics & charts based on paper trades (1000 trades, $1K start) &nbsp;|&nbsp; Real performance shown in overview above
   </div>
 
-  <!-- Equity Curve -->
-  <div class="panel">
+  <!-- ═══ SECTION 2: Equity Curve ═══ -->
+  <div class="panel" style="margin-bottom:12px">
     <div class="panel-title">Equity Curve & Drawdown</div>
     <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
   </div>
 
-  <!-- R-Metrics -->
-  <div class="grid-4" id="r-metrics-grid">
-    <div class="stat-card"><div class="stat-value" id="rm-total-trades">--</div><div class="stat-label">Total Trades</div></div>
-    <div class="stat-card"><div class="stat-value" id="rm-win-rate">--</div><div class="stat-label">Win Rate</div></div>
-    <div class="stat-card"><div class="stat-value blue" id="rm-pf">--</div><div class="stat-label">Edge Ratio</div></div>
+  <!-- ═══ SECTION 3: Key Metrics (2 rows of 4) ═══ -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
     <div class="stat-card"><div class="stat-value green" id="rm-expectancy">--</div><div class="stat-label">Expectancy (R)</div></div>
-    <div class="stat-card"><div class="stat-value green" id="rm-total-r">--</div><div class="stat-label">Total R</div></div>
     <div class="stat-card"><div class="stat-value blue" id="rm-avg-r">--</div><div class="stat-label">Avg R/Trade</div></div>
-    <div class="stat-card"><div class="stat-value green" id="rm-avg-win">--</div><div class="stat-label">Avg Win R</div></div>
-    <div class="stat-card"><div class="stat-value red" id="rm-avg-loss">--</div><div class="stat-label">Avg Loss R</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rm-avg-win">--</div><div class="stat-label">Avg Win (R)</div></div>
+    <div class="stat-card"><div class="stat-value red" id="rm-avg-loss">--</div><div class="stat-label">Avg Loss (R)</div></div>
+    <div class="stat-card"><div class="stat-value green" id="rk-sharpe">--</div><div class="stat-label">Sharpe Ratio</div></div>
+    <div class="stat-card"><div class="stat-value red" id="rk-maxdd">--</div><div class="stat-label">Max Drawdown</div></div>
     <div class="stat-card"><div class="stat-value" id="rm-payoff">--</div><div class="stat-label">Payoff Ratio</div></div>
-    <div class="stat-card"><div class="stat-value green" id="rm-best-r">--</div><div class="stat-label">Best Trade (R)</div></div>
-    <div class="stat-card"><div class="stat-value red" id="rm-worst-r">--</div><div class="stat-label">Worst Trade (R)</div></div>
-    <div class="stat-card"><div class="stat-value" id="rm-r-std">--</div><div class="stat-label">R Std Dev</div></div>
+    <div class="stat-card"><div class="stat-value blue" id="rm-pf">--</div><div class="stat-label">Edge Ratio</div></div>
   </div>
 
-  <!-- Risk Metrics Panel -->
-  <div class="panel">
-    <div class="panel-title">Risk Analytics <span class="badge">Advanced</span></div>
-    <div class="grid-4" id="risk-metrics-grid">
-      <div class="stat-card"><div class="stat-value green" id="rk-sharpe">--</div><div class="stat-label">Sharpe Ratio</div></div>
-      <div class="stat-card"><div class="stat-value green" id="rk-sortino">--</div><div class="stat-label">Sortino Ratio</div></div>
-      <div class="stat-card"><div class="stat-value blue" id="rk-calmar">--</div><div class="stat-label">Calmar Ratio</div></div>
-      <div class="stat-card"><div class="stat-value red" id="rk-maxdd">--</div><div class="stat-label">Max Drawdown</div></div>
-      <div class="stat-card"><div class="stat-value" id="rk-dd-dur">--</div><div class="stat-label">Max DD Duration</div></div>
-      <div class="stat-card"><div class="stat-value green" id="rk-win-streak">--</div><div class="stat-label">Max Win Streak</div></div>
-      <div class="stat-card"><div class="stat-value red" id="rk-loss-streak">--</div><div class="stat-label">Max Loss Streak</div></div>
-      <div class="stat-card"><div class="stat-value blue" id="rk-pf">--</div><div class="stat-label">Profit Factor</div></div>
-    </div>
-  </div>
-
-  <!-- Session Performance Heatmap -->
-  <div class="panel">
-    <div class="panel-title">Session Performance Heatmap <span class="badge">By UTC Hour</span></div>
-    <div id="session-heatmap" style="display:grid;grid-template-columns:repeat(24,1fr);gap:2px;margin-top:8px">
-    </div>
-    <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:.6rem;color:var(--text-muted)">
-      <span>00:00 UTC</span><span>06:00 — Asia</span><span>12:00 — London</span><span>18:00 — NY</span><span>23:00</span>
-    </div>
-  </div>
-
-  <!-- Execution Quality Panel -->
-  <div class="panel" style="border-color:rgba(0,212,255,.15)">
-    <div class="panel-title">Execution Quality <span class="badge" style="background:rgba(0,212,255,.15);color:var(--cyan)">Slippage Tracking</span></div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:8px">
-      <div class="stat-card"><div class="stat-value" id="eq-avg-slip" style="color:var(--green)">--</div><div class="stat-label">Avg Slip (ticks)</div></div>
-      <div class="stat-card"><div class="stat-value" id="eq-avg-bps" style="color:var(--green)">--</div><div class="stat-label">Avg Slip (bps)</div></div>
-      <div class="stat-card"><div class="stat-value" id="eq-drag-r" style="color:var(--yellow)">--</div><div class="stat-label">Slip Drag (R) 7d</div></div>
-      <div class="stat-card"><div class="stat-value" id="eq-max-slip" style="color:var(--red)">--</div><div class="stat-label">Max Slip (ticks)</div></div>
-      <div class="stat-card"><div class="stat-value" id="eq-fill-rate">--</div><div class="stat-label">Fill Rate</div></div>
-    </div>
-    <div style="margin-top:8px;font-size:.7rem;color:var(--text-muted)">Paper mode: slippage = 0 (simulated fills at signal price). Real mode: measures actual exchange fill vs signal price.</div>
-  </div>
-
-  <!-- Risk-Return by Scanner -->
-  <div class="panel" style="border-color:rgba(0,170,255,.15)">
-    <div class="panel-title">Risk-Return by Scanner <span class="badge" style="background:rgba(0,170,255,.15);color:#00aaff">Scatter Data</span></div>
-    <div style="overflow-x:auto;margin-top:8px">
-      <table style="width:100%;border-collapse:collapse;font-size:.72rem">
-        <thead>
-          <tr style="border-bottom:1px solid rgba(255,255,255,.06)">
-            <th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Scanner</th>
-            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">Type</th>
-            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">Trades</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Avg Return</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Volatility</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Sharpe</th>
-            <th style="text-align:center;padding:6px 4px;color:var(--text-muted)">WR</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Max DD</th>
-            <th style="text-align:right;padding:6px 4px;color:var(--text-muted)">Total PnL</th>
-          </tr>
-        </thead>
-        <tbody id="risk-return-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Exit Quality + AI Insights -->
-  <div class="grid-2">
+  <!-- ═══ SECTION 4: Daily P&L + Session Heatmap (side by side) ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
     <div class="panel">
-      <div class="panel-title">Exit Quality (MAE / MFE)</div>
-      <div class="grid-3" id="exit-quality">
-        <div class="stat-card"><div class="stat-value red" id="eq-mae">--</div><div class="stat-label">Avg MAE</div></div>
-        <div class="stat-card"><div class="stat-value green" id="eq-mfe">--</div><div class="stat-label">Avg MFE</div></div>
-        <div class="stat-card"><div class="stat-value blue" id="eq-efficiency">--</div><div class="stat-label">Exit Efficiency</div></div>
+      <div class="panel-title">Daily P&L</div>
+      <div class="chart-wrap" style="height:140px"><canvas id="daily-pnl-chart"></canvas></div>
+      <!-- Calendar Heatmap -->
+      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:6px">P&L Calendar</div>
+        <div id="pnl-calendar" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;font-size:.6rem"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:.5rem;color:var(--text-muted)">
+          <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center;margin-top:6px;font-size:.5rem">
+          <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,59,92,.6);border-radius:2px;vertical-align:middle"></span> Loss</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,255,255,.06);border-radius:2px;vertical-align:middle"></span> No trade</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:rgba(0,255,157,.3);border-radius:2px;vertical-align:middle"></span> Small win</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:rgba(0,255,157,.8);border-radius:2px;vertical-align:middle"></span> Big win</span>
+        </div>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-title">AI Learning Adjustments</div>
-      <div id="ai-insights"><div class="empty">No AI data</div></div>
+      <div class="panel-title">Best Trading Sessions <span class="badge">IST</span></div>
+      <div id="session-summary" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px">
+        <div style="text-align:center;padding:10px;border-radius:6px;background:rgba(255,255,255,.03)">
+          <div style="font-size:.6rem;color:var(--text-muted);margin-bottom:4px">ASIA EARLY</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">5:30-9:30 IST</div>
+          <div id="sess-asia-early" style="font-size:1.1rem;font-weight:800;font-family:var(--font-mono);margin-top:4px">--%</div>
+          <div id="sess-asia-early-n" style="font-size:.6rem;color:var(--text-muted)">0 trades</div>
+        </div>
+        <div style="text-align:center;padding:10px;border-radius:6px;background:rgba(255,255,255,.03)">
+          <div style="font-size:.6rem;color:var(--text-muted);margin-bottom:4px">INDIA</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">9:30-14:00 IST</div>
+          <div id="sess-india" style="font-size:1.1rem;font-weight:800;font-family:var(--font-mono);margin-top:4px">--%</div>
+          <div id="sess-india-n" style="font-size:.6rem;color:var(--text-muted)">0 trades</div>
+        </div>
+        <div style="text-align:center;padding:10px;border-radius:6px;background:rgba(255,255,255,.03)">
+          <div style="font-size:.6rem;color:var(--text-muted);margin-bottom:4px">EUROPE</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">14:00-19:30 IST</div>
+          <div id="sess-europe" style="font-size:1.1rem;font-weight:800;font-family:var(--font-mono);margin-top:4px">--%</div>
+          <div id="sess-europe-n" style="font-size:.6rem;color:var(--text-muted)">0 trades</div>
+        </div>
+        <div style="text-align:center;padding:10px;border-radius:6px;background:rgba(255,255,255,.03)">
+          <div style="font-size:.6rem;color:var(--text-muted);margin-bottom:4px">US</div>
+          <div style="font-size:.55rem;color:var(--text-muted)">19:30-5:30 IST</div>
+          <div id="sess-us" style="font-size:1.1rem;font-weight:800;font-family:var(--font-mono);margin-top:4px">--%</div>
+          <div id="sess-us-n" style="font-size:.6rem;color:var(--text-muted)">0 trades</div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <!-- #1 Per-Scanner Performance Panel -->
-  <div class="panel">
-    <div class="panel-title">Per-Scanner Performance <span class="badge">grouped by scanner</span></div>
-    <div class="tbl-wrap">
-      <table>
-        <thead>
-          <tr><th>Scanner</th><th>Trades</th><th>WR%</th><th>PnL $</th><th>Avg R</th><th>Best R</th><th>Worst R</th></tr>
-        </thead>
-        <tbody id="per-scanner-perf-body">
-          <tr><td colspan="7" class="empty">Loading...</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- #3 Scanner Diversity Bar -->
-  <div class="panel">
-    <div class="panel-title">Scanner Diversity <span class="badge">trade distribution</span></div>
-    <div class="scanner-diversity-bar" id="scanner-diversity-bar"></div>
-    <div class="scanner-diversity-legend" id="scanner-diversity-legend"></div>
-  </div>
-
-  <!-- #13 Daily P&L Bar Chart -->
-  <div class="panel">
-    <div class="panel-title">Daily P&L Chart <span class="badge">bar chart</span></div>
-    <div class="chart-wrap" style="height:140px"><canvas id="daily-pnl-chart"></canvas></div>
-  </div>
-
-  <!-- #8 Fee Impact + #5 ML Accuracy -->
-  <div class="grid-2">
+  <!-- ═══ SECTION 5: Scanner Performance + Fee Impact (side by side) ═══ -->
+  <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:12px">
     <div class="panel">
-      <div class="panel-title">Fee Impact <span class="badge">cost analysis</span></div>
-      <div class="fee-impact-grid" id="fee-impact-grid">
-        <div class="stat-card"><div class="stat-value yellow" id="fi-total-fees">--</div><div class="stat-label">Total Fees</div></div>
+      <div class="panel-title">Scanner Performance</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Scanner</th><th>Trades</th><th>WR%</th><th>PnL $</th><th>Avg R</th><th>Avg MFE</th><th>% of Total</th>
+          </tr></thead>
+          <tbody id="per-scanner-perf-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+      <!-- Scanner Diversity -->
+      <div class="scanner-diversity-bar" id="scanner-diversity-bar" style="margin-top:8px"></div>
+      <div class="scanner-diversity-legend" id="scanner-diversity-legend"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Cost Analysis</div>
+      <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+        <div class="stat-card"><div class="stat-value yellow" id="fi-total-fees">--</div><div class="stat-label">Total Fees Paid</div></div>
         <div class="stat-card"><div class="stat-value yellow" id="fi-fee-pct">--</div><div class="stat-label">Fee % of Gross</div></div>
-        <div class="stat-card"><div class="stat-value yellow" id="fi-avg-fee">--</div><div class="stat-label">Avg Fee/Trade</div></div>
+        <div class="stat-card"><div class="stat-value yellow" id="fi-avg-fee">--</div><div class="stat-label">Avg Fee / Trade</div></div>
+      </div>
+      <!-- Exit Quality -->
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Exit Efficiency</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div class="stat-card"><div class="stat-value red" id="eq-mae" style="font-size:.9rem">--</div><div class="stat-label">Avg MAE</div></div>
+          <div class="stat-card"><div class="stat-value green" id="eq-mfe" style="font-size:.9rem">--</div><div class="stat-label">Avg MFE</div></div>
+          <div class="stat-card"><div class="stat-value blue" id="eq-efficiency" style="font-size:.9rem">--</div><div class="stat-label">Capture %</div></div>
+        </div>
+      </div>
+      <!-- ML Accuracy -->
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">ML Model</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div class="stat-card">
+            <div style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--green)" id="ml-take-wr">--</div>
+            <div style="font-size:.55rem;color:var(--text-muted)">TAKE WR</div>
+            <div style="font-size:.6rem;color:var(--text-muted)" id="ml-take-count">0 trades</div>
+          </div>
+          <div class="stat-card">
+            <div style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--red)" id="ml-weak-wr">--</div>
+            <div style="font-size:.55rem;color:var(--text-muted)">WEAK WR</div>
+            <div style="font-size:.6rem;color:var(--text-muted)" id="ml-weak-count">0 trades</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 6: Paper vs Real + Execution Quality ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+    <div class="panel">
+      <div class="panel-title">Paper vs Real</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Paper</div>
+          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono)" id="corr-paper-wr">--%</div>
+          <div style="font-size:.6rem;color:var(--text-muted)">Win Rate</div>
+          <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);margin-top:6px" id="corr-paper-r">--R</div>
+          <div style="font-size:.6rem;color:var(--text-muted)">Avg R</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.6rem;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Real</div>
+          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono)" id="corr-real-wr">--%</div>
+          <div style="font-size:.6rem;color:var(--text-muted)">Win Rate</div>
+          <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);margin-top:6px" id="corr-real-r">--R</div>
+          <div style="font-size:.6rem;color:var(--text-muted)">Avg R</div>
+        </div>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-title">ML Accuracy Tracker <span class="badge">TAKE vs WEAK</span></div>
-      <div class="ml-accuracy-wrap" id="ml-accuracy-wrap">
-        <div class="ml-accuracy-card">
-          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono);color:var(--green)" id="ml-take-wr">--</div>
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">ML TAKE WR</div>
-          <div style="font-size:.65rem;color:var(--text-muted);margin-top:2px" id="ml-take-count">0 trades</div>
-        </div>
-        <div class="ml-accuracy-card">
-          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono);color:var(--red)" id="ml-weak-wr">--</div>
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px">ML WEAK WR</div>
-          <div style="font-size:.65rem;color:var(--text-muted);margin-top:2px" id="ml-weak-count">0 trades</div>
-        </div>
+      <div class="panel-title">Execution Quality</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
+        <div class="stat-card"><div class="stat-value" id="eq-avg-slip" style="color:var(--green);font-size:.9rem">--</div><div class="stat-label">Avg Slip (bps)</div></div>
+        <div class="stat-card"><div class="stat-value" id="eq-max-slip" style="color:var(--red);font-size:.9rem">--</div><div class="stat-label">Max Slip</div></div>
+        <div class="stat-card"><div class="stat-value" id="eq-fill-rate" style="font-size:.9rem">--</div><div class="stat-label">Fill Rate</div></div>
+      </div>
+      <!-- Additional risk metrics -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
+        <div class="stat-card"><div class="stat-value green" id="rk-sortino" style="font-size:.9rem">--</div><div class="stat-label">Sortino</div></div>
+        <div class="stat-card"><div class="stat-value green" id="rk-win-streak" style="font-size:.9rem">--</div><div class="stat-label">Best Streak</div></div>
+        <div class="stat-card"><div class="stat-value red" id="rk-loss-streak" style="font-size:.9rem">--</div><div class="stat-label">Worst Streak</div></div>
       </div>
     </div>
   </div>
 
-  <!-- #12 Trade Correlation (Paper vs Real) -->
-  <div class="panel" id="trade-correlation-panel">
-    <div class="panel-title">Paper vs Real Comparison <span class="badge">correlation</span></div>
-    <div class="correlation-grid" id="trade-correlation-grid">
-      <div class="corr-card">
-        <div class="corr-label">Win Rate</div>
-        <div class="corr-values">
-          <div><div class="corr-val" style="color:var(--cyan)" id="corr-paper-wr">--</div><div style="font-size:.55rem;color:var(--text-muted)">PAPER</div></div>
-          <div><div class="corr-val" style="color:var(--red)" id="corr-real-wr">--</div><div style="font-size:.55rem;color:var(--text-muted)">REAL</div></div>
-        </div>
-      </div>
-      <div class="corr-card">
-        <div class="corr-label">Avg R</div>
-        <div class="corr-values">
-          <div><div class="corr-val" style="color:var(--cyan)" id="corr-paper-r">--</div><div style="font-size:.55rem;color:var(--text-muted)">PAPER</div></div>
-          <div><div class="corr-val" style="color:var(--red)" id="corr-real-r">--</div><div style="font-size:.55rem;color:var(--text-muted)">REAL</div></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Scanner Performance (original) -->
-  <div class="panel">
-    <div class="panel-title">Scanner Performance</div>
-    <div class="tbl-wrap">
-      <table>
-        <thead>
-          <tr><th>Scanner</th><th>Trades</th><th>WR%</th><th>PF</th><th>Expectancy</th><th>Total PnL</th><th>Status</th></tr>
-        </thead>
-        <tbody id="scanner-body">
-          <tr><td colspan="7" class="empty">No data</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Daily P&L -->
-  <div class="panel">
-    <div class="panel-title">Daily P&L</div>
-    <div class="tbl-wrap" style="max-height:300px;overflow-y:auto">
-      <table>
-        <thead><tr><th>Date</th><th>Trades</th><th>Wins</th><th>WR</th><th>Gross</th><th>Fees</th><th>Net</th></tr></thead>
-        <tbody id="daily-pnl-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Session Analysis -->
-  <div class="panel">
-    <div class="panel-title">Session Analysis</div>
-    <div class="grid-3" id="session-analysis">
-      <div class="empty">No session data</div>
-    </div>
-  </div>
-
-  <!-- Closed Trades with Paper/Real tabs -->
+  <!-- ═══ SECTION 7: Trade History ═══ -->
   <div class="panel">
     <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px">
-      <div class="panel-title" style="margin-bottom:0">Closed Trades</div>
+      <div class="panel-title" style="margin-bottom:0">Trade History</div>
       <div style="display:flex;gap:4px">
         <button id="tab-paper-closed" onclick="switchClosedTab('paper')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:var(--cyan);color:#000;border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
-        <button id="tab-demo-closed" onclick="switchClosedTab('demo')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DEMO</button>
         <button id="tab-real-closed" onclick="switchClosedTab('real')" style="padding:4px 12px;font-size:.7rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">REAL</button>
       </div>
       <span class="badge" id="closed-count-badge">last 50</span>
@@ -1162,65 +1087,210 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <tr style="color:var(--text-muted)"><th>Date</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Slip (bps)</th><th>Margin</th><th>Position</th><th>Lev</th><th>Gross $</th><th>Fees $</th><th>Net PnL $</th><th>PnL %</th><th>Scanner</th><th>Reason</th></tr>
         </thead>
         <tbody id="real-closed-body">
-          <tr><td colspan="12" class="empty">No dry run trades closed</td></tr>
+          <tr><td colspan="15" class="empty">No real trades</td></tr>
         </tbody>
       </table>
     </div>
   </div>
+
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB: CONFIG                                            -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-config">
-  <div class="panel" style="margin-bottom:16px">
-    <div class="panel-header">TRADE TYPE CONFIGURATION</div>
-    <div style="overflow-x:auto;margin-top:8px">
-      <table style="width:100%;font-size:.78rem">
-        <thead><tr>
-          <th>Parameter</th>
-          <th style="text-align:center;color:var(--cyan)">SCALP</th>
-          <th style="text-align:center;color:var(--yellow)">INTRADAY</th>
-          <th style="text-align:center;color:var(--purple)">RUNNER</th>
-        </tr></thead>
-        <tbody id="config-table"></tbody>
-      </table>
+
+  <!-- Section Header -->
+  <div style="text-align:center;margin-bottom:16px">
+    <div style="font-size:1.1rem;font-weight:800;color:var(--text);letter-spacing:2px">STRATEGY CONFIGURATION</div>
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Runtime parameters controlling entry, exit, sizing, and risk management</div>
+  </div>
+
+  <!-- ═══ ROW 1: Trade Types + Exit System ═══ -->
+  <div style="display:grid;grid-template-columns:3fr 2fr;gap:12px;margin-bottom:12px">
+    <!-- Trade Type Config -->
+    <div class="panel">
+      <div class="panel-title">Trade Type Parameters</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;font-size:.75rem;border-collapse:collapse">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:6px;color:var(--text-muted)">Parameter</th>
+            <th style="text-align:center;padding:6px;color:var(--cyan)">SCALP</th>
+            <th style="text-align:center;padding:6px;color:var(--yellow)">INTRADAY</th>
+            <th style="text-align:center;padding:6px;color:var(--purple)">RUNNER</th>
+          </tr></thead>
+          <tbody id="config-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Exit System -->
+    <div class="panel">
+      <div class="panel-title">Unified Exit System</div>
+      <div style="font-size:.72rem;margin-top:8px">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--cyan)">
+            <span style="color:var(--text-secondary)">Early Kill</span>
+            <span style="font-family:var(--font-mono);color:var(--cyan)">45-60s</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--yellow)">
+            <span style="color:var(--text-secondary)">Dead Market Kill</span>
+            <span style="font-family:var(--font-mono);color:var(--yellow)">3min</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--green)">
+            <span style="color:var(--text-secondary)">Chandelier Trail</span>
+            <span style="font-family:var(--font-mono);color:var(--green)">ATR-based</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--orange)">
+            <span style="color:var(--text-secondary)">Breakeven Lock</span>
+            <span style="font-family:var(--font-mono);color:var(--orange)">0.15R MFE</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--red)">
+            <span style="color:var(--text-secondary)">Smart Max Age</span>
+            <span style="font-family:var(--font-mono);color:var(--red)">15/20min/8hr</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--purple)">
+            <span style="color:var(--text-secondary)">Hard Cap</span>
+            <span style="font-family:var(--font-mono);color:var(--purple)">2x max_age</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="grid-2" style="margin-bottom:16px">
+  <!-- ═══ ROW 2: Scanners + Risk ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+    <!-- Scanner Config -->
     <div class="panel">
-      <div class="panel-header">SCANNER SIZE TIERS</div>
-      <table style="width:100%;font-size:.78rem;margin-top:8px">
-        <thead><tr><th>Scanner</th><th style="text-align:center">Size Mult</th><th style="text-align:center">Status</th></tr></thead>
+      <div class="panel-title">Scanner Configuration</div>
+      <table style="width:100%;font-size:.75rem;margin-top:6px;border-collapse:collapse">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:5px;color:var(--text-muted)">Scanner</th>
+          <th style="text-align:center;padding:5px;color:var(--text-muted)">Min Conf</th>
+          <th style="text-align:center;padding:5px;color:var(--text-muted)">Size</th>
+          <th style="text-align:center;padding:5px;color:var(--text-muted)">Status</th>
+        </tr></thead>
         <tbody id="scanner-tiers-table"></tbody>
       </table>
     </div>
+
+    <!-- Risk + Safety -->
     <div class="panel">
-      <div class="panel-header">RISK PARAMETERS</div>
-      <div id="risk-params" style="font-size:.78rem;margin-top:8px"></div>
+      <div class="panel-title">Risk & Safety Gates</div>
+      <div id="risk-params" style="font-size:.75rem;margin-top:6px"></div>
+      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
+        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Active Protections</div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:.72rem">
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Fee Viability Filter</span>
+            <span style="color:var(--green)">3x fees min</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Grade Gate</span>
+            <span style="color:var(--green)">A+, A, B only</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Min Confidence</span>
+            <span style="color:var(--green)">45+</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Circuit Breaker</span>
+            <span style="color:var(--green)">$15/day, 3 consec</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Orphan Auto-Close</span>
+            <span style="color:var(--green)">Enabled</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Session Bias Veto</span>
+            <span style="color:var(--green)">4H counter-trade block</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>Stochastic Filter</span>
+            <span style="color:var(--green)">OB/OS block</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(0,255,157,.04);border-radius:4px">
+            <span>OBV Flow Veto</span>
+            <span style="color:var(--green)">Anti-distribution</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="panel" style="margin-bottom:16px">
-    <div class="panel-header">TRADE TYPE PERFORMANCE</div>
-    <div style="overflow-x:auto;margin-top:8px">
-      <table style="width:100%;font-size:.78rem">
-        <thead><tr>
-          <th>Trade Type</th><th style="text-align:right">Trades</th><th style="text-align:right">WR%</th>
-          <th style="text-align:right">Net PnL</th><th style="text-align:right">Avg R</th>
-          <th style="text-align:right">Avg Duration</th><th style="text-align:right">Trail%</th>
-          <th style="text-align:right">Timeout%</th><th style="text-align:right">SL%</th>
-        </tr></thead>
-        <tbody id="tradetype-perf-table"></tbody>
-      </table>
+  <!-- ═══ ROW 3: Trade Type Performance + Execution Config ═══ -->
+  <div style="display:grid;grid-template-columns:3fr 2fr;gap:12px;margin-bottom:12px">
+    <!-- Trade Type Performance -->
+    <div class="panel">
+      <div class="panel-title">Trade Type Performance</div>
+      <div style="overflow-x:auto;margin-top:6px">
+        <table style="width:100%;font-size:.75rem;border-collapse:collapse">
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:5px">Type</th>
+            <th style="text-align:right;padding:5px">Trades</th>
+            <th style="text-align:right;padding:5px">WR%</th>
+            <th style="text-align:right;padding:5px">PnL</th>
+            <th style="text-align:right;padding:5px">Avg R</th>
+            <th style="text-align:right;padding:5px">Trail%</th>
+            <th style="text-align:right;padding:5px">Timeout%</th>
+            <th style="text-align:right;padding:5px">SL%</th>
+          </tr></thead>
+          <tbody id="tradetype-perf-table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Execution Config -->
+    <div class="panel">
+      <div class="panel-title">Execution Engine</div>
+      <div style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;margin-top:6px">
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Entry Mode</span>
+          <span style="font-weight:600;color:var(--cyan)">Maker-First + Taker (Grade A)</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Maker Timeout</span>
+          <span style="font-weight:600">5 seconds</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Max Daily Trades</span>
+          <span style="font-weight:600">15</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Margin Range</span>
+          <span style="font-weight:600">$15 - $50</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Leverage Cap</span>
+          <span style="font-weight:600">75x</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">ML Model</span>
+          <span style="font-weight:600;color:var(--green)">LightGBM + Triple Barrier</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Regime Detector</span>
+          <span style="font-weight:600">Advanced (ADX+ATR+BB)</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Timeframes</span>
+          <span style="font-weight:600">1m 5m 15m 1h 4h</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Active Pairs</span>
+          <span style="font-weight:600">BTC ETH SOL XRP</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.03);border-radius:4px">
+          <span style="color:var(--text-muted)">Reconciliation</span>
+          <span style="font-weight:600;color:var(--green)">Every 5min + Auto-Close</span>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-header">VETO & SAFETY GATES</div>
-    <div id="veto-config" style="font-size:.78rem;margin-top:8px"></div>
-  </div>
+  <!-- Veto Config (hidden, populated by JS) -->
+  <div id="veto-config" style="display:none"></div>
+
 </div>
 
 <!-- TAB 3: SYSTEM                                          -->
@@ -2101,6 +2171,7 @@ async function setRealMode(mode) {
         const r = await fetch("/api/real/toggle", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
             body: JSON.stringify({enabled, dry_run})
         });
         const d = await r.json();
@@ -2310,11 +2381,11 @@ async function refreshAgents() {
 // ══════════════════════════════════════════════════════════
 // TAB 1: LIVE TRADING REFRESH
 // ══════════════════════════════════════════════════════════
-async function refreshLive() {
-    const [status, decision, active, signals, funnel, alerts, closed, realStatus] = await Promise.all([
+async function refreshLive() { window._refreshLiveActive = true; _refreshLiveInner(); } function _refreshLiveInner() {
+    const [status, decision, active, signals, funnel, alerts, closed, realStatus, trkStats] = await Promise.all([
         api("/api/status"), api("/api/decision"), api("/api/tracker/active"),
         api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts"),
-        api("/api/tracker/closed"), api("/api/real/status")
+        api("/api/tracker/closed"), api("/api/real/status"), api("/api/tracker/stats")
     ]);
 
     // Real Trading Panel — update BOTH analytics and live tab versions
@@ -2352,6 +2423,8 @@ async function refreshLive() {
         // Update both panel instances (analytics + live tab)
         for (const suffix of ["", "-live"]) {
             const sel = document.getElementById("real-mode-select" + suffix);
+            const selLive2 = document.getElementById("real-mode-select-live");
+            if (selLive2) selLive2.value = modeVal;
             if (sel) sel.value = modeVal;
             const badge = document.getElementById("real-mode-badge" + suffix);
             if (badge) { badge.textContent = modeLabel; badge.style.color = modeColor; badge.style.borderColor = modeColor; }
@@ -2402,20 +2475,24 @@ async function refreshLive() {
     }
     if (realStatus) {
         const rp = document.getElementById("real-trading-panel");
+        if (!rp) return; // GUARD: element may not exist
         {
             const mode = realStatus.mode || "DISABLED";
             const badge = document.getElementById("real-mode-badge");
+            if (!badge) return; // GUARD: element may not exist
             badge.textContent = mode;
             badge.style.background = mode === "LIVE" ? "var(--red)" : mode === "DRY RUN" ? "var(--cyan)" : "var(--text-muted)";
             badge.style.color = mode === "LIVE" ? "#fff" : "#000";
             const bal = realStatus.balance || 0;
-            document.getElementById("real-balance").textContent = "$" + bal.toFixed(2);
+            (document.getElementById("real-balance") || {textContent:"",innerHTML:"",style:{},classList:{add:()=>{},remove:()=>{}},value:""}).textContent = "$" + bal.toFixed(2);
             const dp = realStatus.circuit_breaker ? realStatus.circuit_breaker.daily_pnl : 0;
             const dpEl = document.getElementById("real-daily-pnl");
+            if (!dpEl) return; // GUARD: element may not exist
             dpEl.textContent = (dp >= 0 ? "+$" : "-$") + Math.abs(dp).toFixed(2);
             dpEl.style.color = dp >= 0 ? "var(--green)" : "var(--red)";
             const tp = realStatus.circuit_breaker ? realStatus.circuit_breaker.total_pnl : 0;
             const tpEl = document.getElementById("real-total-pnl");
+            if (!tpEl) return; // GUARD: element may not exist
             tpEl.textContent = (tp >= 0 ? "+$" : "-$") + Math.abs(tp).toFixed(2);
             tpEl.style.color = tp >= 0 ? "var(--green)" : "var(--red)";
             // Flash on PnL change
@@ -2427,15 +2504,18 @@ async function refreshLive() {
                 setTimeout(() => rp.classList.remove(flashClass), 600);
             }
             prevRealTotalPnl = tp;
-            document.getElementById("real-open-count").textContent = realStatus.open_count || 0;
-            document.getElementById("real-closed-today").textContent = realStatus.closed_today || 0;
+            (document.getElementById("real-open-count") || {textContent:"",innerHTML:"",style:{},classList:{add:()=>{},remove:()=>{}},value:""}).textContent = realStatus.open_count || 0;
+            (document.getElementById("real-closed-today") || {textContent:"",innerHTML:"",style:{},classList:{add:()=>{},remove:()=>{}},value:""}).textContent = realStatus.closed_today || 0;
             const cb = realStatus.circuit_breaker || {};
             const cbEl = document.getElementById("real-cb-status");
+            if (!cbEl) return; // GUARD: element may not exist
             cbEl.textContent = cb.is_tripped ? "TRIPPED" : "OK";
             cbEl.style.color = cb.is_tripped ? "var(--red)" : "var(--green)";
             // Render open positions table
             const posTable = document.getElementById("real-positions-table");
+            if (!posTable) return; // GUARD: element may not exist
             const posBody = document.getElementById("real-positions-body");
+            if (!posBody) return; // GUARD: element may not exist
             const positions = realStatus.open_positions || [];
             if (positions.length > 0) {
                 posTable.style.display = "block";
@@ -2548,7 +2628,7 @@ async function refreshLive() {
     updateAlerts(alerts);
     updateVetoStats(funnel);
     // per-symbol status removed (consolidated into Symbol Scanner Status)
-    updateSetupLifecycle(status);
+    updateSetupLifecycle(status, closed);
     updateRecentClosed(closed);
     // #2 + #9 MTF chain
     updateMTFChain(decision);
@@ -2607,7 +2687,9 @@ const SYMBOL_COLORS = {"BTC":"#f7931a","ETH":"#627eea","AVAX":"#e84142","SOL":"#
 function updatePriceTicker(prices, prev, status) {
     const container = document.getElementById("ticker-symbols");
     if (!container) return;
-    const symbols = Object.keys(prices).sort();
+    // Only show pairs that are actively traded (have real volume/signals)
+    const ACTIVE_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"];
+    const symbols = Object.keys(prices).filter(s => ACTIVE_PAIRS.includes(s)).sort();
     let html = "";
     for (const sym of symbols) {
         const price = prices[sym] || 0;
@@ -2867,7 +2949,20 @@ function updateSignals(signals) {
         wrap.innerHTML = '<div class="empty">No signals</div>';
         return;
     }
-    wrap.innerHTML = signals.slice(0, 10).map(s => {
+    // Filter: hide REJECT/C grades and non-active pairs
+    var activePairs = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT"];
+    var filtered = signals.filter(function(s) {
+        var g = s.grade || "";
+        var sym = s.symbol || "";
+        if (g === "REJECT" || g === "C") return false;
+        if (sym && !activePairs.includes(sym)) return false;
+        return true;
+    });
+    if (filtered.length === 0) {
+        wrap.innerHTML = '<div class="empty">No qualifying signals (REJECT/C filtered)</div>';
+        return;
+    }
+    wrap.innerHTML = filtered.slice(0, 10).map(s => {
         const side = (s.side || "LONG").toUpperCase();
         const setup = (s.metadata && s.metadata.setup_type) || s.setup_type || s.scanner || (s.metadata && s.metadata.scanner) || (s.metadata && s.metadata.scanner_name) || "--";
         const entry = s.entry_price || s.entry || 0;
@@ -2890,14 +2985,16 @@ function updateSignals(signals) {
     }).join("");
 }
 
-function updateSetupLifecycle(status) {
+function updateSetupLifecycle(status, closed) {
     const grid = document.getElementById("scanner-status-grid");
     const countEl = document.getElementById("scanner-status-count");
     if (!grid) return;
 
     // Build per-symbol status from status.prices + status.per_symbol + funnel data
     const prices = (status && status.prices) || {};
-    const symbols = Object.keys(prices).sort();
+    // Only show pairs that are actively traded (have real volume/signals)
+    const ACTIVE_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"];
+    const symbols = Object.keys(prices).filter(s => ACTIVE_PAIRS.includes(s)).sort();
     const perSym = (status && (status.per_symbol || status.symbol_status)) || {};
     const regimes = (status && (status.regimes || status.symbol_regimes)) || {};
 
@@ -2976,13 +3073,43 @@ function updateSetupLifecycle(status) {
         const dec = price > 100 ? 2 : price > 1 ? 2 : 4;
         const symColor = ({"BTC":"#f7931a","ETH":"#627eea","SOL":"#9945ff","DOGE":"#c3a634","LINK":"#2a5ada","XRP":"#00aae4","ADA":"#0033ad","LTC":"#bfbbbb","DOT":"#e6007a","TAO":"#00d4aa","BNB":"#f3ba2f","AVAX":"#e84142"})[base] || "#9ca3af";
 
-        return '<div style="padding:8px;border-radius:8px;background:' + bg + ';border:1px solid ' + border + ';text-align:center;transition:all .3s">' +
+        // Per-symbol stats from closed trades
+        var symWins = 0, symTotal = 0;
+        if (closed && closed.length > 0) {
+            var today = new Date().toISOString().slice(0, 10);
+            for (var ci = 0; ci < closed.length; ci++) {
+                var ct = closed[ci];
+                if (ct.symbol === sym && (ct.exit_time || "").startsWith(today)) {
+                    symTotal++;
+                    if ((ct.pnl_usd || 0) > 0) symWins++;
+                }
+            }
+        }
+        var symWR = symTotal > 0 ? Math.round(symWins / symTotal * 100) : 0;
+        var wrColor = symWR >= 60 ? "var(--green)" : symWR >= 40 ? "var(--yellow)" : symTotal > 0 ? "var(--red)" : "var(--text-muted)";
+        var regimeDisplay = regime || (window._symRegimes && window._symRegimes[sym]) || label || "scanning";
+        if (regimeDisplay === "scanning" && window._symRegimes && window._symRegimes[sym]) {
+            regimeDisplay = window._symRegimes[sym];
+            // Update colors based on actual regime
+            var regC = {"trending_up":"var(--green)","trending_down":"var(--red)","sideways":"var(--yellow)",
+                "ranging":"var(--yellow)","breakout":"var(--cyan)","high_volatility":"var(--orange)",
+                "volatile":"var(--orange)","quiet":"var(--text-muted)","mean_reversion":"var(--purple)",
+                "low_liquidity":"var(--red)"};
+            color = regC[regimeDisplay] || color;
+            dotColor = regC[regimeDisplay] ? regC[regimeDisplay].replace("var(--","").replace(")","") : dotColor;
+        }
+
+        return '<div style="padding:10px;border-radius:8px;background:' + bg + ';border:1px solid ' + border + ';text-align:center;transition:all .3s">' +
             '<div style="display:flex;align-items:center;justify-content:center;gap:5px;margin-bottom:4px">' +
             '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';box-shadow:0 0 6px ' + dotColor + '40;display:inline-block"></span>' +
-            '<span style="font-weight:800;font-size:.82rem;color:' + symColor + '">' + base + '</span>' +
+            '<span style="font-weight:800;font-size:.85rem;color:' + symColor + '">' + base + '</span>' +
+            '<span style="font-size:.62rem;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,.05);color:' + color + ';font-weight:600">' + esc(regimeDisplay) + '</span>' +
             '</div>' +
-            '<div style="font-size:.7rem;font-family:var(--font-mono);color:var(--text-secondary);margin-bottom:3px">$' + price.toFixed(dec) + '</div>' +
-            '<div style="font-size:.58rem;color:' + color + ';font-weight:600;letter-spacing:.3px;text-transform:uppercase">' + esc(label) + '</div>' +
+            '<div style="font-size:.75rem;font-family:var(--font-mono);color:var(--text-secondary);margin-bottom:4px">$' + price.toFixed(dec) + '</div>' +
+            '<div style="display:flex;justify-content:center;gap:10px;font-size:.62rem">' +
+            '<span style="color:' + wrColor + ';font-weight:700">WR: ' + (symTotal > 0 ? symWR + "%" : "--") + '</span>' +
+            '<span style="color:var(--text-muted)">' + symTotal + ' trades</span>' +
+            '</div>' +
             '</div>';
     }).join("");
 }
@@ -2991,11 +3118,14 @@ function updateFunnel(raw) {
     if (!raw) return;
     const f = raw.funnel || raw;
     document.getElementById("fn-scanned").textContent = f.scanned || 0;
+    var fs2=document.getElementById("fn-scanned2");if(fs2)fs2.textContent=f.scanned||0;
     document.getElementById("fn-strong").textContent = f.strong || 0;
+    var fp2=document.getElementById("fn-strong2");if(fp2)fp2.textContent=f.strong||0;
     document.getElementById("fn-valid").textContent = f.valid || 0;
     document.getElementById("fn-weak").textContent = f.weak || 0;
     const blocked = (f.blocked_regime || 0) + (f.blocked_cost || 0) + (f.blocked_ev || 0) + (f.blocked_htf || 0);
     document.getElementById("fn-blocked").textContent = blocked;
+    var fb2=document.getElementById("fn-blocked2");if(fb2)fb2.textContent=blocked;
 }
 
 function updateRecentClosed(closed) {
@@ -3035,6 +3165,7 @@ function updateRecentClosed(closed) {
 
 function updateAlerts(alerts) {
     const wrap = document.getElementById("alerts-list");
+    if (!wrap) return;
     if (!alerts || !Array.isArray(alerts) || alerts.length === 0) {
         wrap.innerHTML = '<div class="empty">No alerts</div>';
         return;
@@ -3049,12 +3180,44 @@ function updateAlerts(alerts) {
             <span class="alert-msg">${esc(a.message || a.msg || "")}</span>
         </div>`;
     }).join("");
+    console.log("HEADER_UPDATE: trkStats=", typeof trkStats, "closed=", typeof closed, closed ? closed.length : 0); try { updateDashboardHeader(trkStats, closed, decision); } catch(e) { console.error("Dashboard header update failed:", e); }
 }
 
 // ══════════════════════════════════════════════════════════
 // TAB 2: ANALYTICS REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshAnalytics() {
+    // Update portfolio overview cards
+    try {
+        var as = await api("/api/tracker/stats");
+        if (as) {
+            var ab = document.getElementById("an-balance");
+            if(ab) ab.textContent = "$" + (as.paper_balance||0).toFixed(2);
+            var ar = document.getElementById("an-return");
+            if(ar){var ret=((as.paper_balance||1000)-1000)/1000*100;ar.textContent=(ret>=0?"+":"")+ret.toFixed(1)+"%";ar.style.color=ret>=0?"var(--green)":"var(--red)";}
+            var aw = document.getElementById("an-wr");
+            if(aw) aw.textContent = (as.win_rate||0).toFixed(1)+"%";
+            var ap = document.getElementById("an-pf");
+            if(ap) ap.textContent = (as.profit_factor||0).toFixed(2);
+            var at2 = document.getElementById("an-trades");
+            if(at2) at2.textContent = as.total_signals||0;
+        }
+        // Real account data
+        var rs = await api("/api/real/status");
+        if (rs) {
+            var arb = document.getElementById("an-real-bal");
+            if(arb) arb.textContent = "$" + (rs.balance||0).toFixed(2);
+            var arp = document.getElementById("an-real-pnl");
+            if(arp) {
+                var tp2 = (rs.circuit_breaker||{}).total_pnl||0;
+                arp.textContent = (tp2>=0?"+":"") + "$" + Math.abs(tp2).toFixed(2);
+                arp.style.color = tp2 >= 0 ? "var(--green)" : "var(--red)";
+            }
+            var art = document.getElementById("an-real-trades");
+            if(art) art.textContent = rs.total_closed||0;
+        }
+    } catch(e){}
+
     const [closed, rMetrics, exitQ, scannerH, aiData, monitor, trkStats, riskData, heatmapData] = await Promise.all([
         api("/api/tracker/closed"), api("/api/r-metrics"), api("/api/exit-quality"),
         api("/api/scanner-health"), api("/api/ai/insights"), api("/api/monitor/report"),
@@ -3067,6 +3230,7 @@ async function refreshAnalytics() {
     updateAIInsights(aiData);
     updateSessionAnalysis(monitor, trkStats);
     updatePaperBalance(monitor);
+    updateDashboardHeader(trkStats, closed, null);
     updateClosedTrades(closed);
     updateDailyPnl(trkStats);
     updateRiskMetrics(riskData);
@@ -3074,7 +3238,9 @@ async function refreshAnalytics() {
     // New analytics panels
     updatePerScannerPerf(closed);       // #1
     updateScannerDiversity(closed);     // #3
-    updateDailyPnlChart(closed);        // #13
+    updateDailyPnlChart(closed);
+    updatePnlCalendar(trkStats);
+    updateSessionSummary(closed);        // #13
     updateFeeImpact(closed);            // #8
     updateMLAccuracy(closed);           // #5
     // #12 Trade correlation
@@ -3190,6 +3356,7 @@ function updateExitQuality(eq) {
 
 function updateScannerTable(data) {
     const body = document.getElementById("scanner-body");
+    if (!body) return; // Element removed in analytics cleanup
     if (!data || (!Array.isArray(data) && !data.scanners)) {
         body.innerHTML = '<tr><td colspan="7" class="empty">No scanner data</td></tr>';
         return;
@@ -3216,6 +3383,7 @@ function updateScannerTable(data) {
 
 function updateAIInsights(data) {
     const wrap = document.getElementById("ai-insights");
+    if (!wrap) return; // Element removed in analytics cleanup
     if (!data) { wrap.innerHTML = '<div class="empty">No AI data</div>'; return; }
     let html = "";
     const boosted = data.boosted_setups || data.boosted || [];
@@ -3241,6 +3409,7 @@ function updateAIInsights(data) {
 
 function updateSessionAnalysis(report, trkStats) {
     const wrap = document.getElementById("session-analysis");
+    if (!wrap) return; // Element removed in analytics cleanup
     if (!report) { wrap.innerHTML = '<div class="empty">No data</div>'; return; }
     let html = "";
     html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:16px">
@@ -3358,6 +3527,7 @@ async function updatePaperBalance(report) {
 
 function updateDailyPnl(stats) {
     const tbody = document.getElementById("daily-pnl-body");
+    if (!tbody) return; // Element removed in analytics cleanup
     if (!stats || !stats.daily_pnl) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No daily data</td></tr>'; return; }
     const daily = stats.daily_pnl;
     const days = Object.keys(daily).sort().reverse();
@@ -3438,6 +3608,7 @@ function switchClosedTab(tab) {
     document.getElementById("real-closed-wrap").style.display = (tab === "demo" || tab === "real") ? "block" : "none";
     const paperBtn = document.getElementById("tab-paper-closed");
     const demoBtn = document.getElementById("tab-demo-closed");
+    if (!demoBtn) return; // GUARD: element may not exist
     const realBtn = document.getElementById("tab-real-closed");
     paperBtn.style.background = tab === "paper" ? "var(--cyan)" : "transparent";
     paperBtn.style.color = tab === "paper" ? "#000" : "var(--text-muted)";
@@ -3963,7 +4134,7 @@ function updateExchangeStatus(status) {
     const settlePct = fees.settlement != null ? (fees.settlement * 100).toFixed(2) + "%" : "--";
     let html = "";
     html += makeKV("Connection", connected ? "Connected" : "Disconnected", connected ? "var(--green)" : "var(--red)");
-    html += makeKV("Balance", "$118.46", "var(--green)");
+    html += makeKV("Balance", "$" + (realStatus && realStatus.balance ? realStatus.balance.toFixed(2) : "--"), "var(--green)");
     html += makeKV("Maker Fee", makerPct);
     html += makeKV("Taker Fee", takerPct);
     html += makeKV("Settlement Fee", settlePct);
@@ -4000,27 +4171,17 @@ function updateConfigSnapshot(status) {
 }
 
 // ── VETO STATS ──────────────────────────────────────────
-function updateVetoStats(funnel) {
-    const wrap = document.getElementById("veto-stats-body");
-    if (!wrap) return;
-    if (!funnel || !funnel.veto_stats) {
-        const f = funnel ? (funnel.funnel || funnel) : {};
-        const vetoData = [];
-        if (f.blocked_regime) vetoData.push({name:"Regime Filter", count:f.blocked_regime});
-        if (f.blocked_cost) vetoData.push({name:"Cost/Fee Filter", count:f.blocked_cost});
-        if (f.blocked_ev) vetoData.push({name:"EV Filter", count:f.blocked_ev});
-        if (f.blocked_htf) vetoData.push({name:"HTF Alignment", count:f.blocked_htf});
-        if (f.blocked_risk) vetoData.push({name:"Risk Limits", count:f.blocked_risk});
-        if (f.blocked_confidence) vetoData.push({name:"Low Confidence", count:f.blocked_confidence});
-        if (vetoData.length === 0) { wrap.innerHTML = '<div class="empty" style="color:var(--green)">No vetos active</div>'; return; }
-        renderVetoRows(wrap, vetoData);
-        return;
+function updateVetoStats(data) {
+    var el = document.getElementById("veto-stats-body");
+    var el2 = document.getElementById("veto-stats-body2");
+    if (!el) return;
+    if (!data || !data.veto_stats) { el.textContent = "None"; return; }
+    var vs = data.veto_stats;
+    var parts = [];
+    for (var k in vs) {
+        if (vs[k] > 0) parts.push('<span style="color:var(--red)">' + k + '</span>: ' + vs[k]);
     }
-    const stats = funnel.veto_stats;
-    const vetoData = Object.entries(stats).map(([k,v]) => ({name:k.replace(/_/g," ").replace(/\b\w/g,c=>c.toUpperCase()), count:v}));
-    vetoData.sort((a,b) => b.count - a.count);
-    if (vetoData.length === 0) { wrap.innerHTML = '<div class="empty" style="color:var(--green)">No vetos active</div>'; return; }
-    renderVetoRows(wrap, vetoData);
+    var vetoHtml = parts.length > 0 ? parts.join(' <span style="color:var(--text-muted)">|</span> ') : '<span style="color:var(--green)">None active</span>';
 }
 
 function renderVetoRows(wrap, vetoData) {
@@ -4072,7 +4233,9 @@ function renderSparkline(base) {
 
 // ── CONTACT FORM (Telegram Webhook) ─────────────────────
 function showToast(msg, type) {
+    if (!document.getElementById("vn-toast")) return;
     let toast = document.getElementById("vn-toast");
+    if (!toast) return; // GUARD: element may not exist
     if (!toast) {
         toast = document.createElement("div");
         toast.id = "vn-toast";
@@ -4322,10 +4485,10 @@ async function loadTradeTypePerf() {
             if ((t.pnl_usd||0) > 0) d.w++; else d.l++;
             d.pnl += (t.pnl_usd||0);
             d.r.push(t.exit_r||0);
-            d.dur.push(t.duration_sec||0);
+            d.dur.push(t.trade_duration_sec||t.duration_sec||0);
             const ex = t.exit_reason||"";
-            if (ex.includes("trail")) d.trail++;
-            if (ex.includes("time_stop") || ex.includes("timeout")) d.timeout++;
+            if (ex.includes("trail") || ex === "smart_extend_exit") d.trail++;
+            if (ex === "max_age" || ex === "expired" || ex === "hard_cap" || ex === "dead_market" || ex === "no_momentum" || ex === "early_kill") d.timeout++;
             if (ex === "stop_loss") d.sl++;
         }
         let html = "";
@@ -4693,9 +4856,446 @@ function openTradeDetail(trade) {
 
     m.style.display = "flex";
 }
+
+// --- Dashboard Header Update ---
+function updateDashboardHeader(trkStats, closed, decision) {
+    if (trkStats) {
+        var daily = trkStats.daily_pnl || {};
+        var today = new Date().toISOString().slice(0, 10);
+        var td = daily[today] || {};
+        var pnl = td.net_pnl || 0;
+        var pnlEl = document.getElementById("cmd-today-pnl");
+        if (pnlEl) {
+            pnlEl.textContent = (pnl < 0 ? "-" : "") + "$" + Math.abs(pnl).toFixed(2);
+            pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
+        }
+        var wrEl = document.getElementById("cmd-today-wr");
+        if (wrEl) wrEl.textContent = (td.wr || 0).toFixed(0) + "%";
+        var trEl = document.getElementById("cmd-today-trades");
+        if (trEl) trEl.textContent = td.trades || 0;
+        var feEl = document.getElementById("cmd-today-fees");
+        if (feEl) feEl.textContent = "$" + (td.fees || 0).toFixed(0);
+    }
+    if (decision) {
+        var macroEl = document.getElementById("cmd-macro-bias");
+        if (macroEl) {
+            var bias = decision.macro_bias_str || "NEUTRAL";
+            macroEl.textContent = String(bias).toUpperCase();
+            macroEl.style.color = bias === "bullish" ? "var(--green)" : bias === "bearish" ? "var(--red)" : "var(--text-muted)";
+        }
+    }
+    if (closed && closed.length > 0) {
+        var t = closed[closed.length - 1];
+        var lpnl = t.pnl_usd || 0;
+        var sym = (t.symbol || "?").split("/")[0];
+        var side = t.side || "?";
+        var reason = t.exit_reason || "?";
+        var el = document.getElementById("cmd-last-trade");
+        if (el) {
+            var color = lpnl >= 0 ? "var(--green)" : "var(--red)";
+            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span style="color:var(--text-muted)">' + sym + ' ' + side + '</span> <span style="font-size:.65rem;color:var(--text-muted)">' + reason + '</span>';
+        }
+    }
+}
+
 </script>
 <footer style="text-align:center;padding:12px;font-size:.6rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,.03);margin-top:20px">
   VN Edge v2.1 | <span id="footer-uptime">--</span> uptime | Last restart: <span id="footer-restart">--</span> | <a href="http://158.101.112.94:8081" target="_blank" style="color:var(--purple);text-decoration:none">ML Training Lab</a>
 </footer>
+
+  <!-- Toast notification -->
+  <div id="vn-toast" style="display:none;position:fixed;bottom:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:.8rem;z-index:10000;font-weight:600"></div>
+<div id="cmd-action" style="display:none"></div>
+<div id="cmd-confidence" style="display:none"></div>
+<div id="cmd-grade" style="display:none"></div>
+<div id="cmd-reason" style="display:none"></div>
+<div id="cmd-ev" style="display:none"></div>
+<div id="cmd-risk" style="display:none"></div>
+<div id="cmd-blockers" style="display:none"></div>
+
+
+
+<script>
+// Dashboard header auto-update (clean rewrite)
+
+function switchRecentClosed(tab) {
+    document.getElementById("rc-paper-wrap").style.display = tab === "paper" ? "" : "none";
+    document.getElementById("rc-real-wrap").style.display = tab === "real" ? "" : "none";
+    document.getElementById("rc-tab-paper").style.background = tab === "paper" ? "rgba(0,212,255,.15)" : "transparent";
+    document.getElementById("rc-tab-paper").style.color = tab === "paper" ? "var(--cyan)" : "var(--text-muted)";
+    document.getElementById("rc-tab-paper").style.borderColor = tab === "paper" ? "rgba(0,212,255,.3)" : "var(--border)";
+    document.getElementById("rc-tab-real").style.background = tab === "real" ? "rgba(255,59,92,.15)" : "transparent";
+    document.getElementById("rc-tab-real").style.color = tab === "real" ? "var(--red)" : "var(--text-muted)";
+    document.getElementById("rc-tab-real").style.borderColor = tab === "real" ? "rgba(255,59,92,.3)" : "var(--border)";
+}
+
+
+function updatePnlCalendar(trkStats) {
+    var cal = document.getElementById("pnl-calendar");
+    if (!cal || !trkStats) return;
+    var daily = trkStats.daily_pnl || {};
+    var days = Object.keys(daily).sort();
+    if (days.length === 0) { cal.innerHTML = '<div class="empty" style="grid-column:1/-1;font-size:.65rem">No data</div>'; return; }
+
+    // Get last 35 days (5 weeks)
+    var today = new Date();
+    var cells = [];
+    for (var i = 34; i >= 0; i--) {
+        var d = new Date(today);
+        d.setDate(d.getDate() - i);
+        var key = d.toISOString().slice(0, 10);
+        var dow = d.getDay(); // 0=Sun
+        var td = daily[key] || null;
+        cells.push({date: key, dow: dow, data: td, day: d.getDate()});
+    }
+
+    // Pad start to align with Monday (dow=1)
+    var firstDow = cells[0].dow;
+    var padStart = firstDow === 0 ? 6 : firstDow - 1; // Monday-based
+
+    var html = "";
+    for (var p = 0; p < padStart; p++) {
+        html += '<div style="aspect-ratio:1;border-radius:3px"></div>';
+    }
+
+    for (var ci = 0; ci < cells.length; ci++) {
+        var c = cells[ci];
+        var bg, color, title;
+        if (!c.data) {
+            bg = "rgba(255,255,255,.03)";
+            color = "var(--text-muted)";
+            title = c.date + ": No trades";
+        } else {
+            var pnl = c.data.net_pnl || 0;
+            var wr = c.data.wr || 0;
+            var trades = c.data.trades || 0;
+            if (pnl < -10) {
+                bg = "rgba(255,59,92,.7)"; color = "#fff";
+            } else if (pnl < 0) {
+                bg = "rgba(255,59,92,.35)"; color = "var(--red)";
+            } else if (pnl < 50) {
+                bg = "rgba(0,255,157,.2)"; color = "var(--green)";
+            } else if (pnl < 200) {
+                bg = "rgba(0,255,157,.45)"; color = "var(--green)";
+            } else {
+                bg = "rgba(0,255,157,.75)"; color = "#fff";
+            }
+            title = c.date + ": $" + (pnl>=0?"+":"") + pnl.toFixed(0) + " | " + trades + " trades | " + wr.toFixed(0) + "% WR";
+        }
+
+        html += '<div style="aspect-ratio:1;background:' + bg + ';border-radius:3px;display:flex;align-items:center;justify-content:center;color:' + color + ';font-weight:600;font-family:var(--font-mono);cursor:default;font-size:.55rem" title="' + title + '">' + c.day + '</div>';
+    }
+
+    cal.innerHTML = html;
+}
+
+
+function updateSessionSummary(closed) {
+    if (!closed || closed.length === 0) return;
+    // IST = UTC + 5:30
+    var sessions = {
+        "asia_early": {h:[0,1,2,3], w:0, n:0},     // 5:30-9:30 IST = 0-4 UTC
+        "india":      {h:[4,5,6,7,8], w:0, n:0},    // 9:30-14:00 IST = 4-8:30 UTC
+        "europe":     {h:[9,10,11,12,13], w:0, n:0}, // 14:00-19:30 IST = 8:30-14 UTC
+        "us":         {h:[14,15,16,17,18,19,20,21,22,23], w:0, n:0}  // 19:30-5:30 IST
+    };
+    for (var i = 0; i < closed.length; i++) {
+        var t = closed[i];
+        var ts = t.exit_time || t.timestamp || "";
+        if (!ts || ts.length < 13) continue;
+        var h = parseInt(ts.substring(11, 13));
+        var pnl = t.pnl_usd || 0;
+        for (var sk in sessions) {
+            if (sessions[sk].h.indexOf(h) >= 0) {
+                sessions[sk].n++;
+                if (pnl > 0) sessions[sk].w++;
+                break;
+            }
+        }
+    }
+    var ids = {"asia_early":"sess-asia-early","india":"sess-india","europe":"sess-europe","us":"sess-us"};
+    for (var sk2 in ids) {
+        var s = sessions[sk2];
+        var wr = s.n > 0 ? Math.round(s.w / s.n * 100) : 0;
+        var el = document.getElementById(ids[sk2]);
+        if (el) {
+            el.textContent = s.n > 0 ? wr + "%" : "--";
+            el.style.color = wr >= 70 ? "var(--green)" : wr >= 50 ? "var(--yellow)" : s.n > 0 ? "var(--red)" : "var(--text-muted)";
+        }
+        var nel = document.getElementById(ids[sk2] + "-n");
+        if (nel) nel.textContent = s.n + " trades";
+    }
+}
+
+
+function switchAnalyticsAccount(mode) {
+    // Update button styles
+    var pb = document.getElementById("analytics-paper-btn");
+    var rb = document.getElementById("analytics-real-btn");
+    var pn = document.getElementById("analytics-paper-note");
+    var rn = document.getElementById("analytics-real-note");
+    if (mode === "paper") {
+        if(pb){pb.style.background="rgba(0,212,255,.15)";pb.style.color="var(--cyan)";pb.style.borderColor="rgba(0,212,255,.4)";}
+        if(rb){rb.style.background="transparent";rb.style.color="var(--text-muted)";rb.style.borderColor="var(--border)";}
+        if(pn)pn.style.display="";
+        if(rn)rn.style.display="none";
+    } else {
+        if(rb){rb.style.background="rgba(255,59,92,.15)";rb.style.color="var(--red)";rb.style.borderColor="rgba(255,59,92,.4)";}
+        if(pb){pb.style.background="transparent";pb.style.color="var(--text-muted)";pb.style.borderColor="var(--border)";}
+        if(pn)pn.style.display="none";
+        if(rn)rn.style.display="";
+    }
+    window._analyticsMode = mode;
+    // Trigger refresh to reload with correct data
+    refreshAnalytics();
+}
+window._analyticsMode = "paper";
+
+async function dashUpdate() {
+  try {
+    // Fetch all data in parallel
+    var results = await Promise.all([
+      fetch("/api/tracker/stats").then(function(r){return r.json()}).catch(function(){return {}}),
+      fetch("/api/tracker/closed").then(function(r){return r.json()}).catch(function(){return []}),
+      fetch("/api/real/status").then(function(r){return r.json()}).catch(function(){return {}}),
+      fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}})
+    ]);
+    var stats = results[0];
+    var closed = results[1];
+    var real = results[2];
+    var decision = results[3];
+
+    // 1. Today paper performance
+    var daily = stats.daily_pnl || {};
+    var today = new Date().toISOString().slice(0,10);
+    var td = daily[today] || {};
+    var pnl = td.net_pnl || 0;
+    var e1 = document.getElementById("cmd-today-pnl");
+    if(e1){e1.textContent=(pnl<0?"-":"")+"$"+Math.abs(pnl).toFixed(2);e1.style.color=pnl>=0?"var(--green)":"var(--red)";}
+    var e2=document.getElementById("cmd-today-wr");if(e2)e2.textContent=(td.wr||0).toFixed(0)+"%";
+    var e3=document.getElementById("cmd-today-trades");if(e3)e3.textContent=td.trades||0;
+    var e4=document.getElementById("cmd-today-fees");if(e4)e4.textContent="$"+(td.fees||0).toFixed(0);
+
+    // 2. Real trading performance
+    var cb = real.circuit_breaker || {};
+    var rpnl = cb.daily_pnl || 0;
+    var rpe = document.getElementById("cmd-real-pnl");
+    if(rpe){rpe.textContent=(rpnl<0?"-":rpnl>0?"+":"")+"$"+Math.abs(rpnl).toFixed(2);rpe.style.color=rpnl>=0?"var(--green)":"var(--red)";}
+    var rbe=document.getElementById("cmd-real-bal");if(rbe)rbe.textContent="$"+(real.balance||0).toFixed(2);
+    var rte=document.getElementById("cmd-real-trades");if(rte)rte.textContent=cb.trade_count_today||0;
+    var rle=document.getElementById("cmd-real-total");
+    if(rle){var tp=cb.total_pnl||0;rle.textContent=(tp<0?"-":"+")+"$"+Math.abs(tp).toFixed(2);rle.style.color=tp>=0?"var(--green)":"var(--red)";}
+
+    // 3. Header bar updates
+    var ppMini = document.getElementById("paper-bal-mini");
+    if(ppMini && stats.paper_balance) ppMini.textContent = "$" + stats.paper_balance.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+    var sigMini = document.getElementById("signals-mini-count");
+    if(sigMini) sigMini.textContent = stats.total_signals || 0;
+    // 3. Exchange balance
+    var eb=document.getElementById("exchange-bal");if(eb&&stats.exchange_balance)eb.textContent="$"+stats.exchange_balance.toFixed(2);
+
+    // 4. Per-symbol regime from closed trades metadata
+    var rc={"trending_up":"#00ff9d","trending_down":"#ff3b5c","sideways":"#ffd700","ranging":"#ffd700",
+      "breakout":"#00d4ff","volatile":"#f97316","high_volatility":"#f97316","quiet":"#5a7090",
+      "mean_reversion":"#a78bfa","low_liquidity":"#ff3b5c"};
+    if(closed&&closed.length>0){
+      var sr={};
+      for(var i=closed.length-1;i>=0;i--){
+        var ct=closed[i];var s=ct.symbol||"";var m=ct.metadata||{};var rg=m.regime||"";
+        if(s&&rg&&!sr[s])sr[s]=rg;
+      }
+      ["btc","eth","sol","xrp"].forEach(function(sym){
+        var reg=sr[sym.toUpperCase()+"/USDT"]||"--";
+        var el=document.getElementById("cmd-regime-"+sym);
+        if(el){el.textContent=reg;el.style.color=rc[reg]||"#9ba3b5";}
+      });
+      // Also update scanner status cards with regime
+      window._symRegimes = sr;
+    }
+
+    // 5. Session + macro bias from decision
+    var se=document.getElementById("cmd-session");if(se&&decision.session)se.textContent=decision.session;
+    var me=document.getElementById("cmd-macro-bias");
+    if(me){var b=decision.macro_bias_str||"NEUTRAL";me.textContent=String(b).toUpperCase();
+      me.style.color=b==="bullish"?"var(--green)":b==="bearish"?"var(--red)":"var(--text-muted)";}
+
+    // 6. Last trade with duration + time ago
+    if(closed&&closed.length>0){
+      var lt=closed[closed.length-1];var lp=lt.pnl_usd||0;
+      var le=document.getElementById("cmd-last-trade");
+      if(le){
+        var c=lp>=0?"var(--green)":"var(--red)";
+        var sym=(lt.symbol||"?").split("/")[0];
+        var ago="";
+        if(lt.exit_time){var diff=Math.round((Date.now()-new Date(lt.exit_time).getTime())/1000);
+          if(diff<60)ago=diff+"s ago";else if(diff<3600)ago=Math.floor(diff/60)+"m ago";
+          else if(diff<86400)ago=Math.floor(diff/3600)+"h ago";else ago=Math.floor(diff/86400)+"d ago";}
+        var dur=Math.round(lt.trade_duration_sec||lt.duration_sec||0);
+        var ds=dur>0?(dur<60?dur+"s":Math.floor(dur/60)+"m"):"";
+        le.innerHTML='<span style="font-weight:700;color:'+c+'">$'+(lp>=0?"+":"")+lp.toFixed(2)+'</span> '+sym+' '+(lt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(lt.exit_reason||"?")+(ds?' \u00B7 held '+ds:'')+(ago?' \u00B7 '+ago:'')+'</span>';
+      }
+    }
+    // 7. Last real trade
+    if(real&&real.recent_trades&&real.recent_trades.length>0){
+      var rt=real.recent_trades[real.recent_trades.length-1];
+      var rp=rt.pnl_usd||0;
+      var rle2=document.getElementById("cmd-last-real-trade");
+      if(rle2){
+        var rc2=rp>=0?"var(--green)":"var(--red)";
+        var rsym=(rt.symbol||"?").split("/")[0];
+        var rago2="";
+                if(rt.timestamp){var rd2=Math.round((Date.now()-new Date(rt.timestamp).getTime())/1000);
+                if(rd2<60)rago2=rd2+"s ago";else if(rd2<3600)rago2=Math.floor(rd2/60)+"m ago";
+                else if(rd2<86400)rago2=Math.floor(rd2/3600)+"h ago";else rago2=Math.floor(rd2/86400)+"d ago";}
+                rle2.innerHTML='<span style="font-weight:700;color:'+rc2+'">$'+(rp>=0?"+":"")+rp.toFixed(2)+'</span> '+rsym+' '+(rt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(rt.exit_reason||rt.reason||"--")+(rago2?' \u00B7 '+rago2:'')+'</span>';
+      }
+    } else {
+      var rle3=document.getElementById("cmd-last-real-trade");
+      if(rle3&&real&&real.total_closed>0)rle3.innerHTML='<span style="color:var(--text-muted)">No trades today</span>';
+    }
+
+    // 8. Market highlight bar
+    var mhBal=document.getElementById("mh-paper-bal");
+    if(mhBal&&stats.paper_balance)mhBal.textContent="$"+stats.paper_balance.toFixed(2);
+    // Peak: calculate from paper balance + gross pnl history
+    var mhPeak=document.getElementById("mh-peak");
+    if(mhPeak){
+        var peakVal=stats.paper_balance||1000;
+        var daily=stats.daily_pnl||{};
+        var runBal=stats.paper_start_balance||1000;
+        var maxBal=runBal;
+        var days=Object.keys(daily).sort();
+        for(var di=0;di<days.length;di++){runBal+=(daily[days[di]].net_pnl||0);if(runBal>maxBal)maxBal=runBal;}
+        mhPeak.textContent="$"+maxBal.toFixed(2);
+        // Drawdown
+        var mhDD=document.getElementById("mh-dd");
+        if(mhDD){var ddp=maxBal>0?((maxBal-(stats.paper_balance||0))/maxBal*100):0;mhDD.textContent=ddp.toFixed(1)+"%";mhDD.style.color=ddp>2?"var(--red)":"var(--green)";}
+    }
+    var mhPF=document.getElementById("mh-pf");
+    if(mhPF&&stats.profit_factor)mhPF.textContent=stats.profit_factor.toFixed(2);
+    // Avg R from r_metrics
+    var mhAR=document.getElementById("mh-avgr");
+    var rm=stats.r_metrics||{};
+    if(mhAR&&rm.avg_r!=null){var ar=rm.avg_r;mhAR.textContent=(ar>=0?"+":"")+ar.toFixed(3)+"R";mhAR.style.color=ar>=0?"var(--green)":"var(--red)";}
+
+
+    // 9. Recent real closed trades
+    try {
+      var rrb = document.getElementById("recent-real-closed-body");
+      if (rrb && real && real.recent_trades) {
+        var rt = real.recent_trades || [];
+        if (rt.length === 0) {
+          rrb.innerHTML = '<tr><td colspan="9" class="empty">No real trades</td></tr>';
+        } else {
+          rrb.innerHTML = rt.slice(-10).reverse().map(function(t) {
+            var p = t.pnl_usd || 0;
+            var pc = p >= 0 ? "var(--green)" : "var(--red)";
+            var dt = (t.timestamp || t.closed_at || t.opened_at || "").replace("T"," ").slice(5,16);
+            var reason = t.reason || t.exit_reason || "--";
+            var margin = t.margin || 0;
+            var slip = t.slippage_bps || 0;
+            var scanner = t.scanner || t.trade_type || "--";
+            return '<tr>' +
+              '<td style="font-size:.7rem">' + dt + '</td>' +
+              '<td style="font-weight:600">' + (t.symbol||"?") + '</td>' +
+              '<td><span style="color:' + (t.side==="long"?"var(--green)":"var(--red)") + '">' + (t.side||"?").toUpperCase() + '</span></td>' +
+              '<td style="font-family:var(--font-mono);font-size:.7rem">' + (t.entry_price||0).toFixed(4) + '</td>' +
+              '<td style="font-family:var(--font-mono);font-size:.7rem">' + (t.exit_price||0).toFixed(4) + '</td>' +
+              '<td>' + slip.toFixed(0) + 'bp</td>' +
+              '<td style="color:' + pc + ';font-weight:600">$' + (p>=0?"+":"") + p.toFixed(2) + '</td>' +
+              '<td>$' + margin.toFixed(0) + '</td>' +
+              '<td style="font-size:.7rem">' + reason + '</td></tr>';
+          }).join("");
+        }
+      }
+    } catch(e) {}
+
+  
+    // 10. Trade Diagnostic — why no trades?
+    try {
+      var diag = document.getElementById("trade-diagnostic");
+      if (diag) {
+        var fr = await fetch("/api/opportunity-funnel").then(function(r){return r.json()}).catch(function(){return {}});
+        var dec = await fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}});
+        var f = fr.funnel || {};
+        var vs = fr.veto_stats || {};
+        var reasons = [];
+
+        // Check paper trading status
+        var hasActive = document.querySelectorAll("#active-trades-cards .trade-card").length > 0;
+        if (hasActive) {
+            diag.innerHTML = '<span style="color:var(--green)">\u2705 Paper trade active</span>';
+        } else {
+            // Build diagnostic from funnel + decision data
+            if (f.scanned === 0) {
+                reasons.push('<span style="color:var(--red)">No candles processed yet</span>');
+            } else {
+                if (f.rejected > 0) reasons.push('<span style="color:var(--yellow)">' + f.rejected + ' signals below threshold</span>');
+                if (f.blocked_regime > 0) reasons.push('<span style="color:var(--red)">' + f.blocked_regime + ' blocked by regime</span>');
+                if (f.blocked_ml > 0) reasons.push('<span style="color:var(--orange)">' + f.blocked_ml + ' blocked by ML</span>');
+            }
+            // Veto breakdown
+            for (var vk in vs) {
+                if (vs[vk] > 0) reasons.push('<span style="color:var(--text-muted)">' + vk + ': ' + vs[vk] + '</span>');
+            }
+            // Real trade specific
+            var cb2 = (real && real.circuit_breaker) || {};
+            if (cb2.is_tripped) reasons.push('<span style="color:var(--red)">\u26A0 Circuit breaker TRIPPED</span>');
+
+            if (reasons.length === 0 && f.scanned > 0) {
+                reasons.push('<span style="color:var(--cyan)">Scanning... ' + f.scanned + ' checked, waiting for setup</span>');
+            }
+
+            diag.innerHTML = reasons.join(' <span style="color:var(--border)">|</span> ');
+        }
+      }
+    } catch(e) {}
+
+    } catch(err) { console.error("dashUpdate error:", err); }
+}
+document.addEventListener("DOMContentLoaded", function() { dashUpdate(); setInterval(() => { if(!window._refreshLiveActive) dashUpdate(); }, 3000); });
+</script>
+
+<!-- Hidden elements for JS compatibility -->
+<span id="fn-blocked" style="display:none">0</span>
+<span id="fn-scanned" style="display:none">0</span>
+<span id="fn-strong" style="display:none">0</span>
+<span id="fn-valid" style="display:none">0</span>
+<span id="fn-weak" style="display:none">0</span>
+<span id="rm-total-trades" style="display:none">--</span>
+<span id="rm-win-rate" style="display:none">--</span>
+<span id="rm-total-r" style="display:none">--</span>
+<span id="rm-r-std" style="display:none">--</span>
+<span id="rm-best-r" style="display:none">--</span>
+<span id="rm-worst-r" style="display:none">--</span>
+<span id="rk-calmar" style="display:none">--</span>
+<span id="rk-dd-dur" style="display:none">--</span>
+<span id="rk-pf" style="display:none">--</span>
+<span id="eq-avg-bps" style="display:none">--</span>
+<span id="eq-drag-r" style="display:none">--</span>
+<span id="paper-balance-hero" style="display:none">--</span>
+<span id="paper-net-pnl" style="display:none">--</span>
+<span id="paper-return-pct" style="display:none">--</span>
+<span id="paper-dd" style="display:none">--</span>
+<span id="paper-peak" style="display:none">--</span>
+<span id="paper-fees" style="display:none">--</span>
+<span id="paper-tpd" style="display:none">--</span>
+<span id="analytics-trades-count" style="display:none">--</span>
+<div id="session-heatmap" style="display:none"></div>
+<span id="analytics-paper-btn" style="display:none"></span>
+<span id="analytics-real-btn" style="display:none"></span>
+<span id="analytics-paper-note" style="display:none"></span>
+<span id="analytics-real-note" style="display:none"></span>
+<div id="alerts-list" style="display:none"></div>
+<div id="real-balance" style="display:none"></div>
+<div id="real-cb-status" style="display:none"></div>
+<div id="real-closed-today" style="display:none"></div>
+<div id="real-daily-pnl" style="display:none"></div>
+<div id="real-mode-badge" style="display:none"></div>
+<div id="real-open-count" style="display:none"></div>
+<div id="real-positions-body" style="display:none"></div>
+<div id="real-positions-table" style="display:none"></div>
+<div id="real-total-pnl" style="display:none"></div>
+<div id="real-trading-panel" style="display:none"></div>
 </body>
 </html>

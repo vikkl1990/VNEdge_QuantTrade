@@ -625,10 +625,11 @@ class RealTradingManager:
             lots=lots,
             stop_loss_price=sl,
             take_profit_price=tp,
-            limit_price=smart_price,  # smart bid/ask price
+            limit_price=0,  # market order — bracket SL/TP/trail all created atomically
             client_order_id=coid,
-            post_only=False,  # CANNOT use post_only with IOC — Delta rejects it
-            time_in_force="ioc",  # IOC: fill instantly or cancel — no 8s wait
+            post_only=False,
+            time_in_force="",
+            trail_amount=abs(entry_price - sl) if entry_price > 0 and sl > 0 else 0,  # native Delta trailing
         )
 
         # Check both no-error AND actually filled (IOC may cancel instantly)
@@ -648,38 +649,9 @@ class RealTradingManager:
                 symbol, side, lots, leverage, fill, sl, tp,
             )
 
-            # NATIVE TRAILING STOP: replace fixed SL with trail
-            # Delta trails automatically -- captures the trail_profit edge
-            time.sleep(1)
-            try:
-                close_side = "sell" if side == "buy" else "buy"
-                trail_dist = abs(fill - sl) if fill > 0 and sl > 0 else 0
-                if trail_dist > 0:
-                    product_id = delta._get_product_id(symbol)
-                    # Place trailing stop FIRST (before cancelling bracket SL)
-                    trail_result = delta._client.place_stop_order(
-                        product_id=product_id,
-                        size=lots,
-                        side=close_side,
-                        trail_amount=trail_dist,
-                        order_type=delta._OrderType.MARKET,
-                        isTrailingStopLoss=True,
-                    )
-                    logger.info("REAL TRAIL: %s trail_dist=%.2f | result=%s",
-                                symbol, trail_dist, str(trail_result)[:100])
-                    # Trail confirmed — NOW cancel the bracket fixed SL
-                    _t2.sleep(0.5)
-                    ex_orders = delta.get_open_orders()
-                    for o in ex_orders:
-                        o_pid = o.get("product", {}).get("id", 0)
-                        if o_pid == product_id and o.get("stop_order_type") == "stop_loss_order" and not o.get("trail_amount"):
-                            try:
-                                delta._client.cancel_order(product_id=product_id, order_id=o.get("id"))
-                                logger.info("REAL TRAIL: Cancelled fixed SL for %s (trail active)", symbol)
-                            except Exception:
-                                pass
-            except Exception as trail_err:
-                logger.warning("REAL TRAIL FAILED for %s -- fixed SL remains: %s", symbol, trail_err)
+            # NATIVE TRAILING STOP: bracket_trail_amount handles this natively on Delta
+            # Delta auto-trails the SL — no bot dependency, survives restarts
+            logger.info("REAL TRAIL: bracket_trail_amount used (Delta native trailing)")
 
             # SL COVERAGE CHECK: ensure ALL lots on exchange have SL protection
             try:
@@ -872,6 +844,16 @@ class RealTradingManager:
                 if sl_result and not sl_result.get("error"):
                     sl_placed = True
                     logger.info("REAL ENTRY [SL]: %s @ %.4f | attempt=%d", symbol, sl, attempt + 1)
+                    # Also place TP
+                    if tp > 0:
+                        try:
+                            tp_result = delta.place_take_profit(symbol, close_side, lots, tp)
+                            if tp_result and not tp_result.get("error"):
+                                logger.info("REAL ENTRY [TP]: %s @ %.4f", symbol, tp)
+                            else:
+                                logger.warning("REAL ENTRY [TP] FAILED: %s", tp_result)
+                        except Exception as tp_err:
+                            logger.warning("REAL ENTRY [TP] error: %s", tp_err)
                     break
             except Exception as sl_err:
                 logger.warning("REAL ENTRY: SL attempt %d failed: %s", attempt + 1, sl_err)
@@ -1585,10 +1567,12 @@ class RealTradingManager:
         orphans = []
         for trade_id, trade in list(self.real_trades.items()):
             paper_id = getattr(trade, "paper_trade_id", "") or ""
+            # Independent exit trades manage their own lifecycle — never orphan them
+            if getattr(trade, "independent_exit", False):
+                continue
             if paper_id and paper_id not in active_paper_ids:
                 orphans.append(trade_id)
             elif not paper_id and not active_paper_ids:
-                # No paper_trade_id AND no active signals = ghost trade from stale state
                 logger.info("ORPHAN GHOST: %s has no paper_trade_id and 0 active signals — marking orphan",
                            getattr(trade, "symbol", trade_id))
                 orphans.append(trade_id)
@@ -1728,7 +1712,7 @@ class RealTradingManager:
 
 
     async def reconcile_exchange_positions(self):
-        return  # DISABLED: was creating ghost import loop
+        # Re-enabled with independent_exit guard
         """On startup: import exchange positions not in local state.
 
         Prevents ghost positions by ensuring every exchange position
@@ -2079,6 +2063,24 @@ class RealTradingManager:
                             sl_updates.append((trade_id, symbol, new_stop))
                             logger.info("REAL CHANDELIER: %s short | SL %.4f -> %.4f | low=%.4f atr=%.4f mult=%.1f",
                                        symbol, old_sl, new_stop, t.lowest_price, atr, mult)
+
+            # ── MFE PROFIT LOCK FLOOR (real) ──
+            if getattr(t, "peak_mfe_r", 0) >= 0.3 and getattr(t, "initial_risk", 0) > 0:
+                _peak = t.peak_mfe_r
+                _lp = 0.85 if _peak >= 1.5 else (0.80 if _peak >= 1.0 else (0.70 if _peak >= 0.5 else 0.60))
+                _lock_dist = _peak * _lp * t.initial_risk
+                if is_long:
+                    _mfe_sl = entry + _lock_dist
+                    if _mfe_sl > t.stop_loss:
+                        t.stop_loss = _mfe_sl
+                        t.breakeven_set = True
+                        sl_updates.append((trade_id, symbol, _mfe_sl))
+                else:
+                    _mfe_sl = entry - _lock_dist
+                    if _mfe_sl < t.stop_loss:
+                        t.stop_loss = _mfe_sl
+                        t.breakeven_set = True
+                        sl_updates.append((trade_id, symbol, _mfe_sl))
 
             # ── [3] SL HIT (real's own SL) ──
             sl = getattr(t, "stop_loss", 0)

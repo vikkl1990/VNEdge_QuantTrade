@@ -430,7 +430,6 @@ class DeltaClient:
                 size=int(lots),
                 side=side,
                 stop_price=str(stop_price),
-                stop_trigger_method="mark_price",
                 order_type=self._OrderType.MARKET,
             )
             self._track_order_placed()
@@ -503,6 +502,7 @@ class DeltaClient:
         stop_loss_price: float, take_profit_price: float = 0,
         limit_price: float = 0, client_order_id: Optional[str] = None,
         post_only: bool = True, time_in_force: str = "",
+        trail_amount: float = 0,
     ) -> Dict[str, Any]:
         """Place entry + SL + optional TP in one atomic API call.
 
@@ -545,8 +545,12 @@ class DeltaClient:
         if take_profit_price > 0:
             payload["bracket_take_profit_price"] = str(take_profit_price)
 
+        # Native trailing SL: Delta auto-trails, survives bot crash
+        if trail_amount > 0:
+            payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
+
         if time_in_force:
-            payload["time_in_force"] = time_in_force  # "ioc" = immediate or cancel
+            payload["time_in_force"] = time_in_force
 
         try:
             result = self._client.request(
@@ -1003,7 +1007,7 @@ class DeltaClient:
     # ==================================================================
 
     def edit_bracket(self, symbol: str, stop_loss_price: float = 0,
-                     take_profit_price: float = 0) -> Dict:
+                     take_profit_price: float = 0, trail_amount: float = 0) -> Dict:
         """Atomically update SL/TP on an existing position via PUT /v2/orders/bracket.
 
         No gap where position is unprotected (vs cancel+replace).
@@ -1015,7 +1019,10 @@ class DeltaClient:
         info = self._get_product_info(symbol)
         tick = info.get("tick_size_demo" if self.mode == "demo" else "tick_size", 0.01)
 
-        payload = {"product_id": product_id}
+        payload = {
+            "product_id": product_id,
+            "bracket_stop_trigger_method": "mark_price",  # always use mark_price
+        }
         if stop_loss_price > 0:
             payload["stop_loss_order"] = {
                 "order_type": "market_order",
@@ -1026,6 +1033,8 @@ class DeltaClient:
                 "order_type": "market_order",
                 "stop_price": str(round(take_profit_price / tick) * tick),
             }
+        if trail_amount > 0:
+            payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
 
         try:
             result = self._client.request("PUT", "/v2/orders/bracket",

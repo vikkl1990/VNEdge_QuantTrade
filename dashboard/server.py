@@ -370,6 +370,9 @@ class DashboardServer:
             return await handler(request)
 
         # POST requests: require auth (state-changing operations)
+        # But allow login/logout without auth (they ARE the auth)
+        if path in ("/api/login", "/api/logout", "/api/register"):
+            return await handler(request)
         session = self._verify_session(request)
         if session:
             request["session"] = session
@@ -390,6 +393,9 @@ class DashboardServer:
             return web.json_response({"error": "invalid JSON"}, status=400)
         user = body.get("username", "")
         password = body.get("password", "")
+        logger.info("LOGIN DEBUG: received user=[%s] pwd_len=%d, expected user=[%s] pwd_len=%d, match_user=%s match_pwd=%s",
+                   user, len(password), self._auth_user, len(self._auth_password),
+                   user == self._auth_user, password == self._auth_password)
         if user != self._auth_user or password != self._auth_password:
             logger.warning("Failed login attempt from %s (user=%s)", request.remote, user)
             self._session_history.append({
@@ -596,7 +602,7 @@ class DashboardServer:
         index_path = _TEMPLATES_DIR / "index.html"
         if not index_path.exists():
             return web.Response(text="Dashboard template not found", status=500)
-        if not hasattr(self, "_idx_cache") or self._idx_cache is None:
+        if True:  # always reload template (cache was serving stale login form)
             self._idx_cache = index_path.read_text(encoding="utf-8")
         return web.Response(text=self._idx_cache, content_type="text/html")
 

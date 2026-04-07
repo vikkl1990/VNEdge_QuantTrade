@@ -1987,6 +1987,31 @@ class SignalTracker:
             else:
                 ts.chandelier_stop = min(ts.chandelier_stop, new_chand)
 
+        # ── MFE-BASED PROFIT LOCK FLOOR ──
+        # Chandelier alone may not lock enough profit (e.g. small initial_risk)
+        # Enforce minimum lock: 70% of peak MFE at 0.5R+, 80% at 1.0R+
+        if ts.peak_mfe_r >= 0.3 and ts.initial_risk > 0:
+            if ts.peak_mfe_r >= 1.5:
+                _lock_pct = 0.85
+            elif ts.peak_mfe_r >= 1.0:
+                _lock_pct = 0.80
+            elif ts.peak_mfe_r >= 0.5:
+                _lock_pct = 0.70
+            else:
+                _lock_pct = 0.60
+
+            _lock_r = ts.peak_mfe_r * _lock_pct
+            _lock_dist = _lock_r * ts.initial_risk
+
+            if is_long:
+                _mfe_floor = ts.entry_price + _lock_dist
+                if ts.chandelier_stop < _mfe_floor:
+                    ts.chandelier_stop = _mfe_floor
+            else:
+                _mfe_floor = ts.entry_price - _lock_dist
+                if ts.chandelier_stop > _mfe_floor or ts.chandelier_stop == 0:
+                    ts.chandelier_stop = _mfe_floor
+
         # Also move the actual stop_loss if chandelier is tighter
         # Enforce minimum SL distance: 0.15% from entry (safety net)
         _min_sl_dist = ts.entry_price * 0.0015
@@ -2871,9 +2896,15 @@ class SignalTracker:
 
     def _save_closed(self) -> None:
         try:
-            # Keep last 1000 closed signals
-            self._closed = self._closed[-1000:]
+            # Keep last 5000 closed signals in main file (was 1000 — lost data)
+            self._closed = self._closed[-5000:]
             self._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1))
+            # APPEND-ONLY ARCHIVE: never lose a trade
+            if self._closed:
+                latest = self._closed[-1]
+                archive = _STORAGE_DIR / "closed_signals_archive.jsonl"
+                with open(archive, "a") as f:
+                    f.write(json.dumps(latest, default=str) + chr(10))
         except Exception as exc:
             logger.warning("Failed to save closed signals: %s", exc)
 

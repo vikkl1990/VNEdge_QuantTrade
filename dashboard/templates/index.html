@@ -2381,7 +2381,7 @@ async function refreshAgents() {
 // ══════════════════════════════════════════════════════════
 // TAB 1: LIVE TRADING REFRESH
 // ══════════════════════════════════════════════════════════
-async function refreshLive() { window._refreshLiveActive = true; _refreshLiveInner(); } function _refreshLiveInner() {
+async function refreshLive() { window._refreshLiveActive = true; await _refreshLiveInner(); } async function _refreshLiveInner() {
     const [status, decision, active, signals, funnel, alerts, closed, realStatus, trkStats] = await Promise.all([
         api("/api/status"), api("/api/decision"), api("/api/tracker/active"),
         api("/api/signals"), api("/api/opportunity-funnel"), api("/api/alerts"),

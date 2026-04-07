@@ -325,8 +325,8 @@ class ScalpStrategy(BaseStrategy):
         self.scalper_cost_pct = 0.047   # entry maker only (exit free under Scalper)
 
         # --- Fee Viability Constants (Upgrade 1) ---
-        self.FEE_RT_TAKER = 0.00118   # 0.059% x 2 sides (Delta India taker)
-        self.FEE_RT_MAKER = 0.00047   # maker entry + settlement
+        self.FEE_RT_TAKER = 0.00059   # 0.059% entry only — Scalper Offer = free exit
+        self.FEE_RT_MAKER = 0.00024   # maker entry only — Scalper Offer = free exit
         self.FEE_VIABILITY_MULT = 2.5 # min move must be 2.5x fees (was 4x — too strict in low vol)
         self.min_edge_high_conf = 0.18  # conservative_move ≥ 0.18% for conf 90+
         self.min_edge_low_conf = 0.25   # conservative_move ≥ 0.25% for conf < 90

@@ -399,8 +399,8 @@ class RealTradingManager:
         # 6. Max open positions
         open_count = len(self.real_trades)
         if open_count >= self.max_open:  # use config value (currently 1)
-            logger.info("SMART QUALIFY FAIL: %d/2 positions open", open_count)
-            return False, f"max_open:{open_count}/2"
+            logger.info("SMART QUALIFY FAIL: %d/%d positions open", open_count, self.max_open)
+            return False, f"max_open:{open_count}/{self.max_open}"
 
         # 7. Balance check
         try:
@@ -649,9 +649,13 @@ class RealTradingManager:
                 symbol, side, lots, leverage, fill, sl, tp,
             )
 
-            # NATIVE TRAILING STOP: bracket_trail_amount handles this natively on Delta
-            # Delta auto-trails the SL — no bot dependency, survives restarts
-            logger.info("REAL TRAIL: bracket_trail_amount used (Delta native trailing)")
+            # NATIVE TRAILING STOP: check if bracket actually created the trail
+            # bracket_order field in response tells us if it worked
+            _bracket_created = order.get("bracket_order") is not None if order else False
+            if _bracket_created:
+                logger.info("REAL TRAIL: bracket_trail_amount ACTIVE (Delta native trailing)")
+            else:
+                logger.warning("REAL TRAIL: bracket FAILED — trail NOT active, SL placed separately")
 
             # SL COVERAGE CHECK: ensure ALL lots on exchange have SL protection
             try:
@@ -1559,6 +1563,20 @@ class RealTradingManager:
                 "stop_loss": getattr(t, "stop_loss", 0),
                 "tp1": getattr(t, "tp1", 0),
                 "tp2": getattr(t, "tp2", 0),
+                # Independent exit fields (survive restart)
+                "independent_exit": getattr(t, "independent_exit", True),
+                "initial_risk": getattr(t, "initial_risk", 0),
+                "highest_price": getattr(t, "highest_price", t.entry_price),
+                "lowest_price": getattr(t, "lowest_price", t.entry_price),
+                "peak_mfe_r": getattr(t, "peak_mfe_r", 0),
+                "mfe_stale_seconds": getattr(t, "mfe_stale_seconds", 0),
+                "last_mfe_update_time": getattr(t, "last_mfe_update_time", 0),
+                "momentum_decay_count": getattr(t, "momentum_decay_count", 0),
+                "breakeven_set": getattr(t, "breakeven_set", False),
+                "chandelier_stop": getattr(t, "chandelier_stop", 0),
+                "entry_atr": getattr(t, "entry_atr", 0),
+                "trade_type": getattr(t, "trade_type", "SCALP"),
+                "regime": getattr(t, "regime", ""),
                 "tp3": getattr(t, "tp3", 0),
                 "position_size": getattr(t, "position_size", 0),
                 "margin": getattr(t, "margin", 0),
@@ -1693,6 +1711,9 @@ class RealTradingManager:
         """Update current prices for all open dry run positions."""
         if not self.real_trades:
             return
+        # Log every tick so we know it is running
+
+
         for trade in list(self.real_trades.values()):
             try:
                 ticker = await self.exchange.fetch_ticker(trade.symbol)
@@ -1725,6 +1746,43 @@ class RealTradingManager:
                 self.dry_run = state["dry_run"]
             # Restore open trades (dry run positions survive restart)
             for td in state.get("open_trades", []):
+                # Ensure all loaded trades have independent_exit fields
+                if "independent_exit" not in td:
+                    td["independent_exit"] = True
+                if "initial_risk" not in td:
+                    entry = td.get("entry_price", 0)
+                    sl = td.get("stop_loss", 0)
+                    td["initial_risk"] = abs(entry - sl) if entry > 0 and sl > 0 else entry * 0.01
+                if "highest_price" not in td:
+                    td["highest_price"] = td.get("entry_price", 0)
+                if "lowest_price" not in td:
+                    td["lowest_price"] = td.get("entry_price", 0)
+                for _fld in ["peak_mfe_r", "mfe_stale_seconds", "chandelier_stop", "momentum_decay_count"]:
+                    if _fld not in td:
+                        td[_fld] = 0
+                if "breakeven_set" not in td:
+                    td["breakeven_set"] = False
+                if "entry_atr" not in td:
+                    td["entry_atr"] = td.get("initial_risk", 0)
+                if "trade_type" not in td:
+                    td["trade_type"] = "SCALP"
+                # Backfill independent_exit fields for trades from older versions
+                if "independent_exit" not in td:
+                    td["independent_exit"] = True
+                if "initial_risk" not in td:
+                    _e = td.get("entry_price", 0)
+                    _s = td.get("stop_loss", 0)
+                    td["initial_risk"] = abs(_e - _s) if _e > 0 and _s > 0 else _e * 0.008
+                for _fld, _def in [("highest_price", td.get("entry_price", 0)),
+                                   ("lowest_price", td.get("entry_price", 0)),
+                                   ("peak_mfe_r", 0), ("mfe_stale_seconds", 0),
+                                   ("last_mfe_update_time", 0), ("momentum_decay_count", 0),
+                                   ("breakeven_set", False), ("chandelier_stop", 0),
+                                   ("entry_atr", td.get("initial_risk", 0))]:
+                    if _fld not in td:
+                        td[_fld] = _def
+                if "trade_type" not in td or td["trade_type"] not in ("SCALP", "INTRADAY", "RUNNER"):
+                    td["trade_type"] = "SCALP"
                 dry_obj = type("DryTrade", (), td)()
                 self.real_trades[td["trade_id"]] = dry_obj
             logger.info(
@@ -1734,6 +1792,12 @@ class RealTradingManager:
                 self.circuit_breaker.daily_pnl, self.circuit_breaker.total_pnl,
                 len(self.closed_real_trades), len(self.real_trades),
             )
+            # Log loaded trade details for debugging
+            for _tid, _t in self.real_trades.items():
+                logger.info("REAL LOADED: %s %s %s | independent=%s risk=%.4f",
+                           _tid[:20], getattr(_t, "symbol", "?"), getattr(_t, "side", "?"),
+                           getattr(_t, "independent_exit", False),
+                           getattr(_t, "initial_risk", 0))
         except Exception as e:
             logger.warning("Failed to load real trading state: %s", e)
 
@@ -2004,7 +2068,7 @@ class RealTradingManager:
         Uses real fill prices for SL/trail/time calculations."""
         if not self.real_trades:
             return
-
+        
         to_close = []
         sl_updates = []
         now = time.time()

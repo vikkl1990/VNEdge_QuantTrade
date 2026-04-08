@@ -665,11 +665,11 @@ class BotOrchestrator:
                 last_check = now
 
                 # PARALLEL REAL EXIT: run real trade exit logic independently
-                if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
+                if hasattr(self, _real_manager) and self._real_manager and self._real_manager.enabled:
                     try:
                         await self._real_manager.update_real_trades(prices)
                     except Exception as _rte:
-                        self._log.debug("Real trade update: %s", _rte)
+                        self._log.error("Real trade update FAILED: %s", _rte, exc_info=True)
 
                 for ev in events:
                     msg = ev.get("message", "")

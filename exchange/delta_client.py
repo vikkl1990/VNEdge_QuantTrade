@@ -450,9 +450,9 @@ class DeltaClient:
         self, symbol: str, side: str, lots: int, stop_price: float,
         client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Place a take-profit order (reduce-only stop at profit level).
+        """Place a take-profit order (reduce-only stop at TP level).
 
-        Uses stop order with trigger at TP price.
+        Uses take_profit_order type — triggers when price reaches TP.
         """
         product_id = self._get_product_id(symbol)
         if not product_id:
@@ -472,8 +472,9 @@ class DeltaClient:
                 "side": side,
                 "stop_price": str(stop_price),
                 "order_type": "market_order",
-                "stop_order_type": "stop_loss_order",
+                "stop_order_type": "take_profit_order",
                 "reduce_only": "true",
+                "close_on_trigger": "true",
             }
             if client_order_id:
                 payload["client_order_id"] = client_order_id[:32]
@@ -525,14 +526,21 @@ class DeltaClient:
             take_profit_price = round(take_profit_price / tick) * tick
 
         # Build inline bracket payload (single POST /v2/orders call)
+        # Delta rule: bracket_stop_loss_price and bracket_trail_amount are MUTUALLY EXCLUSIVE
+        # If trail_amount > 0: use trail only (Delta auto-creates SL from entry ± trail)
+        # If trail_amount = 0: use fixed SL price
         payload = {
             "product_id": product_id,
             "size": int(lots),
             "side": side,
             "order_type": "market_order" if limit_price <= 0 else "limit_order",
-            "bracket_stop_loss_price": str(stop_loss_price),
-            "bracket_stop_trigger_method": "mark_price",  # mark_price prevents wick hunts
+            "bracket_stop_trigger_method": "mark_price",
         }
+        if trail_amount > 0:
+            payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
+            # trail creates SL automatically — do NOT also set bracket_stop_loss_price
+        else:
+            payload["bracket_stop_loss_price"] = str(stop_loss_price)
 
         if client_order_id:
             payload["client_order_id"] = client_order_id[:32]
@@ -545,9 +553,7 @@ class DeltaClient:
         if take_profit_price > 0:
             payload["bracket_take_profit_price"] = str(take_profit_price)
 
-        # Native trailing SL: Delta auto-trails, survives bot crash
-        if trail_amount > 0:
-            payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
+        # bracket_trail_amount already set above if trail_amount > 0
 
         if time_in_force:
             payload["time_in_force"] = time_in_force
@@ -597,7 +603,7 @@ class DeltaClient:
                     time.sleep(1.0)
 
             if take_profit_price > 0:
-                logger.info("DELTA [%s] FALLBACK: placing TP for %s @ %.4f", self.mode.upper(), symbol, take_profit_price)
+                logger.info("DELTA [%s] FALLBACK: placing TP (take_profit_order) for %s @ %.4f", self.mode.upper(), symbol, take_profit_price)
                 try:
                     self.place_take_profit(symbol, close_side, lots, take_profit_price)
                 except Exception:

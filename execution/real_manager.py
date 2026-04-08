@@ -361,6 +361,15 @@ class RealTradingManager:
             logger.info("SMART QUALIFY FAIL: circuit_breaker -- %s", cb_reason)
             return False, f"circuit_breaker:{cb_reason}"
 
+        # Drawdown kill switch: auto-disable if total PnL < -25% of starting balance
+        _total_pnl = self.circuit_breaker.total_pnl
+        _starting = 100.0  # approximate starting balance
+        if _total_pnl < -(_starting * 0.25):
+            logger.critical("DRAWDOWN KILL: total_pnl=$%.2f exceeds 25%% drawdown limit — DISABLING", _total_pnl)
+            self.enabled = False
+            self._save_state()
+            return False, f"drawdown_kill:${_total_pnl:.0f}"
+
         # 3. Grade filter
         grade = signal.get("grade", "") or meta.get("grade", "")
         if grade and grade not in self.SMART_GRADE_ALLOW:

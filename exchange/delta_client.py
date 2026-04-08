@@ -195,6 +195,9 @@ class DeltaClient:
     # Rate Limiting & Compliance
     # ==================================================================
 
+    # Global request timeout (seconds)
+    REQUEST_TIMEOUT = 10
+
     def _rate_limit_check(self):
         """Enforce rate limit: max 150 requests/minute. Sleeps if needed."""
         now = time.time()
@@ -537,7 +540,9 @@ class DeltaClient:
             "bracket_stop_trigger_method": "mark_price",
         }
         if trail_amount > 0:
-            payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
+            # Delta rule: trail_amount is NEGATIVE for buy (trails below), POSITIVE for sell (trails above)
+            _signed_trail = -trail_amount if side == "buy" else trail_amount
+            payload["bracket_trail_amount"] = str(round(_signed_trail / tick) * tick)
             # trail creates SL automatically — do NOT also set bracket_stop_loss_price
         else:
             payload["bracket_stop_loss_price"] = str(stop_loss_price)
@@ -563,6 +568,7 @@ class DeltaClient:
                 "POST", "/v2/orders",
                 payload=payload,
                 auth=True,
+                timeout=self.REQUEST_TIMEOUT,
             )
             # Parse response
             if hasattr(result, 'json'):

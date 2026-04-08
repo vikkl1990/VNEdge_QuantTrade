@@ -1113,8 +1113,8 @@ class SignalTracker:
                 # --- BREAKEVEN at 0.15R MFE ---
                 # Once trade shows 0.15R profit, move SL to entry (zero risk)
                 # This prevents the 0.1-0.3R gap where profit evaporates
-                if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold and not ts.breakeven_set:
-                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0018)  # min 0.18% buffer
+                if ts.peak_mfe_r >= 0.20 and _trade_age >= min_hold and not ts.breakeven_set:
+                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0040)  # min 0.40% buffer
                     if is_long:
                         be_sl = ts.entry_price + fee_buffer
                         if be_sl > ts.stop_loss:
@@ -1142,9 +1142,9 @@ class SignalTracker:
                     if ts.peak_mfe_r >= 0.4:
                         lock_pct = 0  # chandelier handles 0.4R+ (skip lock_pct)
                     elif ts.peak_mfe_r >= 0.3:
-                        lock_pct = 0.65  # lock 65% at 0.3R (conservative — let it run)
+                        lock_pct = 0.75  # lock 75% at 0.3R (prevent trail=loss)
                     elif ts.peak_mfe_r >= 0.2:
-                        lock_pct = 0.50  # lock 50% at 0.2R (cover fees)
+                        lock_pct = 0.60  # lock 60% at 0.2R (cover fees + small profit)
                     else:
                         lock_pct = 0  # below 0.2R: breakeven handles it, no lock_pct
 
@@ -1468,7 +1468,9 @@ class SignalTracker:
                     # ── PHASE 1: Early Kill (first 45-60s) ──
                     # If trade shows zero life in the first minute, cut it
                     # RUNNER is exempt (no early kill)
-                    if early_kill_sec > 0 and age_sec >= early_kill_sec:
+                    # Early kill: SKIP for Grade A+/A (best signals should not be killed)
+                    _grade_ek = ts.metadata.get("grade", "") if isinstance(ts.metadata, dict) else ""
+                    if early_kill_sec > 0 and age_sec >= early_kill_sec and _grade_ek not in ("A+", "A"):
                         if max_fav_r < early_kill_mfe and current_r < -0.15:
                             dead_trade = True
                             kill_reason = "early_kill"
@@ -1489,7 +1491,7 @@ class SignalTracker:
                                 kill_reason = "dead_market"
 
                     # ── EXHAUSTION DETECTION (less aggressive — only clear reversals) ──
-                    if not dead_trade and age_sec >= 180 and current_r > 0.25:
+                    if not dead_trade and age_sec >= 300 and current_r > 0.5:
                         # Check if momentum is dying
                         _candles = self._recent_candles.get(ts.symbol)
                         if _candles is not None and len(_candles) >= 3:
@@ -1498,7 +1500,7 @@ class SignalTracker:
                             _shrinking = len(_bodies) >= 3 and _bodies[0] > _bodies[1] > _bodies[2]
 
                             # 3 shrinking bodies = momentum exhaustion
-                            if _shrinking and current_r > 0.3:  # only exit if meaningful profit to protect
+                            if _shrinking and current_r > 0.5:  # only exit with significant profit
                                 dead_trade = True
                                 kill_reason = "exhaustion_shrink"
                                 logger.info("EXHAUSTION: %s %s | 3 shrinking bodies | R=%.2f — taking profit",
@@ -1511,12 +1513,12 @@ class SignalTracker:
                             if _range > 0 and _body > 0:
                                 if ts.side == "long":
                                     _upper_wick = float(_last["high"]) - max(float(_last["close"]), float(_last["open"]))
-                                    if _upper_wick > _body * 0.6 and current_r > 0.3:  # only on clear wick with profit
+                                    if _upper_wick > _body * 0.6 and current_r > 0.5:  # only on clear wick with big profit
                                         dead_trade = True
                                         kill_reason = "exhaustion_wick"
                                 elif ts.side == "short":
                                     _lower_wick = min(float(_last["close"]), float(_last["open"])) - float(_last["low"])
-                                    if _lower_wick > _body * 0.6 and current_r > 0.3:  # only on clear wick with profit
+                                    if _lower_wick > _body * 0.6 and current_r > 0.5:  # only on clear wick with big profit
                                         dead_trade = True
                                         kill_reason = "exhaustion_wick"
 
@@ -2013,7 +2015,7 @@ class SignalTracker:
 
         # Also move the actual stop_loss if chandelier is tighter
         # Enforce minimum SL distance: 0.15% from entry (safety net)
-        _min_sl_dist = ts.entry_price * 0.0018  # 0.18% floor (was 0.15%)
+        _min_sl_dist = ts.entry_price * 0.0040  # 0.40% floor (match baseline 0.43%)
         if is_long:
             _sl_floor = ts.entry_price - _min_sl_dist
             if ts.chandelier_stop > 0 and ts.chandelier_stop < _sl_floor:

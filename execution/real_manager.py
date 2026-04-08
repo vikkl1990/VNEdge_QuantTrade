@@ -1091,7 +1091,7 @@ class RealTradingManager:
                 "status": "open",
                 "opened_at": time.time(),
                 "scanner": meta.get("setup_type", ""),
-                "trade_type": meta.get("display_section", ""),
+                "trade_type": meta.get("trade_type_override", "") or "SCALP",  # must be SCALP/INTRADAY/RUNNER
                 "confidence": signal.get("confidence", 0),
                 "ml_prob": meta.get("ml_probability", 0),
                 "ml_verdict": meta.get("ml_verdict", ""),
@@ -2134,7 +2134,7 @@ class RealTradingManager:
                 else:
                     mult = config.get("chandelier_mult_ranging", 1.5)
 
-                _min_dist = entry * 0.0018  # 0.18% floor  # minimum 0.15% from entry
+                _min_dist = entry * 0.0040  # 0.40% floor (match baseline)  # minimum 0.15% from entry
                 if is_long:
                     new_stop = t.highest_price - (atr * mult)
                     new_stop = max(new_stop, entry - _min_dist) if new_stop < entry else new_stop  # floor
@@ -2150,7 +2150,7 @@ class RealTradingManager:
                 else:
                     new_stop = t.lowest_price + (atr * mult)
                     # Floor: don't tighten closer than 0.15% from entry
-                    _sl_ceil = entry + entry * 0.0018  # 0.18% floor
+                    _sl_ceil = entry + entry * 0.0040  # 0.40% floor (match baseline)
                     if new_stop > _sl_ceil:
                         new_stop = _sl_ceil
                     ch_stop = getattr(t, "chandelier_stop", 0)

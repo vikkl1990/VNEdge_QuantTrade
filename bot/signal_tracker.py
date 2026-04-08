@@ -1114,7 +1114,7 @@ class SignalTracker:
                 # Once trade shows 0.15R profit, move SL to entry (zero risk)
                 # This prevents the 0.1-0.3R gap where profit evaporates
                 if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold and not ts.breakeven_set:
-                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0015)  # min 0.15% buffer
+                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0018)  # min 0.18% buffer
                     if is_long:
                         be_sl = ts.entry_price + fee_buffer
                         if be_sl > ts.stop_loss:
@@ -1136,19 +1136,17 @@ class SignalTracker:
                                 "symbol": ts.symbol, "side": ts.side,
                                 "new_sl": be_sl, "old_sl": 0, "peak_mfe_r": ts.peak_mfe_r})
 
-                if False and ts.peak_mfe_r >= 0.3 and _trade_age >= min_hold:
-                    # DISABLED: lock_pct replaced by chandelier trail (was conflicting)
-                    # Chandelier at _update_chandelier() handles all trailing now
-                    if ts.peak_mfe_r >= 1.5:
-                        lock_pct = 0.90  # lock 90% — take the money (was 95% — too tight)
-                    elif ts.peak_mfe_r >= 1.0:
-                        lock_pct = 0.88  # lock 88% at 1R (was 95% — choking winners)
-                    elif ts.peak_mfe_r >= 0.75:
-                        lock_pct = 0.85  # lock 85% at 0.75R (was 92%)
-                    elif ts.peak_mfe_r >= 0.5:
-                        lock_pct = 0.80  # lock 80% at 0.5R (was 90% — winners need room)
+                if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold:
+                    # HYBRID TRAIL: lock_pct handles 0.15-0.4R, chandelier takes over at 0.4R+
+                    # This restores baseline 95% trail WR for early profit protection
+                    if ts.peak_mfe_r >= 0.4:
+                        lock_pct = 0  # chandelier handles 0.4R+ (skip lock_pct)
+                    elif ts.peak_mfe_r >= 0.3:
+                        lock_pct = 0.65  # lock 65% at 0.3R (conservative — let it run)
+                    elif ts.peak_mfe_r >= 0.2:
+                        lock_pct = 0.50  # lock 50% at 0.2R (cover fees)
                     else:
-                        lock_pct = 0.70  # lock 70% at 0.3R (was 85% — cover fees only)
+                        lock_pct = 0  # below 0.2R: breakeven handles it, no lock_pct
 
                     # ── TIME-BASED TIGHTENING ──
                     # If MFE hasn't improved in 8 min, tighten lock by 10%
@@ -1490,8 +1488,8 @@ class SignalTracker:
                                 dead_trade = True
                                 kill_reason = "dead_market"
 
-                    # ── EXHAUSTION DETECTION (exit before reversal) ──
-                    if not dead_trade and age_sec >= 90 and current_r > 0:
+                    # ── EXHAUSTION DETECTION (less aggressive — only clear reversals) ──
+                    if not dead_trade and age_sec >= 180 and current_r > 0.25:
                         # Check if momentum is dying
                         _candles = self._recent_candles.get(ts.symbol)
                         if _candles is not None and len(_candles) >= 3:
@@ -1500,7 +1498,7 @@ class SignalTracker:
                             _shrinking = len(_bodies) >= 3 and _bodies[0] > _bodies[1] > _bodies[2]
 
                             # 3 shrinking bodies = momentum exhaustion
-                            if _shrinking and current_r > 0.1:
+                            if _shrinking and current_r > 0.3:  # only exit if meaningful profit to protect
                                 dead_trade = True
                                 kill_reason = "exhaustion_shrink"
                                 logger.info("EXHAUSTION: %s %s | 3 shrinking bodies | R=%.2f — taking profit",
@@ -1513,12 +1511,12 @@ class SignalTracker:
                             if _range > 0 and _body > 0:
                                 if ts.side == "long":
                                     _upper_wick = float(_last["high"]) - max(float(_last["close"]), float(_last["open"]))
-                                    if _upper_wick > _body * 0.6 and current_r > 0.1:
+                                    if _upper_wick > _body * 0.6 and current_r > 0.3:  # only on clear wick with profit
                                         dead_trade = True
                                         kill_reason = "exhaustion_wick"
                                 elif ts.side == "short":
                                     _lower_wick = min(float(_last["close"]), float(_last["open"])) - float(_last["low"])
-                                    if _lower_wick > _body * 0.6 and current_r > 0.1:
+                                    if _lower_wick > _body * 0.6 and current_r > 0.3:  # only on clear wick with profit
                                         dead_trade = True
                                         kill_reason = "exhaustion_wick"
 
@@ -1990,7 +1988,8 @@ class SignalTracker:
         # ── MFE-BASED PROFIT LOCK FLOOR ──
         # Chandelier alone may not lock enough profit (e.g. small initial_risk)
         # Enforce minimum lock: 70% of peak MFE at 0.5R+, 80% at 1.0R+
-        if ts.peak_mfe_r >= 0.3 and ts.initial_risk > 0:
+        if ts.peak_mfe_r >= 0.4 and ts.initial_risk > 0:
+            # Chandelier MFE lock: only activates at 0.4R+ (lock_pct handles 0.15-0.4R)
             if ts.peak_mfe_r >= 1.5:
                 _lock_pct = 0.85
             elif ts.peak_mfe_r >= 1.0:
@@ -1998,7 +1997,7 @@ class SignalTracker:
             elif ts.peak_mfe_r >= 0.5:
                 _lock_pct = 0.70
             else:
-                _lock_pct = 0.60
+                _lock_pct = 0.60  # 0.4-0.5R range
 
             _lock_r = ts.peak_mfe_r * _lock_pct
             _lock_dist = _lock_r * ts.initial_risk
@@ -2014,7 +2013,7 @@ class SignalTracker:
 
         # Also move the actual stop_loss if chandelier is tighter
         # Enforce minimum SL distance: 0.15% from entry (safety net)
-        _min_sl_dist = ts.entry_price * 0.0015
+        _min_sl_dist = ts.entry_price * 0.0018  # 0.18% floor (was 0.15%)
         if is_long:
             _sl_floor = ts.entry_price - _min_sl_dist
             if ts.chandelier_stop > 0 and ts.chandelier_stop < _sl_floor:

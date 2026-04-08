@@ -996,6 +996,26 @@ class RealTradingManager:
         entry_price = signal.get("entry_price", 0)
         coid = paper_trade_id[:32] if paper_trade_id else None
 
+        # -- Price freshness: skip if price already moved too far --
+        try:
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if _safe_connect(delta):
+                _ticker = delta.get_ticker(symbol)
+                if _ticker:
+                    _bid = float(_ticker.get("best_bid", 0) or 0)
+                    _ask = float(_ticker.get("best_ask", 0) or 0)
+                    _mid = (_bid + _ask) / 2 if _bid > 0 and _ask > 0 else 0
+                    if _mid > 0 and entry_price > 0:
+                        _dev_bp = abs(_mid - entry_price) / entry_price * 10000
+                        if _dev_bp > 25:
+                            logger.warning("REAL SKIP: %s — price moved %.0fbp (signal=%.4f mid=%.4f bid=%.4f ask=%.4f)",
+                                          symbol, _dev_bp, entry_price, _mid, _bid, _ask)
+                            return {"status": "skipped", "reason": f"price_stale_{_dev_bp:.0f}bp"}
+                        logger.info("REAL PRICE FRESH: %s | signal=%.4f mid=%.4f dev=%.0fbp | bid=%.4f ask=%.4f",
+                                   symbol, entry_price, _mid, _dev_bp, _bid, _ask)
+        except Exception as _pe:
+            logger.debug("Price check failed: %s", _pe)
+
         # -- Execute Entry --
         try:
             _grade = signal.get("grade", "") or meta.get("grade", "")
@@ -1030,6 +1050,22 @@ class RealTradingManager:
 
             # Slippage
             slippage_bps = abs(fill_price - entry_price) / entry_price * 10000 if entry_price > 0 else 0
+
+            # Max slippage guard: if fill > 40bp from signal, emergency close
+            if slippage_bps > 40 and not self.dry_run:
+                logger.critical("REAL ENTRY: EXCESSIVE SLIPPAGE %.0fbp (signal=%.4f fill=%.4f) — CLOSING",
+                               slippage_bps, entry_price, fill_price)
+                try:
+                    close_side = "sell" if side_str == "long" else "buy"
+                    delta._client.create_order({
+                        "product_id": delta._get_product_id(symbol),
+                        "size": lots, "side": close_side,
+                        "order_type": "market_order", "reduce_only": "true",
+                    })
+                    logger.info("REAL SLIPPAGE CLOSE: %s closed to prevent loss", symbol)
+                except Exception as _sc:
+                    logger.error("REAL SLIPPAGE CLOSE failed: %s", _sc)
+                return {"error": f"slippage_{slippage_bps:.0f}bp"}, fill_price
 
             # Build trade tracking object
             order_id = order.get("id", order.get("order_id", ""))
@@ -2034,7 +2070,7 @@ class RealTradingManager:
                 else:
                     mult = config.get("chandelier_mult_ranging", 1.5)
 
-                _min_dist = entry * 0.0015  # minimum 0.15% from entry
+                _min_dist = entry * 0.0018  # 0.18% floor  # minimum 0.15% from entry
                 if is_long:
                     new_stop = t.highest_price - (atr * mult)
                     new_stop = max(new_stop, entry - _min_dist) if new_stop < entry else new_stop  # floor
@@ -2050,7 +2086,7 @@ class RealTradingManager:
                 else:
                     new_stop = t.lowest_price + (atr * mult)
                     # Floor: don't tighten closer than 0.15% from entry
-                    _sl_ceil = entry + entry * 0.0015
+                    _sl_ceil = entry + entry * 0.0018  # 0.18% floor
                     if new_stop > _sl_ceil:
                         new_stop = _sl_ceil
                     ch_stop = getattr(t, "chandelier_stop", 0)

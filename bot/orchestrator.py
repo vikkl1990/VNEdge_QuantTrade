@@ -1142,6 +1142,11 @@ class BotOrchestrator:
             return
 
         self._heartbeat.record_activity(f"candle_close:{symbol}")
+        try:
+            from bot import pipeline_metrics as _pm
+            _pm.heartbeat("candle_close")
+        except Exception:
+            pass
 
         try:
             self._log.info(

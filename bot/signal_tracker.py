@@ -864,6 +864,11 @@ class SignalTracker:
             self._updating_prices = False
 
     def _update_prices_inner(self, prices: Dict[str, float]) -> List[Dict[str, Any]]:
+        try:
+            from bot import pipeline_metrics as _pm
+            _pm.heartbeat("signal_tracker")
+        except Exception:
+            pass
         events = []
         to_close = []
 

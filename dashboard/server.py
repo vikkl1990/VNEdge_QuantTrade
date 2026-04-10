@@ -561,6 +561,7 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
         app.router.add_get("/api/agents/status", self._handle_agents_status)
         app.router.add_get("/api/risk-return", self._handle_risk_return_scatter)
+        app.router.add_get("/api/pipeline/overview", self._handle_pipeline_overview)
         app.router.add_get("/api/pipeline/journey/{trade_id}", self._handle_journey)
         app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
         app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
@@ -1457,6 +1458,24 @@ class DashboardServer:
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""
         return web.json_response({"t": time.time() * 1000})
+
+    async def _handle_pipeline_overview(self, request: web.Request) -> web.Response:
+        """Phase 0: funnel counts, real rejection leaderboard, agent heartbeats."""
+        try:
+            from bot.pipeline_metrics import get_snapshot
+            orch = getattr(self, '_orchestrator', None)
+            strategy = getattr(self, '_strategy', None) or (getattr(orch, '_strategy', None) if orch else None)
+            real_manager = getattr(self, '_real_manager', None) or (getattr(orch, '_real_manager', None) if orch else None)
+            signal_tracker = getattr(self, '_signal_tracker', None) or (getattr(orch, '_signal_tracker', None) if orch else None)
+            snapshot = get_snapshot(
+                strategy=strategy,
+                real_manager=real_manager,
+                signal_tracker=signal_tracker,
+                orchestrator=orch,
+            )
+            return web.json_response(snapshot, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_journey(self, request: web.Request) -> web.Response:
         """Return signal journey for a specific trade_id."""

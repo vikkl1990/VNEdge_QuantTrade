@@ -976,6 +976,14 @@ class RealTradingManager:
             _SJ.stamp(signal, "real_qualify", passed=qualified, reason=qual_reason)
         except Exception:
             pass
+        try:
+            from bot import pipeline_metrics as _pm
+            if qualified:
+                _pm.record_real_pass()
+            else:
+                _pm.record_real_reject(qual_reason)
+        except Exception:
+            pass
         if not qualified:
             logger.info("REAL SKIP: %s %s -- %s", symbol, signal.get("side", "?"), qual_reason)
             return {"status": "skipped", "reason": qual_reason}

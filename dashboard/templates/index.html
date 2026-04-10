@@ -1646,6 +1646,65 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
 <!-- ═══ AGENTS TAB ═══════════════════════════════════════ -->
 <div class="tab-content" id="tab-agents">
+
+  <!-- Phase 0: Pipeline Funnel + Heartbeat row -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
+
+    <!-- Pipeline Funnel -->
+    <div class="panel" style="border-left:3px solid var(--cyan)">
+      <div class="panel-title">Pipeline Funnel <span class="badge" id="pm-uptime" style="font-size:.6rem"></span></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px" id="pm-funnel-grid">
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Scanned</div>
+          <div style="font-size:1.4rem;font-weight:800;color:var(--cyan)" id="pm-scanned">--</div>
+        </div>
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Paper Emitted</div>
+          <div style="font-size:1.4rem;font-weight:800;color:var(--green)" id="pm-paper">--</div>
+        </div>
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Real Exec</div>
+          <div style="font-size:1.4rem;font-weight:800;color:var(--accent)" id="pm-real-exec">--</div>
+        </div>
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Real Qualified</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--yellow)" id="pm-real-qual">--</div>
+        </div>
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Real Rejected</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--red)" id="pm-real-rej">--</div>
+        </div>
+        <div class="stat-card" style="text-align:center">
+          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase">Exec Events</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--purple)" id="pm-exec-ev">--</div>
+        </div>
+      </div>
+      <!-- Real rejection leaderboard -->
+      <div style="margin-top:8px">
+        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px">Top Reject Reasons (today)</div>
+        <div id="pm-reject-list" style="display:flex;flex-direction:column;gap:3px">
+          <div style="font-size:.7rem;color:var(--text-muted)">--</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent Heartbeats -->
+    <div class="panel" style="border-left:3px solid var(--green)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">Agent Heartbeats</div>
+        <div id="pm-sup-indicator" style="font-size:.65rem;padding:2px 8px;border-radius:4px;background:rgba(0,255,157,.08);color:var(--text-muted)">Supervisor --</div>
+      </div>
+      <div id="pm-heartbeat-list" style="display:flex;flex-direction:column;gap:5px">
+        <div style="font-size:.7rem;color:var(--text-muted)">Loading...</div>
+      </div>
+      <!-- CB status -->
+      <div style="margin-top:8px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)" id="pm-cb-row">
+        <span style="font-size:.65rem;color:var(--text-muted)">Circuit Breaker: </span>
+        <span id="pm-cb-status" style="font-weight:700;font-size:.75rem">--</span>
+      </div>
+    </div>
+  </div>
+
   <div class="grid-2">
     <!-- LEFT: Agent Status Cards -->
     <div>
@@ -2280,7 +2339,77 @@ function switchTab(tab) {
 // ══════════════════════════════════════════════════════════
 async function refreshAgents() {
   try {
-    const d = await fetch("/api/agents/status").then(r => r.json()).catch(() => ({}));
+    const [d, pm, supStatus] = await Promise.all([
+      fetch("/api/agents/status").then(r => r.json()).catch(() => ({})),
+      fetch("/api/pipeline/overview").then(r => r.json()).catch(() => ({})),
+      fetch("/api/supervisor/status").then(r => r.json()).catch(() => ({})),
+    ]);
+
+    // ── Phase 0: Pipeline Funnel ──
+    if (pm && pm.funnel) {
+      const f = pm.funnel;
+      const si = n => document.getElementById(n);
+      si("pm-scanned") && (si("pm-scanned").textContent = (f.scanned||0).toLocaleString());
+      si("pm-paper") && (si("pm-paper").textContent = (f.paper_emitted||0).toLocaleString());
+      si("pm-real-exec") && (si("pm-real-exec").textContent = (f.real_executed||0).toLocaleString());
+      si("pm-real-qual") && (si("pm-real-qual").textContent = (f.real_qualified||0).toLocaleString());
+      si("pm-real-rej") && (si("pm-real-rej").textContent = (f.real_rejected||0).toLocaleString());
+      const execEvents = pm.execution ? Object.values(pm.execution).reduce((a,b)=>a+b,0) : 0;
+      si("pm-exec-ev") && (si("pm-exec-ev").textContent = execEvents.toLocaleString());
+      // Uptime
+      const upt = pm.uptime_sec || 0;
+      si("pm-uptime") && (si("pm-uptime").textContent = upt > 3600 ? (upt/3600).toFixed(1)+"h" : Math.round(upt/60)+"m");
+      // Rejection leaderboard
+      const rl = document.getElementById("pm-reject-list");
+      if (rl && pm.rejections && pm.rejections.top && pm.rejections.top.length) {
+        rl.innerHTML = pm.rejections.top.slice(0,5).map(r =>
+          `<div style="display:flex;justify-content:space-between;font-size:.7rem;padding:2px 0;border-bottom:1px solid var(--border)">
+            <span style="color:var(--text-dim)">${r.reason}</span>
+            <span style="font-weight:700;color:var(--red)">${r.count}</span>
+          </div>`
+        ).join("");
+      } else if (rl) {
+        rl.innerHTML = '<div style="font-size:.7rem;color:var(--text-muted)">No rejections today</div>';
+      }
+      // CB status
+      const cbEl = document.getElementById("pm-cb-status");
+      if (cbEl && pm.circuit_breaker) {
+        const cb = pm.circuit_breaker;
+        cbEl.textContent = cb.is_tripped ? `TRIPPED: ${cb.trip_reason}` : `OK | PnL $${(cb.daily_pnl||0).toFixed(2)} | losses: ${cb.consecutive_losses||0}`;
+        cbEl.style.color = cb.is_tripped ? "var(--red)" : "var(--green)";
+      }
+    }
+
+    // ── Phase 0: Agent Heartbeats ──
+    const hbList = document.getElementById("pm-heartbeat-list");
+    if (hbList && pm && pm.agents) {
+      const hbs = pm.agents;
+      const keys = Object.keys(hbs);
+      if (keys.length) {
+        hbList.innerHTML = keys.map(comp => {
+          const h = hbs[comp];
+          const age = h.last_seen_sec || 0;
+          const st = h.status || "unknown";
+          const col = st === "ok" ? "var(--green)" : st === "stale" ? "var(--yellow)" : "var(--red)";
+          return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:.72rem;padding:3px 0;border-bottom:1px solid var(--border)">
+            <span style="color:var(--text-dim)">${comp}</span>
+            <span><span style="color:${col};font-weight:700">${st.toUpperCase()}</span> <span style="color:var(--text-muted)">${age.toFixed(0)}s ago</span></span>
+          </div>`;
+        }).join("");
+      } else {
+        hbList.innerHTML = '<div style="font-size:.7rem;color:var(--text-muted)">No heartbeats yet (grace period)</div>';
+      }
+    }
+
+    // ── Supervisor status indicator ──
+    const supEl = document.getElementById("pm-sup-indicator");
+    if (supEl && supStatus) {
+      const running = supStatus.running;
+      const anomalies = supStatus.anomaly_count || 0;
+      supEl.textContent = running ? `Supervisor ✓ (${anomalies} alerts)` : "Supervisor ✗ OFF";
+      supEl.style.background = running ? (anomalies > 0 ? "rgba(255,59,92,.12)" : "rgba(0,255,157,.08)") : "rgba(255,59,92,.12)";
+      supEl.style.color = running ? (anomalies > 0 ? "var(--red)" : "var(--green)") : "var(--red)";
+    }
 
     // Agent status cards
     const agents = d.agents || {};

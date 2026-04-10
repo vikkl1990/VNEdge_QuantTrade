@@ -561,6 +561,9 @@ class DashboardServer:
         app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
         app.router.add_get("/api/agents/status", self._handle_agents_status)
         app.router.add_get("/api/risk-return", self._handle_risk_return_scatter)
+        app.router.add_get("/api/pipeline/journey/{trade_id}", self._handle_journey)
+        app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
+        app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
 
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
@@ -1454,6 +1457,56 @@ class DashboardServer:
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""
         return web.json_response({"t": time.time() * 1000})
+
+    async def _handle_journey(self, request: web.Request) -> web.Response:
+        """Return signal journey for a specific trade_id."""
+        trade_id = request.match_info.get("trade_id", "")
+        try:
+            from bot.signal_journey import SignalJourney
+            record = SignalJourney.load_by_trade_id(trade_id)
+            if record:
+                return web.json_response({"found": True, "journey": record}, dumps=_safe_dumps)
+            return web.json_response({"found": False, "trade_id": trade_id})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_supervisor_status(self, request: web.Request) -> web.Response:
+        """Return supervisor watchdog status."""
+        try:
+            supervisor = getattr(self, '_supervisor', None)
+            if supervisor is None:
+                orch = getattr(self, '_orchestrator', None)
+                if orch:
+                    supervisor = getattr(orch, '_supervisor', None)
+            if supervisor:
+                return web.json_response(supervisor.status, dumps=_safe_dumps)
+            return web.json_response({"running": False, "detail": "supervisor_not_wired"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_cb_reset(self, request: web.Request) -> web.Response:
+        """Manually reset the real trading circuit breaker."""
+        try:
+            mgr = getattr(self, '_real_manager', None)
+            if mgr is None:
+                orch = getattr(self, '_orchestrator', None)
+                if orch:
+                    mgr = getattr(orch, '_real_manager', None)
+            if mgr is None:
+                return web.json_response({"error": "real_manager_not_available"}, status=404)
+            cb = mgr.circuit_breaker
+            old_state = {"is_tripped": cb.is_tripped, "consecutive_losses": cb.consecutive_losses, "trip_reason": cb.trip_reason}
+            cb.is_tripped = False
+            cb.consecutive_losses = 0
+            cb.trip_reason = ""
+            mgr._save_state()
+            return web.json_response({
+                "ok": True,
+                "was": old_state,
+                "now": {"is_tripped": False, "consecutive_losses": 0},
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_latency(self, request: web.Request) -> web.Response:
         """Return latency metrics — exchange API, data freshness, WebSocket."""

@@ -722,6 +722,12 @@ class SignalTracker:
                 "TRACK_BLOCKED: %s %s %s | grade=%s conf=%.0f < 45 — too weak to trade",
                 ts.trade_id[:8], ts.symbol, ts.side, _grade, _conf,
             )
+            try:
+                from bot.signal_journey import SignalJourney as _SJ
+                _SJ.stamp(signal_dict, "signal_tracker", passed=False, reason=f"grade={_grade}_conf={_conf:.0f}")
+                _SJ.close(signal_dict)
+            except Exception:
+                pass
             return
 
         # ── DUPLICATE PREVENTION: max 1 per symbol+side (active) ──
@@ -731,6 +737,12 @@ class SignalTracker:
                     "DUPLICATE BLOCKED (active): %s %s %s — already have %s open",
                     ts.trade_id[:8], ts.symbol, ts.side, existing.trade_id[:8],
                 )
+                try:
+                    from bot.signal_journey import SignalJourney as _SJ
+                    _SJ.stamp(signal_dict, "signal_tracker", passed=False, reason="duplicate_active")
+                    _SJ.close(signal_dict)
+                except Exception:
+                    pass
                 return
 
         # ── CONFLICT PREVENTION: block opposite-direction on same symbol ──
@@ -742,6 +754,12 @@ class SignalTracker:
                     ts.trade_id[:8], ts.symbol, ts.side,
                     existing.trade_id[:8], existing.side, existing.symbol,
                 )
+                try:
+                    from bot.signal_journey import SignalJourney as _SJ
+                    _SJ.stamp(signal_dict, "signal_tracker", passed=False, reason="conflict_opposite_side")
+                    _SJ.close(signal_dict)
+                except Exception:
+                    pass
                 return
 
         # ── SETUP STRENGTH VETO: reject weak setups that tend to timeout ──
@@ -783,6 +801,13 @@ class SignalTracker:
             ts.trade_id[:8], ts.symbol, ts.side,
             ts.entry_price, ts.stop_loss, ts.tp1, ts.tp2, ts.tp3,
         )
+        # Journey: stamp success + carry original dict for exit close
+        try:
+            from bot.signal_journey import SignalJourney as _SJ
+            _SJ.stamp(signal_dict, "signal_tracker", passed=True, reason="tracked")
+            ts._orig_sig_dict = signal_dict  # carry for exit stamp
+        except Exception:
+            pass
         self._save_active()
 
 
@@ -1644,6 +1669,16 @@ class SignalTracker:
             ts = self._active.pop(tid)
             closed_dict = ts.to_dict()
             self._closed.append(closed_dict)
+
+            # Journey: stamp exit + persist
+            try:
+                from bot.signal_journey import SignalJourney as _SJ
+                _orig = getattr(ts, '_orig_sig_dict', None)
+                if _orig:
+                    _SJ.stamp(_orig, "exit", passed=True, reason=ts.exit_reason or "closed")
+                    _SJ.close(_orig)
+            except Exception:
+                pass
 
             # Track recently closed for orphan sync (so it gets accurate exit prices)
             self._closed_recently[tid] = {

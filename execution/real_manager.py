@@ -971,6 +971,11 @@ class RealTradingManager:
 
         # -- Smart Qualification --
         qualified, qual_reason = self._smart_qualify(signal)
+        try:
+            from bot.signal_journey import SignalJourney as _SJ
+            _SJ.stamp(signal, "real_qualify", passed=qualified, reason=qual_reason)
+        except Exception:
+            pass
         if not qualified:
             logger.info("REAL SKIP: %s %s -- %s", symbol, signal.get("side", "?"), qual_reason)
             return {"status": "skipped", "reason": qual_reason}
@@ -1130,6 +1135,14 @@ class RealTradingManager:
                 self.paper_to_real[paper_trade_id] = trade_id
             self._save_state()
             self._api_failures = 0
+
+            # Journey: stamp successful real entry
+            try:
+                from bot.signal_journey import SignalJourney as _SJ
+                _SJ.stamp(signal, "real_exec", passed=True,
+                          reason=f"fill={fill_price:.4f}_slip={slippage_bps:.0f}bp_id={trade_id[:16]}")
+            except Exception:
+                pass
 
             _sl_dist_bp = abs(fill_price - sl) / fill_price * 10000 if fill_price > 0 and sl > 0 else 0
             mode_tag = "DRY RUN" if self.dry_run else "LIVE"

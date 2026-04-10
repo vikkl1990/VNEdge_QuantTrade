@@ -395,6 +395,22 @@ class BotOrchestrator:
                 )
             )
 
+            # 8b. Start Supervisor watchdog (60s cycle, 120s grace)
+            try:
+                from bot.supervisor import Supervisor
+                self._supervisor = Supervisor(
+                    signal_tracker=self._signal_tracker,
+                    real_manager=getattr(self, '_real_manager', None),
+                    heartbeat=self._heartbeat,
+                    log=self._log,
+                )
+                await self._supervisor.start()
+                # Wire supervisor to dashboard for status endpoint
+                self._dashboard._supervisor = self._supervisor
+            except Exception as _sup_err:
+                self._supervisor = None
+                self._log.warning("Supervisor failed to start: %s", _sup_err)
+
             # 9. Enter main loop
             await self._main_loop()
 
@@ -415,6 +431,13 @@ class BotOrchestrator:
         """Tear down all subsystems in reverse order."""
         self._running = False
         self._log.info("Shutting down components...")
+
+        # Stop Supervisor watchdog
+        try:
+            if getattr(self, '_supervisor', None):
+                await self._supervisor.stop()
+        except Exception:
+            pass
 
         # Close WebSocket
         if self._delta_ws:
@@ -1202,6 +1225,13 @@ class BotOrchestrator:
         if hasattr(signal_type, 'value'):
             signal_type = signal_type.value
 
+        # -- SignalJourney: begin tracing this signal --
+        try:
+            from bot.signal_journey import SignalJourney as _SJ
+            _SJ.begin(sig_dict)
+        except Exception:
+            _SJ = None
+
         # -- HARD BLOCKS: momentum_trend + dead zone + zero confidence --
         meta = sig_dict.get("metadata", {})
         scanner = meta.get("setup_type", meta.get("scanner", ""))
@@ -1209,11 +1239,21 @@ class BotOrchestrator:
         # Block momentum_trend / investment strategy signals
         if scanner in ("momentum_trend", "simple_bias", "investment") or signal_type == "investment":
             self._log.info("BLOCKED: %s %s — momentum_trend/investment not allowed", symbol, scanner)
+            try:
+                _SJ.stamp(sig_dict, "hard_block", passed=False, reason="momentum_trend_blocked")
+                _SJ.close(sig_dict)
+            except Exception:
+                pass
             return
 
         # Block zero-confidence signals (unattributed)
         if sig_dict.get("confidence", 0) <= 0 and scanner not in ("structure_bounce", "bos_choch", "liquidity_sweep", "cvd_divergence"):
             self._log.info("BLOCKED: %s — zero confidence, scanner=%s", symbol, scanner)
+            try:
+                _SJ.stamp(sig_dict, "hard_block", passed=False, reason="zero_confidence")
+                _SJ.close(sig_dict)
+            except Exception:
+                pass
             return
 
         # Dead zone filter: UTC 21-05 requires higher confidence
@@ -1224,6 +1264,11 @@ class BotOrchestrator:
             if sig_dict.get("confidence", 0) < _dead_zone_min_conf:
                 self._log.info("BLOCKED: %s — dead zone (UTC %d:00) conf=%d < %d",
                              symbol, _utc_hour, sig_dict.get("confidence", 0), _dead_zone_min_conf)
+                try:
+                    _SJ.stamp(sig_dict, "hard_block", passed=False, reason=f"dead_zone_conf_low_{_utc_hour}h")
+                    _SJ.close(sig_dict)
+                except Exception:
+                    pass
                 return
 
         # -- Sync loss streak to AI learner for confidence reduction --
@@ -1267,6 +1312,12 @@ class BotOrchestrator:
             sig_dict.get("confidence", 0),
         )
 
+        # -- Journey: strategy passed all hard blocks --
+        try:
+            _SJ.stamp(sig_dict, "strategy", passed=True, reason=scanner or signal_type)
+        except Exception:
+            pass
+
         # -- Risk check --
         approved, reason = self._risk_manager.check_entry_allowed(sig_dict)
         if not approved:
@@ -1280,7 +1331,16 @@ class BotOrchestrator:
                 f"Signal Rejected: {symbol} {signal_type} — {reason}",
                 level=AlertLevel.WARNING,
             )
+            try:
+                _SJ.stamp(sig_dict, "risk_check", passed=False, reason=reason)
+                _SJ.close(sig_dict)
+            except Exception:
+                pass
             return
+        try:
+            _SJ.stamp(sig_dict, "risk_check", passed=True)
+        except Exception:
+            pass
 
         # -- Inject drawdown level for graduated defense --
         try:
@@ -1343,6 +1403,10 @@ class BotOrchestrator:
                     signal_type,
                     order_result,
                 )
+                try:
+                    _SJ.stamp(sig_dict, "paper_exec", passed=True, reason=str(order_result)[:80] if order_result else "executed")
+                except Exception:
+                    pass
                 # Audit trail — immutable record
                 audit_log("TRADE_ENTRY", {
                     "symbol": symbol,

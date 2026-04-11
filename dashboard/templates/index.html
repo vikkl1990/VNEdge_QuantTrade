@@ -566,6 +566,35 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <span id="rd-alerts" style="color:var(--yellow);font-weight:700;margin-left:auto"></span>
 </div>
 
+<!-- ═══ REAL OPS STRIP (Track D — Fix #1-5 governance) ═══════ -->
+<div id="real-ops-strip" style="margin:6px 16px 0 16px;padding:8px 12px;background:rgba(255,59,92,.03);border:1px solid rgba(255,59,92,.15);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;font-size:.72rem;font-family:var(--font-mono)">
+  <span style="color:var(--red);text-transform:uppercase;letter-spacing:.5px;font-weight:700">REAL OPS</span>
+  <!-- Status badge -->
+  <span><span style="color:var(--text-muted)">Status </span><span id="rops-status" style="font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(128,128,128,.15);color:var(--text-muted)">--</span></span>
+  <!-- Balance -->
+  <span><span style="color:var(--text-muted)">Bal </span><span id="rops-balance" style="color:var(--yellow);font-weight:700">$--</span></span>
+  <span style="color:var(--border)">|</span>
+  <!-- Rolling drawdown: 1h / 24h / 7d -->
+  <span><span style="color:var(--text-muted)">CB 1h </span><span id="rops-cb-1h" style="font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">24h </span><span id="rops-cb-24h" style="font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">7d </span><span id="rops-cb-7d" style="font-weight:700">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <!-- Fix counters -->
+  <span><span style="color:var(--text-muted)">F1 </span><span id="rops-fix1" title="Fix #1 IOC limit fills / skips" style="font-weight:700;color:var(--green)">0/0</span></span>
+  <span><span style="color:var(--text-muted)">F2 </span><span id="rops-fix2" title="Fix #2 trail propagate count" style="font-weight:700;color:var(--green)">0</span></span>
+  <span><span style="color:var(--text-muted)">F3 </span><span id="rops-fix3" title="Fix #3 ml_prob<0.65 blocks" style="font-weight:700;color:var(--text-muted)">0</span></span>
+  <span><span style="color:var(--text-muted)">F4 </span><span id="rops-fix4" title="Fix #4 regime blocks" style="font-weight:700;color:var(--text-muted)">0</span></span>
+  <span><span style="color:var(--text-muted)">F5 </span><span id="rops-fix5" title="Fix #5 TP1 overrides applied" style="font-weight:700;color:var(--text-muted)">0</span></span>
+  <span style="color:var(--border)">|</span>
+  <!-- Probation mode indicator -->
+  <span><span style="color:var(--text-muted)">Probation </span><span id="rops-probation" style="font-weight:700;color:var(--text-muted)">off</span></span>
+  <!-- Action buttons -->
+  <span style="margin-left:auto;display:flex;gap:6px">
+    <button onclick="toggleRealTrading()" id="rops-toggle-btn" style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(255,59,92,.3);background:rgba(255,59,92,.08);color:var(--red);border-radius:3px;cursor:pointer;font-weight:700;font-family:var(--font-mono)">TOGGLE</button>
+    <button onclick="killAllTrading()" id="rops-kill-btn" style="padding:3px 10px;font-size:.65rem;border:1px solid var(--red);background:rgba(255,59,92,.15);color:var(--red);border-radius:3px;cursor:pointer;font-weight:800;font-family:var(--font-mono)">KILL</button>
+  </span>
+</div>
+
 <!-- ═══ CURRENT ACTION BANNER (Phase 2.5 B2) ════════════════ -->
 <div id="current-action-banner" style="margin:6px 16px 0 16px;padding:6px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.15);border-radius:6px;display:flex;align-items:center;gap:12px;font-size:.72rem;font-family:var(--font-mono)">
   <span style="color:#818cf8;text-transform:uppercase;letter-spacing:.5px;font-weight:700;min-width:56px">NOW</span>
@@ -6221,6 +6250,150 @@ async function loadRDrift() {
 try {
   loadRDrift();
   setInterval(loadRDrift, 10000);
+} catch(e) {}
+
+// ═══ Track D: REAL OPS STRIP (Fix #1-5 governance) ═════════
+async function loadRealOps() {
+  try {
+    const r = await fetch('/api/real/status', {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d) return;
+
+    const set = (id, text, color) => {
+      const e = document.getElementById(id);
+      if (!e) return;
+      if (text != null) e.textContent = text;
+      if (color) e.style.color = color;
+    };
+    const bg = (id, color) => {
+      const e = document.getElementById(id);
+      if (e && color) e.style.background = color;
+    };
+
+    // 1. Status badge
+    const mode = d.mode || 'UNKNOWN';
+    const modeColor = mode === 'LIVE' ? 'var(--red)'
+                    : mode === 'DRY RUN' ? 'var(--yellow)'
+                    : 'var(--text-muted)';
+    const modeBg = mode === 'LIVE' ? 'rgba(255,59,92,.18)'
+                 : mode === 'DRY RUN' ? 'rgba(255,215,0,.15)'
+                 : 'rgba(128,128,128,.15)';
+    set('rops-status', mode, modeColor);
+    bg('rops-status', modeBg);
+
+    // 2. Balance
+    const bal = d.balance || 0;
+    set('rops-balance', '$' + bal.toFixed(2));
+
+    // 3. Rolling drawdown (1h / 24h / 7d)
+    const rd = d.rolling_drawdown || {};
+    const fmtCb = (w) => {
+      const r = rd[w];
+      if (!r) return '--';
+      const pnl = r.pnl || 0;
+      const pct = r.pct || 0;
+      const col = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--yellow)' : (pnl >= 0 ? 'var(--green)' : 'var(--text-muted)');
+      return { text: (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' (' + pct.toFixed(0) + '%)', color: col };
+    };
+    const cb1h = fmtCb('1h');
+    const cb24h = fmtCb('24h');
+    const cb7d = fmtCb('7d');
+    if (typeof cb1h === 'object') set('rops-cb-1h', cb1h.text, cb1h.color);
+    if (typeof cb24h === 'object') set('rops-cb-24h', cb24h.text, cb24h.color);
+    if (typeof cb7d === 'object') set('rops-cb-7d', cb7d.text, cb7d.color);
+
+    // 4. Fix counters
+    const fs = d.fix_stats || {};
+    const f1Fill = fs.fix1_ioc_fill || 0;
+    const f1Skip = fs.fix1_ioc_skip || 0;
+    const f2 = fs.fix2_trail_prop || 0;
+    const f3 = fs.fix3_ml_floor_block || 0;
+    const f4 = fs.fix4_regime_block || 0;
+    const f5 = fs.fix5_tp_override || 0;
+
+    set('rops-fix1', f1Fill + '/' + f1Skip, (f1Fill + f1Skip) > 0 ? 'var(--green)' : 'var(--text-muted)');
+    set('rops-fix2', String(f2), f2 > 0 ? 'var(--green)' : 'var(--text-muted)');
+    set('rops-fix3', String(f3), f3 > 0 ? 'var(--cyan)' : 'var(--text-muted)');
+    set('rops-fix4', String(f4), f4 > 0 ? 'var(--cyan)' : 'var(--text-muted)');
+    set('rops-fix5', String(f5), f5 > 0 ? 'var(--green)' : 'var(--text-muted)');
+
+    // 5. Probation mode
+    const p = d.probation || {};
+    if (p.active) {
+      const tradesLeft = p.remaining_trades || 0;
+      const secsLeft = Math.max(0, p.remaining_sec || 0);
+      const minsLeft = (secsLeft / 60).toFixed(0);
+      const mult = (p.size_mult * 100).toFixed(0);
+      set('rops-probation', `${mult}% × ${tradesLeft}t / ${minsLeft}m`, 'var(--yellow)');
+    } else {
+      set('rops-probation', 'off', 'var(--text-muted)');
+    }
+
+    // 6. CB tripped border warning
+    const cb = d.circuit_breaker || {};
+    const strip = document.getElementById('real-ops-strip');
+    if (strip) {
+      if (cb.is_tripped) {
+        strip.style.border = '2px solid var(--red)';
+        strip.style.background = 'rgba(255,59,92,.08)';
+      } else if (!d.enabled) {
+        strip.style.border = '1px solid rgba(128,128,128,.3)';
+        strip.style.background = 'rgba(128,128,128,.03)';
+      } else {
+        strip.style.border = '1px solid rgba(255,59,92,.15)';
+        strip.style.background = 'rgba(255,59,92,.03)';
+      }
+    }
+  } catch(e) {
+    // Silent — keeps last state on transient failures
+  }
+}
+
+async function toggleRealTrading() {
+  // Read current state to flip it
+  let currentEnabled = true;
+  try {
+    const s = await fetch('/api/real/status').then(r => r.json());
+    currentEnabled = !!s.enabled;
+  } catch(e) {}
+  const newEnabled = !currentEnabled;
+  if (!confirm(`Flip real trading: ${currentEnabled ? 'ENABLED' : 'DISABLED'} → ${newEnabled ? 'ENABLED' : 'DISABLED'}?`)) return;
+  try {
+    const r = await fetch('/api/real/toggle', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled: newEnabled}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      alert('Real trading now: ' + (d.enabled ? 'ENABLED' : 'DISABLED'));
+      loadRealOps();
+    } else {
+      alert('Toggle failed: ' + JSON.stringify(d));
+    }
+  } catch(e) {
+    alert('Toggle error: ' + e.message);
+  }
+}
+
+async function killAllTrading() {
+  if (!confirm('⚠ EMERGENCY STOP — this halts ALL trading activity. Continue?')) return;
+  if (!confirm('Are you ABSOLUTELY sure? Bot will need manual restart.')) return;
+  try {
+    const r = await fetch('/api/emergency-stop', {method: 'POST'});
+    const d = await r.json().catch(() => ({}));
+    alert('Emergency stop: ' + JSON.stringify(d));
+    loadRealOps();
+  } catch(e) {
+    alert('Kill error: ' + e.message);
+  }
+}
+
+// Fire on load + every 5s
+try {
+  loadRealOps();
+  setInterval(loadRealOps, 5000);
 } catch(e) {}
 </script>
 </body>

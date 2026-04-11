@@ -267,6 +267,22 @@ class RealTradingManager:
         # decay. 0 = use paper's TP unchanged.
         self._real_tp1_r: float = float(rt_cfg.get("real_tp1_r", 0.0))
 
+        # ── Track D (2026-04-11): FIX-LAYER HIT COUNTERS ──
+        # Exposed via get_status() for the dashboard REAL OPS strip.
+        # Each Fix increments its counter at the fire site so the UI can
+        # show live activity without parsing journal logs.
+        self._fix_stats: Dict[str, int] = {
+            "fix1_ioc_fill": 0,       # Fix #1: IOC limit filled
+            "fix1_ioc_skip": 0,       # Fix #1: IOC didn't fill, trade skipped
+            "fix2_trail_prop": 0,     # Fix #2: paper trail propagated to real SL
+            "fix2_trail_skip": 0,     # Fix #2: trail skipped (already tighter)
+            "fix3_ml_floor_block": 0, # Fix #3: ml_prob < floor rejected
+            "fix4_regime_block": 0,   # Fix #4: regime not in allow-list
+            "fix5_tp_override": 0,    # Fix #5: TP1 tightened from paper
+            "real_entries": 0,        # Total real trades that entered
+            "real_skips": 0,          # Total trades rejected (all reasons)
+        }
+
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
             max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 3)  # 3 is safe default,
@@ -510,6 +526,7 @@ class RealTradingManager:
                 "SMART QUALIFY FAIL [Fix #3]: %s ml_prob=%.3f < real_floor=%.2f — paper_only",
                 signal.get("symbol", "?"), float(ml_prob), _real_floor,
             )
+            self._fix_stats["fix3_ml_floor_block"] = self._fix_stats.get("fix3_ml_floor_block", 0) + 1
             return False, f"real_ml_floor:{ml_prob:.3f}<{_real_floor:.2f}"
 
         # ── Fix #4 (2026-04-11): REGIME FILTER FOR REAL TRADES ──
@@ -527,6 +544,7 @@ class RealTradingManager:
                     "SMART QUALIFY FAIL [Fix #4]: %s regime=%s not in allowed %s — paper_only",
                     signal.get("symbol", "?"), _regime, sorted(_allowed_regimes),
                 )
+                self._fix_stats["fix4_regime_block"] = self._fix_stats.get("fix4_regime_block", 0) + 1
                 return False, f"real_regime_block:{_regime}"
 
         # 5. Scanner win-rate check
@@ -876,6 +894,7 @@ class RealTradingManager:
                     _pm.record_hotfix_veto("p3_9_limit_no_fill", f"{symbol}_{side}_{_state}")
                 except Exception:
                     pass
+                self._fix_stats["fix1_ioc_skip"] = self._fix_stats.get("fix1_ioc_skip", 0) + 1
                 return {"status": "limit_no_fill", "state": _state}, 0
 
             # Path 2: legacy rejection states
@@ -889,6 +908,7 @@ class RealTradingManager:
                     _pm.record_hotfix_veto("p3_9_limit_no_fill", f"{symbol}_{side}_{_state}")
                 except Exception:
                     pass
+                self._fix_stats["fix1_ioc_skip"] = self._fix_stats.get("fix1_ioc_skip", 0) + 1
                 return {"status": "limit_no_fill", "state": _state, "error": _error}, 0
 
         # Check both no-error AND actually filled (IOC may cancel instantly)
@@ -907,6 +927,14 @@ class RealTradingManager:
                 "REAL ENTRY [BRACKET]: %s %s | lots=%d lev=%dx | fill=%.4f | SL=%.4f TP=%.4f",
                 symbol, side, lots, leverage, fill, sl, tp,
             )
+            # Track D: Fix #1 IOC fill counter (if limit path was used)
+            if _use_limit and _limit_price > 0:
+                self._fix_stats["fix1_ioc_fill"] = self._fix_stats.get("fix1_ioc_fill", 0) + 1
+                try:
+                    self._p39_fills = getattr(self, '_p39_fills', 0) + 1
+                except Exception:
+                    pass
+            self._fix_stats["real_entries"] = self._fix_stats.get("real_entries", 0) + 1
 
             # NATIVE TRAILING STOP: check if bracket actually created the trail
             # bracket_order field in response tells us if it worked
@@ -1300,6 +1328,7 @@ class RealTradingManager:
                 signal.get("symbol", "?"), side_str, _tp_original, tp,
                 _real_tp1_r, _paper_initial_risk,
             )
+            self._fix_stats["fix5_tp_override"] = self._fix_stats.get("fix5_tp_override", 0) + 1
 
         # -- Price freshness: skip if price already moved too far --
         try:
@@ -2977,6 +3006,41 @@ class RealTradingManager:
             headline_pnl = live_pnl
             headline_today = len(live_today)
 
+        # ── Track D: rolling drawdown windows + fix hit counters ──
+        # Compute 1h/24h/7d rolling PnL from the real closed trades for the
+        # dashboard CB status card. Thresholds come from the Phase 3.4
+        # drawdown limits (configurable via instance attrs).
+        import time as _t
+        _now_ts = _t.time()
+        _rolling = {"1h": 0.0, "24h": 0.0, "7d": 0.0}
+        _rolling_limits = {
+            "1h": float(getattr(self, "_drawdown_1h_limit", 15.0)),
+            "24h": float(getattr(self, "_drawdown_24h_limit", 25.0)),
+            "7d": float(getattr(self, "_drawdown_7d_limit", 50.0)),
+        }
+        for _win, _secs in (("1h", 3600), ("24h", 86400), ("7d", 604800)):
+            _cutoff = _now_ts - _secs
+            for _t_ in (live_trades if not self.dry_run else demo_trades):
+                try:
+                    from datetime import datetime as _dt
+                    _ts_str = _t_.get("timestamp", "") or ""
+                    if not _ts_str:
+                        continue
+                    _ts = _dt.fromisoformat(str(_ts_str).replace("Z", "+00:00")).timestamp()
+                    if _ts >= _cutoff:
+                        _rolling[_win] += float(_t_.get("pnl_usd", 0) or 0)
+                except Exception:
+                    continue
+
+        # Probation state (Phase 3.5)
+        _prob_mult = float(getattr(self, "_probation_size_mult", 1.0) or 1.0)
+        _prob_active = _prob_mult > 0 and _prob_mult < 1.0
+        _prob_trades_done = int(getattr(self, "_probation_trades_done", 0))
+        _prob_max_trades = int(getattr(self, "_probation_max_trades", 3))
+        _prob_started = float(getattr(self, "_probation_started_at", 0) or 0)
+        _prob_age_sec = (_now_ts - _prob_started) if _prob_started > 0 else 0
+        _prob_max_age = float(getattr(self, "_probation_max_age_sec", 4 * 3600))
+
         return {
             "enabled": self.enabled,
             "dry_run": self.dry_run,
@@ -3009,6 +3073,33 @@ class RealTradingManager:
                 "max_bps": round(max_slippage_bps, 2),
                 "avg_impact_r": round(avg_slippage_r, 4),
                 "samples": len(slippage_data),
+            },
+            # ── Track D: Fix-layer hit counters + rolling drawdown + probation ──
+            "fix_stats": dict(getattr(self, "_fix_stats", {})),
+            "rolling_drawdown": {
+                "1h": {"pnl": round(_rolling["1h"], 2), "limit": _rolling_limits["1h"],
+                        "pct": round(abs(_rolling["1h"]) / _rolling_limits["1h"] * 100, 1) if _rolling_limits["1h"] > 0 else 0},
+                "24h": {"pnl": round(_rolling["24h"], 2), "limit": _rolling_limits["24h"],
+                         "pct": round(abs(_rolling["24h"]) / _rolling_limits["24h"] * 100, 1) if _rolling_limits["24h"] > 0 else 0},
+                "7d": {"pnl": round(_rolling["7d"], 2), "limit": _rolling_limits["7d"],
+                        "pct": round(abs(_rolling["7d"]) / _rolling_limits["7d"] * 100, 1) if _rolling_limits["7d"] > 0 else 0},
+            },
+            "probation": {
+                "active": _prob_active,
+                "size_mult": _prob_mult,
+                "trades_done": _prob_trades_done,
+                "max_trades": _prob_max_trades,
+                "age_sec": round(_prob_age_sec, 0),
+                "max_age_sec": _prob_max_age,
+                "remaining_trades": max(0, _prob_max_trades - _prob_trades_done) if _prob_active else 0,
+                "remaining_sec": max(0, _prob_max_age - _prob_age_sec) if _prob_active else 0,
+            },
+            "fix_config": {
+                "use_limit_orders": bool(getattr(self, "_use_limit_orders", False)),
+                "max_slippage_bps": float(getattr(self, "_p39_max_slippage_bps", 15)),
+                "real_ml_threshold_min": float(getattr(self, "_real_ml_threshold_min", 0.65)),
+                "real_allowed_regimes": sorted(list(getattr(self, "_real_allowed_regimes", set()) or [])),
+                "real_tp1_r": float(getattr(self, "_real_tp1_r", 0.0)),
             },
         }
 

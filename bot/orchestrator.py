@@ -569,12 +569,23 @@ class BotOrchestrator:
                                         await self._real_manager.update_exchange_sl(
                                             trade_id, ev_symbol, _new_real_sl,
                                         )
+                                        # Track D: Fix #2 counter
+                                        try:
+                                            _fs = getattr(self._real_manager, "_fix_stats", {})
+                                            _fs["fix2_trail_prop"] = _fs.get("fix2_trail_prop", 0) + 1
+                                        except Exception:
+                                            pass
                                     else:
                                         self._log.debug(
                                             "TRAIL SKIP (not tighter): %s %s new_real=%.4f current=%.4f",
                                             ev_symbol, _side, _new_real_sl,
                                             float(getattr(_sl_real_t, "stop_loss", 0) or 0),
                                         )
+                                        try:
+                                            _fs = getattr(self._real_manager, "_fix_stats", {})
+                                            _fs["fix2_trail_skip"] = _fs.get("fix2_trail_skip", 0) + 1
+                                        except Exception:
+                                            pass
                         except Exception as _tp_err:
                             self._log.warning("TRAIL PROPAGATE failed: %s", _tp_err)
                 else:
@@ -806,6 +817,18 @@ class BotOrchestrator:
                                         await self._real_manager.update_exchange_sl(
                                             trade_id, symbol, _new_real_sl2,
                                         )
+                                        # Track D: Fix #2 counter
+                                        try:
+                                            _fs = getattr(self._real_manager, "_fix_stats", {})
+                                            _fs["fix2_trail_prop"] = _fs.get("fix2_trail_prop", 0) + 1
+                                        except Exception:
+                                            pass
+                                    else:
+                                        try:
+                                            _fs = getattr(self._real_manager, "_fix_stats", {})
+                                            _fs["fix2_trail_skip"] = _fs.get("fix2_trail_skip", 0) + 1
+                                        except Exception:
+                                            pass
                         except Exception as exc:
                             self._log.warning("TRAIL PROPAGATE [fast] failed: %s", exc)
                         continue  # sl_updated is not a close event, skip rest

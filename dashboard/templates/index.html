@@ -966,6 +966,88 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
+    <!-- ═══ Track B.1: EQUITY CURVE (paper + real overlay) ═══ -->
+    <div class="panel live-span-2" id="equity-curve-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">Equity Curve <span class="badge">cumulative PnL</span></div>
+        <div style="display:flex;gap:4px;align-items:center;font-size:.65rem;font-family:var(--font-mono)">
+          <span style="color:var(--cyan)">● Paper</span>
+          <span style="color:var(--red);margin-left:8px">● Real</span>
+          <span style="margin-left:12px;color:var(--text-muted)">last:</span>
+          <button onclick="setEqRange(100)" data-eq="100" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">100t</button>
+          <button onclick="setEqRange(300)" data-eq="300" class="eq-btn eq-active" style="padding:1px 6px;font-size:.55rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.08);color:var(--cyan);border-radius:3px;cursor:pointer;font-weight:700">300t</button>
+          <button onclick="setEqRange(1000)" data-eq="1000" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">1000t</button>
+          <button onclick="setEqRange(0)" data-eq="0" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">ALL</button>
+        </div>
+      </div>
+      <div style="position:relative;height:240px">
+        <canvas id="equity-curve-canvas"></canvas>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;font-size:.68rem;font-family:var(--font-mono)">
+        <div style="padding:6px 10px;background:rgba(0,212,255,.05);border-left:3px solid var(--cyan);border-radius:4px">
+          <div style="color:var(--cyan);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.55rem">Paper</div>
+          <div style="display:flex;gap:10px;margin-top:2px;color:var(--text-muted)">
+            <span>Trades: <b id="eq-paper-n" style="color:var(--text)">--</b></span>
+            <span>WR: <b id="eq-paper-wr" style="color:var(--green)">--</b></span>
+            <span>Net: <b id="eq-paper-net" style="color:var(--green)">$--</b></span>
+            <span>Peak DD: <b id="eq-paper-dd" style="color:var(--yellow)">$--</b></span>
+          </div>
+        </div>
+        <div style="padding:6px 10px;background:rgba(255,59,92,.05);border-left:3px solid var(--red);border-radius:4px">
+          <div style="color:var(--red);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.55rem">Real</div>
+          <div style="display:flex;gap:10px;margin-top:2px;color:var(--text-muted)">
+            <span>Trades: <b id="eq-real-n" style="color:var(--text)">--</b></span>
+            <span>WR: <b id="eq-real-wr" style="color:var(--green)">--</b></span>
+            <span>Net: <b id="eq-real-net" style="color:var(--green)">$--</b></span>
+            <span>Peak DD: <b id="eq-real-dd" style="color:var(--yellow)">$--</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ Track B.3: R-MULTIPLE HISTOGRAM (paper vs real side-by-side) ═══ -->
+    <div class="panel live-span-2" id="r-histogram-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">R-Multiple Distribution <span class="badge">paper vs real</span></div>
+        <div style="font-size:.65rem;font-family:var(--font-mono)">
+          <span style="color:var(--cyan)">● Paper</span>
+          <span style="color:var(--red);margin-left:8px">● Real</span>
+        </div>
+      </div>
+      <div style="position:relative;height:220px">
+        <canvas id="r-hist-canvas"></canvas>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted)">
+        <div>Paper avg R: <b id="rh-paper-avg" style="color:var(--cyan)">--</b> · median: <b id="rh-paper-med" style="color:var(--cyan)">--</b></div>
+        <div>Real avg R: <b id="rh-real-avg" style="color:var(--red)">--</b> · median: <b id="rh-real-med" style="color:var(--red)">--</b></div>
+      </div>
+    </div>
+
+    <!-- ═══ Track B: PAPER↔REAL DIVERGENCE + LOSS ANALYSIS (side-by-side) ═══ -->
+    <div class="panel live-span-2" id="divergence-loss-panel">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <!-- LEFT: Per-symbol divergence -->
+        <div>
+          <div class="panel-title" style="margin:0 0 8px 0">Paper↔Real Divergence <span class="badge">last 24h</span></div>
+          <div style="position:relative;height:180px">
+            <canvas id="divergence-canvas"></canvas>
+          </div>
+          <div style="margin-top:6px;font-size:.62rem;color:var(--text-muted);font-family:var(--font-mono)">
+            Bars: (paper_R − real_R) per symbol. 🟢 real matches paper. 🟡 &lt;0.25R. 🔴 &gt;0.5R.
+            Fix #2 target: &lt;$0.30/trade divergence.
+          </div>
+        </div>
+        <!-- RIGHT: Loss Analysis recommendations -->
+        <div>
+          <div class="panel-title" style="margin:0 0 8px 0">Loss Analysis <span class="badge">24h buckets</span></div>
+          <div id="loss-analysis-body" style="font-size:.68rem;font-family:var(--font-mono);max-height:200px;overflow-y:auto">
+            <div class="empty">Loading loss taxonomy…</div>
+          </div>
+          <div style="margin-top:6px;font-size:.62rem;color:var(--text-muted);font-family:var(--font-mono)" id="loss-analysis-summary">--</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -6631,6 +6713,365 @@ async function loadMlOps() {
 try {
   loadMlOps();
   setInterval(loadMlOps, 30000);
+} catch(e) {}
+
+// ═══ Track B: Analytics charts (equity curve, R-hist, divergence, loss) ═══
+window._eqRange = 300;  // default
+window._eqChart = null;
+window._rhChart = null;
+window._dvChart = null;
+
+function setEqRange(n) {
+  window._eqRange = n;
+  document.querySelectorAll('.eq-btn').forEach(b => {
+    const v = parseInt(b.getAttribute('data-eq') || '0', 10);
+    if (v === n) {
+      b.classList.add('eq-active');
+      b.style.background = 'rgba(0,212,255,.08)';
+      b.style.color = 'var(--cyan)';
+      b.style.borderColor = 'rgba(0,212,255,.3)';
+      b.style.fontWeight = '700';
+    } else {
+      b.classList.remove('eq-active');
+      b.style.background = 'transparent';
+      b.style.color = 'var(--text-muted)';
+      b.style.borderColor = 'var(--border)';
+      b.style.fontWeight = '400';
+    }
+  });
+  if (typeof loadAnalytics === 'function') loadAnalytics();
+}
+
+async function loadAnalytics() {
+  try {
+    const [paperResp, realResp, lossResp] = await Promise.all([
+      fetch('/api/tracker/closed?limit=1000', {cache: 'no-store'}).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch('/api/real/status', {cache: 'no-store'}).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+      fetch('/api/pipeline/loss_taxonomy?hours=24', {cache: 'no-store'}).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+    ]);
+
+    // Normalize paper trade list
+    let paperSigs = Array.isArray(paperResp) ? paperResp : (paperResp.closed || paperResp.signals || []);
+    paperSigs = paperSigs.filter(s => s && typeof s === 'object' && s.exit_time);
+    // Sort ascending by exit_time
+    paperSigs.sort((a, b) => String(a.exit_time).localeCompare(String(b.exit_time)));
+
+    // Normalize real trade list from /api/real/status
+    const realTrades = (realResp && (realResp.live_trades || realResp.recent_trades)) || [];
+    const realSigs = realTrades.filter(t => t && typeof t === 'object' && t.timestamp);
+    realSigs.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+
+    // ── B.1: EQUITY CURVE ──
+    const eqRange = window._eqRange || 300;
+    const paperSlice = eqRange > 0 ? paperSigs.slice(-eqRange) : paperSigs;
+    const realSlice = eqRange > 0 ? realSigs.slice(-eqRange) : realSigs;
+
+    // Compute cumulative PnL arrays (indexed by trade #)
+    let paperCum = 0, realCum = 0;
+    const paperCumArr = [], realCumArr = [];
+    const paperLabels = [], realLabels = [];
+    let paperWins = 0, paperLosses = 0, paperPeakDD = 0, paperPeak = 0;
+    let realWins = 0, realLosses = 0, realPeakDD = 0, realPeak = 0;
+
+    paperSlice.forEach((s, i) => {
+      const pnl = parseFloat(s.pnl_usd || 0) || 0;
+      paperCum += pnl;
+      paperCumArr.push(paperCum);
+      paperLabels.push(String(s.exit_time || '').slice(5, 16));
+      if (pnl > 0.05) paperWins++;
+      else if (pnl < -0.05) paperLosses++;
+      if (paperCum > paperPeak) paperPeak = paperCum;
+      const dd = paperPeak - paperCum;
+      if (dd > paperPeakDD) paperPeakDD = dd;
+    });
+
+    realSlice.forEach((s, i) => {
+      const pnl = parseFloat(s.pnl_usd || 0) || 0;
+      realCum += pnl;
+      realCumArr.push(realCum);
+      realLabels.push(String(s.timestamp || '').slice(5, 16));
+      if (pnl > 0.05) realWins++;
+      else if (pnl < -0.05) realLosses++;
+      if (realCum > realPeak) realPeak = realCum;
+      const dd = realPeak - realCum;
+      if (dd > realPeakDD) realPeakDD = dd;
+    });
+
+    // Overlay both on same x-axis — use trade index as x (paper+real rarely align on timestamps)
+    const maxLen = Math.max(paperCumArr.length, realCumArr.length);
+    const xLabels = Array.from({length: maxLen}, (_, i) => '#' + (i + 1));
+
+    // Pad shorter series with null so Chart.js handles them cleanly
+    while (paperCumArr.length < maxLen) paperCumArr.push(null);
+    while (realCumArr.length < maxLen) realCumArr.push(null);
+
+    const eqCanvas = document.getElementById('equity-curve-canvas');
+    if (eqCanvas && typeof Chart !== 'undefined') {
+      if (window._eqChart) { window._eqChart.destroy(); }
+      window._eqChart = new Chart(eqCanvas, {
+        type: 'line',
+        data: {
+          labels: xLabels,
+          datasets: [
+            {
+              label: 'Paper',
+              data: paperCumArr,
+              borderColor: 'rgba(0,212,255,.9)',
+              backgroundColor: 'rgba(0,212,255,.08)',
+              borderWidth: 2,
+              tension: 0.2,
+              pointRadius: 0,
+              fill: true,
+              spanGaps: true,
+            },
+            {
+              label: 'Real',
+              data: realCumArr,
+              borderColor: 'rgba(255,59,92,.95)',
+              backgroundColor: 'rgba(255,59,92,.06)',
+              borderWidth: 2,
+              tension: 0.2,
+              pointRadius: 0,
+              fill: true,
+              spanGaps: true,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              mode: 'index',
+              intersect: false,
+              callbacks: {
+                label: (ctx) => ctx.dataset.label + ': $' + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(2) : '--'),
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.3)', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+            y: { ticks: { color: 'rgba(255,255,255,.4)', font: { size: 10 }, callback: (v) => '$' + v.toFixed(0) }, grid: { color: 'rgba(255,255,255,.04)' } },
+          },
+        },
+      });
+    }
+
+    // Summary strips
+    const setT = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    const pWr = (paperWins + paperLosses) > 0 ? (paperWins / (paperWins + paperLosses) * 100).toFixed(1) + '%' : '--';
+    const rWr = (realWins + realLosses) > 0 ? (realWins / (realWins + realLosses) * 100).toFixed(1) + '%' : '--';
+    setT('eq-paper-n', paperSlice.length);
+    setT('eq-paper-wr', pWr);
+    setT('eq-paper-net', (paperCum >= 0 ? '+$' : '-$') + Math.abs(paperCum).toFixed(2));
+    setT('eq-paper-dd', '-$' + paperPeakDD.toFixed(2));
+    setT('eq-real-n', realSlice.length);
+    setT('eq-real-wr', rWr);
+    setT('eq-real-net', (realCum >= 0 ? '+$' : '-$') + Math.abs(realCum).toFixed(2));
+    setT('eq-real-dd', '-$' + realPeakDD.toFixed(2));
+
+    // Color net numbers green/red
+    const setColor = (id, cond) => { const e = document.getElementById(id); if (e) e.style.color = cond ? 'var(--green)' : 'var(--red)'; };
+    setColor('eq-paper-net', paperCum >= 0);
+    setColor('eq-real-net', realCum >= 0);
+
+    // ── B.3: R-MULTIPLE HISTOGRAM ──
+    // Buckets: <-2, -2..-1.5, -1.5..-1, -1..-0.5, -0.5..0, 0..0.5, 0.5..1, 1..1.5, 1.5..2, 2+
+    const buckets = [-2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2];
+    const bucketLabels = ['<-2R', '-2 to -1.5', '-1.5 to -1', '-1 to -0.5', '-0.5 to 0', '0 to 0.5', '0.5 to 1', '1 to 1.5', '1.5 to 2', '>2R'];
+    const paperHist = new Array(10).fill(0);
+    const realHist = new Array(10).fill(0);
+    let paperSum = 0, realSum = 0, paperRs = [], realRs = [];
+
+    paperSlice.forEach(s => {
+      const r = parseFloat(s.exit_r || 0) || 0;
+      paperRs.push(r);
+      paperSum += r;
+      let idx = 0;
+      for (let i = 0; i < buckets.length; i++) {
+        if (r < buckets[i]) { idx = i; break; }
+        idx = i + 1;
+      }
+      if (idx >= 0 && idx < 10) paperHist[idx]++;
+    });
+
+    realSlice.forEach(s => {
+      // Real trades: compute exit_r from pnl_pct / initial_risk if not present
+      let r = parseFloat(s.exit_r || 0);
+      if (!r || isNaN(r)) {
+        const pnlPct = parseFloat(s.pnl_pct || 0) || 0;
+        const slDist = parseFloat(s.initial_risk || 0) || 0;
+        const entry = parseFloat(s.entry_price || 0) || 0;
+        if (entry > 0 && slDist > 0) {
+          r = (pnlPct / 100) * entry / slDist;
+        }
+      }
+      realRs.push(r);
+      realSum += r;
+      let idx = 0;
+      for (let i = 0; i < buckets.length; i++) {
+        if (r < buckets[i]) { idx = i; break; }
+        idx = i + 1;
+      }
+      if (idx >= 0 && idx < 10) realHist[idx]++;
+    });
+
+    const median = arr => { if (!arr.length) return 0; const s = [...arr].sort((a,b) => a-b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2; };
+    setT('rh-paper-avg', paperSlice.length ? (paperSum / paperSlice.length).toFixed(2) + 'R' : '--');
+    setT('rh-paper-med', paperSlice.length ? median(paperRs).toFixed(2) + 'R' : '--');
+    setT('rh-real-avg', realSlice.length ? (realSum / realSlice.length).toFixed(2) + 'R' : '--');
+    setT('rh-real-med', realSlice.length ? median(realRs).toFixed(2) + 'R' : '--');
+
+    const rhCanvas = document.getElementById('r-hist-canvas');
+    if (rhCanvas && typeof Chart !== 'undefined') {
+      if (window._rhChart) { window._rhChart.destroy(); }
+      window._rhChart = new Chart(rhCanvas, {
+        type: 'bar',
+        data: {
+          labels: bucketLabels,
+          datasets: [
+            {
+              label: 'Paper',
+              data: paperHist,
+              backgroundColor: 'rgba(0,212,255,.6)',
+              borderColor: 'rgba(0,212,255,1)',
+              borderWidth: 1,
+            },
+            {
+              label: 'Real',
+              data: realHist,
+              backgroundColor: 'rgba(255,59,92,.6)',
+              borderColor: 'rgba(255,59,92,1)',
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: 'rgba(255,255,255,.4)', font: { size: 9 } }, grid: { display: false } },
+            y: { ticks: { color: 'rgba(255,255,255,.4)', font: { size: 9 } }, grid: { color: 'rgba(255,255,255,.04)' }, beginAtZero: true },
+          },
+        },
+      });
+    }
+
+    // ── D.3: PAPER↔REAL DIVERGENCE CHART ──
+    // Group by symbol: for each, compute avg paper R - avg real R
+    const perSymbol = {};
+    paperSlice.forEach(s => {
+      const sym = s.symbol || '?';
+      if (!perSymbol[sym]) perSymbol[sym] = { paperR: [], realR: [] };
+      perSymbol[sym].paperR.push(parseFloat(s.exit_r || 0) || 0);
+    });
+    realSlice.forEach(s => {
+      const sym = s.symbol || '?';
+      if (!perSymbol[sym]) perSymbol[sym] = { paperR: [], realR: [] };
+      let r = parseFloat(s.exit_r || 0);
+      if (!r || isNaN(r)) {
+        const pnlPct = parseFloat(s.pnl_pct || 0) || 0;
+        const slDist = parseFloat(s.initial_risk || 0) || 0;
+        const entry = parseFloat(s.entry_price || 0) || 0;
+        if (entry > 0 && slDist > 0) r = (pnlPct / 100) * entry / slDist;
+      }
+      perSymbol[sym].realR.push(r);
+    });
+
+    const symLabels = [];
+    const divVals = [];
+    const divColors = [];
+    for (const sym of Object.keys(perSymbol).sort()) {
+      const p = perSymbol[sym];
+      if (p.paperR.length === 0 || p.realR.length === 0) continue;
+      const avgP = p.paperR.reduce((a, b) => a + b, 0) / p.paperR.length;
+      const avgR = p.realR.reduce((a, b) => a + b, 0) / p.realR.length;
+      const diff = avgP - avgR;
+      symLabels.push(sym.replace('/USDT', ''));
+      divVals.push(diff);
+      divColors.push(Math.abs(diff) > 0.5 ? 'rgba(255,59,92,.75)' : Math.abs(diff) > 0.25 ? 'rgba(255,215,0,.75)' : 'rgba(0,255,157,.75)');
+    }
+
+    const dvCanvas = document.getElementById('divergence-canvas');
+    if (dvCanvas && typeof Chart !== 'undefined') {
+      if (window._dvChart) { window._dvChart.destroy(); }
+      if (symLabels.length > 0) {
+        window._dvChart = new Chart(dvCanvas, {
+          type: 'bar',
+          data: {
+            labels: symLabels,
+            datasets: [{
+              label: 'Paper R − Real R',
+              data: divVals,
+              backgroundColor: divColors,
+              borderWidth: 0,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: 'rgba(255,255,255,.5)', font: { size: 10 } }, grid: { display: false } },
+              y: { ticks: { color: 'rgba(255,255,255,.4)', font: { size: 9 }, callback: v => v.toFixed(2) + 'R' }, grid: { color: 'rgba(255,255,255,.04)' } },
+            },
+          },
+        });
+      } else {
+        // No divergence data yet
+        const ctx = dvCanvas.getContext('2d');
+        ctx.clearRect(0, 0, dvCanvas.width, dvCanvas.height);
+        ctx.fillStyle = 'rgba(255,255,255,.3)';
+        ctx.font = '11px SF Mono';
+        ctx.textAlign = 'center';
+        ctx.fillText('No matched paper/real pairs yet', dvCanvas.width / 2, dvCanvas.height / 2);
+      }
+    }
+
+    // ── B.7: LOSS ANALYSIS RECOMMENDATIONS ──
+    if (lossResp && lossResp.buckets) {
+      const buckets = lossResp.buckets;
+      const total = lossResp.total_loss_usd || 0;
+      const totalN = lossResp.total_losses_analyzed || 0;
+      const rows = [];
+      // Sort buckets by abs loss desc
+      const sorted = Object.entries(buckets)
+        .filter(([k, v]) => (v.count || 0) > 0)
+        .sort((a, b) => Math.abs(b[1].total_loss_usd || 0) - Math.abs(a[1].total_loss_usd || 0));
+      for (const [name, b] of sorted.slice(0, 8)) {
+        const loss = b.total_loss_usd || 0;
+        const pct = total !== 0 ? (Math.abs(loss) / Math.abs(total) * 100) : 0;
+        const barWidth = Math.min(100, pct);
+        const symbols = (b.sample_symbols || []).slice(0, 3).join(', ');
+        const labelName = name.replace(/_/g, ' ').toUpperCase();
+        rows.push(
+          `<div style="margin-bottom:6px;padding:4px 8px;border-left:2px solid var(--red);background:rgba(255,59,92,.03)">` +
+          `<div style="display:flex;justify-content:space-between;font-weight:700"><span>${labelName}</span><span style="color:var(--red)">${loss.toFixed(2)} (${b.count}t)</span></div>` +
+          `<div style="height:3px;background:rgba(255,59,92,.15);border-radius:2px;margin:2px 0"><div style="height:100%;width:${barWidth}%;background:var(--red);border-radius:2px"></div></div>` +
+          `<div style="color:var(--text-muted);font-size:.6rem">${symbols || '—'}</div>` +
+          `</div>`
+        );
+      }
+      const body = document.getElementById('loss-analysis-body');
+      if (body) {
+        body.innerHTML = rows.length ? rows.join('') : '<div class="empty">No losses in window</div>';
+      }
+      const summary = document.getElementById('loss-analysis-summary');
+      if (summary) {
+        summary.textContent = `${totalN} losses in 24h, total -$${Math.abs(total).toFixed(2)}. Sorted by $ loss impact.`;
+      }
+    }
+  } catch(e) {
+    console.warn('loadAnalytics error:', e);
+  }
+}
+
+// Fire on load + every 30s
+try {
+  loadAnalytics();
+  setInterval(loadAnalytics, 30000);
 } catch(e) {}
 </script>
 </body>

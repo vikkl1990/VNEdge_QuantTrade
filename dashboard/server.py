@@ -570,6 +570,15 @@ class DashboardServer:
         app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
         app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
 
+        # ── Track C (2026-04-11): ML dashboard proxy ──
+        # VM1 (live bot) dashboard proxies to VM4 (ML dashboard) private-IP
+        # endpoints so the browser can fetch ML data without CORS or direct
+        # public access. Proxies /api/ml/* to http://10.0.2.4:8081/api/ml/*.
+        app.router.add_get("/api/ml/family-verdict-matrix", self._handle_ml_proxy)
+        app.router.add_get("/api/ml/live-calibration", self._handle_ml_proxy)
+        app.router.add_get("/api/ml/edge-verdict-trend", self._handle_ml_proxy)
+        app.router.add_get("/api/ml/health", self._handle_ml_proxy)
+
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
             app.router.add_post("/api/login", self._handle_login)
@@ -1058,6 +1067,40 @@ class DashboardServer:
         if hasattr(self, '_grid_bot') and self._grid_bot:
             return web.json_response(self._grid_bot.get_open_positions(), dumps=_safe_dumps)
         return web.json_response([])
+
+    async def _handle_ml_proxy(self, request: web.Request) -> web.Response:
+        """Track C (2026-04-11): Proxy ML dashboard requests to VM4.
+
+        VM1 (live bot) is on an OCI public IP. VM4 (ML dashboard) is on
+        an OCI private IP (10.0.2.4). The browser can't reach 10.0.2.4
+        directly, so we proxy the /api/ml/* namespace through VM1.
+
+        Target: http://10.0.2.4:8081
+        Query string is forwarded unchanged. 5-second timeout.
+        """
+        import aiohttp
+        path = request.path  # e.g. /api/ml/family-verdict-matrix
+        qs = request.query_string
+        vm4_url = f"http://10.0.2.4:8081{path}"
+        if qs:
+            vm4_url += f"?{qs}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(vm4_url) as resp:
+                    body = await resp.read()
+                    content_type = resp.headers.get("Content-Type", "application/json")
+                    return web.Response(
+                        body=body,
+                        status=resp.status,
+                        content_type=content_type.split(";")[0].strip(),
+                    )
+        except Exception as e:
+            logger.debug("ML proxy failed for %s: %s", path, e)
+            return web.json_response(
+                {"error": "vm4_unreachable", "path": path, "detail": str(e)},
+                status=502,
+            )
 
     async def _handle_real_status(self, request: web.Request) -> web.Response:
         """Return real trading manager status for dashboard."""

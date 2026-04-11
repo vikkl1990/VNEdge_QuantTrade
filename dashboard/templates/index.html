@@ -595,6 +595,26 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </span>
 </div>
 
+<!-- ═══ ML OPS STRIP (Track C — ML health + edge verdict summary) ═══ -->
+<div id="ml-ops-strip" style="margin:6px 16px 0 16px;padding:8px 12px;background:rgba(167,139,250,.03);border:1px solid rgba(167,139,250,.18);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;font-size:.72rem;font-family:var(--font-mono)">
+  <span style="color:var(--purple);text-transform:uppercase;letter-spacing:.5px;font-weight:700">ML OPS</span>
+  <span><span style="color:var(--text-muted)">Health </span><span id="mlops-health" style="font-weight:700;color:var(--text-muted)">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <!-- Global verdict tally -->
+  <span><span style="color:var(--text-muted)">HOLDS </span><span id="mlops-holds" style="color:var(--green);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">WEAK </span><span id="mlops-weak" style="color:var(--yellow);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">UNCLEAR </span><span id="mlops-unclear" style="color:var(--orange);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">NO_EDGE </span><span id="mlops-noedge" style="color:var(--red);font-weight:700">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <!-- Live calibration -->
+  <span><span style="color:var(--text-muted)">Live N </span><span id="mlops-live-n" style="color:var(--cyan);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Pred </span><span id="mlops-live-pred" style="font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Real WR </span><span id="mlops-live-wr" style="font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Cal Err </span><span id="mlops-live-err" style="font-weight:700">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <span id="mlops-alerts" style="color:var(--yellow);font-weight:700;margin-left:auto"></span>
+</div>
+
 <!-- ═══ CURRENT ACTION BANNER (Phase 2.5 B2) ════════════════ -->
 <div id="current-action-banner" style="margin:6px 16px 0 16px;padding:6px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.15);border-radius:6px;display:flex;align-items:center;gap:12px;font-size:.72rem;font-family:var(--font-mono)">
   <span style="color:#818cf8;text-transform:uppercase;letter-spacing:.5px;font-weight:700;min-width:56px">NOW</span>
@@ -877,6 +897,72 @@ textarea.contact-input{min-height:100px;resize:vertical}
             <tr><td colspan="9" class="empty">No real trades</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ═══ Track C: ML VERDICT MATRIX (3 families × 7 scanners) ═══ -->
+    <div class="panel live-span-2" id="ml-verdict-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">ML Edge Verdict Matrix <span class="badge">walk-forward OOS</span></div>
+        <div style="font-size:.6rem;color:var(--text-muted);font-family:var(--font-mono)">
+          <span id="mlvm-last-update">--</span>
+        </div>
+      </div>
+      <div id="mlvm-tbl-wrap" class="tbl-wrap" style="max-height:360px;overflow-y:auto">
+        <table style="font-size:.72rem;font-family:var(--font-mono)">
+          <thead>
+            <tr>
+              <th style="text-align:left">Scanner</th>
+              <th style="text-align:center">liquid_majors</th>
+              <th style="text-align:center">secondary</th>
+              <th style="text-align:center">high_beta</th>
+              <th style="text-align:center">scanner</th>
+            </tr>
+          </thead>
+          <tbody id="ml-verdict-matrix-body">
+            <tr><td colspan="5" class="empty">Loading verdict matrix…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:12px;margin-top:8px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted);flex-wrap:wrap">
+        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(0,255,157,.25);border:1px solid var(--green);border-radius:2px;margin-right:4px"></span>HOLDS — walk-forward edge</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,215,0,.18);border:1px solid var(--yellow);border-radius:2px;margin-right:4px"></span>WEAK — soft blend only</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(249,115,22,.18);border:1px solid var(--orange);border-radius:2px;margin-right:4px"></span>UNCLEAR — noisy</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,59,92,.18);border:1px solid var(--red);border-radius:2px;margin-right:4px"></span>NO_EDGE — blocked</span>
+      </div>
+    </div>
+
+    <!-- ═══ Track C: ML LIVE CALIBRATION (by_verdict rollup) ═══ -->
+    <div class="panel live-span-2" id="ml-calibration-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="panel-title" style="margin:0">ML Live Calibration <span class="badge">last 500 trades</span></div>
+        <div style="font-size:.6rem;color:var(--text-muted);font-family:var(--font-mono)">
+          <span id="mlcal-overall">n=-- pred=-- wr=-- err=--</span>
+        </div>
+      </div>
+      <div id="mlcal-tbl-wrap" class="tbl-wrap" style="max-height:260px;overflow-y:auto">
+        <table style="font-size:.72rem;font-family:var(--font-mono)">
+          <thead>
+            <tr>
+              <th style="text-align:left">Edge Verdict</th>
+              <th style="text-align:right">N</th>
+              <th style="text-align:right">Avg Pred</th>
+              <th style="text-align:right">Realized WR</th>
+              <th style="text-align:right">Cal Err</th>
+              <th style="text-align:right">Avg Exit R</th>
+              <th style="text-align:center">Status</th>
+            </tr>
+          </thead>
+          <tbody id="ml-calibration-body">
+            <tr><td colspan="7" class="empty">Loading calibration…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:6px;font-size:.62rem;color:var(--text-muted);font-family:var(--font-mono)">
+        Cal Err = |avg_predicted − realized_mfe_wr|.
+        <span style="color:var(--green)">&lt;0.08 HEALTHY</span> ·
+        <span style="color:var(--yellow)">0.08-0.15 DRIFTING</span> ·
+        <span style="color:var(--red)">&gt;0.15 NEEDS RETRAIN</span>
       </div>
     </div>
 
@@ -6394,6 +6480,157 @@ async function killAllTrading() {
 try {
   loadRealOps();
   setInterval(loadRealOps, 5000);
+} catch(e) {}
+
+// ═══ Track C: ML OPS strip + Verdict Matrix + Live Calibration ═══
+async function loadMlOps() {
+  try {
+    const [matrix, calib] = await Promise.all([
+      fetch('/api/ml/family-verdict-matrix', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/ml/live-calibration?last_n=500&min_n=15', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+
+    const set = (id, text, color) => {
+      const e = document.getElementById(id);
+      if (!e) return;
+      if (text != null) e.textContent = text;
+      if (color) e.style.color = color;
+    };
+
+    // ── ML OPS strip ──
+    if (matrix && matrix.global_tally) {
+      const t = matrix.global_tally;
+      const holds = t.HOLDS || 0;
+      const weak = t.WEAK || 0;
+      const unclear = t.UNCLEAR || 0;
+      const noedge = t.NO_EDGE || 0;
+      const total = holds + weak + unclear + noedge;
+      set('mlops-holds', String(holds));
+      set('mlops-weak', String(weak));
+      set('mlops-unclear', String(unclear));
+      set('mlops-noedge', String(noedge));
+
+      // Health classification: HOLDS ≥ 5 = OK, 3-4 = DEGRADED, <3 = CRITICAL
+      let health = '--';
+      let healthColor = 'var(--text-muted)';
+      if (total > 0) {
+        if (holds >= 5) { health = 'OK'; healthColor = 'var(--green)'; }
+        else if (holds >= 3) { health = 'DEGRADED'; healthColor = 'var(--yellow)'; }
+        else { health = 'CRITICAL'; healthColor = 'var(--red)'; }
+      }
+      set('mlops-health', health, healthColor);
+    }
+
+    if (calib && calib.overall) {
+      const o = calib.overall;
+      const n = o.n || 0;
+      const pred = o.avg_ml_probability || 0;
+      const wr = o.realized_mfe_wr || 0;
+      const err = o.calibration_error || 0;
+      set('mlops-live-n', String(n));
+      set('mlops-live-pred', pred.toFixed(3));
+      set('mlops-live-wr', (wr * 100).toFixed(1) + '%');
+      // Cal err color: green < 0.08, yellow < 0.15, red > 0.15
+      const errColor = err < 0.08 ? 'var(--green)' : err < 0.15 ? 'var(--yellow)' : 'var(--red)';
+      set('mlops-live-err', err.toFixed(3), errColor);
+    }
+
+    // ── ML VERDICT MATRIX table ──
+    if (matrix && matrix.grid) {
+      const tbody = document.getElementById('ml-verdict-matrix-body');
+      if (tbody) {
+        const scanners = matrix.scanners || [];
+        const families = ['liquid_majors', 'secondary', 'high_beta', '__scanner__'];
+        const rows = [];
+        for (const sc of scanners) {
+          let rowHtml = `<tr><td style="text-align:left;padding:4px 8px;color:var(--text);font-weight:700">${sc}</td>`;
+          for (const fam of families) {
+            const cell = (matrix.grid[sc] || {})[fam];
+            if (!cell) {
+              rowHtml += `<td style="text-align:center;padding:4px 8px;color:var(--text-muted)">—</td>`;
+              continue;
+            }
+            const v = cell.edge_verdict || '?';
+            const oos = cell.oos_mean;
+            const gap = cell.overfit_gap;
+            let bg = 'rgba(128,128,128,.08)';
+            let fg = 'var(--text-muted)';
+            let border = '1px solid var(--border)';
+            if (v === 'HOLDS') { bg = 'rgba(0,255,157,.18)'; fg = 'var(--green)'; border = '1px solid var(--green)'; }
+            else if (v === 'WEAK') { bg = 'rgba(255,215,0,.14)'; fg = 'var(--yellow)'; border = '1px solid rgba(255,215,0,.4)'; }
+            else if (v === 'UNCLEAR') { bg = 'rgba(249,115,22,.14)'; fg = 'var(--orange)'; border = '1px solid rgba(249,115,22,.4)'; }
+            else if (v === 'NO_EDGE') { bg = 'rgba(255,59,92,.14)'; fg = 'var(--red)'; border = '1px solid var(--red)'; }
+            const tooltip = `${v} · OOS=${oos != null ? oos.toFixed(3) : '--'} · gap=${gap != null ? gap.toFixed(3) : '--'} · n_feat=${cell.n_features || '--'}`;
+            const oosDisp = oos != null ? oos.toFixed(2) : '--';
+            rowHtml += `<td style="text-align:center;padding:2px 6px" title="${tooltip}"><span style="display:inline-block;padding:2px 8px;background:${bg};color:${fg};border:${border};border-radius:4px;font-weight:700;font-size:.65rem">${v}<span style="font-weight:400;margin-left:4px;opacity:.7">${oosDisp}</span></span></td>`;
+          }
+          rowHtml += '</tr>';
+          rows.push(rowHtml);
+        }
+        tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="5" class="empty">No models</td></tr>';
+        const ts = new Date().toLocaleTimeString();
+        set('mlvm-last-update', 'updated ' + ts);
+      }
+    }
+
+    // ── ML LIVE CALIBRATION table (by_verdict) ──
+    if (calib && calib.by_verdict) {
+      const tbody = document.getElementById('ml-calibration-body');
+      if (tbody) {
+        const rows = [];
+        for (const v of calib.by_verdict) {
+          const n = v.n || 0;
+          const pred = v.avg_ml_probability || 0;
+          const wr = v.realized_mfe_wr || 0;
+          const err = v.calibration_error || 0;
+          const xr = v.avg_exit_r || 0;
+          let status = 'HEALTHY', statusColor = 'var(--green)';
+          if (err > 0.15) { status = 'DRIFTING'; statusColor = 'var(--red)'; }
+          else if (err > 0.08) { status = 'SOFT DRIFT'; statusColor = 'var(--yellow)'; }
+          rows.push(
+            `<tr>` +
+            `<td style="text-align:left;padding:4px 8px;font-weight:700">${v.edge_verdict || '?'}</td>` +
+            `<td style="text-align:right;padding:4px 8px">${n}</td>` +
+            `<td style="text-align:right;padding:4px 8px">${pred.toFixed(3)}</td>` +
+            `<td style="text-align:right;padding:4px 8px">${(wr * 100).toFixed(1)}%</td>` +
+            `<td style="text-align:right;padding:4px 8px;color:${statusColor}">${err.toFixed(3)}</td>` +
+            `<td style="text-align:right;padding:4px 8px">${xr >= 0 ? '+' : ''}${xr.toFixed(3)}R</td>` +
+            `<td style="text-align:center;padding:4px 8px;color:${statusColor};font-weight:700">${status}</td>` +
+            `</tr>`
+          );
+        }
+        tbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="7" class="empty">No calibration data</td></tr>';
+      }
+      // Overall summary line
+      const o = calib.overall || {};
+      const overallEl = document.getElementById('mlcal-overall');
+      if (overallEl) {
+        overallEl.textContent = `n=${o.n || 0} pred=${(o.avg_ml_probability || 0).toFixed(3)} wr=${((o.realized_mfe_wr || 0) * 100).toFixed(1)}% err=${(o.calibration_error || 0).toFixed(3)}`;
+      }
+    }
+
+    // ── Alerts strip (any DRIFTING bucket or critical health) ──
+    const alertsEl = document.getElementById('mlops-alerts');
+    if (alertsEl) {
+      const alerts = [];
+      if (calib && calib.by_verdict) {
+        for (const v of calib.by_verdict) {
+          if ((v.calibration_error || 0) > 0.15 && (v.n || 0) >= 20) {
+            alerts.push(`${v.edge_verdict} drift ${v.calibration_error.toFixed(2)}`);
+          }
+        }
+      }
+      alertsEl.textContent = alerts.length ? '⚠ ' + alerts.join(' · ') : '';
+    }
+  } catch(e) {
+    // Silent — retain last state on errors
+  }
+}
+
+// Fire on load + every 30s (ML data moves slowly)
+try {
+  loadMlOps();
+  setInterval(loadMlOps, 30000);
 } catch(e) {}
 </script>
 </body>

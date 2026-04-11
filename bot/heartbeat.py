@@ -103,19 +103,40 @@ class HeartbeatMonitor:
     # One-time events that should not be checked for staleness
     _IGNORE_STALE = frozenset({"monitor_start"})
 
+    # Phase E.7 — per-prefix stale timeout override.
+    # Illiquid pairs (LTC, ADA, DOGE, LINK, TAO on Delta India) have sparse 1m
+    # candle data and can go 3-5 minutes without a print even when the exchange
+    # connection is healthy. The default 120s timeout produced false positive
+    # DEGRADED warnings on every heartbeat cycle. Per-prefix override gives
+    # candle_close:* events a longer window (300s = 5 minutes) which is still
+    # well below the true "exchange is down" threshold but tolerates the
+    # natural rate of 1m candle closes on low-volume pairs.
+    _PREFIX_STALE_OVERRIDES: Dict[str, float] = {
+        "candle_close:": 300.0,  # 5 min for candle_close:{symbol} events
+    }
+
     def get_stale_components(self) -> list[str]:
         """Return names of components that have not reported activity
         within the stale timeout window.
 
         One-time events (like ``monitor_start``) are excluded from
         staleness checks since they are recorded once and never updated.
+
+        Phase E.7: components matching a prefix in _PREFIX_STALE_OVERRIDES
+        use a longer timeout (e.g. candle_close:* gets 300s instead of 120s).
         """
         now = time.monotonic()
         stale = []
         for name, last_ts in self._activities.items():
             if name in self._IGNORE_STALE:
                 continue
-            if now - last_ts > self._stale_timeout:
+            # Pick the applicable timeout: longest matching prefix wins
+            effective_timeout = self._stale_timeout
+            for prefix, override_sec in self._PREFIX_STALE_OVERRIDES.items():
+                if name.startswith(prefix):
+                    effective_timeout = override_sec
+                    break
+            if now - last_ts > effective_timeout:
                 stale.append(name)
         return stale
 
@@ -187,9 +208,21 @@ class HeartbeatMonitor:
             )
         else:
             stale = report["stale_components"]
-            self._log.warning(
-                "Heartbeat DEGRADED | stale components: %s | "
+            # Phase E.7: only scream if the stale components include something
+            # that ISN'T a candle feed OR if ≥3 candle feeds are stale
+            # simultaneously. A single stale candle_close:X is almost always
+            # an illiquid-pair artifact and shouldn't pollute the log.
+            _stale_candle_count = sum(1 for s in stale if s.startswith("candle_close:"))
+            _non_candle_stale = [s for s in stale if not s.startswith("candle_close:")]
+            _only_sparse_candles = (
+                _stale_candle_count <= 2
+                and not _non_candle_stale
+            )
+            log_fn = self._log.info if _only_sparse_candles else self._log.warning
+            log_fn(
+                "Heartbeat %s | stale components: %s | "
                 "last_activity=%ds ago | errors=%d",
+                "SPARSE_FEEDS" if _only_sparse_candles else "DEGRADED",
                 ", ".join(stale),
                 int(report["last_activity_age_s"]),
                 report["recent_error_count"],

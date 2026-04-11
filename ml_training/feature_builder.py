@@ -110,11 +110,233 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+def _build_htf_block(df_ltf: pd.DataFrame, htf_df: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    """Phase 4.1a — Rich per-HTF feature block.
+
+    Computes a comprehensive feature set from a higher-timeframe dataframe
+    and aligns it to the LTF index via forward-fill + shift(1) (strict past).
+
+    Args:
+        df_ltf: LTF dataframe (for index alignment)
+        htf_df: HTF OHLCV dataframe (e.g. 1h or 4h candles)
+        prefix: feature name prefix (e.g. "h1" or "h4")
+
+    Returns:
+        DataFrame of aligned HTF features with columns named {prefix}_*
+    """
+    # Lower bound: need ~20 bars for the rolling windows to make sense.
+    # 4h data often has fewer bars than 1h, so accept smaller datasets.
+    if htf_df is None or len(htf_df) < 20:
+        return pd.DataFrame(index=df_ltf.index)
+
+    htf = compute_indicators(htf_df.copy())
+    c = htf["close"].astype(float)
+    h_col = htf["high"].astype(float)
+    l_col = htf["low"].astype(float)
+    o_col = htf["open"].astype(float)
+
+    feats = pd.DataFrame(index=htf.index)
+
+    # ── Trend (EMA alignment) ──
+    if "ema_8" in htf.columns and "ema_21" in htf.columns and "ema_50" in htf.columns:
+        ema8 = htf["ema_8"]
+        ema21 = htf["ema_21"]
+        ema50 = htf["ema_50"]
+        # Trend strength: EMA stack direction
+        trend = np.where(
+            (ema8 > ema21) & (ema21 > ema50), 1.0,
+            np.where((ema8 < ema21) & (ema21 < ema50), -1.0, 0.0)
+        )
+        feats[f"{prefix}_trend_bias"] = trend
+        # EMA slopes (normalized by ATR)
+        atr_safe = htf["atr_14"].replace(0, np.nan)
+        feats[f"{prefix}_ema8_slope"] = (ema8.diff(3) / atr_safe).fillna(0.0)
+        feats[f"{prefix}_ema21_slope"] = (ema21.diff(5) / atr_safe).fillna(0.0)
+        # Distance from EMA50 (macro stretch)
+        feats[f"{prefix}_dist_ema50"] = ((c - ema50) / atr_safe).fillna(0.0)
+    else:
+        feats[f"{prefix}_trend_bias"] = 0.0
+        feats[f"{prefix}_ema8_slope"] = 0.0
+        feats[f"{prefix}_ema21_slope"] = 0.0
+        feats[f"{prefix}_dist_ema50"] = 0.0
+
+    # ── Momentum (multi-bar returns on HTF) ──
+    feats[f"{prefix}_return_1"] = c.pct_change(1).fillna(0.0)
+    feats[f"{prefix}_return_3"] = c.pct_change(3).fillna(0.0)
+    feats[f"{prefix}_return_5"] = c.pct_change(5).fillna(0.0)
+
+    # ── Volatility ──
+    if "atr_14" in htf.columns and "atr_7" in htf.columns:
+        feats[f"{prefix}_atr_ratio"] = (htf["atr_7"] / htf["atr_14"].replace(0, np.nan)).fillna(1.0)
+
+    # ── Candle structure (last N bars) ──
+    body = (c - o_col).abs()
+    rng = (h_col - l_col).replace(0, np.nan)
+    feats[f"{prefix}_body_ratio"] = (body / rng).fillna(0.0)
+    feats[f"{prefix}_upper_wick"] = ((h_col - pd.concat([o_col, c], axis=1).max(axis=1)) / rng).fillna(0.0)
+    feats[f"{prefix}_lower_wick"] = ((pd.concat([o_col, c], axis=1).min(axis=1) - l_col) / rng).fillna(0.0)
+
+    # Last candle direction
+    feats[f"{prefix}_last_direction"] = np.where(c > o_col, 1.0, np.where(c < o_col, -1.0, 0.0))
+
+    # ── Range position (where in the 20-bar range are we?) ──
+    rolling_high = h_col.rolling(20).max()
+    rolling_low = l_col.rolling(20).min()
+    rolling_range = (rolling_high - rolling_low).replace(0, np.nan)
+    feats[f"{prefix}_range_pos"] = ((c - rolling_low) / rolling_range).fillna(0.5)
+
+    # ── RSI for mean-reversion context ──
+    if "rsi_14" in htf.columns:
+        feats[f"{prefix}_rsi"] = (htf["rsi_14"] / 100.0 - 0.5).fillna(0.0)  # normalized -0.5..+0.5
+    else:
+        feats[f"{prefix}_rsi"] = 0.0
+
+    # ── Align to LTF index: forward-fill + shift(1) for strictly past-looking ──
+    aligned = feats.reindex(df_ltf.index, method="ffill").shift(1)
+    # Fill remaining NaNs (first bars before any HTF bar exists)
+    aligned = aligned.fillna(0.0)
+    return aligned
+
+
+def _build_btc_block(
+    df_ltf: pd.DataFrame,
+    btc_df: Optional[pd.DataFrame],
+    symbol: str,
+) -> pd.DataFrame:
+    """Phase 5.0a — BTC cross-asset context block.
+
+    Builds a ~12-feature block from BTC candles that gives ML the same
+    "what's BTC doing right now" context a human trader has. Alts correlate
+    heavily with BTC on short timeframes — currently the model is blind to
+    BTC's state when scoring an ETH/SOL/XRP setup.
+
+    Key features:
+      - btc_return_1/3/5/12  (multi-bar returns)
+      - btc_atr_ratio        (BTC volatility regime)
+      - btc_dist_from_vwap   (BTC stretch from fair value)
+      - btc_ema8_slope       (BTC trend momentum)
+      - btc_trend_bias       (+1/-1/0 based on EMA stack)
+      - btc_range_pos        (where in 20-bar range)
+      - symbol_btc_corr_60   (rolling correlation LTF vs BTC)
+      - symbol_btc_beta_60   (rolling beta)
+
+    Returns a DataFrame aligned to df_ltf.index. Forward-fills BTC features
+    to the LTF bar boundary and shift(1) for strictly-past semantics.
+    If btc_df is None or insufficient, returns zeros.
+    """
+    # When training on BTC itself, we'd normally skip (self-correlation trivial).
+    # But keeping features consistent across symbols is more important than
+    # the few bytes saved — so always include them. For BTC they'll all be
+    # self-derived (beta=1.0, corr=1.0).
+    if btc_df is None or len(btc_df) < 50:
+        return pd.DataFrame(index=df_ltf.index)
+
+    btc = compute_indicators(btc_df.copy())
+    btc_c = btc["close"].astype(float)
+    btc_o = btc["open"].astype(float)
+    btc_h = btc["high"].astype(float)
+    btc_l = btc["low"].astype(float)
+
+    feats = pd.DataFrame(index=btc.index)
+
+    # Multi-bar returns (how is BTC moving recently?)
+    feats["btc_return_1"] = btc_c.pct_change(1).fillna(0.0)
+    feats["btc_return_3"] = btc_c.pct_change(3).fillna(0.0)
+    feats["btc_return_5"] = btc_c.pct_change(5).fillna(0.0)
+    feats["btc_return_12"] = btc_c.pct_change(12).fillna(0.0)  # ~1h on 5m
+
+    # Volatility regime
+    if "atr_14" in btc.columns:
+        btc_atr = btc["atr_14"].replace(0, np.nan)
+        feats["btc_atr_ratio"] = (btc_atr / btc_atr.rolling(100).mean().replace(0, np.nan)).fillna(1.0)
+    else:
+        feats["btc_atr_ratio"] = 1.0
+
+    # VWAP distance (BTC stretched?)
+    if "vwap" in btc.columns and "atr_14" in btc.columns:
+        btc_vwap = btc["vwap"].replace(0, np.nan)
+        btc_atr_s = btc["atr_14"].replace(0, np.nan)
+        feats["btc_dist_from_vwap"] = ((btc_c - btc_vwap) / btc_atr_s).fillna(0.0)
+    else:
+        feats["btc_dist_from_vwap"] = 0.0
+
+    # Trend bias + EMA slope
+    if "ema_8" in btc.columns and "ema_21" in btc.columns and "ema_50" in btc.columns:
+        btc_ema8 = btc["ema_8"]
+        btc_ema21 = btc["ema_21"]
+        btc_ema50 = btc["ema_50"]
+        btc_atr_s = btc["atr_14"].replace(0, np.nan)
+        # Trend bias
+        trend = np.where(
+            (btc_ema8 > btc_ema21) & (btc_ema21 > btc_ema50), 1.0,
+            np.where((btc_ema8 < btc_ema21) & (btc_ema21 < btc_ema50), -1.0, 0.0),
+        )
+        feats["btc_trend_bias"] = trend
+        # EMA8 slope (normalized by ATR)
+        feats["btc_ema8_slope"] = (btc_ema8.diff(3) / btc_atr_s).fillna(0.0)
+        # Distance from EMA50 (macro stretch)
+        feats["btc_dist_ema50"] = ((btc_c - btc_ema50) / btc_atr_s).fillna(0.0)
+    else:
+        feats["btc_trend_bias"] = 0.0
+        feats["btc_ema8_slope"] = 0.0
+        feats["btc_dist_ema50"] = 0.0
+
+    # Range position (where in 20-bar range is BTC?)
+    rolling_high = btc_h.rolling(20).max()
+    rolling_low = btc_l.rolling(20).min()
+    rolling_range = (rolling_high - rolling_low).replace(0, np.nan)
+    feats["btc_range_pos"] = ((btc_c - rolling_low) / rolling_range).fillna(0.5)
+
+    # Breakout pressure: how close is BTC to breaking 20-bar high/low
+    feats["btc_near_high_atr"] = ((rolling_high - btc_c) / btc["atr_14"].replace(0, np.nan)).fillna(0.0).clip(-5, 5)
+    feats["btc_near_low_atr"] = ((btc_c - rolling_low) / btc["atr_14"].replace(0, np.nan)).fillna(0.0).clip(-5, 5)
+
+    # ── Align BTC features to LTF index ──
+    btc_aligned = feats.reindex(df_ltf.index, method="ffill").shift(1).fillna(0.0)
+
+    # ── Cross-asset: rolling 60-bar beta + correlation LTF vs BTC ──
+    # Can only compute when we have both series aligned
+    try:
+        ltf_c = df_ltf["close"].astype(float)
+        # Align BTC close to LTF index for correlation math
+        btc_c_aligned = btc_c.reindex(df_ltf.index, method="ffill").shift(1)
+        ltf_ret = ltf_c.pct_change(1).fillna(0.0)
+        btc_ret = btc_c_aligned.pct_change(1).fillna(0.0)
+
+        # Rolling 60-bar correlation
+        btc_aligned["symbol_btc_corr_60"] = (
+            ltf_ret.rolling(60, min_periods=20)
+                   .corr(btc_ret)
+                   .fillna(0.0)
+                   .clip(-1, 1)
+        )
+        # Rolling 60-bar beta = cov(sym, btc) / var(btc)
+        cov = ltf_ret.rolling(60, min_periods=20).cov(btc_ret)
+        var_btc = btc_ret.rolling(60, min_periods=20).var()
+        beta = (cov / var_btc.replace(0, np.nan)).fillna(0.0).clip(-5, 5)
+        btc_aligned["symbol_btc_beta_60"] = beta
+    except Exception:
+        btc_aligned["symbol_btc_corr_60"] = 0.0
+        btc_aligned["symbol_btc_beta_60"] = 0.0
+
+    return btc_aligned
+
+
+def build_features(
+    df: pd.DataFrame,
+    htf_df: Optional[pd.DataFrame] = None,
+    htf_1h_df: Optional[pd.DataFrame] = None,
+    htf_4h_df: Optional[pd.DataFrame] = None,
+    btc_df: Optional[pd.DataFrame] = None,
+    symbol: str = "",
+) -> pd.DataFrame:
     """Build ML features from pure candle math.
 
     Returns ~35 features derived from price movement, volatility, and participation.
     No raw indicators — only relationships.
+
+    Phase 4.1a: added htf_1h_df + htf_4h_df for HTF feature fusion.
+    Phase 5.0a: added btc_df for BTC cross-asset context features.
     """
     df = compute_indicators(df)
     features = pd.DataFrame(index=df.index)
@@ -659,6 +881,86 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
         features["htf_vol_ratio"] = 1.0
         features["tf_alignment"] = 0.0
 
+    # ════════════════════════════════════════════════════════════════
+    # Phase 4.1a — 1h + 4h HTF FEATURE FUSION
+    # ════════════════════════════════════════════════════════════════
+    # Previously ML only saw 15m as "HTF" — but live bot uses 1h macro
+    # and 4h session bias. ML was blind to the exact features that the
+    # live strategy uses for its best decisions. This block adds ~14
+    # features from 1h and ~14 from 4h so ML can finally learn HTF context.
+    # ════════════════════════════════════════════════════════════════
+    # Full list of expected HTF feature suffixes (must match _build_htf_block output)
+    _HTF_SUFFIXES = (
+        "trend_bias", "ema8_slope", "ema21_slope", "dist_ema50",
+        "return_1", "return_3", "return_5", "atr_ratio",
+        "body_ratio", "upper_wick", "lower_wick", "last_direction",
+        "range_pos", "rsi",
+    )
+
+    # 1h block
+    h1_block = _build_htf_block(df, htf_1h_df, prefix="h1") if htf_1h_df is not None else pd.DataFrame(index=df.index)
+    for suffix in _HTF_SUFFIXES:
+        col = f"h1_{suffix}"
+        if col in h1_block.columns:
+            features[col] = h1_block[col].values
+        else:
+            features[col] = 0.0
+
+    # 4h block
+    h4_block = _build_htf_block(df, htf_4h_df, prefix="h4") if htf_4h_df is not None else pd.DataFrame(index=df.index)
+    for suffix in _HTF_SUFFIXES:
+        col = f"h4_{suffix}"
+        if col in h4_block.columns:
+            features[col] = h4_block[col].values
+        else:
+            features[col] = 0.0
+
+    # ── Cross-timeframe alignment features ──
+    # These are the highest-signal features — they encode regime coherence
+    # across 5m / 15m / 1h / 4h. Trades where ALL TFs agree should be
+    # much higher probability winners.
+    features["align_ltf_h1"] = features["trend_strength"] * features["h1_trend_bias"]
+    features["align_ltf_h4"] = features["trend_strength"] * features["h4_trend_bias"]
+    features["align_15m_h1"] = features["htf_trend_bias"] * features["h1_trend_bias"]
+    features["align_h1_h4"] = features["h1_trend_bias"] * features["h4_trend_bias"]
+
+    # Trend cascade score: how many TFs agree on direction?
+    # Each TF contributes 0 or ±1 → cascade range = [-4, +4]
+    def _sign(s):
+        return np.sign(s).fillna(0) if hasattr(s, "fillna") else np.sign(s)
+    features["trend_cascade_score"] = (
+        _sign(features["trend_strength"])
+        + _sign(features["htf_trend_bias"])
+        + _sign(features["h1_trend_bias"])
+        + _sign(features["h4_trend_bias"])
+    )
+
+    # Cascade alignment strength (0..1): how many TFs agree
+    # If cascade_score is ±4 (all agree) → 1.0; if 0 (no agreement) → 0.0
+    features["trend_cascade_strength"] = features["trend_cascade_score"].abs() / 4.0
+
+    # ════════════════════════════════════════════════════════════════
+    # Phase 5.0a — BTC CROSS-ASSET CONTEXT
+    # ════════════════════════════════════════════════════════════════
+    # Alts correlate heavily with BTC on short timeframes. Currently the
+    # model is blind to BTC's state when scoring an ETH/SOL/XRP setup.
+    # Adds ~12 features of BTC context that give ML the same situational
+    # awareness a human trader has.
+    # ════════════════════════════════════════════════════════════════
+    _BTC_SUFFIXES = (
+        "btc_return_1", "btc_return_3", "btc_return_5", "btc_return_12",
+        "btc_atr_ratio", "btc_dist_from_vwap",
+        "btc_trend_bias", "btc_ema8_slope", "btc_dist_ema50",
+        "btc_range_pos", "btc_near_high_atr", "btc_near_low_atr",
+        "symbol_btc_corr_60", "symbol_btc_beta_60",
+    )
+    btc_block = _build_btc_block(df, btc_df, symbol) if btc_df is not None else pd.DataFrame(index=df.index)
+    for col in _BTC_SUFFIXES:
+        if col in btc_block.columns:
+            features[col] = btc_block[col].values
+        else:
+            features[col] = 0.0
+
     # ================================================================
     # 26. LIQUIDITY SWEEP / GRAB DETECTION
     # Detects stop hunts: price sweeps above equal highs (or below equal lows)
@@ -910,8 +1212,9 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     # Funding rate approximation: premium/discount of close vs VWAP
     # Positive = longs paying shorts, negative = shorts paying longs
     if "vwap" in df.columns:
+        _closes_arr = df["close"].values  # Phase 4.1a: fix latent NameError
         vwap = df["vwap"].values
-        funding_proxy = (closes - vwap) / vwap * 100  # premium in %
+        funding_proxy = (_closes_arr - vwap) / vwap * 100  # premium in %
         features["funding_proxy"] = funding_proxy
         features["funding_proxy_ma5"] = pd.Series(funding_proxy).rolling(5).mean().values
         features["funding_positive"] = (funding_proxy > 0).astype(float)  # longs paying
@@ -951,12 +1254,15 @@ def build_features(df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None) -> p
     # Section 32: Price Level Context
     # ================================================================
     # Round number proximity (psychological S/R levels)
-    if closes[-1] > 100:  # BTC/ETH
-        round_level = round(closes[-1] / 1000) * 1000
-        features["dist_from_round_number"] = abs(closes - round_level) / closes * 100
-    elif closes[-1] > 1:  # SOL/XRP
-        round_level = round(closes[-1] / 10) * 10
-        features["dist_from_round_number"] = abs(closes - round_level) / closes * 100
+    # Phase 4.1a: fix latent NameError — use df["close"] instead of undefined 'closes'
+    _closes_series = df["close"]
+    _last_close = float(_closes_series.iloc[-1]) if len(_closes_series) > 0 else 0
+    if _last_close > 100:  # BTC/ETH
+        round_level = round(_last_close / 1000) * 1000
+        features["dist_from_round_number"] = (abs(_closes_series - round_level) / _closes_series * 100).values
+    elif _last_close > 1:  # SOL/XRP
+        round_level = round(_last_close / 10) * 10
+        features["dist_from_round_number"] = (abs(_closes_series - round_level) / _closes_series * 100).values
     else:
         features["dist_from_round_number"] = 0
 

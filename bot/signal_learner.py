@@ -169,6 +169,38 @@ class SignalLearner:
             sym_mult = 0.8 + (sym_wr / 100.0) * 0.4  # range: 0.8 to 1.2
             total_mult *= sym_mult
 
+        # ── P2 HOTFIX (2026-04-10): Regime-aware boost cap ──
+        # The setup-level boost (e.g. "structure_bounce 71% WR") is a regime-agnostic
+        # historical average. In counter-HTF conditions, that average does NOT apply —
+        # it's dominated by aligned-HTF trades. Applying the boost to counter-HTF trades
+        # artificially lifts losers past confidence gates.
+        #
+        # Fix: if HTF opposes the signal direction, cap total_mult at 1.0 (penalties
+        # still apply; boosts are suppressed). Neutral HTF (bias=0) is unaffected.
+        # Zero impact on: HTF-aligned trades, neutral-HTF trades, setups that were
+        # already being penalized (mult < 1.0).
+        try:
+            _htf = meta.get("htf_bias")
+            if _htf is not None:
+                _htf_val = int(_htf) if isinstance(_htf, (int, float)) else int(str(_htf).strip() or 0)
+                _side_str = str(side).lower()
+                _htf_opposes = (
+                    (_htf_val < 0 and _side_str == "long") or
+                    (_htf_val > 0 and _side_str == "short")
+                )
+                if _htf_opposes and total_mult > 1.0:
+                    _orig_mult = total_mult
+                    total_mult = 1.0
+                    adjustments.append(f"[P2_COUNTER_HTF_BOOST_CAPPED: {_orig_mult:.2f}→1.00]")
+                    # Phase 3.2: count P2 effectiveness
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p2_counter_htf_boost_cap", f"{symbol}_{_side_str}_htf{_htf_val}_mult{_orig_mult:.2f}")
+                    except Exception:
+                        pass
+        except (ValueError, TypeError):
+            pass
+
         # Apply total multiplier with ceiling cap
         # Cap at 90 to prevent AI from pumping signals to max leverage tier
         # Only the raw strategy signal should reach 90+ (extremely rare, high conviction)

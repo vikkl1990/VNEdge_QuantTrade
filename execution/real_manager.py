@@ -361,14 +361,71 @@ class RealTradingManager:
             logger.info("SMART QUALIFY FAIL: circuit_breaker -- %s", cb_reason)
             return False, f"circuit_breaker:{cb_reason}"
 
-        # Drawdown kill switch: auto-disable if total PnL < -25% of starting balance
-        _total_pnl = self.circuit_breaker.total_pnl
-        _starting = 100.0  # approximate starting balance
-        if _total_pnl < -(_starting * 0.25):
-            logger.critical("DRAWDOWN KILL: total_pnl=$%.2f exceeds 25%% drawdown limit — DISABLING", _total_pnl)
-            self.enabled = False
-            self._save_state()
-            return False, f"drawdown_kill:${_total_pnl:.0f}"
+        # ── Phase 3.4: ROLLING DRAWDOWN KILL ──
+        # OLD BUG (2026-04-10 incident): used cumulative `circuit_breaker.total_pnl` which
+        # never resets. -$27 from a 3-day-old streak persistently re-tripped real trading
+        # even after good days, locking the bot in DISABLED mode for 4+ hours.
+        #
+        # NEW DESIGN: Rolling-window PnL from `closed_real_trades` (the actual trade log).
+        # Three layered limits with double-safety belt+suspenders:
+        #   1h limit: -$15 (fast bleed protection — same as old daily_loss_limit)
+        #   24h limit: -$25 (replaces broken cumulative gate)
+        #    7d limit: -$50 (slow bleed catch-all)
+        # All limits configurable via attributes; defaults match historical risk envelope.
+        try:
+            # Phase 3.4.1: auto-revert temporary limit overrides
+            _revert_ts = getattr(self, '_drawdown_7d_limit_revert_ts', 0) or 0
+            if _revert_ts > 0 and time.time() > _revert_ts:
+                _old_limit = getattr(self, '_drawdown_7d_limit', 50.0)
+                self._drawdown_7d_limit = 50.0
+                self._drawdown_7d_limit_revert_ts = 0
+                logger.warning(
+                    "P3.4 AUTO-REVERT: 7d drawdown limit restored from $%.0f → $50 (trial expired)",
+                    _old_limit,
+                )
+                try:
+                    self._save_state()
+                except Exception:
+                    pass
+
+            limits = (
+                ("1h", 1 * 3600, getattr(self, '_drawdown_1h_limit', 15.0)),
+                ("24h", 24 * 3600, getattr(self, '_drawdown_24h_limit', 25.0)),
+                ("7d", 7 * 24 * 3600, getattr(self, '_drawdown_7d_limit', 50.0)),
+            )
+            now_ts = time.time()
+            closed_real = list(getattr(self, 'closed_real_trades', None) or [])
+            for label, window_sec, limit in limits:
+                window_pnl = 0.0
+                cutoff = now_ts - window_sec
+                for t in closed_real:
+                    try:
+                        ts_str = t.get("timestamp", "") or ""
+                        if not ts_str:
+                            continue
+                        from datetime import datetime as _dt
+                        ts = _dt.fromisoformat(str(ts_str).replace('Z', '+00:00')).timestamp()
+                        if ts >= cutoff:
+                            window_pnl += float(t.get("pnl_usd", 0) or 0)
+                    except Exception:
+                        continue
+                if window_pnl < -limit:
+                    logger.critical(
+                        "DRAWDOWN KILL [%s]: rolling_pnl=$%.2f exceeds limit -$%.2f — DISABLING",
+                        label, window_pnl, limit,
+                    )
+                    self.enabled = False
+                    self._save_state()
+                    return False, f"drawdown_kill_{label}:${window_pnl:.0f}"
+        except Exception as e:
+            # NEVER let drawdown computation crash the qualify gate
+            logger.warning("DRAWDOWN KILL: rolling check failed (%s) — falling back to cumulative", e)
+            _total_pnl = self.circuit_breaker.total_pnl
+            if _total_pnl < -25.0:
+                logger.critical("DRAWDOWN KILL [legacy]: total_pnl=$%.2f exceeds -$25 — DISABLING", _total_pnl)
+                self.enabled = False
+                self._save_state()
+                return False, f"drawdown_kill_legacy:${_total_pnl:.0f}"
 
         # 3. Grade filter
         grade = signal.get("grade", "") or meta.get("grade", "")
@@ -486,6 +543,38 @@ class RealTradingManager:
         margin = max(margin, self.min_margin)  # at least $15
 
         # margin is already >= min_margin from max() above
+
+        # ── Phase 3.5: PROBATION MODE size reduction ──
+        # Set via /api/real/cb-reset?reenable=true&probation=true
+        # Halves position size for the first N trades after re-enable.
+        # Auto-exits after probation_max_trades successful entries OR probation_max_age_sec.
+        try:
+            prob_mult = float(getattr(self, '_probation_size_mult', 1.0) or 1.0)
+            if prob_mult > 0 and prob_mult < 1.0:
+                _trades_done = int(getattr(self, '_probation_trades_done', 0))
+                _max_trades = int(getattr(self, '_probation_max_trades', 3))
+                _started = float(getattr(self, '_probation_started_at', 0) or 0)
+                _max_age = float(getattr(self, '_probation_max_age_sec', 4 * 3600))
+                _age = time.time() - _started if _started > 0 else 0
+                # Auto-exit conditions
+                if _trades_done >= _max_trades:
+                    self._probation_size_mult = 1.0
+                    logger.info("PROBATION EXIT: %d/%d trades completed — restoring full size",
+                                _trades_done, _max_trades)
+                elif _age > _max_age:
+                    self._probation_size_mult = 1.0
+                    logger.info("PROBATION EXIT: max age %.0fs reached — restoring full size", _max_age)
+                else:
+                    # Apply reduction
+                    margin = margin * prob_mult
+                    lots_will_be = max(1, int((margin * 20) / max(entry_price * 0.001, 1)))  # rough preview
+                    logger.warning(
+                        "PROBATION ACTIVE: %s margin=$%.2f→$%.2f (×%.2f) | trades %d/%d | age %.0fmin",
+                        symbol, margin / prob_mult, margin, prob_mult,
+                        _trades_done, _max_trades, _age / 60,
+                    )
+        except Exception as _prob_exc:
+            logger.debug("probation check failed: %s", _prob_exc)
 
         # Leverage from paper signal (mirrors what paper used)
         # Paper's signal_tracker already computed optimal leverage per confidence tier
@@ -628,18 +717,102 @@ class RealTradingManager:
             logger.error("SL SANITY FAIL: %s SHORT but SL %.4f <= price %.4f — BLOCKED", symbol, sl, smart_price)
             return {"error": "sl_below_entry_for_short"}, 0
 
+        # ── Phase 3.9 REVISED: SAFER LIMIT ORDER APPROACH ──
+        # WR SAFETY CONCERN: post-only limits ADVERSELY SELECT for losers.
+        # Winners run away fast (miss fill), losers chop at entry (fill triggers).
+        # This could reduce real WR below market-order baseline.
+        #
+        # Defaults changed:
+        #   _use_limit_orders = False (DISABLED BY DEFAULT — ship safe, enable later)
+        #   post_only = False (IOC-style limit, not maker-only)
+        #   tolerance = 15bp (fills if price within 15bp, cancels otherwise)
+        #
+        # Auto-rollback: if fill rate < 60% over 10 attempts, auto-disable.
+        _use_limit = getattr(self, '_use_limit_orders', False)  # DEFAULT OFF for safety
+        _limit_price = 0
+        _p39_post_only = False  # IOC-style, NOT post-only maker
+        if _use_limit and entry_price > 0:
+            # IOC-style: limit price = signal + 15bp tolerance (max acceptable slippage)
+            # If market is within 15bp, we fill. If beyond, order cancels at the exchange.
+            # This avoids both: (a) 80bp slippage disasters, (b) missing all runners.
+            _bp_tolerance = getattr(self, '_p39_max_slippage_bps', 15) / 10000.0
+            if side == "buy":
+                _limit_price = entry_price * (1 + _bp_tolerance)
+            else:
+                _limit_price = entry_price * (1 - _bp_tolerance)
+            _p39_post_only = False  # IOC behavior — NOT post-only
+            logger.info(
+                "REAL ENTRY [LIMIT IOC]: %s %s | signal=%.4f → limit=%.4f (%dbp tol) post_only=False",
+                symbol, side, entry_price, _limit_price, int(_bp_tolerance * 10000),
+            )
+
+            # Phase 3.9 auto-rollback: track fill rate
+            try:
+                if not hasattr(self, '_p39_attempts'):
+                    self._p39_attempts = 0
+                    self._p39_fills = 0
+                self._p39_attempts += 1
+                if self._p39_attempts >= 10:
+                    _fill_rate = self._p39_fills / self._p39_attempts
+                    if _fill_rate < 0.60:
+                        logger.critical(
+                            "P3.9 AUTO-ROLLBACK: fill rate %.0f%% < 60%% over %d attempts — DISABLING limit orders",
+                            _fill_rate * 100, self._p39_attempts,
+                        )
+                        self._use_limit_orders = False
+            except Exception:
+                pass
+
         order = delta.place_bracket_order(
             symbol=symbol,
             side=side,
             lots=lots,
             stop_loss_price=sl,
             take_profit_price=tp,
-            limit_price=0,  # market order — bracket SL/TP/trail all created atomically
+            limit_price=_limit_price,  # 3.9: limit price if enabled, else 0=market
             client_order_id=coid,
-            post_only=False,
+            post_only=_p39_post_only,  # 3.9: post_only=False (IOC-style, not maker-only)
             time_in_force="",
-            trail_amount=abs(entry_price - sl) if entry_price > 0 and sl > 0 else 0,  # native Delta trailing
+            trail_amount=abs(entry_price - sl) if entry_price > 0 and sl > 0 else 0,
         )
+
+        # ── Phase 3.9: LIMIT ORDER FALLBACK CHECK ──
+        # delta_client now correctly passes limit_price + post_only through the
+        # fallback path. Two rejection scenarios:
+        #   1. limit_no_fill=True — limit order didn't fill (post_only rejection
+        #      or still open). Entry result is marked with limit_no_fill by
+        #      delta_client and we should skip creating a position.
+        #   2. Legacy cancelled/rejected state (defensive check)
+        if _use_limit and order:
+            _state = str(order.get("state", "")).lower()
+            _error = order.get("error", "")
+            _limit_no_fill = order.get("limit_no_fill", False)
+
+            # Path 1: explicit limit_no_fill flag from delta_client
+            if _limit_no_fill:
+                logger.info(
+                    "LIMIT ORDER NOT FILLED: %s %s state=%s — SKIPPING (avoided slippage)",
+                    symbol, side, _state,
+                )
+                try:
+                    from bot import pipeline_metrics as _pm
+                    _pm.record_hotfix_veto("p3_9_limit_no_fill", f"{symbol}_{side}_{_state}")
+                except Exception:
+                    pass
+                return {"status": "limit_no_fill", "state": _state}, 0
+
+            # Path 2: legacy rejection states
+            if _state in ("cancelled", "rejected") or "post_only" in str(_error).lower():
+                logger.warning(
+                    "LIMIT ORDER REJECTED: %s %s | state=%s error=%s — SKIPPING",
+                    symbol, side, _state, _error,
+                )
+                try:
+                    from bot import pipeline_metrics as _pm
+                    _pm.record_hotfix_veto("p3_9_limit_no_fill", f"{symbol}_{side}_{_state}")
+                except Exception:
+                    pass
+                return {"status": "limit_no_fill", "state": _state, "error": _error}, 0
 
         # Check both no-error AND actually filled (IOC may cancel instantly)
         order_state = order.get("state", "") if order else ""
@@ -1003,6 +1176,12 @@ class RealTradingManager:
         # -- Build order params --
         meta = signal.get("metadata", {})
         sl = signal.get("stop_loss", 0)
+        # Phase 3.28: capture PAPER SL BEFORE buffer is applied.
+        # R-multiple calculations (breakeven, chandelier, trail, early kill)
+        # must use paper_initial_risk, NOT the bloated real initial_risk.
+        # Without this, real trades can never hit 0.10R/0.20R/0.30R thresholds
+        # because their "R" is 2-13× larger than paper's.
+        _paper_sl_unbuffered = sl  # save before buffer applied
         # REAL TRADE: widen SL by 0.15% buffer for execution latency
         # Paper exits instantly (0ms), real has 200-500ms API delay = noise stopouts
         entry_raw = signal.get("entry_price", 0)
@@ -1015,6 +1194,8 @@ class RealTradingManager:
                 sl = sl + buffer  # widen up for short
             logger.info("REAL SL BUFFER: %s %s | paper_sl=%.4f real_sl=%.4f (buffer=%.4f)",
                         signal.get("symbol"), side_raw, signal.get("stop_loss"), sl, buffer)
+        # Phase 3.28: compute paper_initial_risk (unbuffered)
+        _paper_initial_risk = abs(entry_raw - _paper_sl_unbuffered) if (entry_raw > 0 and _paper_sl_unbuffered > 0) else 0
         tps = signal.get("take_profits", [])
         tp = float(tps[0]) if tps and isinstance(tps[0], (int, float)) else 0
         side_str = _normalize_side(signal.get("side", "long"))
@@ -1077,8 +1258,60 @@ class RealTradingManager:
             # Slippage
             slippage_bps = abs(fill_price - entry_price) / entry_price * 10000 if entry_price > 0 else 0
 
-            # Max slippage guard: if fill > 40bp from signal, emergency close
-            if slippage_bps > 40 and not self.dry_run:
+            # ── Phase 3.21 HYBRID A+D: SMART SLIPPAGE TOLERANCE ──
+            # Evidence (2026-04-11): paper made +$14.08 on XRP while real auto-closed
+            # at -$0.20 due to 65bp fill slip. The 40bp threshold was arbitrary and
+            # too tight relative to typical 100bp SL distance.
+            #
+            # HYBRID A: raise hard close threshold 40bp → 80bp (configurable)
+            # HYBRID D: for slip in (hard/2, hard], re-check if fill price still
+            #           has enough SL room to be viable. If yes, KEEP the trade.
+            #
+            # Feature flags:
+            #   self._slip_hard_close_bp      (default 80)
+            #   self._slip_recheck_min_sl_pct (default 0.40 = 40% of SL remaining)
+            _slip_hard_bp = float(getattr(self, '_slip_hard_close_bp', 80.0))
+            _slip_recheck_min = float(getattr(self, '_slip_recheck_min_sl_pct', 0.40))
+
+            # Recheck logic: slip in [hard_bp/2, hard_bp] → keep if SL room remains
+            _keep_despite_slip = False
+            if (slippage_bps > (_slip_hard_bp / 2)) and (slippage_bps <= _slip_hard_bp) and not self.dry_run:
+                if sl > 0 and fill_price > 0:
+                    _sl_dist_total = abs(entry_price - sl)
+                    if side_str == "long":
+                        _sl_dist_remain = max(0, fill_price - sl)
+                    else:
+                        _sl_dist_remain = max(0, sl - fill_price)
+                    _remain_pct = _sl_dist_remain / _sl_dist_total if _sl_dist_total > 0 else 0
+                    if _remain_pct >= _slip_recheck_min:
+                        _keep_despite_slip = True
+                        logger.warning(
+                            "SLIP RECHECK KEEP: %s slip=%.0fbp %.0f%% of SL remains (>%.0f%%) — KEEPING trade",
+                            symbol, slippage_bps, _remain_pct * 100, _slip_recheck_min * 100,
+                        )
+                        try:
+                            from bot import pipeline_metrics as _pm
+                            _pm.record_hotfix_veto(
+                                "p3_21_slip_recheck_kept",
+                                f"{symbol}_slip{slippage_bps:.0f}_remain{_remain_pct*100:.0f}pct",
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(
+                            "SLIP RECHECK CLOSE: %s slip=%.0fbp only %.0f%% of SL remains (<%.0f%%) — CLOSING",
+                            symbol, slippage_bps, _remain_pct * 100, _slip_recheck_min * 100,
+                        )
+
+            # Decide whether to close
+            _should_close = False
+            if not self.dry_run:
+                if slippage_bps > _slip_hard_bp:
+                    _should_close = True  # above hard cap — always close
+                elif (slippage_bps > (_slip_hard_bp / 2)) and not _keep_despite_slip:
+                    _should_close = True  # in recheck range AND recheck said close
+
+            if _should_close:
                 logger.critical("REAL ENTRY: EXCESSIVE SLIPPAGE %.0fbp (signal=%.4f fill=%.4f) — CLOSING",
                                slippage_bps, entry_price, fill_price)
                 try:
@@ -1091,6 +1324,85 @@ class RealTradingManager:
                     logger.info("REAL SLIPPAGE CLOSE: %s closed to prevent loss", symbol)
                 except Exception as _sc:
                     logger.error("REAL SLIPPAGE CLOSE failed: %s", _sc)
+
+                # ── Phase 3.10: SILENT CLOSE LOGGING ──
+                # Previously, slippage auto-closes bypassed all metrics (no feedback
+                # entry, no closed_today increment, no CB update). This hid a silent
+                # fee leak. Now we write a proper feedback record so metrics reflect
+                # reality. PnL is typically ~$0 but fees are real.
+                try:
+                    from datetime import datetime, timezone
+                    import json as _json
+                    from pathlib import Path
+                    # ── Phase 3.10 BUG FIX (2026-04-11) ──
+                    # Original formula used `lots * fill_price * 0.0005 * 2` which
+                    # ignored contract_size. On ETH/USDT with contract_size=0.01,
+                    # this over-calculated fees by 100× (phantom $38 loss on real
+                    # $0.38 fee). Fix: use position_size_usd if available, else
+                    # derive notional correctly via margin × leverage.
+                    _notional_usd = margin * leverage if (margin > 0 and leverage > 0) else 0
+                    if _notional_usd <= 0:
+                        # Fallback: try to get contract_size from PRODUCT_MAP
+                        try:
+                            from exchange.delta_client import PRODUCT_MAP
+                            _cs = PRODUCT_MAP.get(symbol, {}).get("contract_size", 1.0)
+                            _notional_usd = lots * _cs * fill_price
+                        except Exception:
+                            _notional_usd = 0  # give up — will record $0 PnL
+                    _approx_fee = _notional_usd * 0.0005 * 2  # 2x = entry + close (taker both sides)
+                    _est_pnl = -_approx_fee  # no PnL movement, just fees
+                    _record = {
+                        "trade_id": f"silent_{int(time.time() * 1000)}",
+                        "symbol": symbol,
+                        "side": side_str,
+                        "entry_price": entry_price,  # signal price
+                        "exit_price": fill_price,    # slipped fill price
+                        "margin": margin,
+                        "leverage": leverage,
+                        "position_size": lots,
+                        "pnl_usd": round(_est_pnl, 4),
+                        "pnl_pct": round(_est_pnl / margin * 100, 2) if margin > 0 else 0,
+                        "scanner": meta.get("setup_type", "unknown"),
+                        "reason": f"slippage_close_{slippage_bps:.0f}bp",
+                        "exit_reason": f"slippage_close_{slippage_bps:.0f}bp",
+                        "dry_run": False,
+                        "paper_trade_id": paper_trade_id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "confidence": meta.get("confidence", 0),
+                        "grade": signal.get("grade", ""),
+                        "ml_prob": meta.get("ml_probability", 0),
+                        "ml_verdict": meta.get("ml_verdict", ""),
+                        "regime": meta.get("regime", ""),
+                        "trade_type": pre_trade_type if 'pre_trade_type' in dir() else "SCALP",
+                        "slippage_bps": round(slippage_bps, 2),
+                        "slippage_impact_r": 0,
+                        "duration_min": 0.1,
+                        "stop_loss": sl,
+                        "peak_mfe_r": 0,
+                        "initial_risk": abs(entry_price - sl) if entry_price and sl else 0,
+                        "silent_close": True,
+                    }
+                    # 1. Append to in-memory closed_real_trades list
+                    self.closed_real_trades.append(_record)
+                    # 2. Append to feedback file for historical analysis
+                    feedback_file = Path("storage/real_trade_feedback.jsonl")
+                    with open(feedback_file, "a") as f:
+                        f.write(_json.dumps(_record, default=str) + "\n")
+                    # 3. Update circuit breaker (no consecutive loss increment for silent)
+                    try:
+                        self.circuit_breaker.daily_pnl += _est_pnl
+                        self.circuit_breaker.total_pnl += _est_pnl
+                        self.circuit_breaker.trade_count_today += 1
+                    except Exception:
+                        pass
+                    self._save_state()
+                    logger.info(
+                        "SILENT CLOSE LOGGED (P3.10): %s | slip=%.0fbp est_fee=$%.2f — recorded to metrics",
+                        symbol, slippage_bps, _approx_fee,
+                    )
+                except Exception as _log_exc:
+                    logger.warning("P3.10 silent close logging failed: %s", _log_exc)
+
                 return {"error": f"slippage_{slippage_bps:.0f}bp"}, fill_price
 
             # Build trade tracking object
@@ -1124,7 +1436,14 @@ class RealTradingManager:
                 "slippage_bps": slippage_bps,
                 "grade": signal.get("grade", "") or meta.get("grade", ""),
                 # PARALLEL EXIT: independent tracking from real fill price
+                # initial_risk uses the BUFFERED real SL (for exchange-level SL placement only)
                 "initial_risk": abs(fill_price - sl) if fill_price > 0 and sl > 0 else 0,
+                # Phase 3.28: paper_initial_risk uses the UNBUFFERED paper SL distance.
+                # This is what MFE/R-multiple calculations MUST use so real trades hit the
+                # same 0.10R/0.15R/0.20R/0.30R thresholds that paper hits. Without this,
+                # real trades can never trigger breakeven, chandelier trail, or MFE lock
+                # because their bloated R makes thresholds unreachable.
+                "paper_initial_risk": _paper_initial_risk if _paper_initial_risk > 0 else abs(fill_price - sl),
                 "highest_price": fill_price,
                 "lowest_price": fill_price,
                 "peak_mfe_r": 0.0,
@@ -1143,6 +1462,21 @@ class RealTradingManager:
                 self.paper_to_real[paper_trade_id] = trade_id
             self._save_state()
             self._api_failures = 0
+
+            # Phase 3.5: increment probation trade counter
+            try:
+                if float(getattr(self, '_probation_size_mult', 1.0) or 1.0) < 1.0:
+                    self._probation_trades_done = int(getattr(self, '_probation_trades_done', 0)) + 1
+                    logger.warning("PROBATION: trade %d completed", self._probation_trades_done)
+            except Exception:
+                pass
+
+            # Phase 3.9: track successful limit order fill for auto-rollback math
+            try:
+                if getattr(self, '_use_limit_orders', False):
+                    self._p39_fills = int(getattr(self, '_p39_fills', 0)) + 1
+            except Exception:
+                pass
 
             # Journey: stamp successful real entry
             try:
@@ -1596,6 +1930,8 @@ class RealTradingManager:
                 # Independent exit fields (survive restart)
                 "independent_exit": getattr(t, "independent_exit", True),
                 "initial_risk": getattr(t, "initial_risk", 0),
+                # Phase 3.28: persist paper_initial_risk (unbuffered, for R calcs)
+                "paper_initial_risk": getattr(t, "paper_initial_risk", getattr(t, "initial_risk", 0)),
                 "highest_price": getattr(t, "highest_price", t.entry_price),
                 "lowest_price": getattr(t, "lowest_price", t.entry_price),
                 "peak_mfe_r": getattr(t, "peak_mfe_r", 0),
@@ -1632,6 +1968,15 @@ class RealTradingManager:
             "dry_run": self.dry_run,
             "api_failures": self._api_failures,
             "saved_at": datetime.now(timezone.utc).isoformat(),
+            # Phase 3.4.1: persist drawdown limit overrides for trial periods
+            "_drawdown_7d_limit": getattr(self, '_drawdown_7d_limit', 50.0),
+            "_drawdown_7d_limit_revert_ts": getattr(self, '_drawdown_7d_limit_revert_ts', 0),
+            # Phase 3.5: persist probation mode state
+            "_probation_size_mult": getattr(self, '_probation_size_mult', 1.0),
+            "_probation_started_at": getattr(self, '_probation_started_at', 0),
+            "_probation_trades_done": getattr(self, '_probation_trades_done', 0),
+            "_probation_max_trades": getattr(self, '_probation_max_trades', 3),
+            "_probation_max_age_sec": getattr(self, '_probation_max_age_sec', 4 * 3600),
         }
         try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1774,6 +2119,17 @@ class RealTradingManager:
                 self.enabled = state["enabled"]
             if "dry_run" in state:
                 self.dry_run = state["dry_run"]
+            # Phase 3.4.1: restore drawdown limit overrides
+            if "_drawdown_7d_limit" in state:
+                self._drawdown_7d_limit = float(state["_drawdown_7d_limit"])
+            if "_drawdown_7d_limit_revert_ts" in state:
+                self._drawdown_7d_limit_revert_ts = float(state["_drawdown_7d_limit_revert_ts"])
+            # Phase 3.5: restore probation mode state
+            for _pfld in ("_probation_size_mult", "_probation_started_at",
+                          "_probation_trades_done", "_probation_max_trades",
+                          "_probation_max_age_sec"):
+                if _pfld in state:
+                    setattr(self, _pfld, float(state[_pfld]) if "max_age" in _pfld or "started" in _pfld or "mult" in _pfld else int(state[_pfld]))
             # Restore open trades (dry run positions survive restart)
             for td in state.get("open_trades", []):
                 # Ensure all loaded trades have independent_exit fields
@@ -1783,6 +2139,14 @@ class RealTradingManager:
                     entry = td.get("entry_price", 0)
                     sl = td.get("stop_loss", 0)
                     td["initial_risk"] = abs(entry - sl) if entry > 0 and sl > 0 else entry * 0.01
+                # Phase 3.28: backfill paper_initial_risk — for pre-3.28 trades,
+                # estimate paper risk as initial_risk - 0.15% buffer. Conservative.
+                if "paper_initial_risk" not in td or td.get("paper_initial_risk", 0) <= 0:
+                    _entry_p = td.get("entry_price", 0)
+                    _ir = td.get("initial_risk", 0) or 0
+                    _buf = _entry_p * 0.0015 if _entry_p > 0 else 0
+                    # paper risk ≈ real risk - buffer (clamped to 10% of real risk minimum)
+                    td["paper_initial_risk"] = max(_ir - _buf, _ir * 0.1) if _ir > 0 else 0
                 if "highest_price" not in td:
                     td["highest_price"] = td.get("entry_price", 0)
                 if "lowest_price" not in td:
@@ -1828,6 +2192,57 @@ class RealTradingManager:
                            _tid[:20], getattr(_t, "symbol", "?"), getattr(_t, "side", "?"),
                            getattr(_t, "independent_exit", False),
                            getattr(_t, "initial_risk", 0))
+
+            # ── Phase 3.4.1 RECOVERY MODE (one-time boot fixup) ──
+            # If state file contains "recovery_mode", apply its directives ONCE
+            # on boot then remove it. Used for controlled re-enable after
+            # drawdown kill / CB trip. Never persisted after first run.
+            _recovery = state.get("recovery_mode")
+            if _recovery and isinstance(_recovery, dict):
+                logger.warning("RECOVERY MODE detected in state: %s", _recovery)
+                try:
+                    if _recovery.get("reset_cb"):
+                        self.circuit_breaker.is_tripped = False
+                        self.circuit_breaker.consecutive_losses = 0
+                        self.circuit_breaker.trip_reason = ""
+                        self.circuit_breaker.daily_pnl = 0.0
+                        self.circuit_breaker.total_pnl = 0.0
+                        logger.warning("RECOVERY: CB counters reset to 0")
+                    if _recovery.get("enabled"):
+                        self.enabled = True
+                        logger.warning("RECOVERY: enabled=True set")
+                    if _recovery.get("drawdown_7d_limit"):
+                        _new_limit = float(_recovery["drawdown_7d_limit"])
+                        self._drawdown_7d_limit = _new_limit
+                        self._drawdown_7d_limit_revert_ts = float(_recovery.get("revert_ts", 0))
+                        logger.warning(
+                            "RECOVERY: 7d drawdown limit raised from $50 → $%.0f until ts=%.0f",
+                            _new_limit, self._drawdown_7d_limit_revert_ts,
+                        )
+                    if _recovery.get("probation"):
+                        self._probation_size_mult = float(_recovery.get("prob_size_mult", 0.5))
+                        self._probation_started_at = time.time()
+                        self._probation_trades_done = 0
+                        self._probation_max_trades = int(_recovery.get("prob_max_trades", 3))
+                        self._probation_max_age_sec = float(_recovery.get("prob_max_age_sec", 4 * 3600))
+                        logger.warning(
+                            "RECOVERY: probation mode enabled — %.0f%% size × %d trades or %.0fh",
+                            self._probation_size_mult * 100,
+                            self._probation_max_trades,
+                            self._probation_max_age_sec / 3600,
+                        )
+                    # Clear recovery_mode so it doesn't apply twice
+                    self._save_state()  # save without recovery_mode (we already read it)
+                    # Also explicitly remove from disk state
+                    try:
+                        _state_disk = json.loads(STATE_FILE.read_text())
+                        _state_disk.pop("recovery_mode", None)
+                        STATE_FILE.write_text(json.dumps(_state_disk, indent=1, default=str))
+                        logger.warning("RECOVERY: recovery_mode cleared from state file")
+                    except Exception as _rc:
+                        logger.warning("RECOVERY: failed to clear from disk: %s", _rc)
+                except Exception as _re:
+                    logger.error("RECOVERY MODE apply failed: %s", _re, exc_info=True)
         except Exception as e:
             logger.warning("Failed to load real trading state: %s", e)
 
@@ -2116,7 +2531,12 @@ class RealTradingManager:
             side = _normalize_side(getattr(t, "side", "long"))
             is_long = side == "long"
             entry = getattr(t, "entry_price", 0)
-            risk = getattr(t, "initial_risk", 0)
+            # Phase 3.28: use paper_initial_risk for R calculations (smaller, tighter)
+            # Keep initial_risk (buffered) for SL placement via chandelier dist only.
+            # Without this, R thresholds (0.10/0.15/0.20/0.30) are unreachable because
+            # real's buffered risk is 2-13× larger than paper's unbuffered risk.
+            risk = getattr(t, "initial_risk", 0)  # buffered — used for chandelier atr only
+            r_risk = getattr(t, "paper_initial_risk", 0) or risk  # tight — used for R math
             if risk <= 0 or entry <= 0:
                 continue
 
@@ -2129,8 +2549,8 @@ class RealTradingManager:
             if price < getattr(t, "lowest_price", 999999):
                 t.lowest_price = price
 
-            # Current R from REAL fill price
-            current_r = (price - entry) / risk if is_long else (entry - price) / risk
+            # Phase 3.28: Current R uses PAPER risk so thresholds fire correctly
+            current_r = (price - entry) / r_risk if is_long else (entry - price) / r_risk
 
             # Peak MFE tracking
             if current_r > getattr(t, "peak_mfe_r", 0):
@@ -2195,10 +2615,11 @@ class RealTradingManager:
                                        symbol, old_sl, new_stop, t.lowest_price, atr, mult)
 
             # ── MFE PROFIT LOCK FLOOR (real) ──
-            if getattr(t, "peak_mfe_r", 0) >= 0.3 and getattr(t, "initial_risk", 0) > 0:
+            # Phase 3.28: use r_risk (paper_initial_risk) so lock distance matches paper
+            if getattr(t, "peak_mfe_r", 0) >= 0.3 and r_risk > 0:
                 _peak = t.peak_mfe_r
                 _lp = 0.85 if _peak >= 1.5 else (0.80 if _peak >= 1.0 else (0.70 if _peak >= 0.5 else 0.60))
-                _lock_dist = _peak * _lp * t.initial_risk
+                _lock_dist = _peak * _lp * r_risk
                 if is_long:
                     _mfe_sl = entry + _lock_dist
                     if _mfe_sl > t.stop_loss:

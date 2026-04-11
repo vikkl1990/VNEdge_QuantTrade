@@ -63,6 +63,34 @@ REGIME_CATEGORIES = [
 # Sessions used in one-hot encoding (matching live strategy)
 SESSION_CATEGORIES = ["asia_late", "asia_early", "europe", "us"]
 
+# ──────────────────────────────────────────────────────────────────────
+# Phase 4.5 — Pair families (single source of truth)
+# ──────────────────────────────────────────────────────────────────────
+# Symbols with similar microstructure get a shared model. The live bot
+# (ml_scorer / dashboard _handle_score) uses PAIR_FAMILIES to route a
+# scoring request to the family model before falling back to a per-scanner
+# model. This map must stay in sync between training and serving.
+PAIR_FAMILIES: Dict[str, List[str]] = {
+    "liquid_majors": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+    "secondary":     ["AVAX/USDT", "LINK/USDT"],
+    "high_beta":     ["DOGE/USDT", "WIF/USDT", "SUI/USDT"],
+}
+
+
+def symbol_to_family(symbol: str) -> str:
+    """Resolve a trading symbol to its pair family name.
+
+    Returns "other" if the symbol isn't in any named family, so callers
+    can always ask for a family (and fall back to the per-scanner model).
+    """
+    if not symbol:
+        return "other"
+    sym = symbol.strip()
+    for fam, members in PAIR_FAMILIES.items():
+        if sym in members:
+            return fam
+    return "other"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Gate/Veto feature computation (mirrors live scalp_strategy.py logic)
@@ -295,6 +323,76 @@ def _compute_gate_veto_features(
     ])
     features["rules_passed_pct"] = features["rules_passed_count"] / 8.0
 
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE 5.0b — HOTFIX DISTILLATION FEATURES
+    # (must match _compute_gate_block in unified_features.py — same math)
+    # ══════════════════════════════════════════════════════════════════
+    _is_long = 1.0 if side == "long" else 0.0
+    _is_short = 1.0 - _is_long
+    _htf_align = features.get("htf_alignment", 0.0)
+    _trend_str = features.get("trend_strength", 0.0)
+    _regime_chop_score = (
+        features.get("regime_sideways", 0.0)
+        + features.get("regime_ranging", 0.0)
+        + features.get("regime_volatile", 0.0)
+    )
+    _impulse = features.get("impulse_body_atr", 0.0)
+    _dist_ema8 = features.get("dist_from_ema8", 0.0)
+    _body = features.get("body_ratio", 0.5)
+    _upper_wick = features.get("upper_wick_ratio", 0.0)
+    _lower_wick = features.get("lower_wick_ratio", 0.0)
+    _atr_ratio = features.get("atr_ratio", 1.0)
+    _vwap_dist = features.get("vwap_distance", 0.0)
+
+    features["hotfix_chop_long_trap_risk"] = (
+        _is_long * _regime_chop_score * max(0.0, -_htf_align)
+    )
+    features["hotfix_chop_short_trap_risk"] = (
+        _is_short * _regime_chop_score * max(0.0, _htf_align)
+    )
+    features["hotfix_counter_htf_risk"] = max(0.0, -_htf_align)
+
+    _no_trend = 1.0 - min(1.0, abs(_trend_str) / 2.0)
+    _no_htf = 1.0 - min(1.0, abs(_htf_align))
+    features["hotfix_weak_combo_risk"] = _no_trend * _no_htf * _regime_chop_score
+
+    features["hotfix_exhaustion_long_risk"] = (
+        _is_long * _upper_wick * min(_impulse, 2.0) / 2.0
+    )
+    features["hotfix_exhaustion_short_risk"] = (
+        _is_short * _lower_wick * min(_impulse, 2.0) / 2.0
+    )
+
+    _stretch = min(_dist_ema8, 3.0) / 3.0
+    _chase = min(_impulse, 3.0) / 3.0
+    features["hotfix_overstretched_risk"] = _stretch * _chase
+
+    _vwap_long_risk = _is_long * max(0.0, -_vwap_dist) / 3.0
+    _vwap_short_risk = _is_short * max(0.0, _vwap_dist) / 3.0
+    features["hotfix_vwap_conflict_risk"] = min(1.0, _vwap_long_risk + _vwap_short_risk)
+
+    features["hotfix_fee_drag_risk"] = max(0.0, (0.7 - min(_atr_ratio, 0.7)) / 0.7)
+
+    features["hotfix_sideways_weak_body_risk"] = (
+        _is_long * features.get("regime_sideways", 0.0) * (1.0 - _body)
+    )
+
+    _all_hotfixes = [
+        features["hotfix_chop_long_trap_risk"],
+        features["hotfix_chop_short_trap_risk"],
+        features["hotfix_counter_htf_risk"],
+        features["hotfix_weak_combo_risk"],
+        features["hotfix_exhaustion_long_risk"],
+        features["hotfix_exhaustion_short_risk"],
+        features["hotfix_overstretched_risk"],
+        features["hotfix_vwap_conflict_risk"],
+        features["hotfix_fee_drag_risk"],
+        features["hotfix_sideways_weak_body_risk"],
+    ]
+    features["hotfix_total_risk"] = float(sum(_all_hotfixes))
+    features["hotfix_max_risk"] = float(max(_all_hotfixes)) if _all_hotfixes else 0.0
+    # ══════════════════════════════════════════════════════════════════
+
     return features
 
 
@@ -306,11 +404,70 @@ def _simulate_trade_outcome(
     df: pd.DataFrame, entry_idx: int, side: str,
     entry_price: float, atr: float, symbol: str,
     fee_rate: float = SCALPER_FEE_ROUND_TRIP,
+    regime: str = "sideways",
+    trade_type: str = "SCALP",
 ) -> Dict[str, float]:
     """Simulate trade forward and return outcome dict.
 
-    Uses live-identical exit logic: 0.65% SL, ATR-based TPs,
-    dynamic trailing, early kill, scalper timeout.
+    Phase 4.0 REFACTOR (2026-04-11):
+    Delegates to bot.trade_simulator.simulate_trade — the SINGLE source of
+    truth for exit logic. Shared with scanner_backtester AND matches live
+    bot's TRADE_TYPE_CONFIG.
+
+    OLD BUG (pre-4.0):
+      - Hardcoded sl_pct=0.0065 → ~3-6× tighter than live's ATR-based SL
+      - TPs at fixed 1.5×ATR → not scaled with actual risk
+      - Result: training labels based on impossible targets, models
+        learned "easy" trades then deployed on "hard" live trades
+    """
+    from bot.trade_simulator import simulate_trade as _unified_sim, SimulatorConfig
+
+    if atr <= 0 or entry_price <= 0:
+        return {"pnl_r": 0.0, "won": False, "exit_reason": "invalid_input",
+                "peak_mfe_r": 0.0, "mae_r": 0.0, "duration_bars": 0,
+                "exit_price": 0.0, "initial_risk": 0.0}
+
+    config = SimulatorConfig.from_trade_type(trade_type)
+    config.fee_rate_per_side = fee_rate / 2  # input is round-trip, config is per-side
+
+    outcome = _unified_sim(
+        df=df,
+        entry_idx=entry_idx,
+        side=side,
+        entry_price=entry_price,
+        atr=atr,
+        regime=regime,
+        config=config,
+        trade_type=trade_type,
+    )
+
+    # Backward-compat shape: ensure keys expected by callers exist
+    return {
+        "pnl_r": outcome.get("pnl_r", 0.0),
+        "won": outcome.get("won", False),
+        "exit_reason": outcome.get("exit_reason", ""),
+        "exit_price": outcome.get("exit_price", 0.0),
+        "exit_bar": outcome.get("exit_bar", 0),
+        "peak_mfe_r": outcome.get("peak_mfe_r", 0.0),
+        "mae_r": outcome.get("mae_r", 0.0),
+        "duration_bars": outcome.get("duration_bars", 0),
+        "duration_sec": outcome.get("duration_sec", 0),
+        "initial_risk": outcome.get("initial_risk", 0.0),
+        "breakeven_set": outcome.get("breakeven_set", False),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LEGACY SIMULATOR (kept for reference — not used after Phase 4.0)
+# ──────────────────────────────────────────────────────────────────────
+
+def _legacy_simulate_trade_outcome_DEPRECATED(
+    df: pd.DataFrame, entry_idx: int, side: str,
+    entry_price: float, atr: float, symbol: str,
+    fee_rate: float = SCALPER_FEE_ROUND_TRIP,
+) -> Dict[str, float]:
+    """DEPRECATED: Legacy buggy simulator. Kept for regression comparison only.
+    Uses hardcoded 0.65% SL + 1.5×ATR TP.
     """
     sl_pct = 0.0065
     if side == "long":
@@ -564,8 +721,15 @@ class CandidateTrainer:
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
         htf_df: Optional[pd.DataFrame] = None,
+        htf_1h_df: Optional[pd.DataFrame] = None,
+        htf_4h_df: Optional[pd.DataFrame] = None,
+        btc_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
-        """Build candidate dataset with veto labels.
+        """Build candidate dataset with veto labels + multi-timeframe HTF features.
+
+        Phase 4.1a: added htf_1h_df and htf_4h_df parameters so ML can learn
+        from the same HTF context that the live bot uses. Previously only 15m
+        was exposed as "HTF" — a 3× ratio that's not really higher timeframe.
 
         Returns (X, y, veto_blocked) where veto_blocked[i] = True if the
         live rule-based vetos would have blocked this candidate.
@@ -578,7 +742,14 @@ class CandidateTrainer:
             raise ValueError("scanner_func is required")
 
         df = compute_indicators(df)
-        market_features = build_features(df, htf_df=htf_df)
+        market_features = build_features(
+            df,
+            htf_df=htf_df,
+            htf_1h_df=htf_1h_df,
+            htf_4h_df=htf_4h_df,
+            btc_df=btc_df,      # Phase 5.0a
+            symbol=symbol,       # Phase 5.0a
+        )
 
         # Pre-compute MFE labels for both sides if using MFE mode
         mfe_labels_long = None
@@ -605,6 +776,13 @@ class CandidateTrainer:
             if atr <= 0:
                 continue
 
+            # Phase 4.1b: Use the UNIFIED feature builder (same code path as live serving)
+            # This guarantees zero training-serving skew. The old code called
+            # _compute_gate_veto_features + manual mkt_ prefixing separately, which
+            # matched training internally but not live. Now both use build_live_row().
+            #
+            # market_features is already pre-computed above via build_features() with
+            # all HTFs so we can slice it directly to avoid rebuilding per candidate.
             gate_feats = _compute_gate_veto_features(df, i, side, symbol)
 
             mkt_row = market_features.iloc[i]
@@ -612,8 +790,10 @@ class CandidateTrainer:
             for col in mkt_row.index:
                 try:
                     val = float(mkt_row[col])
-                    if not np.isnan(val):
+                    if not np.isnan(val) and not np.isinf(val):
                         mkt_dict[f"mkt_{col}"] = val
+                    else:
+                        mkt_dict[f"mkt_{col}"] = 0.0
                 except (TypeError, ValueError):
                     continue
 
@@ -689,29 +869,87 @@ class CandidateTrainer:
         n_estimators: int = 50,
         max_depth: int = 6,
         regression: bool = False,
+        label_lookahead_bars: int = 30,
     ) -> Dict:
         """Train model with walk-forward TimeSeriesSplit validation.
+
+        Phase 4.3 (2026-04-11): Fixed walk-forward contamination.
+
+        Two critical fixes vs legacy:
+
+        1. PURGE GAP is now LABEL-AWARE:
+           OLD: hardcoded `purge_gap = 10` (50 min on 5m)
+           NEW: `purge_gap = label_lookahead_bars` — matches the window the
+                label at bar t uses for its ground truth. Trades labeled at
+                the end of train could still be "in flight" at the start of
+                test, creating data leakage. The purge must cover the full
+                label lookahead.
+
+        2. DOUBLE-SIDED EMBARGO:
+           OLD: only strip `purge_gap` from END of train
+           NEW: also strip `purge_gap` from START of test — this prevents
+                features at the start of test from being correlated with
+                the last train bars (via overlapping lookback windows on
+                rolling features like EMAs, ATR, RSI).
+
+        Also reports:
+          - per-fold + aggregate OOS AUC (unchanged)
+          - IN-SAMPLE AUC (new — so you can see overfit gap)
+          - edge_verdict field: "HOLDS" / "WEAK" / "NO_EDGE" / "UNCLEAR"
 
         If regression=True, uses GradientBoostingRegressor to predict realized R.
         Otherwise uses RandomForestClassifier for binary classification.
 
-        Returns metrics dict with per-fold and aggregate results.
+        Args:
+            label_lookahead_bars: how many bars ahead the label uses for ground
+                truth. For MFE labels, this equals mfe_max_bars (default 30).
+                Used to set purge_gap. If you switch to sim-trade labels with
+                a longer hold time, increase this accordingly.
+
+        Returns metrics dict with per-fold, aggregate OOS, aggregate IS, and
+        edge_verdict fields.
         """
         if len(X) < 250:
             return {"error": f"insufficient data: {len(X)} candidates (need 250+)"}
 
         self._regression = regression
         tscv = TimeSeriesSplit(n_splits=n_splits)
-        purge_gap = 10  # 10 bars on 5m = 50min, covers BTC 27min scalper + safety margin
+
+        # Phase 4.3: purge_gap = label_lookahead so train/test don't overlap via label window
+        # Legacy value was 10; new default matches the MFE label lookahead (30 bars).
+        # For 5m bars: 30 * 5 = 150 min = 2.5 hours of clean gap between folds.
+        purge_gap = max(int(label_lookahead_bars), 10)  # never less than 10 for safety
 
         fold_results = []
         all_probs = np.zeros(len(X))
         all_preds = np.zeros(len(X), dtype=int)
         all_mask = np.zeros(len(X), dtype=bool)
 
+        # Phase 4.3: Also track IN-SAMPLE (training) metrics for overfit diagnosis
+        # - classification: AUC (IS vs OOS gap = overfit indicator)
+        # - regression: spearman rank_corr (IS vs OOS gap = overfit indicator)
+        in_sample_aucs: List[float] = []
+        oos_aucs_per_fold: List[float] = []
+        in_sample_rank_corrs: List[float] = []
+        oos_rank_corrs: List[float] = []
+        # Phase E.2: track which features each fold selects — measures edge stability
+        # If 5 folds pick 5 wildly different feature sets, the "edge" is non-stationary
+        # and the final model's features may not be what OOS metrics measured.
+        per_fold_selected_features: List[set] = []
+
         for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
+            # Phase 4.3: DOUBLE-SIDED EMBARGO
+            # (a) strip end of train (label at last train bar looks forward into test)
+            # (b) strip start of test  (rolling features at first test bars look back into train)
+            original_train_len = len(train_idx)
+            original_test_len = len(test_idx)
             if purge_gap > 0 and len(train_idx) > purge_gap:
                 train_idx = train_idx[:-purge_gap]
+            if purge_gap > 0 and len(test_idx) > purge_gap:
+                test_idx = test_idx[purge_gap:]
+            # Track how much data we purged (for diagnostics)
+            train_purged = original_train_len - len(train_idx)
+            test_purged = original_test_len - len(test_idx)
 
             X_train_full, X_test_full = X.iloc[train_idx], X.iloc[test_idx]
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
@@ -721,14 +959,16 @@ class CandidateTrainer:
             if not regression and len(y_train.unique()) < 2:
                 continue
 
-            # In-fold feature selection
+            # In-fold feature selection (Phase E.2: track selection per fold)
             if len(X_train_full.columns) > 40:
                 fold_features = self._select_top_features(X_train_full, y_train, max_features=40, regression=regression)
                 X_train = X_train_full[fold_features]
                 X_test = X_test_full[fold_features]
+                per_fold_selected_features.append(set(fold_features))
             else:
                 X_train = X_train_full
                 X_test = X_test_full
+                per_fold_selected_features.append(set(X_train_full.columns))
 
             if regression:
                 model = GradientBoostingRegressor(
@@ -752,6 +992,20 @@ class CandidateTrainer:
                     rank_corr, _ = spearmanr(y_test, preds_r)
                 except Exception:
                     rank_corr = 0.0
+                if np.isnan(rank_corr):
+                    rank_corr = 0.0
+
+                # Phase 4.3: IS rank_corr for overfit diagnosis
+                try:
+                    in_sample_preds = model.predict(X_train)
+                    is_rc, _ = spearmanr(y_train, in_sample_preds)
+                    if np.isnan(is_rc):
+                        is_rc = 0.0
+                except Exception:
+                    is_rc = 0.0
+                in_sample_rank_corrs.append(float(is_rc))
+                oos_rank_corrs.append(float(rank_corr))
+
                 # Top quartile actual R vs bottom quartile
                 sorted_idx = np.argsort(preds_r)
                 q25 = len(sorted_idx) // 4
@@ -762,8 +1016,12 @@ class CandidateTrainer:
                     "fold": fold_idx,
                     "train_size": len(X_train),
                     "test_size": len(X_test),
+                    "train_purged": train_purged,   # Phase 4.3
+                    "test_purged": test_purged,     # Phase 4.3
                     "rmse": round(rmse, 4),
-                    "rank_corr": round(float(rank_corr) if not np.isnan(rank_corr) else 0, 4),
+                    "in_sample_rank_corr": round(float(is_rc), 4),  # Phase 4.3
+                    "oos_rank_corr": round(float(rank_corr), 4),    # Phase 4.3 alias
+                    "rank_corr": round(float(rank_corr), 4),
                     "top_q_avg_r": round(top_r, 4),
                     "bot_q_avg_r": round(bot_r, 4),
                     "spread": round(top_r - bot_r, 4),
@@ -790,10 +1048,26 @@ class CandidateTrainer:
                 except ValueError:
                     auc = 0.5
 
+                # Phase 4.3: Also compute IN-SAMPLE AUC for overfit diagnosis
+                try:
+                    in_sample_probs = clf.predict_proba(X_train)[:, 1]
+                    if len(y_train.unique()) >= 2:
+                        is_auc = roc_auc_score(y_train, in_sample_probs)
+                    else:
+                        is_auc = 0.5
+                except Exception:
+                    is_auc = 0.5
+                in_sample_aucs.append(is_auc)
+                oos_aucs_per_fold.append(auc)
+
                 fold_results.append({
                     "fold": fold_idx,
                     "train_size": len(X_train),
                     "test_size": len(X_test),
+                    "train_purged": train_purged,   # Phase 4.3
+                    "test_purged": test_purged,     # Phase 4.3
+                    "in_sample_auc": round(is_auc, 4),  # Phase 4.3
+                    "oos_auc": round(auc, 4),           # Phase 4.3 alias
                     "accuracy": round(accuracy_score(y_test, preds) * 100, 1),
                     "precision": round(precision_score(y_test, preds, zero_division=0) * 100, 1),
                     "recall": round(recall_score(y_test, preds, zero_division=0) * 100, 1),
@@ -812,6 +1086,30 @@ class CandidateTrainer:
             self._feature_names = selected_features
         else:
             self._feature_names = list(X.columns)
+
+        # Phase E.2: Feature selection stability analysis
+        # How much does each fold agree with the final feature set? Low overlap
+        # means the edge is non-stationary — the persisted model uses features
+        # that didn't consistently win across folds.
+        feature_selection_stability = 1.0
+        feature_selection_overlap_per_fold: List[float] = []
+        if per_fold_selected_features:
+            final_set = set(self._feature_names)
+            for fold_set in per_fold_selected_features:
+                if not final_set:
+                    continue
+                overlap = len(fold_set & final_set) / len(final_set)
+                feature_selection_overlap_per_fold.append(round(overlap, 4))
+            if feature_selection_overlap_per_fold:
+                feature_selection_stability = round(
+                    float(np.mean(feature_selection_overlap_per_fold)), 4
+                )
+            # Features that appear in EVERY fold (most robust)
+            if per_fold_selected_features:
+                consistent_features = set.intersection(*per_fold_selected_features)
+                consistent_count = len(consistent_features & final_set)
+            else:
+                consistent_count = 0
 
         # Train final model on all data
         if regression:
@@ -882,6 +1180,83 @@ class CandidateTrainer:
         else:
             agg_metrics = {}
 
+        # ------------------------------------------------------------------
+        # Phase 4.3: IS vs OOS stability analysis + edge_verdict
+        # ------------------------------------------------------------------
+        # Compute the aggregate overfit gap and stability metrics so we can
+        # emit a single `edge_verdict` classification that summarizes whether
+        # the learned edge generalizes out-of-sample or is just memorization.
+        # ------------------------------------------------------------------
+        edge_verdict = "UNCLEAR"
+        overfit_gap = 0.0
+        is_mean = 0.0
+        oos_mean = 0.0
+        oos_std = 0.0
+
+        if regression:
+            if oos_rank_corrs:
+                oos_mean = float(np.mean(oos_rank_corrs))
+                oos_std = float(np.std(oos_rank_corrs))
+            if in_sample_rank_corrs:
+                is_mean = float(np.mean(in_sample_rank_corrs))
+            overfit_gap = round(is_mean - oos_mean, 4)
+
+            # Verdict on ranking skill
+            #  HOLDS  — decent OOS rank_corr AND low fold-to-fold variance
+            #  WEAK   — measurable but noisy edge
+            #  NO_EDGE— OOS rank_corr ≤ 0 (model ranks randomly or inverted)
+            #  UNCLEAR— between the bands
+            if oos_mean >= 0.15 and oos_std <= 0.10 and len(oos_rank_corrs) >= 2:
+                edge_verdict = "HOLDS"
+            elif oos_mean >= 0.05:
+                edge_verdict = "WEAK"
+            elif oos_mean <= 0.0:
+                edge_verdict = "NO_EDGE"
+            else:
+                edge_verdict = "UNCLEAR"
+
+            agg_metrics.update({
+                "in_sample_rank_corr_mean": round(is_mean, 4),
+                "oos_rank_corr_mean": round(oos_mean, 4),
+                "oos_rank_corr_std": round(oos_std, 4),
+                "overfit_gap": overfit_gap,
+                "edge_verdict": edge_verdict,
+                "n_folds_used": len(oos_rank_corrs),
+            })
+        else:
+            if oos_aucs_per_fold:
+                oos_mean = float(np.mean(oos_aucs_per_fold))
+                oos_std = float(np.std(oos_aucs_per_fold))
+            if in_sample_aucs:
+                is_mean = float(np.mean(in_sample_aucs))
+            overfit_gap = round(is_mean - oos_mean, 4)
+
+            # Verdict on classification AUC
+            #  HOLDS  — OOS AUC > 0.58 AND low fold variance
+            #  WEAK   — OOS AUC > 0.54 (small but positive edge)
+            #  NO_EDGE— OOS AUC < 0.52 (model barely above coinflip)
+            #  UNCLEAR— between the bands
+            if oos_mean >= 0.58 and oos_std <= 0.05 and len(oos_aucs_per_fold) >= 2:
+                edge_verdict = "HOLDS"
+            elif oos_mean >= 0.54:
+                edge_verdict = "WEAK"
+            elif oos_mean <= 0.52:
+                edge_verdict = "NO_EDGE"
+            else:
+                edge_verdict = "UNCLEAR"
+
+            agg_metrics.update({
+                "in_sample_auc_mean": round(is_mean, 4),
+                "oos_auc_mean": round(oos_mean, 4),
+                "oos_auc_std": round(oos_std, 4),
+                "overfit_gap": overfit_gap,
+                "edge_verdict": edge_verdict,
+                "n_folds_used": len(oos_aucs_per_fold),
+            })
+
+        total_train_purged = sum(f.get("train_purged", 0) for f in fold_results)
+        total_test_purged = sum(f.get("test_purged", 0) for f in fold_results)
+
         result = {
             "total_candidates": len(X),
             "base_win_rate": round(y.mean() * 100, 1) if not regression else round(float(y.mean()), 4),
@@ -889,6 +1264,21 @@ class CandidateTrainer:
             "aggregate_oos": agg_metrics,
             "top_features": top_features,
             "model_type": "regression" if regression else "classification",
+            # Phase 4.3: top-level summary fields for dashboard + gating logic
+            "edge_verdict": edge_verdict,
+            "overfit_gap": overfit_gap,
+            "oos_mean": round(oos_mean, 4),
+            "oos_std": round(oos_std, 4),
+            "in_sample_mean": round(is_mean, 4),
+            "purge_gap_bars": int(purge_gap),
+            "label_lookahead_bars": int(label_lookahead_bars),
+            "total_train_purged": int(total_train_purged),
+            "total_test_purged": int(total_test_purged),
+            # Phase E.2: feature selection stability diagnostics
+            "feature_selection_stability": feature_selection_stability,  # 0-1, higher = more stable
+            "feature_selection_overlap_per_fold": feature_selection_overlap_per_fold,
+            "features_consistent_across_folds": int(consistent_count),
+            "features_selected_final": int(len(self._feature_names)),
         }
 
         self._results = result
@@ -1068,6 +1458,9 @@ class CandidateTrainer:
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
         htf_df: Optional[pd.DataFrame] = None,
+        htf_1h_df: Optional[pd.DataFrame] = None,
+        htf_4h_df: Optional[pd.DataFrame] = None,
+        btc_df: Optional[pd.DataFrame] = None,  # Phase 5.0a
     ) -> Dict:
         """Run the complete candidate training pipeline end-to-end.
 
@@ -1077,16 +1470,21 @@ class CandidateTrainer:
         4. Evaluate probability bucket calibration
         5. Save results (per scanner)
 
+        Phase 4.1a: added htf_1h_df + htf_4h_df so ML sees 1h/4h context.
+
         Returns full results dict.
         """
         logger.info("=== CandidateTrainer: Starting pipeline for %s / %s (labels=%s, mfe_r=%.2f) ===",
                      scanner_name, symbol, label_mode, mfe_threshold_r)
 
-        # Step 1: Build dataset with veto labels
+        # Step 1: Build dataset with veto labels + multi-timeframe HTF features
         X, y, veto_blocked = self.build_dataset_with_veto_labels(
             df, symbol, scanner_func=scanner_func,
             label_mode=label_mode,
             htf_df=htf_df,
+            htf_1h_df=htf_1h_df,
+            htf_4h_df=htf_4h_df,
+            btc_df=btc_df,  # Phase 5.0a
             mfe_threshold_r=mfe_threshold_r,
             mfe_max_bars=mfe_max_bars,
         )
@@ -1114,9 +1512,14 @@ class CandidateTrainer:
             )
 
         # Step 2: Train
+        # Phase 4.3: forward mfe_max_bars as label_lookahead_bars so walk-forward
+        # purge gap matches the actual label lookahead window. Default MFE uses
+        # 30 bars (~150 min on 5m), so that much data is embargoed on both sides
+        # of each fold split.
         train_result = self.train(X, y, n_splits=n_splits,
                                   n_estimators=n_estimators, max_depth=max_depth,
-                                  regression=is_regression)
+                                  regression=is_regression,
+                                  label_lookahead_bars=int(mfe_max_bars))
         if "error" in train_result:
             train_result["scanner"] = scanner_name
             self._save_results(train_result, scanner_name)
@@ -1176,6 +1579,7 @@ class CandidateTrainer:
             avg_acc = sum(f.get("accuracy", 0) for f in folds) / len(folds) if folds else 0
             avg_prec = sum(f.get("precision", 0) for f in folds) / len(folds) if folds else 0
             avg_recall = sum(f.get("recall", 0) for f in folds) / len(folds) if folds else 0
+            # Phase 4.3: forward edge diagnostics into history record
             tracker.record_training(
                 scanner=scanner_name,
                 metrics={
@@ -1186,10 +1590,31 @@ class CandidateTrainer:
                     "samples": len(X),
                     "n_features": len(X.columns),
                     "positive_rate": round(y.mean() * 100, 1),
+                    "edge_verdict": train_result.get("edge_verdict", "UNCLEAR"),
+                    "overfit_gap": train_result.get("overfit_gap", 0.0),
+                    "oos_mean": train_result.get("oos_mean", 0.0),
+                    "oos_std": train_result.get("oos_std", 0.0),
+                    "in_sample_mean": train_result.get("in_sample_mean", 0.0),
+                    "purge_gap_bars": train_result.get("purge_gap_bars", 0),
                 },
                 feature_importances=train_result.get("top_features", {}),
             )
-            logger.info("Recorded training history for %s (AUC=%.4f)", scanner_name, avg_auc)
+            logger.info(
+                "Recorded training history for %s (AUC=%.4f, verdict=%s, overfit_gap=%.3f)",
+                scanner_name, avg_auc,
+                train_result.get("edge_verdict", "?"),
+                train_result.get("overfit_gap", 0.0),
+            )
+            # Loud warning when the model has no real edge
+            _verdict = train_result.get("edge_verdict", "UNCLEAR")
+            if _verdict == "NO_EDGE":
+                logger.warning(
+                    "PHASE 4.3: %s edge_verdict=NO_EDGE (OOS mean=%.3f, IS mean=%.3f, gap=%.3f) — model is memorizing, not learning",
+                    scanner_name,
+                    train_result.get("oos_mean", 0.0),
+                    train_result.get("in_sample_mean", 0.0),
+                    train_result.get("overfit_gap", 0.0),
+                )
         except Exception as e:
             logger.warning("Failed to record training history: %s", e)
 
@@ -1229,9 +1654,14 @@ class CandidateTrainer:
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
         htf_df: Optional[pd.DataFrame] = None,
+        htf_1h_df: Optional[pd.DataFrame] = None,
+        htf_4h_df: Optional[pd.DataFrame] = None,
+        btc_df: Optional[pd.DataFrame] = None,  # Phase 5.0a
         exclude_scanners: Optional[set] = None,
     ) -> Dict:
         """Run candidate training for ALL scanners and produce comparison.
+
+        Phase 4.1a: Added htf_1h_df + htf_4h_df for multi-timeframe features.
 
         Args:
             df: OHLCV DataFrame (5m)
@@ -1239,7 +1669,9 @@ class CandidateTrainer:
             scanners: dict of {name: func} from trainer.py SCANNERS
             label_mode: "mfe" (default) or "trade"
             mfe_threshold_r: MFE threshold in R (default 0.2)
-            htf_df: Optional higher-timeframe DataFrame (15m) for multi-TF features
+            htf_df: Optional 15m HTF DataFrame (legacy)
+            htf_1h_df: Optional 1h HTF DataFrame (Phase 4.1a — macro trend)
+            htf_4h_df: Optional 4h HTF DataFrame (Phase 4.1a — session context)
             exclude_scanners: set of scanner names to skip (default: {"bb_squeeze", "simple_bias"})
 
         Returns dict with per-scanner results and comparison table.
@@ -1252,7 +1684,11 @@ class CandidateTrainer:
         if exclude_scanners:
             logger.info("  Excluding scanners: %s", exclude_scanners)
         if htf_df is not None:
-            logger.info("  Multi-TF enabled: %d HTF candles for alignment features", len(htf_df))
+            logger.info("  15m HTF: %d bars", len(htf_df))
+        if htf_1h_df is not None:
+            logger.info("  1h HTF:  %d bars (Phase 4.1a — macro trend features)", len(htf_1h_df))
+        if htf_4h_df is not None:
+            logger.info("  4h HTF:  %d bars (Phase 4.1a — session/structure features)", len(htf_4h_df))
 
         all_results = {}
         comparison_rows = []
@@ -1275,6 +1711,9 @@ class CandidateTrainer:
                 mfe_threshold_r=mfe_threshold_r,
                 mfe_max_bars=mfe_max_bars,
                 htf_df=htf_df,
+                htf_1h_df=htf_1h_df,
+                htf_4h_df=htf_4h_df,
+                btc_df=btc_df,  # Phase 5.0a
             )
             all_results[scanner_name] = result
 
@@ -1340,12 +1779,17 @@ class CandidateTrainer:
         mfe_threshold_r: float = 0.2,
         mfe_max_bars: int = 30,
         htf_data: Optional[Dict[str, pd.DataFrame]] = None,
+        htf_1h_data: Optional[Dict[str, pd.DataFrame]] = None,
+        htf_4h_data: Optional[Dict[str, pd.DataFrame]] = None,
+        btc_df: Optional[pd.DataFrame] = None,  # Phase 5.0a — shared across all family symbols
         exclude_scanners: Optional[set] = None,
     ) -> Dict:
         """Train ONE model per scanner per pair-family (not per symbol).
 
         Groups symbols into families based on market characteristics, concatenates
         candidates from all symbols in each family, and trains a shared model.
+
+        Phase 4.1a: Added htf_1h_data + htf_4h_data for multi-timeframe features.
 
         Args:
             symbol_data: dict of {symbol: OHLCV DataFrame} e.g. {"BTC/USDT": df_btc, ...}
@@ -1354,7 +1798,9 @@ class CandidateTrainer:
             label_mode: "mfe" (default) or "trade"
             mfe_threshold_r: MFE threshold in R (default 0.2)
             mfe_max_bars: max bars for MFE lookahead
-            htf_data: optional dict of {symbol: htf_df} for multi-TF features
+            htf_data: optional dict of {symbol: 15m_df} (legacy HTF)
+            htf_1h_data: optional dict of {symbol: 1h_df} (Phase 4.1a — macro trend)
+            htf_4h_data: optional dict of {symbol: 4h_df} (Phase 4.1a — session context)
             exclude_scanners: set of scanner names to skip (default: {"bb_squeeze", "simple_bias"})
 
         Returns dict with per-family, per-scanner results.
@@ -1362,26 +1808,15 @@ class CandidateTrainer:
         if exclude_scanners is None:
             exclude_scanners = {"bb_squeeze", "simple_bias"}
 
-        # Define pair families
-        PAIR_FAMILIES = {
-            "liquid_majors": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
-            "secondary": ["AVAX/USDT", "LINK/USDT"],
-            "high_beta": ["DOGE/USDT", "WIF/USDT", "SUI/USDT"],
-        }
-
-        # Assign each provided symbol to its family (or "other")
-        symbol_to_family = {}
-        for family_name, family_symbols in PAIR_FAMILIES.items():
-            for sym in family_symbols:
-                symbol_to_family[sym] = family_name
-        for sym in symbol_data:
-            if sym not in symbol_to_family:
-                symbol_to_family[sym] = "other"
+        # Phase 4.5: PAIR_FAMILIES is now the module-level constant (single
+        # source of truth shared by serving code). The resolver returns "other"
+        # for symbols not in any named family.
+        sym_family_map = {sym: symbol_to_family(sym) for sym in symbol_data}
 
         # Group provided symbols by family
         family_groups: Dict[str, List[str]] = {}
         for sym in symbol_data:
-            fam = symbol_to_family[sym]
+            fam = sym_family_map[sym]
             family_groups.setdefault(fam, []).append(sym)
 
         logger.info("=== Pair-family training: %d symbols -> %d families ===",
@@ -1409,6 +1844,8 @@ class CandidateTrainer:
                 for sym in family_symbols:
                     df = symbol_data[sym]
                     htf_df = htf_data.get(sym) if htf_data else None
+                    htf_1h = htf_1h_data.get(sym) if htf_1h_data else None
+                    htf_4h = htf_4h_data.get(sym) if htf_4h_data else None
 
                     # Build a per-symbol trainer to run candidate extraction + features
                     trainer = CandidateTrainer(self._config)
@@ -1420,6 +1857,9 @@ class CandidateTrainer:
                             mfe_threshold_r=mfe_threshold_r,
                             mfe_max_bars=mfe_max_bars,
                             htf_df=htf_df,
+                            htf_1h_df=htf_1h,
+                            htf_4h_df=htf_4h,
+                            btc_df=btc_df,  # Phase 5.0a — shared BTC feed across family
                         )
                     except Exception as e:
                         logger.warning("  %s: dataset build failed: %s", sym, e)
@@ -1466,13 +1906,41 @@ class CandidateTrainer:
                     n_estimators=n_estimators,
                     max_depth=max_depth,
                     regression=is_regression,
+                    label_lookahead_bars=int(mfe_max_bars),  # Phase 4.3
                 )
+
+                # Phase 4.5: PERSIST the family model to disk.
+                # Previously `run_pair_family` trained but never called save_model —
+                # the trained models were discarded. Now we save every family model
+                # with an edge_verdict gate: only persist if the OOS check shows
+                # HOLDS or WEAK (UNCLEAR is also allowed so we can observe it
+                # live; NO_EDGE is dropped to avoid shipping a coinflip).
+                _verdict = train_result.get("edge_verdict", "UNCLEAR")
+                if _verdict != "NO_EDGE" and family_trainer._model is not None:
+                    try:
+                        family_trainer.save_model(scanner_name, family_name=family_name)
+                        logger.info(
+                            "  PHASE 4.5: Persisted family model %s/%s (verdict=%s)",
+                            scanner_name, family_name, _verdict,
+                        )
+                    except Exception as save_err:
+                        logger.warning(
+                            "  Failed to save family model %s/%s: %s",
+                            scanner_name, family_name, save_err,
+                        )
+                else:
+                    logger.warning(
+                        "  SKIPPED family model save %s/%s: edge_verdict=%s",
+                        scanner_name, family_name, _verdict,
+                    )
 
                 family_results[scanner_name] = {
                     "family": family_name,
                     "symbols": family_symbols,
                     "total_candidates": len(X_combined),
                     "training": train_result,
+                    "model_saved": _verdict != "NO_EDGE",  # Phase 4.5
+                    "edge_verdict": _verdict,              # Phase 4.5
                 }
 
             all_family_results[family_name] = family_results
@@ -1589,36 +2057,157 @@ class CandidateTrainer:
     # Model persistence for live scoring API
     # ──────────────────────────────────────────────────────────────────────
 
-    def save_model(self, scanner_name: str):
-        """Persist trained RandomForest model + feature names to disk for live scoring."""
+    def save_model(self, scanner_name: str, family_name: Optional[str] = None):
+        """Persist trained RandomForest model + feature names to disk for live scoring.
+
+        Phase 4.2: Also emits a global feature_schema.json so ml_scorer can
+        validate the trained schema against what it's sending at serving time.
+
+        Phase 4.5: Support family-scoped filenames so `run_pair_family` can
+        persist its shared models. When `family_name` is provided (e.g.
+        "liquid_majors"), the model is written as
+          model_{scanner}_family_{family}.joblib
+        The serving code can then prefer the family model before falling back
+        to the per-scanner one.
+        """
         if self._model is None:
             logger.warning("No model to save for %s", scanner_name)
             return
+        import hashlib
         import joblib
-        model_path = RESULTS_DIR / f"model_{scanner_name}.joblib"
-        meta_path = RESULTS_DIR / f"model_{scanner_name}_features.json"
+
+        # Phase 4.5: family-scoped filename when requested
+        if family_name and family_name != "other":
+            file_key = f"{scanner_name}_family_{family_name}"
+        else:
+            file_key = scanner_name
+
+        model_path = RESULTS_DIR / f"model_{file_key}.joblib"
+        meta_path = RESULTS_DIR / f"model_{file_key}_features.json"
 
         joblib.dump(self._model, model_path)
+
+        # Phase 4.2: compute a schema hash that uniquely identifies the feature set
+        # (stable across runs as long as feature names are the same)
+        _sorted_feats = sorted(self._feature_names) if self._feature_names else []
+        _schema_str = "|".join(_sorted_feats)
+        _schema_hash = hashlib.sha256(_schema_str.encode()).hexdigest()[:16]
+
         meta = {
             "scanner": scanner_name,
+            "family": family_name if family_name and family_name != "other" else None,
+            "file_key": file_key,
             "feature_names": self._feature_names,
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "n_features": len(self._feature_names),
+            # Phase 4.2 additions — schema contract
+            "feature_schema_hash": _schema_hash,
+            "feature_schema_version": "fs_v2_htf_fusion",  # bumped for Phase 4.1a+4.1b
+            "trainer_phase": "4.5",  # Phase 4.5 — family-aware
+            "has_htf_features": any(
+                f.startswith("mkt_h1_") or f.startswith("mkt_h4_")
+                for f in self._feature_names
+            ),
+            # Phase 4.3 edge diagnostics (if available in self._results)
+            "edge_verdict": self._results.get("edge_verdict") if hasattr(self, "_results") and isinstance(self._results, dict) else None,
+            "oos_mean": self._results.get("oos_mean") if hasattr(self, "_results") and isinstance(self._results, dict) else None,
+            "overfit_gap": self._results.get("overfit_gap") if hasattr(self, "_results") and isinstance(self._results, dict) else None,
         }
         meta_path.write_text(json.dumps(meta, indent=2))
-        logger.info("Saved model for %s: %s (%d features)", scanner_name, model_path, len(self._feature_names))
+
+        # Phase 4.2: Also write/update the GLOBAL feature_schema.json
+        # This is the single canonical schema used by ml_scorer for validation
+        try:
+            global_schema_path = RESULTS_DIR / "feature_schema.json"
+            existing = {}
+            if global_schema_path.exists():
+                try:
+                    existing = json.loads(global_schema_path.read_text())
+                except Exception:
+                    existing = {}
+            # Per-scanner + per-family entries keyed by file_key
+            scanners_entry = existing.get("scanners", {})
+            scanners_entry[file_key] = {
+                "scanner": scanner_name,
+                "family": family_name if family_name and family_name != "other" else None,
+                "feature_names": self._feature_names,
+                "n_features": len(self._feature_names),
+                "schema_hash": _schema_hash,
+                "trained_at": meta["trained_at"],
+            }
+            global_schema = {
+                "version": "fs_v2_htf_fusion",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "scanners": scanners_entry,
+            }
+            global_schema_path.write_text(json.dumps(global_schema, indent=2))
+            logger.info(
+                "Saved model for %s: %s (%d features, schema=%s, has_htf=%s, family=%s)",
+                file_key, model_path, len(self._feature_names),
+                _schema_hash, meta["has_htf_features"],
+                family_name or "-",
+            )
+        except Exception as e:
+            logger.warning("Failed to update global feature_schema.json: %s", e)
 
     @classmethod
-    def load_model(cls, scanner_name: str):
-        """Load a trained model from disk. Returns (model, feature_names) or (None, [])."""
+    def load_model(cls, scanner_name: str, family_name: Optional[str] = None):
+        """Load a trained model from disk.
+
+        Phase 4.5: when `family_name` is supplied (and != "other"), loads the
+        family-scoped file `model_{scanner}_family_{family}.joblib`.
+        Otherwise loads the plain per-scanner file.
+
+        Returns (model, feature_names) or (None, []) on miss.
+        """
         import joblib
-        model_path = RESULTS_DIR / f"model_{scanner_name}.joblib"
-        meta_path = RESULTS_DIR / f"model_{scanner_name}_features.json"
+        if family_name and family_name != "other":
+            file_key = f"{scanner_name}_family_{family_name}"
+        else:
+            file_key = scanner_name
+        model_path = RESULTS_DIR / f"model_{file_key}.joblib"
+        meta_path = RESULTS_DIR / f"model_{file_key}_features.json"
         if not model_path.exists():
             return None, []
         model = joblib.load(model_path)
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
         return model, meta.get("feature_names", [])
+
+    @classmethod
+    def load_model_for_symbol(cls, scanner_name: str, symbol: str):
+        """Family-aware loader: try family model first, then fall back to scanner.
+
+        Phase 4.5: this is the primary entry point the serving code should use.
+        Returns (model, feature_names, meta_dict) — meta includes `resolved_key`
+        so the caller can tell whether it got a family or scanner model.
+        """
+        import joblib
+        fam = symbol_to_family(symbol) if symbol else "other"
+        # 1) try family model
+        if fam != "other":
+            file_key = f"{scanner_name}_family_{fam}"
+            model_path = RESULTS_DIR / f"model_{file_key}.joblib"
+            meta_path = RESULTS_DIR / f"model_{file_key}_features.json"
+            if model_path.exists():
+                model = joblib.load(model_path)
+                meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+                meta["resolved_key"] = file_key
+                meta["resolved_scope"] = "family"
+                meta["resolved_family"] = fam
+                return model, meta.get("feature_names", []), meta
+        # 2) fall back to per-scanner model
+        file_key = scanner_name
+        model_path = RESULTS_DIR / f"model_{file_key}.joblib"
+        meta_path = RESULTS_DIR / f"model_{file_key}_features.json"
+        if model_path.exists():
+            model = joblib.load(model_path)
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            meta["resolved_key"] = file_key
+            meta["resolved_scope"] = "scanner"
+            meta["resolved_family"] = None
+            return model, meta.get("feature_names", []), meta
+        # 3) miss
+        return None, [], {"resolved_key": None, "resolved_scope": None, "resolved_family": None}
 
 
 # ──────────────────────────────────────────────────────────────────────

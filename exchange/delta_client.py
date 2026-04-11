@@ -428,16 +428,29 @@ class DeltaClient:
         self._enforce_order_delay(symbol)
 
         try:
-            result = self._client.place_stop_order(
-                product_id=product_id,
-                size=int(lots),
-                side=side,
-                stop_price=str(stop_price),
-                order_type=self._OrderType.MARKET,
-            )
+            # FIX: Use raw POST with reduce_only=true + close_on_trigger=true
+            # The wrapper self._client.place_stop_order() does NOT set reduce_only,
+            # causing dangling SL orders to fire as naked entries (zombie bug)
+            payload = {
+                "product_id": product_id,
+                "size": int(lots),
+                "side": side,
+                "stop_price": str(stop_price),
+                "order_type": "market_order",
+                "stop_order_type": "stop_loss_order",
+                "reduce_only": "true",
+                "close_on_trigger": "true",
+            }
+            if client_order_id:
+                payload["client_order_id"] = client_order_id[:32]
+            result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
+            if hasattr(result, 'json'):
+                result = result.json().get("result", result.json())
+            elif not isinstance(result, dict):
+                result = {"raw": str(result)}
             self._track_order_placed()
             logger.info(
-                "DELTA [%s] SL: %s %s %d lots @ %.4f | trail=%.2f | coid=%s | result=%s",
+                "DELTA [%s] SL: %s %s %d lots @ %.4f | trail=%.2f | coid=%s | reduce_only=true | result=%s",
                 self.mode.upper(), side, symbol, lots, stop_price, trail_amount,
                 client_order_id[:12] if client_order_id else "-",
                 str(result)[:200],
@@ -563,7 +576,14 @@ class DeltaClient:
         if time_in_force:
             payload["time_in_force"] = time_in_force
 
+        # FIX: Delta's inline bracket creates SL leg as NON-reduce_only (zombie bug).
+        # Force the fallback path (entry + separate reduce-only SL + separate reduce-only TP).
+        # Cost: ~200-400ms extra latency. Benefit: no zombies from dangling non-reduce SL orders.
+        _FORCE_FALLBACK_FOR_REDUCE_ONLY_SAFETY = True
+
         try:
+            if _FORCE_FALLBACK_FOR_REDUCE_ONLY_SAFETY:
+                raise Exception("force_fallback_reduce_only_safety")
             result = self._client.request(
                 "POST", "/v2/orders",
                 payload=payload,
@@ -584,15 +604,37 @@ class DeltaClient:
             return result
 
         except Exception as e:
-            logger.warning(
-                "DELTA [%s] INLINE BRACKET FAILED: %s | falling back to separate orders",
+            logger.info(
+                "DELTA [%s] BRACKET: using fallback path (reduce-only safety): %s",
                 self.mode.upper(), e,
             )
             # Fallback: entry + separate SL
-            entry_result = self.place_market_order(symbol, side, lots,
-                                                    client_order_id=client_order_id)
+            # Phase 3.9 FIX: pass limit_price + post_only through so limit orders
+            # actually work via fallback path. Previously these were silently dropped,
+            # which meant EVERY real entry was a market order regardless of config.
+            entry_result = self.place_market_order(
+                symbol, side, lots,
+                client_order_id=client_order_id,
+                limit_price=limit_price,  # Phase 3.9: honor limit price
+                post_only=post_only,       # Phase 3.9: honor post_only
+            )
             if entry_result.get("error"):
                 return entry_result
+
+            # Phase 3.9: if we requested a limit order and it's not filled yet,
+            # skip the SL/TP phase — no phantom SL/TP on unfilled entries
+            if limit_price > 0:
+                _entry_state = str(entry_result.get("state", "")).lower()
+                _avg_fill = float(entry_result.get("average_fill_price", 0) or 0)
+                # Post-only limits either fill ("closed" state) or stay "open" until cancelled/filled
+                if _entry_state in ("cancelled", "rejected") or (_entry_state == "open" and _avg_fill == 0):
+                    logger.info(
+                        "DELTA [%s] LIMIT ENTRY NOT FILLED: %s state=%s fill=%.4f — skipping SL/TP",
+                        self.mode.upper(), symbol, _entry_state, _avg_fill,
+                    )
+                    entry_result["bracket_fallback"] = True
+                    entry_result["limit_no_fill"] = True
+                    return entry_result
 
             close_side = "sell" if side == "buy" else "buy"
             import time

@@ -501,18 +501,44 @@ class TrainingOrchestrator:
             self._save_status()
 
             # Phase 5: Candidate training on 5m data (most stable for candle-only ML)
-            # Uses MFE-based labels instead of full trade outcome
+            # Phase 4.4 (2026-04-11): switched from realized_r (regression on continuous R)
+            # to MFE binary labels. Rationale:
+            #   - realized_r couples ML tightly to simulator exit logic (hard to change exits
+            #     without retraining; model "learns" the simulator's bugs)
+            #   - MFE (Max Favorable Excursion) labels are SL-agnostic: they just ask
+            #     "did price move ≥ threshold_r within lookahead bars?" — pure candle math
+            #   - With Phase 4.3 label-aware purge, the lookahead directly sets the purge gap
             logger.info("=== PHASE 5: Candidate training on 5m (MFE labels, all scanners) ===")
             self._status["phase"] = "candidate_training"
             self._save_status()
 
+            # Phase 5.0a — load BTC once, share across all symbols in Phase 5 + 6
+            # BTC is the cross-asset anchor: every alt's ML score benefits from
+            # knowing what BTC is doing right now. We load it here so a single
+            # collector call serves both phases and we don't hammer the exchange.
+            logger.info("Phase 5.0a: loading BTC/USDT 5m for cross-asset features")
+            try:
+                btc_collector = CandleCollector(self._exchange, ["BTC/USDT"], ["5m"])
+                btc_data = await btc_collector.collect_all()
+                btc_df_5m = btc_data.get("BTC/USDT", {}).get("5m")
+                del btc_data, btc_collector
+                if btc_df_5m is not None and len(btc_df_5m) > 15000:
+                    btc_df_5m = btc_df_5m.iloc[-15000:]
+                logger.info("  BTC 5m: %d bars loaded", len(btc_df_5m) if btc_df_5m is not None else 0)
+            except Exception as e:
+                logger.warning("Phase 5.0a: failed to load BTC context: %s", e)
+                btc_df_5m = None
+
             candidate_results = {}
             for symbol in symbols:
-                logger.info("Loading 5m + 15m data for candidate training: %s", symbol)
-                collector = CandleCollector(self._exchange, [symbol], ["5m", "15m"])
+                # Phase 4.1a: load 5m + 15m + 1h + 4h so ML can learn HTF context
+                logger.info("Loading 5m/15m/1h/4h data for candidate training: %s", symbol)
+                collector = CandleCollector(self._exchange, [symbol], ["5m", "15m", "1h", "4h"])
                 sym_data = await collector.collect_all()
                 df = sym_data.get(symbol, {}).get("5m")
                 htf_df = sym_data.get(symbol, {}).get("15m")
+                htf_1h_df = sym_data.get(symbol, {}).get("1h")
+                htf_4h_df = sym_data.get(symbol, {}).get("4h")
                 del sym_data, collector
 
                 if df is None or len(df) < 500:
@@ -525,21 +551,36 @@ class TrainingOrchestrator:
                     df = df.iloc[-15000:]
                     logger.info("Capped to 15k rows for %s", symbol)
 
-                logger.info("Running candidate trainer for %s (all scanners, realized R regression)...", symbol)
+                # Log HTF coverage for visibility
+                logger.info(
+                    "  HTF data: 15m=%d, 1h=%d, 4h=%d bars",
+                    len(htf_df) if htf_df is not None else 0,
+                    len(htf_1h_df) if htf_1h_df is not None else 0,
+                    len(htf_4h_df) if htf_4h_df is not None else 0,
+                )
+
+                logger.info("Running candidate trainer for %s (all scanners, MFE binary labels)...", symbol)
                 await asyncio.sleep(0)
                 ct = CandidateTrainer()
+                # Phase 4.4: MFE binary labels
+                #   threshold_r=0.3 — price must move at least 0.3R in our direction
+                #   max_bars=20    — within 100 minutes on 5m (scalp + fast intraday window)
+                #                    Phase 4.3 purge gap is auto-derived from max_bars.
                 result = ct.run_all_scanners(
                     df, symbol, SCANNERS,
                     n_splits=5, n_estimators=50, max_depth=6,
-                    label_mode="realized_r",
-                    mfe_threshold_r=0.8,
-                    mfe_max_bars=15,
+                    label_mode="mfe",
+                    mfe_threshold_r=0.3,
+                    mfe_max_bars=20,
                     htf_df=htf_df,
+                    htf_1h_df=htf_1h_df,
+                    htf_4h_df=htf_4h_df,
+                    btc_df=btc_df_5m,  # Phase 5.0a
                 )
                 candidate_results[symbol] = result
 
                 # Free memory
-                del df, htf_df, ct
+                del df, htf_df, htf_1h_df, htf_4h_df, ct
                 gc.collect()
 
             self._status["results"]["candidate_training"] = candidate_results
@@ -553,14 +594,19 @@ class TrainingOrchestrator:
 
             try:
                 # Collect all symbol data for family training
+                # Phase 4.1a: also load 1h + 4h for multi-TF feature fusion
                 symbol_data_all = {}
-                htf_data_all = {}
+                htf_data_all = {}       # 15m (legacy)
+                htf_1h_data_all = {}    # Phase 4.1a
+                htf_4h_data_all = {}    # Phase 4.1a
                 for symbol in symbols:
-                    logger.info("Loading 5m + 15m data for family training: %s", symbol)
-                    collector = CandleCollector(self._exchange, [symbol], ["5m", "15m"])
+                    logger.info("Loading 5m/15m/1h/4h data for family training: %s", symbol)
+                    collector = CandleCollector(self._exchange, [symbol], ["5m", "15m", "1h", "4h"])
                     sym_data = await collector.collect_all()
                     df_sym = sym_data.get(symbol, {}).get("5m")
                     htf_sym = sym_data.get(symbol, {}).get("15m")
+                    h1_sym = sym_data.get(symbol, {}).get("1h")
+                    h4_sym = sym_data.get(symbol, {}).get("4h")
                     del sym_data, collector
 
                     if df_sym is not None and len(df_sym) >= 500:
@@ -569,24 +615,37 @@ class TrainingOrchestrator:
                         symbol_data_all[symbol] = df_sym
                         if htf_sym is not None:
                             htf_data_all[symbol] = htf_sym
+                        if h1_sym is not None:
+                            htf_1h_data_all[symbol] = h1_sym
+                        if h4_sym is not None:
+                            htf_4h_data_all[symbol] = h4_sym
                     await asyncio.sleep(0)
 
                 if len(symbol_data_all) >= 2:
+                    logger.info(
+                        "Phase 4.1a HTF coverage: 15m=%d, 1h=%d, 4h=%d symbols",
+                        len(htf_data_all), len(htf_1h_data_all), len(htf_4h_data_all),
+                    )
                     ct_family = CandidateTrainer()
+                    # Phase 4.4: family models also on MFE binary labels (same thresholds)
+                    # Phase 5.0a: shared BTC context for all family symbols
                     family_results = ct_family.run_pair_family(
                         symbol_data_all, SCANNERS,
                         n_splits=5, n_estimators=50, max_depth=6,
-                        label_mode="realized_r",
-                        mfe_threshold_r=0.8,
-                        mfe_max_bars=15,
+                        label_mode="mfe",
+                        mfe_threshold_r=0.3,
+                        mfe_max_bars=20,
                         htf_data=htf_data_all,
+                        htf_1h_data=htf_1h_data_all,
+                        htf_4h_data=htf_4h_data_all,
+                        btc_df=btc_df_5m,  # Phase 5.0a
                     )
                     self._status["results"]["pair_family_training"] = family_results
                     del ct_family
                 else:
                     logger.warning("Skipping pair-family training: only %d symbols with data",
                                    len(symbol_data_all))
-                del symbol_data_all, htf_data_all
+                del symbol_data_all, htf_data_all, htf_1h_data_all, htf_4h_data_all
                 gc.collect()
             except Exception as e:
                 logger.error("Pair-family training failed: %s", e, exc_info=True)

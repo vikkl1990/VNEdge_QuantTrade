@@ -543,6 +543,45 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 </div>
 
+<!-- ═══ R-DRIFT / WR ALERT STRIP (Phase 2D + 3.14) ══════════ -->
+<div id="rdrift-strip" style="margin:6px 16px 0 16px;padding:8px 12px;background:rgba(0,255,157,.03);border:1px solid rgba(0,255,157,.15);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;font-size:.72rem;font-family:var(--font-mono)">
+  <span style="color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700">EDGE</span>
+  <!-- Phase 3.14: Rolling window selector -->
+  <div style="display:flex;gap:2px" id="rd-window-buttons">
+    <button onclick="setRdWindow(1)" data-h="1" class="rd-win-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">1H</button>
+    <button onclick="setRdWindow(4)" data-h="4" class="rd-win-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">4H</button>
+    <button onclick="setRdWindow(24)" data-h="24" class="rd-win-btn rd-win-active" style="padding:1px 6px;font-size:.55rem;border:1px solid rgba(0,255,157,.3);background:rgba(0,255,157,.08);color:var(--green);border-radius:3px;cursor:pointer;font-weight:700">24H</button>
+    <button onclick="setRdWindow(168)" data-h="168" class="rd-win-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">7D</button>
+    <button onclick="setRdWindow(0)" data-h="0" class="rd-win-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">ALL</button>
+  </div>
+  <span><span style="color:var(--text-muted)">Paper WR </span><span id="rd-paper-wr" style="color:var(--green);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Real WR </span><span id="rd-real-wr" style="color:var(--accent);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Δ </span><span id="rd-wr-drift" style="font-weight:700">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <span><span style="color:var(--text-muted)">Paper R </span><span id="rd-paper-r" style="color:var(--green);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Real R </span><span id="rd-real-r" style="color:var(--accent);font-weight:700">--</span></span>
+  <span><span style="color:var(--text-muted)">Δ </span><span id="rd-r-drift" style="font-weight:700">--</span></span>
+  <span style="color:var(--border)">|</span>
+  <span><span style="color:var(--text-muted)">Supervisor </span><span id="rd-sup-indicator" style="font-weight:700;color:var(--text-muted)">--</span></span>
+  <span id="rd-alerts" style="color:var(--yellow);font-weight:700;margin-left:auto"></span>
+</div>
+
+<!-- ═══ CURRENT ACTION BANNER (Phase 2.5 B2) ════════════════ -->
+<div id="current-action-banner" style="margin:6px 16px 0 16px;padding:6px 12px;background:rgba(99,102,241,.04);border:1px solid rgba(99,102,241,.15);border-radius:6px;display:flex;align-items:center;gap:12px;font-size:.72rem;font-family:var(--font-mono)">
+  <span style="color:#818cf8;text-transform:uppercase;letter-spacing:.5px;font-weight:700;min-width:56px">NOW</span>
+  <span id="ca-pulse" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#818cf8;box-shadow:0 0 6px #818cf8;animation:pulse 1.5s ease-in-out infinite"></span>
+  <span id="ca-action" style="color:var(--text-dim);font-weight:700">--</span>
+  <span id="ca-symbol" style="color:var(--green);font-weight:700"></span>
+  <span id="ca-detail" style="color:var(--text-muted)"></span>
+  <span id="ca-age" style="color:var(--text-muted);margin-left:auto">--</span>
+</div>
+<style>
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+</style>
+
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 1: LIVE TRADING                                    -->
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -634,6 +673,70 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <div class="panel" id="symbol-scanner-status" style="margin-bottom:8px">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
     <div id="scanner-status-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">
+    </div>
+  </div>
+
+  <!-- ═══ PIPELINE OBSERVABILITY (restored from yesterday's layout) ═══ -->
+  <div class="panel" id="pipeline-obs-live" style="margin-bottom:8px;border-left:3px solid var(--cyan)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="panel-title" style="margin:0">Pipeline Observability</div>
+      <div id="po-timestamp" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono)">--</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px">
+      <!-- Col 1: Stage-Loss Map (TODAY) -->
+      <div style="padding:10px;border:1px solid rgba(0,212,255,.15);border-radius:6px">
+        <div style="font-size:.6rem;color:var(--cyan);letter-spacing:1.5px;font-weight:700;margin-bottom:8px">STAGE-LOSS MAP (TODAY)</div>
+        <div id="po-stage-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.7">
+          <div style="color:var(--text-muted);font-size:.7rem">Loading...</div>
+        </div>
+      </div>
+      <!-- Col 2: Rejection Leaderboard + Hotfix Effectiveness (3.2) -->
+      <div style="padding:10px;border:1px solid rgba(255,59,92,.15);border-radius:6px;display:flex;flex-direction:column">
+        <div style="font-size:.6rem;color:var(--red);letter-spacing:1.5px;font-weight:700;margin-bottom:6px">REJECTION LEADERBOARD</div>
+        <div id="po-reject-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.6;flex:0 0 auto;max-height:80px;overflow-y:auto">
+          <div style="color:var(--text-muted);font-size:.7rem">Loading...</div>
+        </div>
+        <div style="border-top:1px dashed rgba(255,255,255,.08);margin:8px 0 6px 0"></div>
+        <div style="font-size:.6rem;color:#818cf8;letter-spacing:1.5px;font-weight:700;margin-bottom:6px">HOTFIX EFFECTIVENESS</div>
+        <div id="po-hotfix-rows" style="font-family:var(--font-mono);font-size:.68rem;line-height:1.6">
+          <div style="color:var(--text-muted);font-size:.68rem">Loading...</div>
+        </div>
+      </div>
+      <!-- Col 3: Agents & Circuit Breaker -->
+      <div style="padding:10px;border:1px solid rgba(0,255,157,.15);border-radius:6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:.6rem;color:var(--green);letter-spacing:1.5px;font-weight:700">AGENTS &amp; CIRCUIT BREAKER</div>
+          <div style="display:flex;gap:3px">
+            <button onclick="cbResetAction('reset')" title="Reset consecutive losses + trip state (keep pnl counters)" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.08);color:var(--yellow);border-radius:3px;cursor:pointer;font-weight:700">RESET</button>
+            <button onclick="cbResetAction('full')" title="Full reset: trip+losses+daily PnL+total PnL (clears drawdown-kill)" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(255,140,0,.3);background:rgba(255,140,0,.08);color:#ff8c00;border-radius:3px;cursor:pointer;font-weight:700">FULL</button>
+            <button onclick="cbResetAction('reenable')" title="Full reset + re-enable real trading (full size — risky)" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(255,59,92,.3);background:rgba(255,59,92,.08);color:var(--red);border-radius:3px;cursor:pointer;font-weight:700">RE-ENABLE</button>
+            <button onclick="cbResetAction('probation')" title="Phase 3.5: Re-enable in PROBATION mode — 50% size for first 3 trades or 4h" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(0,255,157,.3);background:rgba(0,255,157,.08);color:var(--green);border-radius:3px;cursor:pointer;font-weight:700">+ PROB</button>
+          </div>
+        </div>
+        <div id="po-cb-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.7">
+          <div style="color:var(--text-muted);font-size:.7rem">Loading...</div>
+        </div>
+        <div id="po-cb-msg" style="display:none;margin-top:6px;padding:4px 6px;font-size:.65rem;border-radius:3px;font-family:var(--font-mono)"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ PHASE 3.3: LOSS TAXONOMY ════════════════════════ -->
+  <div class="panel" id="loss-taxonomy-panel" style="margin-bottom:8px;border-left:3px solid var(--red)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px">
+      <div class="panel-title" style="margin:0">Loss Taxonomy <span id="lt-window-label" style="font-size:.6rem;color:var(--text-muted);font-weight:400">· last 24h</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;gap:3px" id="lt-window-buttons">
+          <button onclick="setLtWindow(1)" data-h="1" class="lt-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">1H</button>
+          <button onclick="setLtWindow(4)" data-h="4" class="lt-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">4H</button>
+          <button onclick="setLtWindow(24)" data-h="24" class="lt-win-btn lt-win-active" style="padding:2px 8px;font-size:.6rem;border:1px solid rgba(255,59,92,.3);background:rgba(255,59,92,.08);color:var(--red);border-radius:3px;cursor:pointer;font-weight:700">24H</button>
+          <button onclick="setLtWindow(168)" data-h="168" class="lt-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">7D</button>
+        </div>
+        <div id="lt-summary" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono);min-width:130px;text-align:right">--</div>
+      </div>
+    </div>
+    <div id="lt-rows" style="display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:14px">Loading loss taxonomy...</div>
     </div>
   </div>
 
@@ -1705,6 +1808,26 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- Phase 2A + 3.1: Stage Loss Map with time filter -->
+  <div class="panel" style="border-left:3px solid var(--yellow);margin-bottom:var(--gap)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px">
+      <div class="panel-title" style="margin:0">Stage Loss Map <span id="sl-window-label" style="font-size:.6rem;color:var(--text-muted);font-weight:400">· last 4h</span></div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;gap:3px" id="sl-window-buttons">
+          <button onclick="setSlWindow(1)" data-h="1" class="sl-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">1H</button>
+          <button onclick="setSlWindow(4)" data-h="4" class="sl-win-btn sl-win-active" style="padding:2px 8px;font-size:.6rem;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.08);color:var(--yellow);border-radius:3px;cursor:pointer;font-weight:700">4H</button>
+          <button onclick="setSlWindow(24)" data-h="24" class="sl-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">24H</button>
+          <button onclick="setSlWindow(168)" data-h="168" class="sl-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">7D</button>
+          <button onclick="setSlWindow(0)" data-h="0" class="sl-win-btn" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">ALL</button>
+        </div>
+        <div id="sl-analyzed" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono);min-width:90px;text-align:right">--</div>
+      </div>
+    </div>
+    <div id="sl-funnel" style="display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:.75rem;color:var(--text-muted);text-align:center;padding:20px">Loading stage data...</div>
+    </div>
+  </div>
+
   <div class="grid-2">
     <!-- LEFT: Agent Status Cards -->
     <div>
@@ -2339,11 +2462,19 @@ function switchTab(tab) {
 // ══════════════════════════════════════════════════════════
 async function refreshAgents() {
   try {
-    const [d, pm, supStatus] = await Promise.all([
+    const slHours = window._slWindowHours != null ? window._slWindowHours : 4;
+    const slUrl = slHours > 0
+      ? `/api/pipeline/stage_stats?hours=${slHours}&limit=5000`
+      : `/api/pipeline/stage_stats?since_ts=0&limit=5000`;
+    const [d, pm, supStatus, stageStats] = await Promise.all([
       fetch("/api/agents/status").then(r => r.json()).catch(() => ({})),
       fetch("/api/pipeline/overview").then(r => r.json()).catch(() => ({})),
       fetch("/api/supervisor/status").then(r => r.json()).catch(() => ({})),
+      fetch(slUrl).then(r => r.json()).catch(() => ({})),
     ]);
+
+    // ── Phase 2A + 3.1: Stage Loss Map with time filter ──
+    renderStageLossMap(stageStats);
 
     // ── Phase 0: Pipeline Funnel ──
     if (pm && pm.funnel) {
@@ -5489,6 +5620,608 @@ async function showJourney(tradeId) {
 document.getElementById('journey-modal').addEventListener('click', function(e) {
   if (e.target === this) this.style.display = 'none';
 });
+
+// ══════════════════════════════════════════════════════════
+// Pipeline Observability panel (Live tab) — restored yesterday layout
+// ══════════════════════════════════════════════════════════
+async function renderPipelineObs() {
+  try {
+    const ltHours = window._ltWindowHours != null ? window._ltWindowHours : 24;
+    const [pm, sup, rstat, hotfix, taxonomy] = await Promise.all([
+      fetch('/api/pipeline/overview').then(r => r.json()).catch(() => ({})),
+      fetch('/api/supervisor/status').then(r => r.json()).catch(() => ({})),
+      fetch('/api/real/status').then(r => r.json()).catch(() => ({})),
+      fetch('/api/pipeline/hotfix_stats').then(r => r.json()).catch(() => ({})),
+      fetch(`/api/pipeline/loss_taxonomy?hours=${ltHours}`).then(r => r.json()).catch(() => ({})),
+    ]);
+
+    // Phase 3.3: Loss Taxonomy panel
+    try { renderLossTaxonomy(taxonomy); } catch(_){}
+
+    if (!pm || !pm.funnel) return;
+
+    // ── Phase 3.2: Hotfix Effectiveness rows ──
+    try {
+      const hfEl = document.getElementById('po-hotfix-rows');
+      if (hfEl) {
+        const fixes = (hotfix && hotfix.ok && hotfix.fixes) || null;
+        if (!fixes) {
+          hfEl.innerHTML = '<div style="color:var(--text-muted);font-size:.68rem">No data</div>';
+        } else {
+          const formatAge = (s) => {
+            if (s == null) return 'never';
+            if (s < 60) return s.toFixed(0) + 's';
+            if (s < 3600) return (s/60).toFixed(1) + 'm';
+            if (s < 86400) return (s/3600).toFixed(1) + 'h';
+            return (s/86400).toFixed(1) + 'd';
+          };
+          const mapping = [
+            {key: 'p0_lowconf_bear_htf', label: 'P0 SB bear-HTF', color: '#ef4444'},
+            {key: 'p0_8_momentum_counter_htf', label: 'P0.8 mom-HTF', color: '#dc2626'},
+            {key: 'p1_duplicate_exit_match', label: 'P1 dup-exit', color: '#f59e0b'},
+            {key: 'p2_counter_htf_boost_cap', label: 'P2 cap-boost', color: '#8b5cf6'},
+            {key: 'p3_orphan_prevention', label: 'P3 orphan', color: '#10b981'},
+            {key: 'p3_6_ml_weak_block', label: 'P3.6 ML-weak', color: '#a78bfa'},
+            {key: 'p3_7_sideways_sb_long', label: 'P3.7 sideways-SB', color: '#e11d48'},
+            {key: 'p3_9_limit_no_fill', label: 'P3.9 no-fill save', color: '#14b8a6'},
+            {key: 'p3_11_chop_long_block', label: 'P3.11 chop-long', color: '#f43f5e'},
+            {key: 'p4_fee_drag_chop', label: 'P4 fee-chop', color: '#06b6d4'},
+          ];
+          hfEl.innerHTML = mapping.map(m => {
+            const d = fixes[m.key] || {};
+            const blocked = d.blocked || 0;
+            const age = d.age_sec;
+            const status = d.status || 'dormant';
+            const countColor = blocked > 0 ? m.color : 'var(--text-muted)';
+            const ageText = blocked > 0 ? formatAge(age) : '—';
+            return `<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--text-muted)"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${countColor};margin-right:5px;box-shadow:${blocked>0?'0 0 4px '+m.color:'none'}"></span>${m.label}</span><span><span style="color:${countColor};font-weight:800">${blocked}</span><span style="color:var(--text-muted);font-size:.6rem;margin-left:6px">${ageText}</span></span></div>`;
+          }).join('');
+          // Summary line
+          const sum = fixes._summary || {};
+          const totalBlocked = sum.total_blocked || 0;
+          hfEl.innerHTML += `<div style="border-top:1px dotted rgba(255,255,255,.05);margin-top:4px;padding-top:3px;display:flex;justify-content:space-between;font-size:.6rem"><span style="color:var(--text-muted)">total blocked</span><span style="color:${totalBlocked>0?'#818cf8':'var(--text-muted)'};font-weight:700">${totalBlocked}</span></div>`;
+        }
+      }
+    } catch(_){}
+
+    // Timestamp
+    const tsEl = document.getElementById('po-timestamp');
+    if (tsEl) {
+      const d = new Date();
+      tsEl.textContent = d.toTimeString().slice(0,8);
+    }
+
+    // ── Col 1: Stage-Loss Map rows ──
+    const f = pm.funnel || {};
+    const rowsEl = document.getElementById('po-stage-rows');
+    if (rowsEl) {
+      const r = (label, val, color) =>
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">${label}</span><span style="color:${color||'var(--text-dim)'};font-weight:700">${(val||0).toLocaleString()}</span></div>`;
+      rowsEl.innerHTML = [
+        r('Scanned', f.scanned, 'var(--cyan)'),
+        r('Tier Valid', f.tier_valid, 'var(--green)'),
+        r('Near Miss', f.tier_near_miss || f.near_miss, 'var(--yellow)'),
+        r('Blocked (regime)', f.blocked_regime, 'var(--red)'),
+        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+        r('Paper Emitted', f.paper_emitted, 'var(--green)'),
+        r('Real Qualified', f.real_qualified, 'var(--yellow)'),
+        r('Real Rejected', f.real_rejected, 'var(--red)'),
+        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+        r('Real Executed', f.real_executed, 'var(--accent)'),
+        r('Anti-slip Rej', f.real_anti_slip_rejected, 'var(--red)'),
+      ].join('');
+    }
+
+    // ── Col 2: Rejection Leaderboard ──
+    const rejEl = document.getElementById('po-reject-rows');
+    if (rejEl) {
+      const rejs = (pm.rejections && pm.rejections.top) || [];
+      if (rejs.length) {
+        rejEl.innerHTML = rejs.slice(0,5).map(x =>
+          `<div style="display:flex;justify-content:space-between;padding:1px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:var(--text-dim);font-size:.68rem;overflow:hidden;text-overflow:ellipsis;max-width:140px;white-space:nowrap">${x.reason||'?'}</span><span style="color:var(--red);font-weight:700">${x.count||0}</span></div>`
+        ).join('');
+      } else {
+        rejEl.innerHTML = '<div style="color:var(--text-muted);font-size:.7rem;padding:8px 0">No rejections today</div>';
+      }
+    }
+
+    // ── Col 3: Agents & CB ──
+    const cbEl = document.getElementById('po-cb-rows');
+    if (cbEl) {
+      const cb = pm.circuit_breaker || {};
+      const agents = pm.agents || {};
+      // P0: show real-trading enabled state FIRST (most important)
+      const realEnabled = rstat && rstat.enabled;
+      const realMode = (rstat && rstat.mode) || 'UNKNOWN';
+      const modeColor = !realEnabled ? 'var(--red)' : (rstat && rstat.dry_run ? 'var(--cyan)' : 'var(--green)');
+      // CB state
+      const cbColor = cb.is_tripped ? 'var(--red)' : (realEnabled ? 'var(--green)' : 'var(--text-muted)');
+      const cbLabel = cb.is_tripped ? 'TRIPPED' : (realEnabled ? 'OK' : 'idle');
+      const pnlColor = (cb.daily_pnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
+      const totalPnl = rstat && rstat.total_pnl != null ? rstat.total_pnl : (cb.total_pnl||0);
+      const totalColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      // Phase 3.5: probation badge
+      const prob = sup && sup.probation;
+      let probBadge = '';
+      if (prob && prob.active) {
+        const remT = prob.remaining_trades || 0;
+        const remH = ((prob.remaining_age_sec || 0) / 3600).toFixed(1);
+        probBadge = `<span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(255,215,0,.12);color:var(--yellow);font-weight:800;margin-left:6px">PROB ${(prob.size_mult*100).toFixed(0)}% · ${remT}t/${remH}h</span>`;
+      }
+      const rows = [
+        `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;background:${!realEnabled?'rgba(255,59,92,.08)':'transparent'};border-radius:3px"><span style="color:var(--text-muted);font-weight:700">Real Trading</span><span style="display:flex;align-items:center"><span style="color:${modeColor};font-weight:800">${realMode}</span>${probBadge}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Circuit Breaker</span><span style="color:${cbColor};font-weight:700">${cbLabel}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Consec losses</span><span style="color:var(--text-dim);font-weight:700">${cb.consecutive_losses||0} / 3</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Daily PnL</span><span style="color:${pnlColor};font-weight:700">$${(cb.daily_pnl||0).toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total PnL</span><span style="color:${totalColor};font-weight:700">$${totalPnl.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Daily limit</span><span style="color:var(--text-dim);font-weight:700">$${(cb.daily_loss_limit||15).toFixed(0)}</span></div>`,
+        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+      ];
+      const keys = Object.keys(agents);
+      if (keys.length) {
+        // Phase 2.5 B1: Upgrade from plain rows to role-state labels
+        keys.forEach(k => {
+          const a = agents[k] || {};
+          const age = a.last_seen_sec || 0;
+          const st = (a.status || 'unknown').toLowerCase();
+          // Derive WORKING/IDLE/STALE from heartbeat age
+          let roleLabel, dotColor;
+          if (st !== 'ok' && st !== 'stale') {
+            roleLabel = 'OFFLINE';
+            dotColor = 'var(--red)';
+          } else if (age < 5) {
+            roleLabel = 'WORKING';
+            dotColor = 'var(--green)';
+          } else if (age < 30) {
+            roleLabel = 'IDLE';
+            dotColor = 'var(--cyan)';
+          } else if (age < 120) {
+            roleLabel = 'STALE';
+            dotColor = 'var(--yellow)';
+          } else {
+            roleLabel = 'DEAD';
+            dotColor = 'var(--red)';
+          }
+          rows.push(`<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--text-muted);display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>${k}</span><span style="display:flex;align-items:center;gap:6px"><span style="color:var(--text-muted);font-size:.62rem">${age.toFixed(0)}s</span><span style="color:${dotColor};font-weight:800;font-size:.62rem;padding:1px 5px;border-radius:3px;background:${dotColor === 'var(--green)' ? 'rgba(0,255,157,.08)' : dotColor === 'var(--cyan)' ? 'rgba(0,212,255,.08)' : dotColor === 'var(--yellow)' ? 'rgba(255,215,0,.08)' : 'rgba(255,59,92,.08)'}">${roleLabel}</span></span></div>`);
+        });
+      }
+      // Supervisor last-known
+      if (sup && sup.running !== undefined) {
+        const anomalies = sup.anomaly_count || 0;
+        const supColor = sup.running ? (anomalies > 0 ? 'var(--yellow)' : 'var(--green)') : 'var(--red)';
+        const supText = sup.running ? `✓ ${anomalies} alerts` : '✗ OFF';
+        rows.push(`<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${supColor};margin-right:6px;box-shadow:0 0 5px ${supColor}"></span>supervisor</span><span style="color:${supColor};font-weight:700">${supText}</span></div>`);
+      }
+      cbEl.innerHTML = rows.join('');
+    }
+  } catch(e) {
+    // silent — keep last known state
+  }
+}
+// Poll independently of tab switches (every 3s while Live is active)
+try {
+  renderPipelineObs();
+  setInterval(() => {
+    if (document.getElementById('tab-live') && document.getElementById('tab-live').classList.contains('active')) {
+      renderPipelineObs();
+    }
+  }, 3000);
+} catch(e) {}
+
+// ══════════════════════════════════════════════════════════
+// Phase 3.3: Loss Taxonomy window selector + renderer
+// ══════════════════════════════════════════════════════════
+window._ltWindowHours = 24;
+function setLtWindow(hours) {
+  window._ltWindowHours = hours;
+  document.querySelectorAll('.lt-win-btn').forEach(b => {
+    const h = parseFloat(b.dataset.h);
+    if (h === hours) {
+      b.classList.add('lt-win-active');
+      b.style.background = 'rgba(255,59,92,.08)';
+      b.style.color = 'var(--red)';
+      b.style.borderColor = 'rgba(255,59,92,.3)';
+      b.style.fontWeight = '700';
+    } else {
+      b.classList.remove('lt-win-active');
+      b.style.background = 'transparent';
+      b.style.color = 'var(--text-muted)';
+      b.style.borderColor = 'var(--border)';
+      b.style.fontWeight = '600';
+    }
+  });
+  const label = document.getElementById('lt-window-label');
+  if (label) {
+    label.textContent = hours < 24 ? `· last ${hours}h` : hours === 24 ? '· last 24h' : `· last ${hours/24}d`;
+  }
+  if (typeof renderPipelineObs === 'function') renderPipelineObs();
+}
+
+function renderLossTaxonomy(data) {
+  const rowsEl = document.getElementById('lt-rows');
+  const summaryEl = document.getElementById('lt-summary');
+  if (!rowsEl) return;
+  if (!data || !data.ok) {
+    rowsEl.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:14px">No taxonomy data yet</div>';
+    if (summaryEl) summaryEl.textContent = '0 losses';
+    return;
+  }
+  const totalCount = data.total_losses_analyzed || 0;
+  const totalLossUsd = data.total_loss_usd || 0;
+  const totalLossPct = data.total_loss_pct || 0;
+  if (summaryEl) {
+    summaryEl.textContent = totalCount === 0 ? '✓ no losses' : `${totalCount} losses · $${totalLossUsd.toFixed(2)}`;
+    summaryEl.style.color = totalCount === 0 ? 'var(--green)' : 'var(--red)';
+  }
+
+  if (totalCount === 0) {
+    rowsEl.innerHTML = '<div style="font-size:.72rem;color:var(--green);text-align:center;padding:14px">✓ No losses in window — bot is profitable</div>';
+    return;
+  }
+
+  const buckets = data.buckets || {};
+  // Build sorted list by total_loss_usd (most damaging first)
+  const labels = {
+    counter_htf_long:  {label: 'Counter-HTF Long',  color: '#ef4444', icon: '🔻'},
+    counter_htf_short: {label: 'Counter-HTF Short', color: '#f87171', icon: '🔺'},
+    early_kill:        {label: 'Early Kill <5m',    color: '#f59e0b', icon: '⚡'},
+    time_decay:        {label: 'Time Decay',         color: '#fb923c', icon: '⏱'},
+    fee_drag_be:       {label: 'Fee-Drag BE',       color: '#06b6d4', icon: '💸'},
+    chop_regime:       {label: 'Chop Regime',       color: '#8b5cf6', icon: '🌪'},
+    ml_weak:           {label: 'ML WEAK',            color: '#a78bfa', icon: '🤖'},
+    slippage:          {label: 'Slippage >30bps',   color: '#ec4899', icon: '📉'},
+    other:             {label: 'Other / Unknown',   color: '#6b7280', icon: '?'},
+  };
+
+  // Find the max count for bar scaling
+  const maxCount = Math.max(1, ...Object.values(buckets).map(b => b.count || 0));
+
+  const sorted = Object.entries(buckets)
+    .filter(([_, b]) => (b.count || 0) > 0)
+    .sort((a, b) => Math.abs(b[1].total_loss_usd || 0) - Math.abs(a[1].total_loss_usd || 0));
+
+  if (sorted.length === 0) {
+    rowsEl.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:14px">No losses in window</div>';
+    return;
+  }
+
+  rowsEl.innerHTML = sorted.map(([key, b]) => {
+    const meta = labels[key] || {label: key, color: 'var(--text-dim)', icon: '?'};
+    const count = b.count || 0;
+    const lossUsd = Math.abs(b.total_loss_usd || 0);
+    const lossPct = Math.abs(b.total_loss_pct || 0);
+    const widthPct = maxCount > 0 ? (count / maxCount) * 100 : 0;
+    const samples = (b.sample_symbols || []).join(', ') || '—';
+    return `
+      <div style="display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.01);border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <div style="display:flex;align-items:center;gap:8px;min-width:200px">
+            <span style="font-size:.85rem">${meta.icon}</span>
+            <span style="font-size:.72rem;font-weight:700;color:${meta.color}">${meta.label}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:.7rem">
+            <span style="color:var(--text-muted)">count <span style="color:${meta.color};font-weight:700">${count}</span></span>
+            <span style="color:var(--text-muted)">loss <span style="color:var(--red);font-weight:700">−$${lossUsd.toFixed(2)}</span></span>
+            <span style="color:var(--text-muted)">${lossPct.toFixed(2)}%</span>
+            <span style="color:var(--text-dim);font-size:.62rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${samples}">${samples}</span>
+          </div>
+        </div>
+        <div style="height:5px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${widthPct}%;background:linear-gradient(90deg,${meta.color}33,${meta.color});border-radius:3px;transition:width .3s"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════
+// Circuit Breaker reset buttons — three modes
+// ══════════════════════════════════════════════════════════
+async function cbResetAction(mode) {
+  const msgEl = document.getElementById('po-cb-msg');
+  const confirmMsgs = {
+    reset: 'Reset circuit breaker?\n\nThis clears: is_tripped, consecutive_losses, trip_reason.\nKeeps: daily_pnl, total_pnl, enabled state.\n\nContinue?',
+    full: 'FULL reset?\n\nThis clears: is_tripped, consecutive_losses, daily_pnl, total_pnl.\nKeeps: enabled state.\n\nUse this to clear drawdown-kill pnl accumulator.\n\nContinue?',
+    reenable: 'RE-ENABLE real trading (FULL SIZE)?\n\nThis clears ALL CB state AND sets enabled=true with full position sizes.\n\n⚠ WARNING: Real trading will resume on next qualifying signal at 100% margin.\n\nRECOMMENDED: Use "+ PROB" instead for probation-mode (50% size).\n\nContinue?',
+    probation: 'RE-ENABLE WITH PROBATION (Phase 3.5)?\n\nThis re-enables real trading with reduced risk:\n  • 50% position size for first 3 trades\n  • Auto-exits to full size after 3 trades or 4 hours\n  • Safer recovery from drawdown-kill\n\n✓ Recommended over plain RE-ENABLE.\n\nContinue?',
+  };
+  if (!confirm(confirmMsgs[mode] || 'Reset?')) return;
+
+  let url = '/api/real/cb-reset';
+  if (mode === 'full') url += '?full=true';
+  else if (mode === 'reenable') url += '?full=true&reenable=true';
+  else if (mode === 'probation') url += '?full=true&reenable=true&probation=true';
+
+  try {
+    const r = await fetch(url, {method: 'POST'});
+    const d = await r.json();
+    if (msgEl) {
+      msgEl.style.display = 'block';
+      if (d.ok) {
+        const wasEnabled = d.was ? d.was.enabled : null;
+        const nowEnabled = d.now ? d.now.enabled : null;
+        msgEl.style.background = 'rgba(0,255,157,.08)';
+        msgEl.style.border = '1px solid rgba(0,255,157,.2)';
+        msgEl.style.color = 'var(--green)';
+        msgEl.textContent = `✓ ${mode.toUpperCase()} OK · was tripped=${d.was.is_tripped} losses=${d.was.consecutive_losses} enabled=${wasEnabled} · now losses=0 enabled=${nowEnabled}`;
+        // Trigger immediate refresh
+        setTimeout(() => renderPipelineObs(), 300);
+      } else {
+        msgEl.style.background = 'rgba(255,59,92,.08)';
+        msgEl.style.border = '1px solid rgba(255,59,92,.2)';
+        msgEl.style.color = 'var(--red)';
+        msgEl.textContent = '✗ ERROR: ' + (d.error || 'unknown');
+      }
+      setTimeout(() => { msgEl.style.display = 'none'; }, 8000);
+    }
+  } catch(e) {
+    if (msgEl) {
+      msgEl.style.display = 'block';
+      msgEl.style.background = 'rgba(255,59,92,.08)';
+      msgEl.style.color = 'var(--red)';
+      msgEl.textContent = '✗ Network error: ' + e.message;
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+// Phase 3.1: Stage Loss Map window selector
+// ══════════════════════════════════════════════════════════
+window._slWindowHours = 4;
+function setSlWindow(hours) {
+  window._slWindowHours = hours;
+  // Update button states
+  document.querySelectorAll('.sl-win-btn').forEach(b => {
+    const h = parseFloat(b.dataset.h);
+    if (h === hours) {
+      b.classList.add('sl-win-active');
+      b.style.background = 'rgba(255,215,0,.08)';
+      b.style.color = 'var(--yellow)';
+      b.style.borderColor = 'rgba(255,215,0,.3)';
+      b.style.fontWeight = '700';
+    } else {
+      b.classList.remove('sl-win-active');
+      b.style.background = 'transparent';
+      b.style.color = 'var(--text-muted)';
+      b.style.borderColor = 'var(--border)';
+      b.style.fontWeight = '600';
+    }
+  });
+  // Update label
+  const label = document.getElementById('sl-window-label');
+  if (label) {
+    const txt = hours === 0 ? '· all time' : hours < 24 ? `· last ${hours}h` : hours < 168 ? `· last ${hours/24}d` : '· last 7d';
+    label.textContent = txt;
+  }
+  // Immediate refresh
+  if (typeof refreshAgents === 'function') refreshAgents();
+}
+
+// ══════════════════════════════════════════════════════════
+// Phase 2A: Stage Loss Map renderer
+// ══════════════════════════════════════════════════════════
+function renderStageLossMap(data) {
+  const container = document.getElementById('sl-funnel');
+  const analyzed = document.getElementById('sl-analyzed');
+  if (!container) return;
+  if (!data || !data.ok || !Array.isArray(data.funnel)) {
+    container.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:20px">No journey data yet — waiting for closed trades</div>';
+    if (analyzed) analyzed.textContent = '0 journeys';
+    return;
+  }
+  // Show filtered vs total from backend
+  if (analyzed) {
+    const f = data.filter || {};
+    const shown = data.journeys_analyzed || 0;
+    const total = f.total_in_file || shown;
+    if (shown < total) {
+      analyzed.textContent = `${shown}/${total} journeys`;
+    } else {
+      analyzed.textContent = `${shown} journeys`;
+    }
+  }
+
+  // Max "reached" count for bar scale
+  const maxReached = Math.max(1, ...data.funnel.map(s => s.reached || 0));
+  const stageIcons = {
+    strategy: '🎯', hard_block: '🛑', risk_check: '⚖️',
+    signal_tracker: '📡', paper_exec: '📝', real_qualify: '🔍',
+    real_exec: '💰', exit: '🏁'
+  };
+  const stageColors = {
+    strategy: '#6366f1', hard_block: '#ef4444', risk_check: '#f59e0b',
+    signal_tracker: '#0ea5e9', paper_exec: '#10b981', real_qualify: '#f59e0b',
+    real_exec: '#00ff9d', exit: '#00d4ff'
+  };
+
+  const rows = data.funnel.map((s, i) => {
+    const reached = s.reached || 0;
+    const passed = s.passed || 0;
+    const failed = s.failed || 0;
+    const dropPct = s.drop_pct || 0;
+    const widthPct = maxReached > 0 ? (reached / maxReached) * 100 : 0;
+    const col = stageColors[s.stage] || 'var(--text-dim)';
+    const icon = stageIcons[s.stage] || '•';
+    const dropBadge = i > 0 && s.drop_from_prev > 0
+      ? `<span style="font-size:.6rem;color:var(--red);font-weight:700;margin-left:8px">−${s.drop_from_prev} (${dropPct}% drop)</span>`
+      : '';
+    const reasonChips = (s.top_reasons || []).slice(0, 3).map(r =>
+      `<span style="font-size:.58rem;padding:1px 6px;border-radius:3px;background:rgba(239,68,68,.08);color:#f87171;border:1px solid rgba(239,68,68,.15);font-family:var(--font-mono)" title="${r.reason}">${r.reason.length > 20 ? r.reason.substring(0,20)+'…' : r.reason} ×${r.count}</span>`
+    ).join(' ');
+    return `
+      <div style="display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.01);border:1px solid var(--border)">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <div style="display:flex;align-items:center;gap:8px;min-width:200px">
+            <span style="font-size:.85rem">${icon}</span>
+            <span style="font-size:.72rem;font-weight:700;color:${col}">${s.stage}</span>
+            ${dropBadge}
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.68rem">
+            <span style="color:var(--text-muted)">reached <span style="color:var(--text-dim);font-weight:700">${reached}</span></span>
+            <span style="color:var(--green)">✓ ${passed}</span>
+            <span style="color:var(--red)">✗ ${failed}</span>
+            <span style="color:var(--text-muted)">${s.avg_latency_ms}ms</span>
+          </div>
+        </div>
+        <div style="height:6px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${widthPct}%;background:linear-gradient(90deg,${col}33,${col});border-radius:3px;transition:width .3s"></div>
+        </div>
+        ${reasonChips ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">${reasonChips}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+  container.innerHTML = rows;
+}
+
+// ══════════════════════════════════════════════════════════
+// Phase 2D: R-Drift / WR alert strip (global, all tabs)
+// ══════════════════════════════════════════════════════════
+// Phase 3.14: R-Drift rolling window selector
+window._rdWindowHours = 24;  // default to 24h (sane default)
+function setRdWindow(hours) {
+  window._rdWindowHours = hours;
+  document.querySelectorAll('.rd-win-btn').forEach(b => {
+    const h = parseFloat(b.dataset.h);
+    if (h === hours) {
+      b.classList.add('rd-win-active');
+      b.style.background = 'rgba(0,255,157,.08)';
+      b.style.color = 'var(--green)';
+      b.style.borderColor = 'rgba(0,255,157,.3)';
+      b.style.fontWeight = '700';
+    } else {
+      b.classList.remove('rd-win-active');
+      b.style.background = 'transparent';
+      b.style.color = 'var(--text-muted)';
+      b.style.borderColor = 'var(--border)';
+      b.style.fontWeight = '600';
+    }
+  });
+  if (typeof loadRDrift === 'function') loadRDrift();
+}
+
+async function loadRDrift() {
+  try {
+    const rdHours = window._rdWindowHours != null ? window._rdWindowHours : 24;
+    const rdUrl = rdHours > 0
+      ? `/api/pipeline/rdrift?limit=50&hours=${rdHours}`
+      : `/api/pipeline/rdrift?limit=20`;
+    const [d, sup] = await Promise.all([
+      fetch(rdUrl).then(r => r.json()).catch(() => ({})),
+      fetch('/api/supervisor/status').then(r => r.json()).catch(() => ({})),
+    ]);
+
+    // ── Phase 2.5 B2: Current Action Banner ──
+    try {
+      const ca = sup && sup.current_action;
+      if (ca) {
+        const actionEl = document.getElementById('ca-action');
+        const symEl = document.getElementById('ca-symbol');
+        const detEl = document.getElementById('ca-detail');
+        const ageEl = document.getElementById('ca-age');
+        const pulseEl = document.getElementById('ca-pulse');
+        const act = (ca.action || 'idle').toUpperCase().replace(/_/g, ' ');
+        if (actionEl) actionEl.textContent = act;
+        if (symEl) symEl.textContent = ca.symbol ? `${ca.symbol}${ca.timeframe ? ' · ' + ca.timeframe : ''}` : '';
+        if (detEl) detEl.textContent = ca.detail || '';
+        const age = ca.age_sec || 0;
+        const ageText = age < 60 ? `${age.toFixed(0)}s ago` : `${(age/60).toFixed(1)}m ago`;
+        if (ageEl) {
+          ageEl.textContent = ageText;
+          ageEl.style.color = age > 60 ? 'var(--red)' : age > 10 ? 'var(--yellow)' : 'var(--text-muted)';
+        }
+        // Pulse dim if stale
+        if (pulseEl) {
+          if (age > 60) {
+            pulseEl.style.background = 'var(--red)';
+            pulseEl.style.boxShadow = '0 0 6px var(--red)';
+            pulseEl.style.animation = 'none';
+          } else if (age > 10) {
+            pulseEl.style.background = 'var(--yellow)';
+            pulseEl.style.boxShadow = '0 0 6px var(--yellow)';
+            pulseEl.style.animation = 'pulse 2.5s ease-in-out infinite';
+          } else {
+            pulseEl.style.background = '#818cf8';
+            pulseEl.style.boxShadow = '0 0 6px #818cf8';
+            pulseEl.style.animation = 'pulse 1.5s ease-in-out infinite';
+          }
+        }
+      } else {
+        const actionEl = document.getElementById('ca-action');
+        if (actionEl) actionEl.textContent = 'IDLE';
+      }
+    } catch(_){}
+
+    if (!d || !d.ok) return;
+    const paper = d.paper || {};
+    const real = d.real || {};
+    const drift = d.drift || {};
+    const alerts = d.alerts || [];
+
+    const elWR = id => document.getElementById(id);
+    const setText = (id, val) => { const e = elWR(id); if (e) e.textContent = val; };
+    const setColor = (id, col) => { const e = elWR(id); if (e) e.style.color = col; };
+
+    setText('rd-paper-wr', paper.count ? paper.wr + '% (' + paper.count + ')' : '--');
+    setText('rd-real-wr', real.count ? real.wr + '% (' + real.count + ')' : '--');
+    setText('rd-paper-r', paper.count ? (paper.avg_r >= 0 ? '+' : '') + paper.avg_r.toFixed(2) + 'R' : '--');
+    setText('rd-real-r', real.count ? (real.avg_r >= 0 ? '+' : '') + real.avg_r.toFixed(2) + 'R' : '--');
+
+    // WR drift color
+    const wrD = drift.wr_drift_pct || 0;
+    const wrDText = (wrD >= 0 ? '+' : '') + wrD.toFixed(1) + '%';
+    setText('rd-wr-drift', wrDText);
+    setColor('rd-wr-drift', Math.abs(wrD) > 10 ? 'var(--red)' : Math.abs(wrD) > 5 ? 'var(--yellow)' : 'var(--green)');
+
+    // R drift color
+    const rD = drift.r_drift || 0;
+    const rDText = (rD >= 0 ? '+' : '') + rD.toFixed(2) + 'R';
+    setText('rd-r-drift', rDText);
+    setColor('rd-r-drift', Math.abs(rD) > 0.5 ? 'var(--red)' : Math.abs(rD) > 0.25 ? 'var(--yellow)' : 'var(--green)');
+
+    // Supervisor indicator
+    const supEl = elWR('rd-sup-indicator');
+    if (supEl) {
+      if (sup && sup.running) {
+        const anomalies = sup.anomaly_count || 0;
+        supEl.textContent = anomalies > 0 ? '⚠ ' + anomalies : '✓ OK';
+        supEl.style.color = anomalies > 0 ? 'var(--red)' : 'var(--green)';
+      } else {
+        supEl.textContent = '✗ OFF';
+        supEl.style.color = 'var(--red)';
+      }
+    }
+
+    // Inline alerts strip
+    const aEl = elWR('rd-alerts');
+    if (aEl) {
+      if (alerts.length) {
+        aEl.textContent = '⚠ ' + alerts.map(a => a.message).join(' · ');
+        aEl.style.color = 'var(--red)';
+      } else {
+        aEl.textContent = '';
+      }
+    }
+
+    // Strip border color reflects worst alert
+    const strip = document.getElementById('rdrift-strip');
+    if (strip) {
+      if (alerts.length) {
+        strip.style.border = '1px solid rgba(255,59,92,.35)';
+        strip.style.background = 'rgba(255,59,92,.04)';
+      } else {
+        strip.style.border = '1px solid rgba(0,255,157,.15)';
+        strip.style.background = 'rgba(0,255,157,.03)';
+      }
+    }
+  } catch(e) {
+    // Silent — strip stays in last known state
+  }
+}
+// Fire on load + every 10s, independent of tab switches
+try {
+  loadRDrift();
+  setInterval(loadRDrift, 10000);
+} catch(e) {}
 </script>
 </body>
 </html>

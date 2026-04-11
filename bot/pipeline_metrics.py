@@ -38,6 +38,22 @@ _exec_counter: Counter = Counter()
 # Agent heartbeats: {component: last_activity_timestamp}
 _heartbeats: Dict[str, float] = {}
 
+# Phase 3.2: Hotfix effectiveness counters — {fix_name: {blocked: int, first_seen: ts, last_seen: ts}}
+_hotfix_counters: Dict[str, Dict[str, Any]] = {}
+_HOTFIX_NAMES = (
+    "p0_lowconf_bear_htf",
+    "p0_8_momentum_counter_htf",  # Phase 3.8: counter-HTF veto for non-SB momentum scanners
+    "p1_duplicate_exit_match",
+    "p2_counter_htf_boost_cap",
+    "p3_orphan_prevention",       # Phase 3.0: tracker-rejected trades that would orphan
+    "p3_6_ml_weak_block",         # Phase 3.6: conservative ML weak+low conf+no HTF block
+    "p3_7_sideways_sb_long",      # Phase 3.7: data-driven sideways SB long block (47 losses)
+    "p3_9_limit_no_fill",         # Phase 3.9: limit order didn't fill — avoided slippage
+    "p3_11_chop_long_block",      # Phase 3.11: chop+long+low_conf + no ML support block
+    "p3_21_slip_recheck_kept",    # Phase 3.21: Hybrid A+D — slip recheck kept trade alive
+    "p4_fee_drag_chop",
+)
+
 # Day-boundary tracking for rolling 24h reset
 _day_start: float = time.time()
 _TODAY_SEC: int = 86400
@@ -84,6 +100,56 @@ def record_exec_event(event: str) -> None:
 def heartbeat(component: str) -> None:
     """Record activity from a component. Called every tick/iteration."""
     _heartbeats[component] = time.time()
+
+
+def record_hotfix_veto(fix_name: str, detail: str = "") -> None:
+    """Phase 3.2: Record a hotfix veto/action.
+
+    Called from each P0/P1/P2/P4 veto site to count effectiveness.
+    Never raises — logging failures must not break trading.
+    """
+    try:
+        now = time.time()
+        if fix_name not in _hotfix_counters:
+            _hotfix_counters[fix_name] = {
+                "blocked": 0,
+                "first_seen": now,
+                "last_seen": now,
+                "last_detail": "",
+            }
+        _hotfix_counters[fix_name]["blocked"] += 1
+        _hotfix_counters[fix_name]["last_seen"] = now
+        if detail:
+            _hotfix_counters[fix_name]["last_detail"] = str(detail)[:80]
+    except Exception:
+        pass
+
+
+def get_hotfix_stats() -> Dict[str, Any]:
+    """Return current hotfix effectiveness snapshot for the dashboard."""
+    try:
+        now = time.time()
+        result = {}
+        for name in _HOTFIX_NAMES:
+            data = _hotfix_counters.get(name, {})
+            blocked = data.get("blocked", 0)
+            last_seen = data.get("last_seen", 0)
+            first_seen = data.get("first_seen", 0)
+            result[name] = {
+                "blocked": blocked,
+                "age_sec": round(now - last_seen, 1) if last_seen > 0 else None,
+                "active_hours": round((last_seen - first_seen) / 3600, 2) if first_seen > 0 and last_seen > first_seen else 0,
+                "last_detail": data.get("last_detail", ""),
+                "status": "active" if blocked > 0 else "dormant",
+            }
+        result["_summary"] = {
+            "total_blocked": sum(d["blocked"] for d in _hotfix_counters.values()),
+            "active_fixes": sum(1 for d in _hotfix_counters.values() if d.get("blocked", 0) > 0),
+            "monitored_since_ts": _day_start,
+        }
+        return result
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ──────────────────────────────────────────────────────────────────────

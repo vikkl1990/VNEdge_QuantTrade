@@ -563,6 +563,10 @@ class DashboardServer:
         app.router.add_get("/api/risk-return", self._handle_risk_return_scatter)
         app.router.add_get("/api/pipeline/overview", self._handle_pipeline_overview)
         app.router.add_get("/api/pipeline/journey/{trade_id}", self._handle_journey)
+        app.router.add_get("/api/pipeline/stage_stats", self._handle_stage_stats)
+        app.router.add_get("/api/pipeline/rdrift", self._handle_rdrift)
+        app.router.add_get("/api/pipeline/hotfix_stats", self._handle_hotfix_stats)
+        app.router.add_get("/api/pipeline/loss_taxonomy", self._handle_loss_taxonomy)
         app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
         app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
 
@@ -1490,21 +1494,77 @@ class DashboardServer:
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_supervisor_status(self, request: web.Request) -> web.Response:
-        """Return supervisor watchdog status."""
+        """Return supervisor watchdog status + current_action from orchestrator + probation."""
         try:
+            orch = getattr(self, '_orchestrator', None)
             supervisor = getattr(self, '_supervisor', None)
-            if supervisor is None:
-                orch = getattr(self, '_orchestrator', None)
-                if orch:
-                    supervisor = getattr(orch, '_supervisor', None)
+            if supervisor is None and orch:
+                supervisor = getattr(orch, '_supervisor', None)
+
+            payload: Dict[str, Any] = {}
             if supervisor:
-                return web.json_response(supervisor.status, dumps=_safe_dumps)
-            return web.json_response({"running": False, "detail": "supervisor_not_wired"})
+                st = supervisor.status
+                if isinstance(st, dict):
+                    payload.update(st)
+                else:
+                    payload["supervisor"] = st
+            else:
+                payload = {"running": False, "detail": "supervisor_not_wired"}
+
+            # Phase 2.5 B2: current_action (last candle close / signal processing)
+            try:
+                if orch is not None:
+                    ca = getattr(orch, '_current_action', None)
+                    if ca:
+                        import time as _t
+                        ca_copy = dict(ca) if isinstance(ca, dict) else {}
+                        ca_copy["age_sec"] = round(_t.time() - ca_copy.get("ts", _t.time()), 1)
+                        payload["current_action"] = ca_copy
+            except Exception:
+                pass
+
+            # Phase 3.5: probation status
+            try:
+                mgr = getattr(self, '_real_manager', None) or (getattr(orch, '_real_manager', None) if orch else None)
+                if mgr is not None:
+                    prob_mult = float(getattr(mgr, '_probation_size_mult', 1.0) or 1.0)
+                    if prob_mult < 1.0:
+                        import time as _t
+                        started = float(getattr(mgr, '_probation_started_at', 0) or 0)
+                        max_age = float(getattr(mgr, '_probation_max_age_sec', 4 * 3600))
+                        max_trades = int(getattr(mgr, '_probation_max_trades', 3))
+                        done = int(getattr(mgr, '_probation_trades_done', 0))
+                        age = _t.time() - started if started > 0 else 0
+                        payload["probation"] = {
+                            "active": True,
+                            "size_mult": prob_mult,
+                            "trades_done": done,
+                            "max_trades": max_trades,
+                            "age_sec": round(age, 0),
+                            "max_age_sec": max_age,
+                            "remaining_trades": max(0, max_trades - done),
+                            "remaining_age_sec": max(0, max_age - age),
+                        }
+                    else:
+                        payload["probation"] = {"active": False}
+            except Exception:
+                pass
+
+            return web.json_response(payload, dumps=_safe_dumps)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_cb_reset(self, request: web.Request) -> web.Response:
-        """Manually reset the real trading circuit breaker."""
+        """Manually reset the real trading circuit breaker.
+
+        Query params:
+          full=true       — also reset total_pnl to 0 (clears drawdown-kill state)
+          reenable=true   — also set real_manager.enabled = True (overrides drawdown-kill disable)
+          daily=true      — also reset daily_pnl to 0 (clears daily loss limit)
+          probation=true  — also enable probation mode (Phase 3.5): 50% size for first 3 trades or 4h
+
+        Default (no params) = reset consecutive_losses + is_tripped only (backward compat).
+        """
         try:
             mgr = getattr(self, '_real_manager', None)
             if mgr is None:
@@ -1513,19 +1573,575 @@ class DashboardServer:
                     mgr = getattr(orch, '_real_manager', None)
             if mgr is None:
                 return web.json_response({"error": "real_manager_not_available"}, status=404)
+
+            full = request.query.get("full", "").lower() in ("1", "true", "yes")
+            reenable = request.query.get("reenable", "").lower() in ("1", "true", "yes")
+            reset_daily = request.query.get("daily", "").lower() in ("1", "true", "yes")
+            probation = request.query.get("probation", "").lower() in ("1", "true", "yes")
+
             cb = mgr.circuit_breaker
-            old_state = {"is_tripped": cb.is_tripped, "consecutive_losses": cb.consecutive_losses, "trip_reason": cb.trip_reason}
+            old_state = {
+                "is_tripped": cb.is_tripped,
+                "consecutive_losses": cb.consecutive_losses,
+                "trip_reason": cb.trip_reason,
+                "daily_pnl": cb.daily_pnl,
+                "total_pnl": cb.total_pnl,
+                "enabled": getattr(mgr, 'enabled', None),
+            }
+            # Always reset trip state
             cb.is_tripped = False
             cb.consecutive_losses = 0
             cb.trip_reason = ""
+            # Optional: reset total_pnl (clears drawdown-kill reason)
+            if full:
+                cb.total_pnl = 0.0
+            # Optional: reset daily_pnl
+            if reset_daily or full:
+                cb.daily_pnl = 0.0
+            # Optional: re-enable the real manager (for drawdown-kill recovery)
+            if reenable:
+                try:
+                    mgr.enabled = True
+                except Exception:
+                    pass
+            # Phase 3.5: Optional probation mode (50% size for 3 trades or 4h)
+            if probation and reenable:
+                try:
+                    import time as _t
+                    mgr._probation_size_mult = 0.5
+                    mgr._probation_started_at = _t.time()
+                    mgr._probation_trades_done = 0
+                    mgr._probation_max_trades = 3
+                    mgr._probation_max_age_sec = 4 * 3600
+                    logger.warning(
+                        "PROBATION ENABLED: 50%% size for next 3 trades or 4 hours via API"
+                    )
+                except Exception as _pe:
+                    logger.warning("probation setup failed: %s", _pe)
             mgr._save_state()
+            logger.warning(
+                "CB RESET via API: full=%s reenable=%s daily=%s | was: tripped=%s losses=%d daily=$%.2f total=$%.2f enabled=%s",
+                full, reenable, reset_daily,
+                old_state["is_tripped"], old_state["consecutive_losses"],
+                old_state["daily_pnl"], old_state["total_pnl"], old_state["enabled"],
+            )
             return web.json_response({
                 "ok": True,
                 "was": old_state,
-                "now": {"is_tripped": False, "consecutive_losses": 0},
+                "now": {
+                    "is_tripped": False,
+                    "consecutive_losses": 0,
+                    "daily_pnl": cb.daily_pnl,
+                    "total_pnl": cb.total_pnl,
+                    "enabled": getattr(mgr, 'enabled', None),
+                },
+                "flags_applied": {"full": full, "reenable": reenable, "daily": reset_daily},
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_stage_stats(self, request: web.Request) -> web.Response:
+        """Phase 2A + 3.1: Stage Loss Map — aggregate SignalJourney JSONL.
+
+        Read-only. Tail-reads recent journey records and aggregates per-stage
+        reach/pass/fail counts + top rejection reasons.
+
+        Query params:
+          limit=N       — hard cap on records read (default 2000, max 5000)
+          hours=N       — only aggregate records from last N hours (default 4)
+          since_ts=N    — unix timestamp cutoff (overrides hours if provided)
+
+        Never touches live signal flow, exit logic, or scoring.
+        """
+        try:
+            import time as _t
+            limit = int(request.query.get("limit", "2000"))
+            limit = max(1, min(limit, 5000))  # hard cap for memory safety
+
+            # Time filter — default 4h, or explicit hours/since_ts
+            since_ts_raw = request.query.get("since_ts")
+            hours_raw = request.query.get("hours")
+            if since_ts_raw:
+                try:
+                    since_ts = float(since_ts_raw)
+                except (ValueError, TypeError):
+                    since_ts = 0.0
+            elif hours_raw:
+                try:
+                    hours = float(hours_raw)
+                    since_ts = _t.time() - (hours * 3600) if hours > 0 else 0.0
+                except (ValueError, TypeError):
+                    since_ts = _t.time() - (4 * 3600)  # default 4h
+            else:
+                since_ts = _t.time() - (4 * 3600)  # default 4h
+
+            from bot.signal_journey import SignalJourney
+            all_journeys = SignalJourney.load_recent(limit=limit)
+
+            # Filter by closed_at timestamp
+            if since_ts > 0:
+                journeys = [j for j in all_journeys if float(j.get("closed_at", 0) or 0) >= since_ts]
+            else:
+                journeys = all_journeys
+            filter_stats = {
+                "total_in_file": len(all_journeys),
+                "after_time_filter": len(journeys),
+                "since_ts": since_ts,
+                "window_hours": round((_t.time() - since_ts) / 3600, 2) if since_ts > 0 else None,
+            }
+
+            # Canonical stage order (must match stamp sites across pipeline)
+            stages_order = [
+                "strategy",
+                "hard_block",
+                "risk_check",
+                "signal_tracker",
+                "paper_exec",
+                "real_qualify",
+                "real_exec",
+                "exit",
+            ]
+            stats: Dict[str, Dict[str, Any]] = {
+                s: {
+                    "reached": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "avg_latency_ms": 0.0,
+                    "_lat_sum": 0.0,
+                    "_lat_n": 0,
+                    "top_reasons": {},
+                }
+                for s in stages_order
+            }
+
+            for j in journeys:
+                for stage in j.get("stages", []) or []:
+                    name = stage.get("stage", "")
+                    if name not in stats:
+                        continue
+                    stats[name]["reached"] += 1
+                    if stage.get("passed"):
+                        stats[name]["passed"] += 1
+                    else:
+                        stats[name]["failed"] += 1
+                        reason = str(stage.get("reason", "unknown"))[:50]
+                        stats[name]["top_reasons"][reason] = stats[name]["top_reasons"].get(reason, 0) + 1
+                    lat = stage.get("latency_ms", 0) or 0
+                    try:
+                        stats[name]["_lat_sum"] += float(lat)
+                        stats[name]["_lat_n"] += 1
+                    except Exception:
+                        pass
+
+            # Finalize: compute avg latency + top-5 reasons list
+            for s in stats.values():
+                n = s.pop("_lat_n", 0)
+                total = s.pop("_lat_sum", 0.0)
+                s["avg_latency_ms"] = round(total / n, 2) if n > 0 else 0.0
+                tr = sorted(s["top_reasons"].items(), key=lambda x: -x[1])[:5]
+                s["top_reasons"] = [{"reason": r, "count": c} for r, c in tr]
+
+            # Funnel view: ordered stages with drop rate from previous
+            funnel = []
+            prev_reached = 0
+            for i, s_name in enumerate(stages_order):
+                reached = stats[s_name]["reached"]
+                drop_from_prev = 0
+                drop_pct = 0.0
+                if i > 0 and prev_reached > 0:
+                    drop_from_prev = max(0, prev_reached - reached)
+                    drop_pct = round((drop_from_prev / prev_reached) * 100, 1)
+                funnel.append({
+                    "stage": s_name,
+                    "reached": reached,
+                    "passed": stats[s_name]["passed"],
+                    "failed": stats[s_name]["failed"],
+                    "drop_from_prev": drop_from_prev,
+                    "drop_pct": drop_pct,
+                    "avg_latency_ms": stats[s_name]["avg_latency_ms"],
+                    "top_reasons": stats[s_name]["top_reasons"],
+                })
+                if reached > 0:
+                    prev_reached = reached
+
+            return web.json_response({
+                "ok": True,
+                "journeys_analyzed": len(journeys),
+                "limit": limit,
+                "filter": filter_stats,
+                "funnel": funnel,
+                "stats": stats,
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e), "ok": False}, status=500)
+
+    async def _handle_hotfix_stats(self, request: web.Request) -> web.Response:
+        """Phase 3.2: Hotfix effectiveness counters.
+
+        Returns per-fix block counts + last-seen info. Read-only.
+        """
+        try:
+            from bot.pipeline_metrics import get_hotfix_stats
+            stats = get_hotfix_stats()
+            return web.json_response({"ok": True, "fixes": stats}, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e), "ok": False}, status=500)
+
+    async def _handle_loss_taxonomy(self, request: web.Request) -> web.Response:
+        """Phase 3.3: Loss Taxonomy — auto-classify recent losses into pattern buckets.
+
+        Reads paper closed trades within the time window and classifies each loss
+        (pnl < 0) into 8 diagnostic buckets. A trade can match multiple buckets.
+
+        Query params:
+          hours=N    — time window (default 24)
+
+        Read-only. Never touches live state.
+        """
+        try:
+            import time as _t
+            from datetime import datetime
+            hours = float(request.query.get("hours", "24"))
+            hours = max(0.1, min(hours, 168))  # 6 min to 7 days
+            since_ts = _t.time() - (hours * 3600)
+
+            orch = getattr(self, '_orchestrator', None)
+            sig_tracker = getattr(self, '_signal_tracker', None) or (getattr(orch, '_signal_tracker', None) if orch else None)
+            if sig_tracker is None:
+                return web.json_response({"ok": False, "error": "signal_tracker_not_available"}, status=404)
+
+            # Pull closed signals (paper)
+            try:
+                closed = sig_tracker.get_closed_signals(limit=500) or []
+            except Exception:
+                closed = []
+
+            # Filter to losses within window
+            losses = []
+            for c in closed:
+                try:
+                    if not isinstance(c, dict):
+                        continue
+                    pnl_pct = float(c.get("pnl_pct", 0) or 0)
+                    if pnl_pct >= 0:
+                        continue  # not a loss
+                    exit_time = c.get("exit_time", "") or c.get("closed_at", "")
+                    if exit_time:
+                        try:
+                            ts = datetime.fromisoformat(str(exit_time).replace('Z', '+00:00')).timestamp()
+                            if ts < since_ts:
+                                continue
+                        except (ValueError, TypeError):
+                            continue
+                    losses.append(c)
+                except Exception:
+                    continue
+
+            # Classify into buckets — a trade can match multiple
+            bucket_defs = [
+                "counter_htf_long",
+                "counter_htf_short",
+                "early_kill",
+                "time_decay",
+                "fee_drag_be",
+                "chop_regime",
+                "ml_weak",
+                "slippage",
+                "other",
+            ]
+            buckets: Dict[str, List[Dict[str, Any]]] = {b: [] for b in bucket_defs}
+
+            for L in losses:
+                try:
+                    meta = L.get("metadata", {}) or {}
+                    htf = int(meta.get("htf_bias", 0) or 0)
+                    side = str(L.get("side", "") or "").lower()
+                    exit_reason = str(L.get("exit_reason", "") or "")
+                    exit_reason_d = str(L.get("exit_reason_detailed", "") or "")
+                    regime = str(meta.get("regime", "") or "").lower()
+                    ml_verdict = str(meta.get("ml_verdict", "") or "").upper()
+                    pnl_usd = float(L.get("pnl_usd", 0) or 0)
+                    slippage_bps = float(L.get("slippage_bps", 0) or 0)
+                    fee_drag = float(meta.get("fee_drag_r", 0) or 0)
+                    duration_sec = float(L.get("trade_duration_sec", 0) or 0)
+                    duration_min = duration_sec / 60.0 if duration_sec > 0 else 0
+
+                    matched_count = 0
+
+                    # Counter-HTF long
+                    if htf < 0 and side == "long":
+                        buckets["counter_htf_long"].append(L); matched_count += 1
+                    # Counter-HTF short
+                    if htf > 0 and side == "short":
+                        buckets["counter_htf_short"].append(L); matched_count += 1
+                    # Early kill (sub-5min momentum failure)
+                    if "early_kill" in exit_reason and duration_min > 0 and duration_min < 5:
+                        buckets["early_kill"].append(L); matched_count += 1
+                    elif "early_kill" in exit_reason_d:
+                        buckets["early_kill"].append(L); matched_count += 1
+                    # Time decay
+                    if "time_decay" in exit_reason or "time_decay" in exit_reason_d or "expired" == exit_reason:
+                        buckets["time_decay"].append(L); matched_count += 1
+                    # Fee-drag breakeven
+                    if abs(pnl_usd) < 0.5 and fee_drag > 0.25:
+                        buckets["fee_drag_be"].append(L); matched_count += 1
+                    # Chop regime
+                    if regime in ("high_volatility", "sideways", "ranging", "quiet", "mean_reversion"):
+                        buckets["chop_regime"].append(L); matched_count += 1
+                    # ML WEAK that lost
+                    if ml_verdict == "WEAK":
+                        buckets["ml_weak"].append(L); matched_count += 1
+                    # Slippage > 30bps
+                    if slippage_bps > 30:
+                        buckets["slippage"].append(L); matched_count += 1
+                    # Other
+                    if matched_count == 0:
+                        buckets["other"].append(L)
+                except Exception:
+                    continue
+
+            # Build response
+            result: Dict[str, Any] = {}
+            for bucket_name in bucket_defs:
+                trades = buckets[bucket_name]
+                total_loss = sum(float(t.get("pnl_usd", 0) or 0) for t in trades)
+                total_loss_pct = sum(float(t.get("pnl_pct", 0) or 0) for t in trades)
+                result[bucket_name] = {
+                    "count": len(trades),
+                    "total_loss_usd": round(total_loss, 2),
+                    "total_loss_pct": round(total_loss_pct, 2),
+                    "sample_trade_ids": [str(t.get("trade_id", ""))[:12] for t in trades[:3]],
+                    "sample_symbols": list(dict.fromkeys(str(t.get("symbol", ""))[:10] for t in trades))[:5],
+                }
+
+            total_loss_usd = sum(float(t.get("pnl_usd", 0) or 0) for t in losses)
+            total_loss_pct = sum(float(t.get("pnl_pct", 0) or 0) for t in losses)
+
+            # ── Phase 3.18: Per-scanner / per-regime / per-side breakdown ──
+            # Data foundation for surgical Phase 3.7 (chop regime gate) and ML retrain
+            # decisions. Shows which scanner×regime×side combos are worst offenders.
+            scanner_breakdown: Dict[str, Dict[str, Any]] = {}
+            regime_breakdown: Dict[str, Dict[str, Any]] = {}
+            side_breakdown: Dict[str, Dict[str, Any]] = {}
+            scanner_regime_breakdown: Dict[str, Dict[str, Any]] = {}
+            scanner_side_breakdown: Dict[str, Dict[str, Any]] = {}
+
+            def _bump(d: Dict[str, Dict], key: str, pnl: float):
+                if key not in d:
+                    d[key] = {"count": 0, "total_loss_usd": 0.0, "total_loss_pct": 0.0}
+                d[key]["count"] += 1
+                d[key]["total_loss_usd"] += pnl
+
+            for L in losses:
+                try:
+                    meta = L.get("metadata", {}) or {}
+                    scanner = str(meta.get("setup_type", L.get("scanner", "") or "unknown")).lower()
+                    regime = str(meta.get("regime", "") or "unknown").lower()
+                    side = str(L.get("side", "") or "unknown").lower()
+                    pnl_usd = float(L.get("pnl_usd", 0) or 0)
+                    pnl_pct = float(L.get("pnl_pct", 0) or 0)
+
+                    _bump(scanner_breakdown, scanner, pnl_usd)
+                    _bump(regime_breakdown, regime, pnl_usd)
+                    _bump(side_breakdown, side, pnl_usd)
+                    _bump(scanner_regime_breakdown, f"{scanner}:{regime}", pnl_usd)
+                    _bump(scanner_side_breakdown, f"{scanner}:{side}", pnl_usd)
+
+                    # Add pct to the aggregates
+                    scanner_breakdown[scanner]["total_loss_pct"] += pnl_pct
+                    regime_breakdown[regime]["total_loss_pct"] += pnl_pct
+                    side_breakdown[side]["total_loss_pct"] += pnl_pct
+                    scanner_regime_breakdown[f"{scanner}:{regime}"]["total_loss_pct"] += pnl_pct
+                    scanner_side_breakdown[f"{scanner}:{side}"]["total_loss_pct"] += pnl_pct
+                except Exception:
+                    continue
+
+            # Round + sort by total_loss_usd
+            def _finalize(d: Dict[str, Dict], top_n: int = 20) -> List[Dict[str, Any]]:
+                out = []
+                for key, v in d.items():
+                    out.append({
+                        "key": key,
+                        "count": v["count"],
+                        "total_loss_usd": round(v["total_loss_usd"], 2),
+                        "total_loss_pct": round(v["total_loss_pct"], 2),
+                    })
+                out.sort(key=lambda x: x["total_loss_usd"])  # most negative first
+                return out[:top_n]
+
+            return web.json_response({
+                "ok": True,
+                "window_hours": hours,
+                "since_ts": since_ts,
+                "total_losses_analyzed": len(losses),
+                "total_loss_usd": round(total_loss_usd, 2),
+                "total_loss_pct": round(total_loss_pct, 2),
+                "buckets": result,
+                # Phase 3.18: breakdowns for surgical decisions
+                "breakdown": {
+                    "scanner": _finalize(scanner_breakdown),
+                    "regime": _finalize(regime_breakdown),
+                    "side": _finalize(side_breakdown),
+                    "scanner_regime": _finalize(scanner_regime_breakdown, top_n=15),
+                    "scanner_side": _finalize(scanner_side_breakdown, top_n=15),
+                },
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e), "ok": False}, status=500)
+
+    async def _handle_rdrift(self, request: web.Request) -> web.Response:
+        """Phase 2D + 3.14: Paper vs Real WR / R-drift alert strip.
+
+        Query params:
+          limit=N    — max trades to include (default 20, max 200)
+          hours=N    — only include trades from last N hours (Phase 3.14)
+                       default 0 = no time filter (legacy behavior)
+
+        Read-only. Never mutates state.
+        """
+        try:
+            import time as _t
+            from datetime import datetime as _dt
+            limit = int(request.query.get("limit", "20"))
+            limit = max(5, min(limit, 200))
+            hours = float(request.query.get("hours", "0") or "0")
+            since_ts = (_t.time() - (hours * 3600)) if hours > 0 else 0
+
+            def _filter_by_time(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                """Phase 3.14: filter trades by timestamp if since_ts set."""
+                if since_ts <= 0:
+                    return trades
+                out = []
+                for t in trades:
+                    try:
+                        ts_str = str(t.get("timestamp", "") or t.get("exit_time", "") or t.get("closed_at", "") or "")
+                        if not ts_str:
+                            continue
+                        ts = _dt.fromisoformat(ts_str.replace('Z', '+00:00')).timestamp()
+                        if ts >= since_ts:
+                            out.append(t)
+                    except Exception:
+                        continue
+                return out
+
+            orch = getattr(self, '_orchestrator', None)
+            sig_tracker = getattr(self, '_signal_tracker', None) or (getattr(orch, '_signal_tracker', None) if orch else None)
+            real_mgr = getattr(self, '_real_manager', None) or (getattr(orch, '_real_manager', None) if orch else None)
+
+            def _realized_r(trade: Dict[str, Any]) -> float:
+                """Compute realized R-multiple from pnl_pct + initial_risk."""
+                try:
+                    pnl = float(trade.get("pnl_pct", 0) or 0)
+                    ir = float(trade.get("initial_risk", 0) or 0)
+                    ep = float(trade.get("entry_price", 0) or 0)
+                    if ir > 0 and ep > 0:
+                        risk_pct = (ir / ep) * 100
+                        if risk_pct > 0:
+                            return round(pnl / risk_pct, 3)
+                    return 0.0
+                except Exception:
+                    return 0.0
+
+            def _summarize(trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+                if not trades:
+                    return {"count": 0, "wr": 0.0, "avg_r": 0.0, "wins": 0, "losses": 0, "avg_pnl_pct": 0.0}
+                wins = 0
+                losses = 0
+                rs = []
+                pnls = []
+                for t in trades:
+                    try:
+                        pnl = float(t.get("pnl_pct", 0) or 0)
+                    except Exception:
+                        pnl = 0.0
+                    pnls.append(pnl)
+                    if pnl > 0:
+                        wins += 1
+                    elif pnl < 0:
+                        losses += 1
+                    rs.append(_realized_r(t))
+                n = len(trades)
+                return {
+                    "count": n,
+                    "wins": wins,
+                    "losses": losses,
+                    "wr": round((wins / n) * 100, 1) if n > 0 else 0.0,
+                    "avg_r": round(sum(rs) / n, 3) if n > 0 else 0.0,
+                    "avg_pnl_pct": round(sum(pnls) / n, 3) if n > 0 else 0.0,
+                }
+
+            # Paper closed (Phase 3.14: apply time filter before limit)
+            paper_closed: List[Dict[str, Any]] = []
+            try:
+                if sig_tracker and hasattr(sig_tracker, "get_closed_signals"):
+                    _raw_paper = list(sig_tracker.get_closed_signals(limit=max(500, limit * 10)))
+                    _filtered_paper = _filter_by_time(_raw_paper)
+                    paper_closed = _filtered_paper[-limit:]
+            except Exception:
+                paper_closed = []
+
+            # Real closed (Phase 3.14: apply time filter before limit)
+            real_closed: List[Dict[str, Any]] = []
+            try:
+                if real_mgr and hasattr(real_mgr, "closed_real_trades"):
+                    raw = list(real_mgr.closed_real_trades)
+                    _filtered_real = _filter_by_time(raw)
+                    real_closed = _filtered_real[-limit:]
+            except Exception:
+                real_closed = []
+
+            paper = _summarize(paper_closed)
+            real = _summarize(real_closed)
+
+            # Drift calculations (only meaningful when both sides have trades)
+            wr_drift = round(paper["wr"] - real["wr"], 1) if (paper["count"] and real["count"]) else 0.0
+            r_drift = round(paper["avg_r"] - real["avg_r"], 3) if (paper["count"] and real["count"]) else 0.0
+
+            # Alerts
+            alerts = []
+            if paper["count"] >= 5 and real["count"] >= 5:
+                if abs(wr_drift) > 10.0:
+                    alerts.append({
+                        "level": "warn",
+                        "metric": "wr_drift",
+                        "value": wr_drift,
+                        "message": f"WR divergence {wr_drift:+.1f}% (paper {paper['wr']}% vs real {real['wr']}%)",
+                    })
+                if abs(r_drift) > 0.5:
+                    alerts.append({
+                        "level": "warn",
+                        "metric": "r_drift",
+                        "value": r_drift,
+                        "message": f"R-drift {r_drift:+.2f}R (paper {paper['avg_r']:+.2f}R vs real {real['avg_r']:+.2f}R)",
+                    })
+
+            # Supervisor last-alert pass-through (if wired)
+            supervisor_alerts: List[Any] = []
+            try:
+                supervisor = getattr(self, '_supervisor', None) or (getattr(orch, '_supervisor', None) if orch else None)
+                if supervisor is not None:
+                    st = getattr(supervisor, "status", None)
+                    if isinstance(st, dict):
+                        supervisor_alerts = st.get("alerts", []) or []
+            except Exception:
+                supervisor_alerts = []
+
+            return web.json_response({
+                "ok": True,
+                "limit": limit,
+                "window_hours": hours,  # Phase 3.14: echo back window
+                "since_ts": since_ts,
+                "paper": paper,
+                "real": real,
+                "drift": {
+                    "wr_drift_pct": wr_drift,
+                    "r_drift": r_drift,
+                },
+                "alerts": alerts,
+                "supervisor_alerts": supervisor_alerts,
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e), "ok": False}, status=500)
 
     async def _handle_latency(self, request: web.Request) -> web.Response:
         """Return latency metrics — exchange API, data freshness, WebSocket."""

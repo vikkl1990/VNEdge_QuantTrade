@@ -320,6 +320,8 @@ class BotOrchestrator:
             # 5. Start dashboard (non-blocking)
             # Wire signal tracker and AI learner to dashboard for API access
             self._dashboard._signal_tracker = self._signal_tracker
+            # Phase 2.5 B2: wire orchestrator itself for current_action lookup
+            self._dashboard._orchestrator = self
 
             # RL Shadow Agent — logs sizing/trail suggestions (shadow mode)
             try:
@@ -688,7 +690,16 @@ class BotOrchestrator:
                 last_check = now
 
                 # PARALLEL REAL EXIT: run real trade exit logic independently
-                if hasattr(self, _real_manager) and self._real_manager and self._real_manager.enabled:
+                # ⚠ BUG FIX (2026-04-11): Was `hasattr(self, _real_manager)` — missing
+                #    quotes caused NameError to fire EVERY iteration, silently caught
+                #    by the outer try/except at DEBUG level. This killed:
+                #      - Real trade time_decay/early_kill management (multi-hour scalps!)
+                #      - Signal tracker event processing (line 699 onwards)
+                #      - Chandelier trail updates on real trades
+                #      - Orphan sync + RCA + probation trade counters
+                #    Symptoms: paper/real divergence, stale multi-hour trades,
+                #    hotfix counters not rebuilding, silent close bugs.
+                if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                     try:
                         await self._real_manager.update_real_trades(prices)
                     except Exception as _rte:
@@ -814,7 +825,10 @@ class BotOrchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._log.debug("Fast trade monitor error: %s", exc)
+                # 2026-04-11: promoted DEBUG → WARNING. Was silently swallowing
+                # a NameError that killed the entire real trade management loop
+                # for hours. WARNING level ensures future errors surface in logs.
+                self._log.warning("Fast trade monitor error: %s", exc, exc_info=True)
                 await asyncio.sleep(2)
 
         self._log.info("Fast trade monitor stopped")
@@ -1147,6 +1161,18 @@ class BotOrchestrator:
             _pm.heartbeat("candle_close")
         except Exception:
             pass
+        # Phase 2.5 B2: Current action banner — surface last-scanned pair + TF
+        try:
+            import time as _t
+            self._current_action = {
+                "action": "scanning",
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "ts": _t.time(),
+                "detail": f"close=${candle.get('close', 0):.4f}",
+            }
+        except Exception:
+            pass
 
         try:
             self._log.info(
@@ -1229,6 +1255,26 @@ class BotOrchestrator:
         signal_type = sig_dict.get("type", "unknown")
         if hasattr(signal_type, 'value'):
             signal_type = signal_type.value
+
+        # Phase 2.5 B2: Update current action to "processing" with signal details
+        try:
+            import time as _t
+            _meta_pre = sig_dict.get("metadata", {}) or {}
+            _scanner_pre = _meta_pre.get("setup_type", _meta_pre.get("scanner", "unknown"))
+            _side_pre = sig_dict.get("side", "?")
+            if hasattr(_side_pre, 'value'):
+                _side_pre = _side_pre.value
+            self._current_action = {
+                "action": "processing_signal",
+                "symbol": symbol,
+                "timeframe": _meta_pre.get("timeframe", ""),
+                "ts": _t.time(),
+                "detail": f"{_scanner_pre} {_side_pre} conf={sig_dict.get('confidence', 0):.0f}",
+                "scanner": _scanner_pre,
+                "side": _side_pre,
+            }
+        except Exception:
+            pass
 
         # -- SignalJourney: begin tracing this signal --
         try:
@@ -1360,6 +1406,13 @@ class BotOrchestrator:
             self._log.debug("Failed to push signal to dashboard: %s", exc)
 
         # -- Track signal for TP/SL closure and P&L --
+        # Phase 3.0 ORPHAN PREVENTION: snapshot active count BEFORE track_signal so we
+        # can detect silent rejections (tracker has 7+ silent `return` points: grade,
+        # duplicate, conflict, weak setup, P1 dup-exit, missing prices, etc.)
+        try:
+            _tracker_active_before = len(getattr(self._signal_tracker, '_active', {}) or {})
+        except Exception:
+            _tracker_active_before = -1  # disable orphan check on lookup failure
         try:
             # Pass order_type so from_signal can compute fees correctly
             sig_dict["_order_type"] = getattr(self._signal_tracker, "_order_type", "maker")
@@ -1379,6 +1432,35 @@ class BotOrchestrator:
                     pass
         except Exception as exc:
             self._log.error("Failed to track signal: %s", exc, exc_info=True)
+
+        # Phase 3.0 ORPHAN PREVENTION: if tracker did NOT add to _active, abort paper exec + real mirror
+        # This prevents the architectural race condition where paper engine + real_manager fire
+        # for signals that signal_tracker rejected (duplicate, conflict, grade, weak, P1 dup-exit).
+        # WR risk: zero — tracker rejections were NEVER supposed to execute, this enforces that intent.
+        try:
+            if _tracker_active_before >= 0:
+                _tracker_active_after = len(getattr(self._signal_tracker, '_active', {}) or {})
+                if _tracker_active_after <= _tracker_active_before:
+                    self._log.warning(
+                        "ORPHAN PREVENTION: tracker rejected %s %s — aborting paper exec + real mirror "
+                        "(active before=%d, after=%d)",
+                        symbol, signal_type, _tracker_active_before, _tracker_active_after,
+                    )
+                    try:
+                        _SJ.stamp(sig_dict, "orphan_prevention", passed=False, reason="tracker_rejected_no_active_increment")
+                        _SJ.close(sig_dict)
+                    except Exception:
+                        pass
+                    # Phase 3.2: count orphan prevention as a hotfix
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p3_orphan_prevention", f"{symbol}_{signal_type}")
+                    except Exception:
+                        pass
+                    return
+        except Exception as _orphan_exc:
+            # Never let orphan check break the pipeline
+            self._log.debug("orphan check failed (allowing trade through): %s", _orphan_exc)
 
         # -- Alert on signal --
         try:

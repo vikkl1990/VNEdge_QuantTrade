@@ -551,6 +551,41 @@ class TrackedSignal:
                 position_usd, sl_dist_pct,
             )
             confidence = 0
+        else:
+            # ── P4 HOTFIX (2026-04-10): Regime+type-conditional fee-drag veto ──
+            # DOT/USDT trade (2026-04-10 13:39) exited breakeven at -$0.04 with
+            # fee_drag_r=0.32, peak_mfe_r=0.20 — mathematically doomed: MFE < fee_drag.
+            # Root cause: in high_volatility/sideways, chop eats MFE before it can
+            # overcome fee drag, even if fee_drag < 0.6 (existing threshold).
+            #
+            # Surgical fix: tighten fee_drag threshold to 0.30 ONLY when:
+            #   1. trade_type in (SCALP, INTRADAY) — runners have room to overcome fees
+            #   2. regime in (high_volatility, sideways) — chop regimes eat MFE
+            # Zero impact on: trending regimes, RUNNER trades, low fee_drag setups.
+            # Preserves the 80.8% WR data from prior 0.30→0.60 relaxation (that
+            # WR was measured ACROSS regimes; this fix only hits chop regimes).
+            try:
+                _fdr = float(fee_check.get("fee_drag_r", 0) or 0)
+                _regime_str = str(meta.get("regime", "") or "").lower()
+                _chop_regime = _regime_str in ("high_volatility", "sideways", "ranging", "quiet")
+                _short_type = pre_trade_type in (TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY)
+                if _fdr > 0.30 and _short_type and _chop_regime:
+                    logger.warning(
+                        "FEE BLOCK P4: %s %s %s | fee_drag=%.2fR (>0.30) | regime=%s | "
+                        "pos=$%.0f sl=%.3f%% — chop+scalp can't overcome fees, blocked",
+                        sig.get("symbol", ""), sig.get("side", ""), pre_trade_type,
+                        _fdr, _regime_str, position_usd, sl_dist_pct,
+                    )
+                    confidence = 0
+                    meta["p4_fee_block"] = f"fee_drag={_fdr:.2f}_regime={_regime_str}_type={pre_trade_type}"
+                    # Phase 3.2: count P4 effectiveness
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p4_fee_drag_chop", f"{sig.get('symbol','?')}_{pre_trade_type}_{_regime_str}_fd{_fdr:.2f}")
+                    except Exception:
+                        pass
+            except (ValueError, TypeError):
+                pass
 
         # Store fee analysis in metadata
         meta["fee_drag_r"] = fee_check["fee_drag_r"]
@@ -774,24 +809,61 @@ class SignalTracker:
             return
 
         # ── DUPLICATE PREVENTION: no re-entry at same price within 30 min ──
+        # P1 FIX (2026-04-10): Previously only compared old.entry vs new.entry.
+        # Failed on SOL case: trade #1 entry=83.11 exit=82.941; trade #2 entry=82.94
+        # (1 tick from exit) fired 16s after loss because 83.11-82.94=0.17 > threshold.
+        #
+        # Now checks THREE conditions (any match = block):
+        #   a) new.entry ≈ old.entry  (original: catches re-chase at same level)
+        #   b) new.entry ≈ old.exit   (NEW: catches re-entry at failure price)
+        #   c) SCALP losers get 45-min cooldown instead of 30 min
+        #
+        # Only blocks if prior trade was a LOSER (pnl_pct < 0) for condition (b).
+        # Winner-adjacent re-entries remain allowed (legit momentum continuation).
         from datetime import datetime, timedelta, timezone
         try:
             now_dt = datetime.now(timezone.utc)
+            _new_entry = float(ts.entry_price or 0)
+            _price_band = _new_entry * 0.001  # 0.1% band
             for recent in self._closed[-50:]:  # check last 50 closed
-                if recent.get("symbol") == ts.symbol and recent.get("side") == ts.side:
-                    price_match = abs(recent.get("entry_price", 0) - ts.entry_price) < ts.entry_price * 0.001  # within 0.1%
-                    if price_match:
-                        try:
-                            closed_time = datetime.fromisoformat(recent.get("exit_time", ""))
-                            if (now_dt - closed_time).total_seconds() < 1800:  # 30 min cooldown
-                                logger.info(
-                                    "DUPLICATE BLOCKED (recent): %s %s %s @ %.2f — same price closed %dm ago",
-                                    ts.trade_id[:8], ts.symbol, ts.side, ts.entry_price,
-                                    int((now_dt - closed_time).total_seconds() / 60),
-                                )
-                                return
-                        except (ValueError, TypeError, KeyError):
-                            pass
+                if recent.get("symbol") != ts.symbol or recent.get("side") != ts.side:
+                    continue
+                try:
+                    closed_time = datetime.fromisoformat(recent.get("exit_time", ""))
+                except (ValueError, TypeError, KeyError):
+                    continue
+                age_sec = (now_dt - closed_time).total_seconds()
+                # Scalp losers get longer cooldown to prevent revenge re-entries
+                _was_loser = float(recent.get("pnl_pct", 0) or 0) < 0
+                _was_scalp = str(recent.get("trade_type", "")).upper() == "SCALP"
+                cooldown_sec = 2700 if (_was_loser and _was_scalp) else 1800  # 45m vs 30m
+                if age_sec >= cooldown_sec:
+                    continue
+
+                _old_entry = float(recent.get("entry_price", 0) or 0)
+                _old_exit = float(recent.get("exit_price", 0) or 0)
+
+                # Condition (a): re-entry near prior entry (original logic)
+                if _old_entry > 0 and abs(_old_entry - _new_entry) < _price_band:
+                    logger.info(
+                        "DUPLICATE BLOCKED (entry-match): %s %s %s @ %.4f — same entry closed %dm ago (pnl=%+.2f%%)",
+                        ts.trade_id[:8], ts.symbol, ts.side, _new_entry,
+                        int(age_sec / 60), float(recent.get("pnl_pct", 0) or 0),
+                    )
+                    return
+                # Condition (b): re-entry near prior EXIT (P1 fix) — losers only
+                if _was_loser and _old_exit > 0 and abs(_old_exit - _new_entry) < _price_band:
+                    logger.info(
+                        "DUPLICATE BLOCKED (exit-match P1): %s %s %s @ %.4f — prior loser exit @ %.4f %dm ago",
+                        ts.trade_id[:8], ts.symbol, ts.side, _new_entry, _old_exit, int(age_sec / 60),
+                    )
+                    # Phase 3.2: count P1 effectiveness
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p1_duplicate_exit_match", f"{ts.symbol}_{ts.side}_{int(age_sec/60)}m")
+                    except Exception:
+                        pass
+                    return
         except (ValueError, TypeError, KeyError, AttributeError):
             pass
 
@@ -1253,6 +1325,103 @@ class SignalTracker:
                 elif current_r_trail >= ts.peak_mfe_r:
                     # New high — reset decay
                     ts.momentum_decay_count = 0
+
+                # ══════════════════════════════════════════════════════════════
+                # PHASE 4.7 — PROFIT DEFENDER
+                # ══════════════════════════════════════════════════════════════
+                # Two gaps exposed by live trade tracking (XRP long at 6:42 past
+                # the 6:00 scalper window, MFE peak 0.76R but stop only locking 0.4R):
+                #
+                # Gap A — SCALPER WINDOW EXPIRY DEFENDER
+                #   When the Scalper fee window has expired AND the trade is
+                #   profitable, every additional second increases the round-trip
+                #   fee drag (0.094% → 0.120%) and reduces expected net-R on
+                #   exit. Tighten the stop to capture more of the earned profit
+                #   before the fee meter ticks further.
+                #
+                # Gap B — MFE RATCHET LOCK
+                #   The existing lock_pct system tops out at peak_mfe_r=0.4R and
+                #   hands off to chandelier. Chandelier uses a generic ATR
+                #   multiple that doesn't ratchet with peak — a trade that
+                #   reached 1.5R and retraced to 0.8R could still hit the same
+                #   chandelier stop as one that peaked at 0.5R. This ratchet
+                #   floor guarantees that as peak_mfe_r grows, the stop floor
+                #   grows monotonically.
+                #
+                # Both gates are STOP-TIGHTENING-ONLY (max with current stop),
+                # never loosen — zero WR risk, can only increase booked profit.
+                # Gated on min_hold to avoid spurious 5-second trail exits.
+                # ══════════════════════════════════════════════════════════════
+                if ts.peak_mfe_r >= 0.30 and _trade_age >= min_hold:
+                    _defender_floor = None
+                    _defender_reason = ""
+
+                    # ── Gap B: MFE ratchet floor ──
+                    # lock floor rises as peak_mfe_r rises above 0.15R
+                    # (0.15R is the breakeven trigger — we always at least break even)
+                    # Scaling: lock = (peak - 0.15) * 0.6 capped at peak - 0.1
+                    #   peak 0.50R → lock 0.21R
+                    #   peak 0.76R → lock 0.366R
+                    #   peak 1.00R → lock 0.51R
+                    #   peak 1.50R → lock 0.81R
+                    #   peak 2.00R → lock 1.11R
+                    _mfe_lock_r = max(0.0, (ts.peak_mfe_r - 0.15) * 0.6)
+                    _mfe_lock_r = min(_mfe_lock_r, ts.peak_mfe_r - 0.10)  # never lock above peak-0.1
+
+                    # ── Gap A: scalper window expiry → tighter lock ──
+                    # Pull scalper_window_sec from metadata (default 6 min)
+                    _scalper_window = float(ts.metadata.get("scalper_window_sec", 360)) if ts.metadata else 360
+                    _scalper_expired = _trade_age > _scalper_window
+                    if _scalper_expired and ts.peak_mfe_r >= 0.40:
+                        # Scalper fees doubled → defend 70% of peak instead of 60%
+                        # Also bump the base floor so it overrides Gap B when expired
+                        _scalper_lock_r = max(0.0, (ts.peak_mfe_r - 0.10) * 0.70)
+                        _scalper_lock_r = min(_scalper_lock_r, ts.peak_mfe_r - 0.05)
+                        if _scalper_lock_r > _mfe_lock_r:
+                            _mfe_lock_r = _scalper_lock_r
+                            _defender_reason = "scalper_expiry"
+                        else:
+                            _defender_reason = "mfe_ratchet"
+                    elif _mfe_lock_r > 0:
+                        _defender_reason = "mfe_ratchet"
+
+                    # Convert R floor to price level
+                    if _mfe_lock_r > 0:
+                        _lock_dist = ts.initial_risk * _mfe_lock_r
+                        if is_long:
+                            _defender_floor = ts.entry_price + _lock_dist
+                        else:
+                            _defender_floor = ts.entry_price - _lock_dist
+
+                        # Only tighten — never loosen
+                        _should_update = (
+                            (is_long and _defender_floor > ts.stop_loss) or
+                            (not is_long and _defender_floor < ts.stop_loss)
+                        )
+                        if _should_update:
+                            _old_sl = ts.stop_loss
+                            ts.stop_loss = _defender_floor
+                            if not ts.breakeven_set:
+                                ts.breakeven_set = True
+                            logger.info(
+                                "PROFIT_DEFENDER [%s]: %s %s @ %.4f | peak=%.2fR cur=%.2fR | "
+                                "lock=%.2fR age=%.0fs scalper_win=%.0fs expired=%s | SL %.4f → %.4f",
+                                _defender_reason,
+                                ts.symbol, ts.side, price,
+                                ts.peak_mfe_r, current_r_trail,
+                                _mfe_lock_r, _trade_age, _scalper_window, _scalper_expired,
+                                _old_sl, ts.stop_loss,
+                            )
+                            events.append({
+                                "type": "sl_updated",
+                                "trade_id": ts.trade_id,
+                                "symbol": ts.symbol,
+                                "side": ts.side,
+                                "new_sl": ts.stop_loss,
+                                "old_sl": _old_sl,
+                                "peak_mfe_r": ts.peak_mfe_r,
+                                "defender_reason": _defender_reason,
+                            })
 
             # -- Check TP levels (in order) --
             if not ts.tp1_hit and ts.tp1:
@@ -1855,6 +2024,19 @@ class SignalTracker:
                 "ml_probability": meta.get("ml_probability", 0.0),
                 "ml_verdict": meta.get("ml_verdict", ""),
                 "ml_model_version": meta.get("ml_model_version", ""),
+                # Phase 4.5/4.6: which model scope actually scored this trade
+                # (family vs per-scanner). Enables per-family calibration diff.
+                "ml_resolved_scope": meta.get("ml_resolved_scope", "scanner"),
+                "ml_resolved_family": meta.get("ml_resolved_family"),
+                "ml_file_key": meta.get("ml_file_key", ""),
+                "ml_feature_schema_hash": meta.get("ml_feature_schema_hash", ""),
+                "ml_match_pct": meta.get("ml_match_pct", 1.0),
+                # Phase 4.8: edge_verdict + effective threshold for per-verdict calibration
+                "ml_edge_verdict": meta.get("ml_edge_verdict"),
+                "ml_oos_mean": meta.get("ml_oos_mean"),
+                "ml_overfit_gap": meta.get("ml_overfit_gap"),
+                "ml_effective_threshold": meta.get("ml_effective_threshold"),
+                "ml_verdict_action": meta.get("ml_verdict_action", ""),
                 # Entry/exit
                 "entry_price": ts.entry_price,
                 "exit_price": ts.exit_price,
@@ -1896,11 +2078,37 @@ class SignalTracker:
                 f.write(json.dumps(feedback, default=str) + "\n")
 
             # Rotate feedback file if > 10K lines (keep last 8K)
+            # Phase E.3: archive rotated-out records instead of discarding.
+            # Older 2000 lines get compressed to
+            # storage/feedback_archive/feedback_YYYYMMDD_HHMMSS.jsonl.gz so
+            # we never lose training history on rotation.
             try:
                 if self._live_feedback_file.exists():
                     with open(self._live_feedback_file) as rf:
                         lines = rf.readlines()
                     if len(lines) > 10000:
+                        # Phase E.3: archive the older ~2000 lines before truncating
+                        try:
+                            import gzip
+                            _archive_dir = _STORAGE_DIR / "feedback_archive"
+                            _archive_dir.mkdir(parents=True, exist_ok=True)
+                            _ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                            _archive_path = _archive_dir / f"feedback_{_ts_str}.jsonl.gz"
+                            # Archive everything EXCEPT the last 8000 lines we're keeping
+                            _to_archive = lines[:-8000]
+                            with gzip.open(_archive_path, "wt") as gz:
+                                gz.writelines(_to_archive)
+                            logger.info(
+                                "Feedback archived: %d lines → %s (%.1f KB gzipped)",
+                                len(_to_archive),
+                                _archive_path.name,
+                                _archive_path.stat().st_size / 1024,
+                            )
+                        except Exception as _arch_err:
+                            logger.warning(
+                                "Feedback archive failed (rotation still proceeds): %s",
+                                _arch_err,
+                            )
                         with open(self._live_feedback_file, "w") as wf:
                             wf.writelines(lines[-8000:])
                         logger.info("Feedback file rotated: %d → 8000 lines", len(lines))

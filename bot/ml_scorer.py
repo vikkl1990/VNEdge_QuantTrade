@@ -44,8 +44,15 @@ class MLScorer:
         self,
         scanner_name: str,
         features: Dict[str, float],
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
     ) -> Dict:
         """Score a candidate synchronously. Returns score dict.
+
+        Phase 4.5: `symbol` is now passed through to the server so it can
+        route the request to a family-specific model (e.g. liquid_majors)
+        before falling back to the per-scanner model. `side` is included
+        for logging / audit only — it does not affect model selection.
 
         Always returns a result — never raises.
         """
@@ -58,9 +65,18 @@ class MLScorer:
         t0 = time.time()
 
         try:
+            # Phase 4.5: send symbol + side so server can do family routing
+            _payload = {
+                "scanner": scanner_name,
+                "features": features,
+            }
+            if symbol:
+                _payload["symbol"] = symbol
+            if side:
+                _payload["side"] = side
             resp = requests.post(
                 self._url,
-                json={"scanner": scanner_name, "features": features},
+                json=_payload,
                 timeout=SCORE_TIMEOUT,
             )
             latency_ms = (time.time() - t0) * 1000
@@ -68,13 +84,42 @@ class MLScorer:
                 self._stats["avg_latency_ms"] * 0.9 + latency_ms * 0.1
             )
 
+            # Phase 4.2: 503 Service Unavailable = model missing OR schema drift
+            # These are LOUD signals that something is broken. They must never
+            # be treated as "neutral 0.5" predictions.
+            if resp.status_code == 503:
+                result = resp.json()
+                result["latency_ms"] = round(latency_ms, 1)
+                # probability is None (not 0.5) so callers can distinguish from real predictions
+                verdict = result.get("verdict", "ABSTAIN_UNKNOWN")
+                err = result.get("error", "unknown")
+                # Track telemetry on missing/skew — surfaces in get_stats()
+                self._stats.setdefault("abstain_counts", {})
+                self._stats["abstain_counts"][verdict] = self._stats["abstain_counts"].get(verdict, 0) + 1
+                # Log at WARNING level so ops sees it
+                logger.warning(
+                    "ML ABSTAIN %s: scanner=%s verdict=%s err=%s",
+                    "503", scanner_name, verdict, err,
+                )
+                result["in_top_bucket"] = False
+                result["bucket_action"] = "ABSTAIN"
+                return result
+
             if resp.status_code == 200:
                 result = resp.json()
                 result["latency_ms"] = round(latency_ms, 1)
                 self._last_error = None
 
-                # Top-bucket enforcement metadata
-                prob = result.get("probability", 0.5)
+                # Phase 4.2: check probability is not None (could be from older server)
+                prob_raw = result.get("probability")
+                if prob_raw is None:
+                    # Server returned 200 but no probability — treat as abstain
+                    result["in_top_bucket"] = False
+                    result["bucket_action"] = "ABSTAIN"
+                    logger.warning("ML SCORE 200 but probability=None for %s — treating as ABSTAIN", scanner_name)
+                    return result
+
+                prob = float(prob_raw)
                 rank_bucket = result.get("rank_bucket", "Q50")
                 result["in_top_bucket"] = rank_bucket in ("D90", "Q75")
                 result["bucket_action"] = (
@@ -83,13 +128,38 @@ class MLScorer:
                     else "SKIP"
                 )
 
+                # Phase 4.5: track which model scope actually scored this (family vs scanner)
+                _scope = result.get("resolved_scope", "scanner")
+                _family = result.get("resolved_family")
+                self._stats.setdefault("scope_counts", {"family": 0, "scanner": 0})
+                self._stats["scope_counts"][_scope] = self._stats["scope_counts"].get(_scope, 0) + 1
+                if _scope == "family":
+                    self._stats.setdefault("family_counts", {})
+                    self._stats["family_counts"][_family or "?"] = (
+                        self._stats["family_counts"].get(_family or "?", 0) + 1
+                    )
+
+                # Phase 4.2: warn if training-serving skew is moderate (80-99%)
+                match_pct = result.get("match_pct", 1.0)
+                if match_pct < 0.99 and match_pct >= 0.80:
+                    logger.info(
+                        "ML SCORE %s: match_pct=%.1f%% (%d/%d features) — minor drift",
+                        scanner_name, match_pct * 100,
+                        result.get("features_matched", 0),
+                        result.get("features_expected", 0),
+                    )
+
                 # Log for analysis
                 self._scores_log.append({
                     "time": time.time(),
                     "scanner": scanner_name,
+                    "symbol": symbol,
                     "probability": prob,
                     "verdict": result.get("verdict", "?"),
                     "bucket_action": result["bucket_action"],
+                    "match_pct": match_pct,
+                    "resolved_scope": _scope,        # Phase 4.5
+                    "resolved_family": _family,      # Phase 4.5
                 })
                 # Keep last 100
                 if len(self._scores_log) > 100:
@@ -100,25 +170,43 @@ class MLScorer:
                 self._stats["errors"] += 1
                 self._last_error = f"HTTP {resp.status_code}"
                 return {
-                    "probability": 0.5, "verdict": "API_ERROR",
-                    "scanner": scanner_name, "error": f"HTTP {resp.status_code}"
+                    "probability": None,  # Phase 4.2: None not 0.5
+                    "verdict": "API_ERROR",
+                    "scanner": scanner_name,
+                    "error": f"HTTP {resp.status_code}",
+                    "bucket_action": "ABSTAIN",
                 }
 
         except Exception as e:
             self._stats["errors"] += 1
             self._last_error = str(e)
             logger.warning("ML score error for %s: %s", scanner_name, e)
-            return {"probability": 0.5, "verdict": "UNREACHABLE", "scanner": scanner_name}
+            return {
+                "probability": None,  # Phase 4.2: None not 0.5
+                "verdict": "UNREACHABLE",
+                "scanner": scanner_name,
+                "bucket_action": "ABSTAIN",
+            }
 
     def should_take_trade(self, score_result: Dict, threshold: float = 0.40) -> bool:
         """Decide whether to take trade based on ML score.
 
-        In shadow_mode, always returns True (log only, never veto).
+        Phase 4.2: ABSTAIN verdicts (NO_MODEL, SKEW, UNREACHABLE, API_ERROR)
+        no longer default to 0.5. Behavior depends on shadow_mode:
+          - shadow_mode=True  → always return True (never veto)
+          - shadow_mode=False → treat ABSTAIN as "cannot evaluate" — return True
+                                 (fail-open: don't block just because ML is down)
+
+        This is deliberate: a broken ML scorer should NOT stop trading entirely.
+        Other hotfix gates (P0-P4) still protect. ML is advisory.
         """
         if self._shadow_mode:
             return True  # never veto in shadow mode
-        prob = score_result.get("probability", 0.5)
-        return prob >= threshold
+        prob = score_result.get("probability")
+        if prob is None:
+            # Phase 4.2: ABSTAIN — fail open (don't block)
+            return True
+        return float(prob) >= threshold
 
     def get_stats(self) -> Dict:
         return {
@@ -137,23 +225,63 @@ def build_scoring_features(
     symbol: str,
     htf_bias: float = 0.0,
     htf_trend_strength: float = 0.0,
+    htf_15m: "pd.DataFrame | None" = None,
+    htf_1h: "pd.DataFrame | None" = None,
+    htf_4h: "pd.DataFrame | None" = None,
+    btc_df: "pd.DataFrame | None" = None,   # Phase 5.0a
 ) -> Dict[str, float]:
     """Build the feature dict for ML scoring from live candle data.
 
-    This mirrors _compute_gate_veto_features() + market-state features
-    from candidate_trainer.py. Must produce the SAME feature names
-    that the model was trained on.
+    Phase 4.1b REFACTOR (2026-04-11):
+    Delegates to ml_training.unified_features.build_live_row() — the SAME
+    function used by candidate_trainer.build_dataset_with_veto_labels() during
+    training. This guarantees zero training-serving skew.
+
+    Before Phase 4.1b: this function had a 400-line inline reimplementation
+    that drifted from training — produced 73 mkt_ features vs training's 204.
+    The missing 131 features were silently zero-filled at serving, corrupting
+    every ML prediction.
 
     Args:
-        df: DataFrame with OHLCV + indicators (from compute_indicators)
-        idx: Current bar index (-1 for last bar)
+        df: 5m OHLCV DataFrame with indicators (compute_indicators) already run
+        idx: bar index (-1 for last bar)
         side: "long" or "short"
-        symbol: Trading symbol
-        htf_bias: +1 (bullish), -1 (bearish), 0 (neutral) from 15m analysis
-        htf_trend_strength: EMA trend strength from 15m TF
-    """
-    # No dependency on ml_training — all features computed inline
+        symbol: e.g. "BTC/USDT"
+        htf_bias, htf_trend_strength: LEGACY — no longer used (inferred from df)
+        htf_15m: 15m HTF candles (optional but recommended)
+        htf_1h: 1h HTF candles (Phase 4.1a — macro trend features)
+        htf_4h: 4h HTF candles (Phase 4.1a — session/structure features)
 
+    Returns:
+        Dict[str, float] with 247 features (stable schema, matches training)
+    """
+    # Phase 4.1b: single-call to unified builder
+    try:
+        from ml_training.unified_features import build_live_row
+        return build_live_row(
+            df=df,
+            idx=idx,
+            side=side,
+            symbol=symbol,
+            htf_15m=htf_15m,
+            htf_1h=htf_1h,
+            htf_4h=htf_4h,
+            btc_df=btc_df,      # Phase 5.0a
+        )
+    except ImportError as e:
+        logger.warning(
+            "ml_training.unified_features not available (%s) — falling back to legacy inline builder",
+            e,
+        )
+        # Fall through to legacy implementation below
+    except Exception as e:
+        logger.error("build_live_row failed: %s — falling back to legacy inline", e, exc_info=True)
+
+    # ═══════════════════════════════════════════════════════════════
+    # LEGACY FALLBACK — kept for VM1 compatibility if ml_training isn't present
+    # Produces 73 mkt_ features (missing ~130 that trained model expects).
+    # Not used in normal operation after Phase 4.1b.
+    # ═══════════════════════════════════════════════════════════════
     if idx < 0:
         idx = len(df) + idx
 

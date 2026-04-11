@@ -351,3 +351,185 @@ class ScannerWeightManager:
             _WEIGHTS_FILE.write_text(json.dumps(data, indent=1), encoding="utf-8")
         except Exception as exc:
             logger.warning("Failed to save scanner weights: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Phase 5.2 — Auto-learning from /api/ml/live-calibration
+    # ------------------------------------------------------------------
+    def update_from_live_calibration(
+        self,
+        dashboard_url: str = "http://localhost:8081",
+        last_n: int = 500,
+        min_n: int = 30,
+        timeout_sec: int = 10,
+    ) -> Dict[str, Any]:
+        """Pull Phase 4.6 live calibration and refresh scanner weights from it.
+
+        Aggregates calibration buckets by scanner (sums across families) and
+        maps the observed metrics into the shape that `update_weights`
+        already knows how to consume. Returns a summary dict describing what
+        changed — useful for cron logs.
+
+        Args:
+            dashboard_url: base URL of the ML dashboard
+            last_n: trade window for calibration endpoint
+            min_n: minimum trades per scanner before we trust the number
+            timeout_sec: HTTP timeout
+
+        Returns:
+            {
+                "status": "ok" | "error",
+                "buckets_seen": int,
+                "scanners_updated": int,
+                "changes": [{"scanner": str, "old_weight": float, "new_weight": float, "reason": str}, ...],
+                "error": str | None,
+            }
+        """
+        import requests  # lazy import — not needed in the live scoring path
+        from collections import defaultdict
+
+        report: Dict[str, Any] = {
+            "status": "error",
+            "buckets_seen": 0,
+            "scanners_updated": 0,
+            "changes": [],
+            "error": None,
+        }
+
+        try:
+            resp = requests.get(
+                f"{dashboard_url.rstrip('/')}/api/ml/live-calibration",
+                params={"last_n": last_n, "min_n": min_n},
+                timeout=timeout_sec,
+            )
+            if resp.status_code != 200:
+                report["error"] = f"HTTP {resp.status_code}"
+                return report
+            data = resp.json()
+        except Exception as e:
+            report["error"] = f"fetch failed: {e}"
+            return report
+
+        buckets = data.get("buckets", [])
+        report["buckets_seen"] = len(buckets)
+        if not buckets:
+            report["status"] = "ok"
+            report["error"] = "no buckets"
+            return report
+
+        # Aggregate per scanner across families
+        agg: Dict[str, Dict[str, float]] = defaultdict(lambda: {
+            "total": 0, "wins": 0, "sum_exit_r": 0.0,
+            "sum_mfe_r": 0.0, "sum_mae_r": 0.0,
+        })
+        for b in buckets:
+            scanner = b.get("scanner") or "?"
+            if scanner == "?":
+                continue
+            n = int(b.get("n", 0))
+            if n < min_n:
+                continue  # not enough data for this bucket
+            a = agg[scanner]
+            a["total"] += n
+            # realized_mfe_wr * n = approx wins, matches update_weights expectation
+            a["wins"] += int(round(float(b.get("realized_mfe_wr", 0.0)) * n))
+            a["sum_exit_r"] += float(b.get("avg_exit_r", 0.0)) * n
+            a["sum_mfe_r"] += float(b.get("avg_mfe_r", 0.0)) * n
+
+        if not agg:
+            report["status"] = "ok"
+            report["error"] = "no scanners met min_n"
+            return report
+
+        # Snapshot old weights so we can diff
+        old_weights = {name: self._states.get(name, ScannerState(name=name)).weight
+                       for name in agg.keys()}
+
+        # Build the by_setup dict update_weights expects
+        by_setup: Dict[str, Dict[str, Any]] = {}
+        for scanner, a in agg.items():
+            total = a["total"]
+            if total == 0:
+                continue
+            avg_r = a["sum_exit_r"] / total
+            avg_mfe = a["sum_mfe_r"] / total
+            by_setup[scanner] = {
+                "total": total,
+                "wins": a["wins"],
+                "win_rate": round(100.0 * a["wins"] / total, 2),
+                "avg_r": round(avg_r, 4),
+                "total_r": round(a["sum_exit_r"], 4),
+                "expectancy_r": round(avg_r, 4),  # per-trade expectancy
+                "avg_win_r": 0.0,    # not derivable from calibration alone
+                "avg_loss_r": 0.0,
+                "avg_mae_r": 0.0,
+                "avg_mfe_r": round(avg_mfe, 4),
+            }
+
+        # Delegate to existing classifier — it handles thresholds + persistence
+        self.update_weights(by_setup)
+        report["scanners_updated"] = len(by_setup)
+        report["status"] = "ok"
+
+        # Compute diff
+        for scanner in by_setup.keys():
+            new_w = self._states.get(scanner, ScannerState(name=scanner)).weight
+            if abs(new_w - old_weights[scanner]) > 0.001:
+                state = self._states.get(scanner)
+                report["changes"].append({
+                    "scanner": scanner,
+                    "old_weight": round(old_weights[scanner], 3),
+                    "new_weight": round(new_w, 3),
+                    "status": state.status if state else "",
+                    "expectancy_r": round(by_setup[scanner]["expectancy_r"], 4),
+                    "n": by_setup[scanner]["total"],
+                    "reason": state.reason if state else "",
+                })
+
+        return report
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 5.2 — CLI entry for cron-based auto-refresh
+# ──────────────────────────────────────────────────────────────────────
+def _cli_main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Phase 5.2 scanner weight auto-learner — pulls /api/ml/live-calibration and refreshes scanner_weights.json",
+    )
+    parser.add_argument("--dashboard-url", default="http://localhost:8081")
+    parser.add_argument("--last-n", type=int, default=500)
+    parser.add_argument("--min-n", type=int, default=30)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="fetch + log the intended changes but don't persist")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    mgr = ScannerWeightManager()
+    if args.dry_run:
+        # Snapshot state before, run, then restore
+        import copy
+        snapshot = copy.deepcopy(mgr._states)
+        report = mgr.update_from_live_calibration(
+            dashboard_url=args.dashboard_url,
+            last_n=args.last_n,
+            min_n=args.min_n,
+        )
+        mgr._states = snapshot
+        mgr._save()
+        report["dry_run"] = True
+    else:
+        report = mgr.update_from_live_calibration(
+            dashboard_url=args.dashboard_url,
+            last_n=args.last_n,
+            min_n=args.min_n,
+        )
+
+    print(json.dumps(report, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    _cli_main()

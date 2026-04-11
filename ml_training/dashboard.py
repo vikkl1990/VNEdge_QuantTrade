@@ -430,6 +430,13 @@ class _ModelHistoryTracker:
             "n_samples": metrics.get("samples", 0),
             "n_features": metrics.get("n_features", 0),
             "positive_rate": metrics.get("positive_rate", 0),
+            # Phase 4.3: walk-forward stability diagnostics
+            "edge_verdict": metrics.get("edge_verdict", "UNCLEAR"),
+            "overfit_gap": metrics.get("overfit_gap", 0.0),
+            "oos_mean": metrics.get("oos_mean", 0.0),
+            "oos_std": metrics.get("oos_std", 0.0),
+            "in_sample_mean": metrics.get("in_sample_mean", 0.0),
+            "purge_gap_bars": metrics.get("purge_gap_bars", 0),
         }
         self._history_file.parent.mkdir(parents=True, exist_ok=True)
         with open(self._history_file, 'a') as f:
@@ -683,6 +690,10 @@ class MLDashboard:
         self._app.router.add_get("/api/candidates", self._handle_candidates)
         self._app.router.add_post("/api/score", self._handle_score)
         self._app.router.add_get("/api/health", self._handle_health)
+        self._app.router.add_get("/api/ml/health", self._handle_ml_health)  # Phase 4.2
+        self._app.router.add_get("/api/ml/live-calibration", self._handle_ml_live_calibration)  # Phase 4.6
+        self._app.router.add_get("/api/ml/edge-verdict-trend", self._handle_ml_edge_verdict_trend)  # Phase B.7
+        self._app.router.add_get("/api/ml/family-verdict-matrix", self._handle_ml_family_verdict_matrix)  # Phase B.8
         self._app.router.add_get("/api/live-feedback", self._handle_live_feedback)
         self._app.router.add_get("/api/validation", self._handle_validation)
         self._app.router.add_post("/api/validation/run", self._handle_run_validation)
@@ -1036,7 +1047,14 @@ class MLDashboard:
     #  Score  (P0: model cache invalidation via mtime)
     # -------------------------------------------------------------------
     async def _handle_score(self, request):
-        """Score a candidate using trained ML model, with mtime-based cache invalidation."""
+        """Score a candidate using trained ML model, with mtime-based cache invalidation.
+
+        Phase 4.2 additions:
+          - Loud error when model is missing (not a default 0.5 masquerading as prediction)
+          - Training-serving schema validation at every score call
+          - Drift metrics included in response
+          - Explicit ABSTAIN verdict when schema drift is detected
+        """
         import pandas as pd
         from ml_training.candidate_trainer import CandidateTrainer
 
@@ -1051,34 +1069,127 @@ class MLDashboard:
             if not scanner or not features:
                 return _error_response("score", "Missing scanner or features", 400)
 
-            # P0: Model cache with mtime invalidation
-            model_path = MODELS_DIR / f"model_{scanner}.joblib"
-            meta_path = MODELS_DIR / f"model_{scanner}_features.json"
+            # ── Phase 4.5: FAMILY-AWARE MODEL ROUTING ──
+            # When the client supplies a symbol, try the family-scoped model
+            # first (e.g. model_structure_bounce_family_liquid_majors.joblib)
+            # and fall back to the per-scanner model if that file doesn't
+            # exist. This lets pair-family training (Phase 6 of the pipeline)
+            # actually be served in production instead of being discarded.
+            from ml_training.candidate_trainer import symbol_to_family
+            resolved_family = symbol_to_family(symbol) if symbol and symbol != "?" else "other"
 
-            current_mtime = model_path.stat().st_mtime if model_path.exists() else 0
+            # Build the candidate file_keys in priority order
+            candidate_keys: list = []
+            if resolved_family != "other":
+                candidate_keys.append(f"{scanner}_family_{resolved_family}")
+            candidate_keys.append(scanner)  # fallback
 
-            if scanner in self._loaded_models:
-                cached_model, cached_features, cached_meta, cached_mtime = self._loaded_models[scanner]
+            # Find the first key whose model file exists on disk
+            file_key = None
+            model_path = None
+            meta_path = None
+            for _k in candidate_keys:
+                _mp = MODELS_DIR / f"model_{_k}.joblib"
+                if _mp.exists():
+                    file_key = _k
+                    model_path = _mp
+                    meta_path = MODELS_DIR / f"model_{_k}_features.json"
+                    break
+
+            if file_key is None:
+                # Neither family nor per-scanner model exists
+                logger.warning(
+                    "MODEL MISSING: scanner=%s symbol=%s side=%s family=%s tried=%s — returning ABSTAIN",
+                    scanner, symbol, side, resolved_family, candidate_keys,
+                )
+                return web.json_response({
+                    "probability": None,
+                    "scanner": scanner,
+                    "symbol": symbol,
+                    "side": side,
+                    "verdict": "ABSTAIN_NO_MODEL",
+                    "error": f"no model file for scanner='{scanner}' family='{resolved_family}'",
+                    "tried_keys": candidate_keys,
+                    "rank_bucket": "NONE",
+                    "model_version": "none",
+                    "resolved_scope": None,
+                    "resolved_family": None,
+                    "features_received": len(features),
+                    "features_expected": None,
+                    "_freshness": _freshness(),
+                }, dumps=_json_dumps, status=503)
+
+            current_mtime = model_path.stat().st_mtime
+            resolved_scope = "family" if file_key != scanner else "scanner"
+
+            if file_key in self._loaded_models:
+                cached_model, cached_features, cached_meta, cached_mtime = self._loaded_models[file_key]
                 if current_mtime != cached_mtime:
                     logger.info("Model %s changed on disk (mtime %s -> %s), reloading",
-                                scanner, cached_mtime, current_mtime)
-                    del self._loaded_models[scanner]
+                                file_key, cached_mtime, current_mtime)
+                    del self._loaded_models[file_key]
 
-            if scanner not in self._loaded_models:
-                model, feature_names = CandidateTrainer.load_model(scanner)
+            if file_key not in self._loaded_models:
+                # Reuse CandidateTrainer.load_model with the explicit family override
+                if resolved_scope == "family":
+                    model, feature_names = CandidateTrainer.load_model(
+                        scanner, family_name=resolved_family,
+                    )
+                else:
+                    model, feature_names = CandidateTrainer.load_model(scanner)
                 if model is None:
+                    # Race: file was deleted between existence-check and load
                     return web.json_response({
-                        "probability": 0.5, "scanner": scanner,
-                        "verdict": "NO_MODEL", "error": f"no model for {scanner}",
-                        "rank_bucket": "NONE", "model_version": "none",
+                        "probability": None,
+                        "scanner": scanner,
+                        "symbol": symbol,
+                        "side": side,
+                        "verdict": "ABSTAIN_NO_MODEL",
+                        "error": "model file disappeared mid-load",
+                        "rank_bucket": "NONE",
+                        "model_version": "none",
                         "_freshness": _freshness(),
-                    }, dumps=_json_dumps)
-                meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-                self._loaded_models[scanner] = (model, feature_names, meta, current_mtime)
-                logger.info("Loaded model for %s (%d features, mtime=%s)",
-                            scanner, len(feature_names), current_mtime)
+                    }, dumps=_json_dumps, status=503)
 
-            model, feature_names, meta, _ = self._loaded_models[scanner]
+                meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+                self._loaded_models[file_key] = (model, feature_names, meta, current_mtime)
+                logger.info(
+                    "Loaded model %s (%d features, mtime=%s, scope=%s, family=%s)",
+                    file_key, len(feature_names), current_mtime,
+                    resolved_scope, resolved_family,
+                )
+
+            model, feature_names, meta, _ = self._loaded_models[file_key]
+
+            # ── Phase 4.2: TRAINING-SERVING SKEW CHECK ──
+            # How many of the features the model expects are ACTUALLY in the request?
+            # If the caller sends 116 features and model expects 247, we had 131 zero-fills.
+            _matched = sum(1 for f in feature_names if f in features)
+            _expected = len(feature_names)
+            _match_pct = (_matched / _expected) if _expected > 0 else 0.0
+            _missing_features = [f for f in feature_names if f not in features][:10]  # first 10
+
+            # Phase 4.2: ABSTAIN if drift is severe (< 80% match)
+            if _match_pct < 0.80 and _expected > 0:
+                logger.warning(
+                    "SCORE SKEW: %s matched %d/%d features (%.1f%%) — ABSTAINING",
+                    scanner, _matched, _expected, _match_pct * 100,
+                )
+                return web.json_response({
+                    "probability": None,  # not a real prediction
+                    "scanner": scanner,
+                    "symbol": symbol,
+                    "side": side,
+                    "verdict": "ABSTAIN_SKEW",
+                    "error": f"training-serving skew: only {_matched}/{_expected} features matched ({_match_pct:.1%})",
+                    "features_matched": _matched,
+                    "features_expected": _expected,
+                    "match_pct": round(_match_pct, 4),
+                    "missing_features_sample": _missing_features,
+                    "rank_bucket": "NONE",
+                    "model_version": meta.get("trained_at", "unknown"),
+                    "_freshness": _freshness(model_version=meta.get("trained_at", "unknown")),
+                }, dumps=_json_dumps, status=503)
 
             # Build DataFrame with aligned columns
             row_df = pd.DataFrame([features])
@@ -1128,21 +1239,40 @@ class MLDashboard:
                 "verdict": verdict,
                 "rank_bucket": rank_bucket,
                 "model_version": meta.get("trained_at", "unknown"),
-                "feature_set_version": f"fs_v1_{len(feature_names)}feat",
-                "label_type": "tp_sl_1.5R_1.0R",
+                "feature_set_version": meta.get("feature_schema_version", f"fs_legacy_{len(feature_names)}feat"),
+                "feature_schema_hash": meta.get("feature_schema_hash", ""),
+                "has_htf_features": meta.get("has_htf_features", False),
+                "trainer_phase": meta.get("trainer_phase", "pre_4.2"),
+                "label_type": "mfe_binary",
                 "calibrated": False,
-                "features_matched": len([f for f in feature_names if f in features]),
-                "features_expected": len(feature_names),
+                # Phase 4.5: surface which model actually scored this candidate
+                "resolved_scope": resolved_scope,          # "family" | "scanner"
+                "resolved_family": resolved_family if resolved_scope == "family" else None,
+                "file_key": file_key,
+                # Phase 4.8: surface edge_verdict + overfit so the client can
+                # apply selective gating (tighter threshold on HOLDS models,
+                # soft-blend only on WEAK/UNCLEAR). NO_EDGE is blocked at save
+                # time so shouldn't show up here, but we still return it for
+                # visibility.
+                "edge_verdict": meta.get("edge_verdict"),
+                "oos_mean": meta.get("oos_mean"),
+                "overfit_gap": meta.get("overfit_gap"),
+                "features_matched": _matched,
+                "features_expected": _expected,
+                "match_pct": round(_match_pct, 4),
                 "_freshness": _freshness(model_version=meta.get("trained_at", "unknown")),
             }, dumps=_json_dumps)
         except Exception as e:
             logger.exception("Score error: %s", e)
             return web.json_response({
-                "probability": 0.5, "scanner": body.get("scanner", ""),
-                "verdict": "ERROR", "error": str(e),
-                "rank_bucket": "ERROR", "model_version": "error",
+                "probability": None,  # Phase 4.2: not a real prediction
+                "scanner": body.get("scanner", ""),
+                "verdict": "ABSTAIN_ERROR",
+                "error": str(e),
+                "rank_bucket": "ERROR",
+                "model_version": "error",
                 "_freshness": _freshness(),
-            }, dumps=_json_dumps)
+            }, dumps=_json_dumps, status=500)
 
     # -------------------------------------------------------------------
     #  Health
@@ -1193,6 +1323,117 @@ class MLDashboard:
             return _error_response("health", str(e))
 
     # -------------------------------------------------------------------
+    #  Phase 4.2 — ML health deep inspection
+    # -------------------------------------------------------------------
+    async def _handle_ml_health(self, request):
+        """Phase 4.2: Detailed ML health endpoint.
+
+        Returns:
+          - Per-scanner model status (exists, feature count, schema version, age)
+          - Global feature_schema.json if present
+          - Last N score requests' match_pct (skew telemetry)
+          - Any drift/degradation warnings
+        """
+        try:
+            # Expected scanners (keep in sync with SCANNERS in trainer.py)
+            EXPECTED_SCANNERS = [
+                "structure_bounce",
+                "ema_momentum",
+                "rsi_divergence",
+                "vwap_mean_revert",
+                "liquidity_sweep",
+                "bos_choch",
+                "trend_continuation",
+            ]
+
+            scanner_status: Dict[str, Dict[str, Any]] = {}
+            now_ts = time.time()
+
+            for scanner in EXPECTED_SCANNERS:
+                model_path = MODELS_DIR / f"model_{scanner}.joblib"
+                meta_path = MODELS_DIR / f"model_{scanner}_features.json"
+
+                entry: Dict[str, Any] = {
+                    "scanner": scanner,
+                    "model_file_exists": model_path.exists(),
+                    "meta_file_exists": meta_path.exists(),
+                }
+                if model_path.exists():
+                    stat = model_path.stat()
+                    entry["model_size_bytes"] = stat.st_size
+                    entry["age_hours"] = round((now_ts - stat.st_mtime) / 3600, 1)
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text())
+                        entry["n_features"] = meta.get("n_features")
+                        entry["feature_schema_version"] = meta.get("feature_schema_version", "unknown")
+                        entry["feature_schema_hash"] = meta.get("feature_schema_hash", "")
+                        entry["has_htf_features"] = meta.get("has_htf_features", False)
+                        entry["trainer_phase"] = meta.get("trainer_phase", "unknown")
+                        entry["trained_at"] = meta.get("trained_at")
+                    except Exception as e:
+                        entry["meta_error"] = str(e)
+
+                # Classify health state
+                if not entry["model_file_exists"]:
+                    entry["health"] = "MISSING"
+                elif not entry["meta_file_exists"]:
+                    entry["health"] = "META_MISSING"
+                elif entry.get("age_hours", 0) > 72:
+                    entry["health"] = "STALE"
+                elif not entry.get("has_htf_features", False):
+                    entry["health"] = "PRE_4.1A"  # older model without HTF fusion
+                else:
+                    entry["health"] = "OK"
+
+                scanner_status[scanner] = entry
+
+            # Global schema file
+            global_schema = None
+            global_schema_path = MODELS_DIR / "feature_schema.json"
+            if global_schema_path.exists():
+                try:
+                    global_schema = json.loads(global_schema_path.read_text())
+                except Exception as e:
+                    global_schema = {"error": str(e)}
+
+            # Aggregate summary
+            total = len(scanner_status)
+            ok_count = sum(1 for s in scanner_status.values() if s.get("health") == "OK")
+            missing_count = sum(1 for s in scanner_status.values() if s.get("health") == "MISSING")
+            stale_count = sum(1 for s in scanner_status.values() if s.get("health") == "STALE")
+            pre_htf_count = sum(1 for s in scanner_status.values() if s.get("health") == "PRE_4.1A")
+
+            overall_health = "OK"
+            if missing_count == total:
+                overall_health = "CRITICAL_ALL_MISSING"
+            elif missing_count > 0:
+                overall_health = "DEGRADED_SOME_MISSING"
+            elif pre_htf_count > 0:
+                overall_health = "NEEDS_RETRAIN_PRE_HTF"
+            elif stale_count > total / 2:
+                overall_health = "STALE"
+
+            return web.json_response({
+                "overall_health": overall_health,
+                "summary": {
+                    "total_expected": total,
+                    "ok": ok_count,
+                    "missing": missing_count,
+                    "stale": stale_count,
+                    "pre_htf_fusion": pre_htf_count,
+                },
+                "scanners": scanner_status,
+                "global_schema": global_schema,
+                "models_dir": str(MODELS_DIR),
+                "loaded_in_memory": list(self._loaded_models.keys()),
+                "_freshness": _freshness(),
+            }, dumps=_json_dumps)
+        except Exception as e:
+            logger.exception("ML health check error: %s", e)
+            return _error_response("ml_health", str(e))
+
+    # -------------------------------------------------------------------
     #  Live Feedback  (P0: uses in-memory cache, P1: per-pair accuracy, P3: sessions)
     # -------------------------------------------------------------------
     async def _handle_live_feedback(self, request):
@@ -1202,6 +1443,408 @@ class MLDashboard:
         except Exception as e:
             logger.exception("Live feedback error: %s", e)
             return _error_response("live_feedback", str(e))
+
+    # -------------------------------------------------------------------
+    #  Phase B.7 — Edge verdict trend over time per scanner
+    # -------------------------------------------------------------------
+    async def _handle_ml_edge_verdict_trend(self, request):
+        """Display-ready series of edge_verdict per scanner over recent retrains.
+
+        Reads ml_model_history.jsonl (written by _ModelHistoryTracker on every
+        training run). Groups by scanner + returns a time series of:
+          ts, edge_verdict, oos_mean, overfit_gap, in_sample_mean
+
+        Query params:
+          scanner  — filter to one scanner (default: return all)
+          last_n   — max records per scanner (default: 30)
+        """
+        scanner_filter = request.query.get("scanner")
+        try:
+            last_n = int(request.query.get("last_n", "30"))
+        except ValueError:
+            last_n = 30
+
+        hist_file = MODEL_HISTORY_FILE
+        if not hist_file.exists():
+            return web.json_response({
+                "scanners": {},
+                "error": "no history file yet",
+                "_freshness": _freshness(),
+            }, dumps=_json_dumps)
+
+        from collections import defaultdict
+        series: Dict[str, List[Dict]] = defaultdict(list)
+        try:
+            with open(hist_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    sc = rec.get("scanner", "?")
+                    if scanner_filter and sc != scanner_filter:
+                        continue
+                    series[sc].append({
+                        "ts": rec.get("ts"),
+                        "edge_verdict": rec.get("edge_verdict", "UNCLEAR"),
+                        "oos_mean": rec.get("oos_mean", 0.0),
+                        "oos_std": rec.get("oos_std", 0.0),
+                        "in_sample_mean": rec.get("in_sample_mean", 0.0),
+                        "overfit_gap": rec.get("overfit_gap", 0.0),
+                        "auc": rec.get("auc", 0.0),
+                        "n_samples": rec.get("n_samples", 0),
+                        "purge_gap_bars": rec.get("purge_gap_bars", 0),
+                    })
+        except Exception as e:
+            return _error_response("edge_verdict_trend", f"read failed: {e}")
+
+        # Sort each series by timestamp + truncate to last_n
+        for sc in series:
+            series[sc].sort(key=lambda r: r.get("ts", ""))
+            if last_n > 0:
+                series[sc] = series[sc][-last_n:]
+
+        # Per-scanner summary (latest verdict + trend direction)
+        summaries = {}
+        for sc, rows in series.items():
+            if not rows:
+                continue
+            latest = rows[-1]
+            # Trend: compare last 3 vs prior 3 OOS means
+            if len(rows) >= 6:
+                recent = sum(r.get("oos_mean", 0) for r in rows[-3:]) / 3
+                prior = sum(r.get("oos_mean", 0) for r in rows[-6:-3]) / 3
+                trend_delta = round(recent - prior, 4)
+                if trend_delta > 0.02:
+                    trend_dir = "IMPROVING"
+                elif trend_delta < -0.02:
+                    trend_dir = "DEGRADING"
+                else:
+                    trend_dir = "STABLE"
+            else:
+                trend_delta = 0.0
+                trend_dir = "INSUFFICIENT_HISTORY"
+            summaries[sc] = {
+                "latest_verdict": latest.get("edge_verdict"),
+                "latest_oos": latest.get("oos_mean"),
+                "latest_overfit_gap": latest.get("overfit_gap"),
+                "trend_direction": trend_dir,
+                "trend_delta": trend_delta,
+                "n_runs": len(rows),
+            }
+
+        return web.json_response({
+            "scanners": dict(series),
+            "summaries": summaries,
+            "filter": {"scanner": scanner_filter, "last_n": last_n},
+            "_freshness": _freshness(),
+        }, dumps=_json_dumps)
+
+    # -------------------------------------------------------------------
+    #  Phase B.8 — Family × scanner verdict matrix (display-ready grid)
+    # -------------------------------------------------------------------
+    async def _handle_ml_family_verdict_matrix(self, request):
+        """Build a 3×N verdict grid: scanner name × family → verdict/oos/overfit.
+
+        Reads per-family model meta files directly from storage/ml_models/.
+        Returns a grid keyed [scanner][family] → {verdict, oos_mean, overfit_gap,
+        n_features, trained_at}.
+
+        This is the one-screen "which models are holding, which are drifting"
+        visualization the user wants as a dashboard card.
+        """
+        try:
+            from ml_training.candidate_trainer import PAIR_FAMILIES
+        except Exception as e:
+            return _error_response("family_verdict_matrix", f"PAIR_FAMILIES import failed: {e}")
+
+        families = list(PAIR_FAMILIES.keys())
+
+        # Collect all per-family model meta files
+        grid: Dict[str, Dict[str, Dict]] = {}  # scanner -> family -> meta
+        row_summary: Dict[str, Dict[str, int]] = {}  # scanner -> verdict counts
+        col_summary: Dict[str, Dict[str, int]] = {}  # family -> verdict counts
+
+        if not MODELS_DIR.exists():
+            return web.json_response({
+                "families": families,
+                "grid": {},
+                "row_summary": {},
+                "col_summary": {},
+                "error": "models dir not found",
+                "_freshness": _freshness(),
+            }, dumps=_json_dumps)
+
+        for meta_path in MODELS_DIR.glob("model_*_family_*_features.json"):
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception:
+                continue
+            scanner = meta.get("scanner")
+            family = meta.get("family")
+            if not scanner or not family:
+                continue
+            grid.setdefault(scanner, {})[family] = {
+                "edge_verdict": meta.get("edge_verdict", "UNCLEAR"),
+                "oos_mean": meta.get("oos_mean"),
+                "overfit_gap": meta.get("overfit_gap"),
+                "n_features": meta.get("n_features"),
+                "trained_at": meta.get("trained_at"),
+                "has_htf_features": meta.get("has_htf_features", False),
+                "trainer_phase": meta.get("trainer_phase", "unknown"),
+            }
+            # Tally row (scanner) + col (family)
+            _v = meta.get("edge_verdict", "UNCLEAR")
+            row_summary.setdefault(scanner, {}).setdefault(_v, 0)
+            row_summary[scanner][_v] += 1
+            col_summary.setdefault(family, {}).setdefault(_v, 0)
+            col_summary[family][_v] += 1
+
+        # Add per-scanner fallback (family="-") — the scanner-scope model
+        for meta_path in MODELS_DIR.glob("model_*_features.json"):
+            if "_family_" in meta_path.name:
+                continue  # handled above
+            try:
+                meta = json.loads(meta_path.read_text())
+            except Exception:
+                continue
+            scanner = meta.get("scanner")
+            if not scanner:
+                continue
+            grid.setdefault(scanner, {})["__scanner__"] = {
+                "edge_verdict": meta.get("edge_verdict", "UNCLEAR"),
+                "oos_mean": meta.get("oos_mean"),
+                "overfit_gap": meta.get("overfit_gap"),
+                "n_features": meta.get("n_features"),
+                "trained_at": meta.get("trained_at"),
+                "has_htf_features": meta.get("has_htf_features", False),
+                "trainer_phase": meta.get("trainer_phase", "unknown"),
+            }
+
+        # Global tally
+        global_tally: Dict[str, int] = {}
+        for scanner_row in grid.values():
+            for cell in scanner_row.values():
+                v = cell.get("edge_verdict", "UNCLEAR")
+                global_tally[v] = global_tally.get(v, 0) + 1
+
+        return web.json_response({
+            "families": families,
+            "scanners": sorted(grid.keys()),
+            "grid": grid,
+            "row_summary": row_summary,
+            "col_summary": col_summary,
+            "global_tally": global_tally,
+            "total_cells": sum(len(v) for v in grid.values()),
+            "_freshness": _freshness(),
+        }, dumps=_json_dumps)
+
+    # -------------------------------------------------------------------
+    #  Phase 4.6 — Live calibration (closed-loop learning diagnostics)
+    # -------------------------------------------------------------------
+    async def _handle_ml_live_calibration(self, request):
+        """Per-(scanner, family) predicted-vs-realized calibration.
+
+        Reads ml_live_feedback.jsonl and aggregates trades by
+        (resolved_scope, resolved_family or "-", scanner). For each bucket:
+          - n trades
+          - avg ml_probability (what we predicted)
+          - realized win rate (mfe_r >= 0.3R or exit_r > 0)
+          - realized mean R
+          - calibration_error = |avg_pred - realized_wr|
+          - edge_delta = realized_wr - 50%  (raw edge)
+          - verdict: HOLDS / WEAK / NO_EDGE / DRIFTING
+
+        Query params:
+          last_n=200     — window size (default 200 trades)
+          min_n=20       — minimum trades for a bucket to be evaluated
+        """
+        try:
+            last_n = int(request.query.get("last_n", "200"))
+            min_n = int(request.query.get("min_n", "20"))
+        except ValueError:
+            return _error_response("ml_live_calibration", "invalid last_n / min_n", 400)
+
+        feedback_file = FEEDBACK_FILE
+        if not feedback_file.exists():
+            return web.json_response({
+                "buckets": [],
+                "overall": {},
+                "window": last_n,
+                "error": "no feedback file yet",
+                "_freshness": _freshness(),
+            }, dumps=_json_dumps)
+
+        # Read last N lines
+        try:
+            lines = feedback_file.read_text().splitlines()
+        except Exception as e:
+            return _error_response("ml_live_calibration", f"read failed: {e}")
+        lines = [ln for ln in lines if ln.strip()]
+        if last_n > 0:
+            lines = lines[-last_n:]
+
+        # Aggregate by (scope, family, scanner)
+        from collections import defaultdict
+        buckets: Dict[tuple, Dict] = defaultdict(lambda: {
+            "n": 0,
+            "sum_pred": 0.0,
+            "sum_exit_r": 0.0,
+            "sum_mfe_r": 0.0,
+            "wins": 0,         # mfe_r >= 0.3 (matches Phase 4.4 MFE threshold)
+            "exit_wins": 0,    # exit_r > 0 (realized PnL win)
+            "sum_match_pct": 0.0,
+            "first_ts": None,
+            "last_ts": None,
+        })
+
+        total = 0
+        skipped = 0
+        # Phase 4.8: also tally per-verdict (HOLDS/WEAK/UNCLEAR/None)
+        verdict_tally: Dict[str, Dict] = defaultdict(lambda: {
+            "n": 0, "wins": 0, "sum_pred": 0.0, "sum_exit_r": 0.0, "sum_mfe_r": 0.0,
+        })
+
+        for ln in lines:
+            try:
+                rec = json.loads(ln)
+            except Exception:
+                skipped += 1
+                continue
+            if rec.get("exit_price", 0) in (0, None):
+                skipped += 1  # not a closed trade
+                continue
+            scope = rec.get("ml_resolved_scope", "scanner")
+            family = rec.get("ml_resolved_family") or "-"
+            scanner = rec.get("setup_type") or rec.get("scanner") or "?"
+            key = (scope, family, scanner)
+            b = buckets[key]
+            b["n"] += 1
+            b["sum_pred"] += float(rec.get("ml_probability", 0.5) or 0.5)
+            b["sum_exit_r"] += float(rec.get("exit_r", 0) or 0)
+            b["sum_mfe_r"] += float(rec.get("mfe_r", 0) or 0)
+            if float(rec.get("mfe_r", 0) or 0) >= 0.3:
+                b["wins"] += 1
+            if float(rec.get("exit_r", 0) or 0) > 0:
+                b["exit_wins"] += 1
+            b["sum_match_pct"] += float(rec.get("ml_match_pct", 1.0) or 1.0)
+            ts = rec.get("timestamp")
+            if ts:
+                if b["first_ts"] is None or ts < b["first_ts"]:
+                    b["first_ts"] = ts
+                if b["last_ts"] is None or ts > b["last_ts"]:
+                    b["last_ts"] = ts
+            total += 1
+
+            # Phase 4.8: verdict-level tally
+            _v = rec.get("ml_edge_verdict") or "UNKNOWN"
+            vb = verdict_tally[_v]
+            vb["n"] += 1
+            vb["sum_pred"] += float(rec.get("ml_probability", 0.5) or 0.5)
+            vb["sum_exit_r"] += float(rec.get("exit_r", 0) or 0)
+            vb["sum_mfe_r"] += float(rec.get("mfe_r", 0) or 0)
+            if float(rec.get("mfe_r", 0) or 0) >= 0.3:
+                vb["wins"] += 1
+
+        # Build response
+        out_buckets = []
+        for (scope, family, scanner), b in buckets.items():
+            n = b["n"]
+            if n == 0:
+                continue
+            avg_pred = b["sum_pred"] / n
+            realized_wr = b["wins"] / n
+            realized_exit_wr = b["exit_wins"] / n
+            avg_exit_r = b["sum_exit_r"] / n
+            avg_mfe_r = b["sum_mfe_r"] / n
+            avg_match = b["sum_match_pct"] / n
+            # calibration error = |pred - realized|, only meaningful if n >= min_n
+            calibration_error = abs(avg_pred - realized_wr)
+            edge_delta_pct = (realized_wr - 0.5) * 100
+
+            if n < min_n:
+                verdict = "INSUFFICIENT_DATA"
+            elif calibration_error <= 0.08 and realized_wr >= 0.55:
+                verdict = "HOLDS"
+            elif realized_wr >= 0.52:
+                verdict = "WEAK"
+            elif calibration_error > 0.15:
+                verdict = "DRIFTING"
+            else:
+                verdict = "NO_EDGE"
+
+            out_buckets.append({
+                "scope": scope,
+                "family": family,
+                "scanner": scanner,
+                "n": n,
+                "avg_ml_probability": round(avg_pred, 4),
+                "realized_mfe_wr": round(realized_wr, 4),
+                "realized_exit_wr": round(realized_exit_wr, 4),
+                "avg_exit_r": round(avg_exit_r, 4),
+                "avg_mfe_r": round(avg_mfe_r, 4),
+                "calibration_error": round(calibration_error, 4),
+                "edge_delta_pct": round(edge_delta_pct, 2),
+                "avg_match_pct": round(avg_match, 4),
+                "verdict": verdict,
+                "first_ts": b["first_ts"],
+                "last_ts": b["last_ts"],
+            })
+
+        # Sort: family models first, then by n desc
+        out_buckets.sort(key=lambda r: (r["scope"] != "family", -r["n"]))
+
+        # Overall aggregate
+        if total > 0:
+            total_pred = sum(b["sum_pred"] for b in buckets.values())
+            total_mfe_wins = sum(b["wins"] for b in buckets.values())
+            overall = {
+                "n": total,
+                "avg_ml_probability": round(total_pred / total, 4),
+                "realized_mfe_wr": round(total_mfe_wins / total, 4),
+                "calibration_error": round(abs((total_pred / total) - (total_mfe_wins / total)), 4),
+                "skipped": skipped,
+                "window": last_n,
+            }
+        else:
+            overall = {"n": 0, "skipped": skipped, "window": last_n}
+
+        # Phase 4.8: per-verdict roll-up (HOLDS / WEAK / UNCLEAR / UNKNOWN)
+        verdict_rollup = []
+        _verdict_order = ["HOLDS", "WEAK", "UNCLEAR", "NO_EDGE", "UNKNOWN"]
+        for _v in _verdict_order:
+            vb = verdict_tally.get(_v)
+            if not vb or vb["n"] == 0:
+                continue
+            n = vb["n"]
+            avg_pred = vb["sum_pred"] / n
+            realized_wr = vb["wins"] / n
+            avg_exit_r = vb["sum_exit_r"] / n
+            avg_mfe_r = vb["sum_mfe_r"] / n
+            cal_err = abs(avg_pred - realized_wr)
+            verdict_rollup.append({
+                "edge_verdict": _v,
+                "n": n,
+                "avg_ml_probability": round(avg_pred, 4),
+                "realized_mfe_wr": round(realized_wr, 4),
+                "avg_exit_r": round(avg_exit_r, 4),
+                "avg_mfe_r": round(avg_mfe_r, 4),
+                "calibration_error": round(cal_err, 4),
+            })
+
+        return web.json_response({
+            "buckets": out_buckets,
+            "overall": overall,
+            "by_verdict": verdict_rollup,  # Phase 4.8
+            "min_n_for_verdict": min_n,
+            "_freshness": _freshness(
+                data_through=overall.get("last_ts"),
+                record_count=total,
+            ),
+        }, dumps=_json_dumps)
 
     # -------------------------------------------------------------------
     #  Validation

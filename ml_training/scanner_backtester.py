@@ -124,134 +124,63 @@ class ScannerBacktester:
 
     def _simulate_trade(self, df: pd.DataFrame, entry_idx: int,
                          side: str, entry_price: float, atr: float,
-                         symbol: str) -> SimTrade:
-        """Simulate a trade forward from entry_idx using live-identical exit logic."""
-        # SL at 0.65% (matching live)
-        sl_pct = 0.0065
-        if side == "long":
-            sl = entry_price * (1 - sl_pct)
-            tp1 = entry_price + 1.5 * atr
-            tp2 = entry_price + 2.5 * atr
-            tp3 = entry_price + 4.0 * atr
-        else:
-            sl = entry_price * (1 + sl_pct)
-            tp1 = entry_price - 1.5 * atr
-            tp2 = entry_price - 2.5 * atr
-            tp3 = entry_price - 4.0 * atr
+                         symbol: str, regime: str = "sideways",
+                         trade_type: str = "SCALP") -> SimTrade:
+        """Simulate a trade forward from entry_idx using live-identical exit logic.
 
-        initial_risk = abs(entry_price - sl)
-        scalper_window = self._scalper_window_btc if "BTC" in symbol else self._scalper_window_other
+        Phase 4.0 REFACTOR (2026-04-11):
+        Delegates to bot.trade_simulator.simulate_trade which is the SINGLE
+        source of truth for exit logic. Shared with candidate_trainer AND
+        matches live bot's TRADE_TYPE_CONFIG.
 
+        OLD BUG (pre-4.0):
+          - Hardcoded sl_pct=0.0065 (0.65%) — didn't match live's ATR-based SL
+          - Hardcoded TP at 1.5×ATR — didn't scale with actual risk
+          - Resulting R-multiple math made every scanner look like a 17% WR loser
+        """
+        from bot.trade_simulator import simulate_trade, SimulatorConfig
+
+        # Get config from live TRADE_TYPE_CONFIG
+        config = SimulatorConfig.from_trade_type(trade_type)
+        # Override fee rate to match backtester's setting
+        config.fee_rate_per_side = self._fee_rate
+
+        # Call the unified simulator
+        outcome = simulate_trade(
+            df=df,
+            entry_idx=entry_idx,
+            side=side,
+            entry_price=entry_price,
+            atr=atr,
+            regime=regime,
+            config=config,
+            trade_type=trade_type,
+        )
+
+        # Populate SimTrade with outcome fields
         trade = SimTrade(
             trade_id=f"bt_{entry_idx}",
             symbol=symbol, side=side, scanner="",
-            entry_price=entry_price, stop_loss=sl,
-            tp1=tp1, tp2=tp2, tp3=tp3,
+            entry_price=entry_price,
+            stop_loss=outcome.get("sl_initial", 0.0),
+            tp1=0.0, tp2=0.0, tp3=0.0,  # not exposed by simulator (uses R units)
             entry_bar=entry_idx,
             entry_time=df.index[entry_idx] if hasattr(df.index[entry_idx], 'isoformat') else None,
-            atr=atr, initial_risk=initial_risk,
-            confidence=0, grade="", regime="", session="",
+            atr=atr,
+            initial_risk=outcome.get("initial_risk", 0.0),
+            confidence=0, grade="", regime=regime, session="",
             fees_pct=self._fee_rate * 2,  # round trip
         )
-
-        # Simulate bar-by-bar
-        highest = entry_price
-        lowest = entry_price
-        tf_seconds = 60  # assume 1m unless we detect otherwise
-        if len(df) > 1:
-            idx_diff = df.index[1] - df.index[0]
-            if hasattr(idx_diff, 'total_seconds'):
-                tf_seconds = int(idx_diff.total_seconds())
-
-        max_bars = max(10, scalper_window // max(tf_seconds, 1))
-
-        for j in range(entry_idx + 1, min(entry_idx + max_bars + 1, len(df))):
-            h = float(df.iloc[j]["high"])
-            l = float(df.iloc[j]["low"])
-            c = float(df.iloc[j]["close"])
-            age_sec = (j - entry_idx) * tf_seconds
-
-            highest = max(highest, h)
-            lowest = min(lowest, l)
-
-            # Current R
-            if side == "long":
-                current_r = (c - entry_price) / initial_risk if initial_risk > 0 else 0
-                mfe = (highest - entry_price) / initial_risk if initial_risk > 0 else 0
-                mae = (entry_price - lowest) / initial_risk if initial_risk > 0 else 0
-            else:
-                current_r = (entry_price - c) / initial_risk if initial_risk > 0 else 0
-                mfe = (entry_price - lowest) / initial_risk if initial_risk > 0 else 0
-                mae = (highest - entry_price) / initial_risk if initial_risk > 0 else 0
-
-            # Dynamic trail stop (matching live fix)
-            trail_floor = None
-            if mfe >= 1.5:
-                trail_floor = mfe * 0.75
-            elif mfe >= 1.0:
-                trail_floor = mfe * 0.65
-            elif mfe >= 0.5:
-                trail_floor = mfe * 0.50
-            elif mfe >= 0.3:
-                trail_floor = 0.15  # matches our fix
-
-            if trail_floor is not None and current_r <= trail_floor:
-                trade.exit_price = c
-                trade.exit_bar = j
-                trade.exit_reason = f"trail_{trail_floor:.0%}"
-                trade.exit_time = df.index[j] if hasattr(df.index[j], 'isoformat') else None
-                break
-
-            # Stop loss
-            sl_hit = (l <= sl) if side == "long" else (h >= sl)
-            if sl_hit:
-                trade.exit_price = sl
-                trade.exit_bar = j
-                trade.exit_reason = "stop_loss"
-                trade.exit_time = df.index[j] if hasattr(df.index[j], 'isoformat') else None
-                break
-
-            # Early kill (5 min, MFE < 0.15R, losing)
-            if age_sec >= 300 and mfe < 0.15 and current_r < -0.15:
-                trade.exit_price = c
-                trade.exit_bar = j
-                trade.exit_reason = "early_kill"
-                trade.exit_time = df.index[j] if hasattr(df.index[j], 'isoformat') else None
-                break
-
-            # Scalper timeout
-            if age_sec >= scalper_window:
-                trade.exit_price = c
-                trade.exit_bar = j
-                trade.exit_reason = "scalper_timeout"
-                trade.exit_time = df.index[j] if hasattr(df.index[j], 'isoformat') else None
-                break
-
-        # If never exited (ran out of bars)
-        if trade.exit_price == 0 and entry_idx + 1 < len(df):
-            last_j = min(entry_idx + max_bars, len(df) - 1)
-            trade.exit_price = float(df.iloc[last_j]["close"])
-            trade.exit_bar = last_j
-            trade.exit_reason = "end_of_data"
-            trade.exit_time = df.index[last_j] if hasattr(df.index[last_j], 'isoformat') else None
-
-        trade.highest = highest
-        trade.lowest = lowest
-        trade.mfe_r = mfe if 'mfe' in dir() else 0
-        trade.mae_r = mae if 'mae' in dir() else 0
-
-        # Calculate PnL in R
-        if initial_risk > 0:
-            if side == "long":
-                raw_r = (trade.exit_price - entry_price) / initial_risk
-            else:
-                raw_r = (entry_price - trade.exit_price) / initial_risk
-            # Subtract fees (in R terms)
-            fee_r = (self._fee_rate * 2 * entry_price) / initial_risk
-            trade.pnl_r = raw_r - fee_r
-        else:
-            trade.pnl_r = 0
-
+        trade.exit_price = outcome.get("exit_price", 0.0)
+        trade.exit_bar = outcome.get("exit_bar", 0)
+        trade.exit_reason = outcome.get("exit_reason", "")
+        if trade.exit_bar and trade.exit_bar < len(df):
+            trade.exit_time = df.index[trade.exit_bar] if hasattr(df.index[trade.exit_bar], 'isoformat') else None
+        trade.highest = entry_price if side == "short" else entry_price * (1 + outcome.get("peak_mfe_r", 0) * 0.01)  # approx
+        trade.lowest = entry_price if side == "long" else entry_price * (1 - outcome.get("peak_mfe_r", 0) * 0.01)
+        trade.mfe_r = outcome.get("peak_mfe_r", 0.0)
+        trade.mae_r = outcome.get("mae_r", 0.0)
+        trade.pnl_r = outcome.get("pnl_r", 0.0)
         return trade
 
     def backtest_scanner(self, scanner_func, scanner_name: str,

@@ -387,10 +387,17 @@ class ScalpStrategy(BaseStrategy):
         self._ev_engine = EVEngine()
         self._last_ev_results: Dict[str, Any] = {}
 
-        # --- ML Scorer (VM2 scoring API) ---
+        # --- ML Scorer (VM4 scoring API) ---
+        # Phase 5.0a+ fix: the hardcoded default was pointing to a stale VM at
+        # 129.80.31.92 which was running pre-Phase-4.2 code (last updated
+        # 2026-03-21). That made every live ML call go to an ancient server
+        # and bypass everything we've built — edge_verdict/family routing/
+        # HTF features/ABSTAIN drift detection. The correct target is the
+        # real VM4 private IP 10.0.2.4:8081. settings.yaml can still override
+        # via ml.scoring_url but the default must not be a stale VM.
         ml_cfg = config.get("ml", {})
         self._ml_scorer = MLScorer(
-            url=ml_cfg.get("scoring_url", "http://129.80.31.92:8081/api/score"),
+            url=ml_cfg.get("scoring_url", "http://10.0.2.4:8081/api/score"),
             enabled=ml_cfg.get("enabled", True),
             shadow_mode=ml_cfg.get("shadow_mode", True),  # Start shadow — log only, no veto
         )
@@ -755,6 +762,17 @@ class ScalpStrategy(BaseStrategy):
         # 1h df for macro trend filter (Phase 1 MTF chain)
         df_1h = candles_dict.get("1h")
         df_4h = candles_dict.get("4h")  # session-level bias (new MTF layer)
+
+        # ── Phase 5.0a: BTC cross-asset cache ──
+        # When analyze() runs for BTC/USDT, snapshot its 5m df into an instance
+        # cache. Other symbols read from that cache when building ML features
+        # so the model can learn from BTC's regime/trend when scoring alts.
+        # Worst case staleness: 1 bar (few seconds to one minute) — fine for
+        # 5m candle context features.
+        if not hasattr(self, "_btc_df_cache"):
+            self._btc_df_cache = None
+        if symbol == "BTC/USDT" and df_5m is not None and len(df_5m) >= 50:
+            self._btc_df_cache = df_5m
 
         # Track signal count per symbol (decoupled — BTC signals don't count against ETH)
         if symbol not in self._signal_count_hr:
@@ -2378,11 +2396,174 @@ class ScalpStrategy(BaseStrategy):
         sb_soft_prefixes = ("HTF STRICT:", "LOW VOLATILITY:", "NO VOLUME:", "NO CHASE:", "WEAK CANDLE:",
                             "COOLDOWN:")
 
+        # ── P0 HOTFIX (2026-04-10): Bear-HTF low-conf long veto ──
+        # Data-driven: 4 consecutive losses on 2026-04-10 were all LONG structure_bounce
+        # trades against bearish HTF (htf_bias=-1) with raw confidence 38-53 (<70).
+        # Root cause: HTF STRICT was globally soft for structure_bounce, letting
+        # counter-HTF low-conf longs fire. Paper WR dropped to 50%, real WR to 20%.
+        #
+        # Surgical fix: HTF STRICT escalates to HARD veto when ALL of:
+        #   1. Scanner == structure_bounce (SB-specific problem)
+        #   2. htf_bias != 0 (actual bias exists)
+        #   3. pre-adjustment confidence < 70 (high-conf setups still fire)
+        #
+        # Feature flag allows toggling off without code change.
+        # Zero impact on: neutral-HTF trades, high-conf (≥70) trades, non-SB scanners.
+        if not hasattr(self, '_htf_strict_hard_for_lowconf_sb'):
+            self._htf_strict_hard_for_lowconf_sb = True  # default ON
+        _sb_hard_lowconf = (
+            self._htf_strict_hard_for_lowconf_sb
+            and is_sb
+            and htf_bias != 0
+            and getattr(best, 'confidence', 100) < 70
+        )
+
+        # ── P0.8 EXPANSION (2026-04-10 PM): Counter-HTF veto for ALL momentum scanners ──
+        # Loss taxonomy data showed 23 counter-HTF losses across BOTH long+short, NOT just SB.
+        # bos_choch, liquidity_sweep, order_block_entry, momentum scanners all leak counter-HTF.
+        #
+        # Stricter rule for non-reversion scanners: HTF STRICT becomes HARD when:
+        #   1. Scanner is a momentum/breakout scanner (not reversion)
+        #   2. htf_bias clearly opposes side (not just != 0)
+        #   3. pre-adjustment confidence < 75 (slightly higher threshold than P0)
+        #
+        # Reversion scanners (rsi_divergence, cvd_divergence, vwap_mean_revert) are EXEMPT
+        # because they're designed to trade counter-trend.
+        if not hasattr(self, '_htf_strict_hard_for_momentum'):
+            self._htf_strict_hard_for_momentum = True  # default ON
+        _reversion_scanners_p08 = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert")
+        _is_reversion = best_sr.scanner_name in _reversion_scanners_p08
+        _is_momentum_scanner = (
+            not _is_reversion
+            and not is_sb  # SB has its own P0 rule
+            and best_sr.scanner_name not in ("structure_bounce",)
+        )
+        _momentum_hard_counter = (
+            self._htf_strict_hard_for_momentum
+            and _is_momentum_scanner
+            and htf_bias != 0
+            and getattr(best, 'confidence', 100) < 75
+        )
+
+        # ── P3.11 CHOP REGIME LONG GATE ──
+        # Data: 5 of 5 formal real trades today were LONG SCALP structure_bounce
+        # in high_volatility/mean_reversion regimes, all failed (mfe_3min_dead,
+        # early_kill, sl_hit). Paper historical showed 97% of losses in chop.
+        # Today's formal real trades had 0% WR in chop longs.
+        #
+        # Rule: block LONG SCALPs in chop regimes when BOTH:
+        #   1. regime in (high_volatility, mean_reversion, sideways) — chop
+        #   2. ml_probability < 0.55 (ML doesn't strongly believe)
+        #   3. htf_bias <= 0 (no bullish tailwind)
+        #
+        # ML-bless escape: if ml_prob >= 0.55 AND htf_bias > 0, trade passes.
+        # A+ grade escape: grade=A+ overrides everything (high conviction preserved).
+        if not hasattr(self, '_p3_11_chop_long_gate'):
+            self._p3_11_chop_long_gate = True  # default ON
+        _chop_regimes_p311 = ("high_volatility", "mean_reversion", "sideways")
+        _side_str_p311 = best.side.value if best.side else ""
+        _regime_lower_p311 = str(regime).lower() if regime else ""
+        _ml_prob_p311 = float(getattr(best, 'ml_probability', 0) or indicators.get('ml_probability', 0) or 0)
+        _grade_p311 = getattr(best, 'grade', '') or ''
+        _chop_long_trap = (
+            self._p3_11_chop_long_gate
+            and _side_str_p311 == "long"
+            and _regime_lower_p311 in _chop_regimes_p311
+            and htf_bias <= 0  # no bullish HTF support
+            and _grade_p311 != "A+"  # A+ override
+            and _ml_prob_p311 < 0.55  # ML not strongly bullish
+        )
+
+        # ── P3.7 SIDEWAYS SCANNER-SPECIFIC GATE (DATA-DRIVEN 2026-04-10) ──
+        # Source: Phase 3.18 loss taxonomy — 47 of 68 losses (70% of $ loss)
+        # came from structure_bounce:sideways:long specifically.
+        #
+        # P3.11 only blocks chop longs when htf_bias <= 0. This misses sideways
+        # trades where HTF is neutral/bullish but price action is still chop.
+        # The data shows THOSE trades are equally deadly.
+        #
+        # Rule: block structure_bounce LONG in SIDEWAYS regime when:
+        #   1. is_sb (structure_bounce only)
+        #   2. regime exactly == sideways (not high_volatility, not ranging)
+        #   3. side = long
+        #   4. confidence < 75 (high-conf preserved)
+        #   5. ml_prob < 0.60 (ML escape hatch)
+        #   6. grade != A+ (A+ override preserved)
+        #
+        # This is SURGICAL: doesn't touch short trades, doesn't touch non-SB,
+        # doesn't touch high-vol/mean-rev (those are covered by P3.11 when
+        # htf aligned against). ONLY targets the exact 47-loss combo.
+        if not hasattr(self, '_p3_7_sideways_sb_long_gate'):
+            self._p3_7_sideways_sb_long_gate = True  # default ON
+        _conf_p37 = getattr(best, 'confidence', 100)
+        _p37_sideways_trap = (
+            self._p3_7_sideways_sb_long_gate
+            and is_sb
+            and _regime_lower_p311 == "sideways"
+            and _side_str_p311 == "long"
+            and _conf_p37 < 75
+            and _ml_prob_p311 < 0.60
+            and _grade_p311 != "A+"
+        )
+
         hard_vetos = []
         soft_vetos = []
         conf_penalty = 0
 
+        # ── P3.11: fire chop-long gate BEFORE veto loop (synthetic hard veto) ──
+        if _chop_long_trap:
+            hard_vetos.append(
+                f"P3.11 CHOP LONG TRAP: regime={_regime_lower_p311} "
+                f"htf={htf_bias} ml={_ml_prob_p311:.2f} grade={_grade_p311} [P3_11_CHOP_LONG_HARD]"
+            )
+            try:
+                from bot import pipeline_metrics as _pm
+                _pm.record_hotfix_veto(
+                    "p3_11_chop_long_block",
+                    f"{symbol}_{_regime_lower_p311}_ml{_ml_prob_p311:.2f}_htf{htf_bias}"
+                )
+            except Exception:
+                pass
+
+        # ── P3.7: fire sideways scanner-specific gate ──
+        if _p37_sideways_trap:
+            hard_vetos.append(
+                f"P3.7 SIDEWAYS SB LONG: regime=sideways "
+                f"conf={_conf_p37} ml={_ml_prob_p311:.2f} grade={_grade_p311} [P3_7_SIDEWAYS_SB_HARD]"
+            )
+            try:
+                from bot import pipeline_metrics as _pm
+                _pm.record_hotfix_veto(
+                    "p3_7_sideways_sb_long",
+                    f"{symbol}_conf{_conf_p37}_ml{_ml_prob_p311:.2f}_grade{_grade_p311}"
+                )
+            except Exception:
+                pass
+
         for v in vetos:
+            # P0: HTF STRICT → HARD for SB low-conf counter-HTF
+            if _sb_hard_lowconf and v.startswith("HTF STRICT:"):
+                hard_vetos.append(v + " [P0_LOWCONF_HARD]")
+                # Phase 3.2: count P0 effectiveness
+                try:
+                    from bot import pipeline_metrics as _pm
+                    _sym_p0 = symbol
+                    _conf_p0 = getattr(best, 'confidence', 0)
+                    _pm.record_hotfix_veto("p0_lowconf_bear_htf", f"{_sym_p0}_conf{_conf_p0}")
+                except Exception:
+                    pass
+                continue
+            # P0.8: HTF STRICT → HARD for momentum scanners (non-SB, non-reversion)
+            if _momentum_hard_counter and v.startswith("HTF STRICT:"):
+                hard_vetos.append(v + " [P0_8_MOMENTUM_HARD]")
+                try:
+                    from bot import pipeline_metrics as _pm
+                    _conf_p08 = getattr(best, 'confidence', 0)
+                    _pm.record_hotfix_veto("p0_8_momentum_counter_htf",
+                                           f"{symbol}_{best_sr.scanner_name}_conf{_conf_p08}")
+                except Exception:
+                    pass
+                continue
             if is_sb and any(v.startswith(p) for p in sb_soft_prefixes):
                 soft_vetos.append(v)
                 conf_penalty += 8  # -8 confidence per soft veto
@@ -2694,44 +2875,102 @@ class ScalpStrategy(BaseStrategy):
         ml_result = {"probability": 0.5, "verdict": "SKIPPED"}
         try:
             # Build feature vector matching training features
-            # Compute HTF trend strength for ML features
+            # Compute HTF trend strength for ML features (legacy param, kept for compat)
             _htf_ts = 0.0
             if htf_df is not None and len(htf_df) > 5:
                 _ema8_htf = float(htf_df["ema_8"].iloc[-1]) if "ema_8" in htf_df.columns else 0
                 _ema21_htf = float(htf_df["ema_21"].iloc[-1]) if "ema_21" in htf_df.columns else 0
                 _atr_htf = float(htf_df.get("atr_14", htf_df.get("atr", pd.Series([1]))).iloc[-1])
                 _htf_ts = (_ema8_htf - _ema21_htf) / _atr_htf if _atr_htf > 0 else 0.0
+            # Phase 4.1b: pass 15m + 1h + 4h HTF frames so unified_features
+            # can compute the full 204-feature schema (was 73 pre-4.1b).
+            # Phase 5.0a: also pass cached BTC 5m df for cross-asset features.
             ml_features = build_scoring_features(
                 df, idx=-1, side=best.side.value if best.side else "long",
                 symbol=symbol,
                 htf_bias=float(htf_bias),
                 htf_trend_strength=_htf_ts,
+                htf_15m=htf_df,   # 15m (already loaded above as htf_df)
+                htf_1h=df_1h,     # 1h (Phase 4.1a macro trend features)
+                htf_4h=df_4h,     # 4h (Phase 4.1a session/structure features)
+                btc_df=getattr(self, "_btc_df_cache", None),  # Phase 5.0a
             )
             # Add context features not in candle data
             ml_features["confidence"] = float(best.confidence)
             ml_features["weighted_score"] = float(best_sr.weighted_score)
 
             # Score via VM2 ML API
+            # Phase 4.5: pass symbol + side so server can route to the family
+            # model (liquid_majors / secondary / high_beta) before falling back
+            # to the per-scanner model.
             ml_result = self._ml_scorer.score_candidate(
                 scanner_name=best_sr.scanner_name,
                 features=ml_features,
+                symbol=symbol,
+                side=best.side,
             )
             self._last_ml_result[symbol] = ml_result
 
-            ml_prob = ml_result.get("probability", 0.5)
+            # Phase 4.2: None means ABSTAIN (model missing, schema drift, API error)
+            # Treat as 0.5 for logging purposes, but the verdict will be ABSTAIN_*
+            # which downstream code can detect and skip blocking.
+            _ml_prob_raw = ml_result.get("probability")
+            ml_prob = float(_ml_prob_raw) if _ml_prob_raw is not None else 0.5
             ml_verdict = ml_result.get("verdict", "?")
             ml_latency = ml_result.get("latency_ms", 0)
+            ml_is_abstain = str(ml_verdict).startswith("ABSTAIN")
 
-            # Pre-decision log: always log what ML thinks
+            # ── Phase 4.8: SELECTIVE ML GATING by edge_verdict ──
+            # Walk-forward OOS evaluation (Phase 4.3) classifies each trained
+            # (scanner, family) model as one of:
+            #   HOLDS    — OOS AUC ≥ 0.58 AND std ≤ 0.05  → earn the right to tighten
+            #   WEAK     — OOS AUC ≥ 0.54               → soft blend only
+            #   UNCLEAR  — between (noisy signal)         → slight penalty
+            #   NO_EDGE  — OOS AUC ≤ 0.52                 → blocked at save time
+            # The dashboard returns the verdict with every score response.
+            # HOLDS models earn tighter gates (threshold 0.55 minimum); the
+            # rest use the per-symbol default. This implements "ML acts as a
+            # real gate only on models that have proved OOS edge".
+            _edge_verdict = ml_result.get("edge_verdict")  # None for pre-4.5 models
+            _ml_resolved_scope = ml_result.get("resolved_scope", "scanner")
+            _ml_resolved_family = ml_result.get("resolved_family")
+
+            # Pre-decision log: always log what ML thinks + the edge_verdict
             logger.info(
-                "ML SCORE [%s] %s %s: prob=%.3f verdict=%s latency=%.0fms | "
-                "scanner=%s conf=%d regime=%s session=%s",
+                "ML SCORE [%s] %s %s: prob=%.3f verdict=%s edge=%s scope=%s fam=%s "
+                "latency=%.0fms | scanner=%s conf=%d regime=%s session=%s",
                 "SHADOW" if self._ml_shadow_mode else "LIVE",
                 best.side.value.upper() if best.side else "?",
-                symbol, ml_prob, ml_verdict, ml_latency,
+                symbol, ml_prob, ml_verdict, _edge_verdict or "-",
+                _ml_resolved_scope, _ml_resolved_family or "-",
+                ml_latency,
                 best_sr.scanner_name, best.confidence, regime,
                 getattr(self, '_current_session', ''),
             )
+
+            # ── Phase A.5: QUANTILE RANKING ──
+            # Rolling deque of recent ML probabilities per (scanner, family). The
+            # Phase 4.8 HOLDS tightening uses fixed 0.55 which is blind to regime —
+            # in chop only the top 5% of candidates will clear, while in a strong
+            # trend the top 40% will. Phase A.5 makes the threshold adaptive: take
+            # the top 15% of the rolling window so trade volume stays normalized
+            # across regimes without losing selectivity.
+            #
+            # Only populated for HOLDS model calls (we don't want WEAK/UNCLEAR
+            # scores polluting the HOLDS distribution). Fallback to Phase 4.8
+            # fixed threshold when the deque has fewer than 20 samples.
+            if not hasattr(self, "_ml_prob_history"):
+                from collections import deque as _deque
+                self._ml_prob_history: Dict[str, "_deque"] = {}
+            # Key includes family so each (scanner, family) has its own distribution
+            _quant_key = f"{best_sr.scanner_name}__{_ml_resolved_family or 'none'}"
+            if not ml_is_abstain and _ml_prob_raw is not None:
+                _dq = self._ml_prob_history.get(_quant_key)
+                if _dq is None:
+                    from collections import deque as _deque2
+                    _dq = _deque2(maxlen=100)
+                    self._ml_prob_history[_quant_key] = _dq
+                _dq.append(ml_prob)
 
             # ── ML HARD VETO GATE (pair-specific thresholds) ──
             # Data proves: trades below the ML threshold lose money.
@@ -2739,9 +2978,72 @@ class ScalpStrategy(BaseStrategy):
             # ML was trained on paper_learning garbage — it has no real edge.
             # Log the ML verdict but DO NOT hard-block.
             # Re-enable hard-block after retraining on 500+ clean enforced-mode trades.
-            if not self._is_learning:
+            #
+            # Phase 4.2: If ML abstained (no model, schema drift, API error),
+            # SKIP all ML-based blocking. Fail-open so a broken ML server
+            # doesn't stop trading. Other hotfix gates (P0-P4, P3.6, P3.7,
+            # P3.11, P3.22) still protect.
+            if ml_is_abstain:
+                logger.info(
+                    "ML ABSTAIN (%s) — skipping ML veto gate, relying on hotfix stack",
+                    ml_verdict,
+                )
                 _ml_conf_adj = 0
-                ml_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
+            elif not self._is_learning:
+                _ml_conf_adj = 0
+                # ── Phase 4.8: compute effective threshold from edge_verdict ──
+                # Base: per-symbol threshold from pair_ml_thresholds
+                _base_threshold = self.pair_ml_thresholds.get(symbol, self.default_ml_threshold)
+
+                # Verdict-aware adjustment:
+                #  HOLDS   → Phase A.5 quantile rank (top 15% of rolling window)
+                #            falling back to Phase 4.8 fixed 0.55 when n < 20
+                #  WEAK    → no change. Soft blend only (hotfix stack protects).
+                #  UNCLEAR → slight penalty (base + 0.03). Noisy model, prefer caution.
+                #  NO_EDGE → shouldn't reach here (blocked at save), but we fail-safe to base.
+                #  None    → pre-4.5 model (no edge_verdict). Use base unchanged.
+                if _edge_verdict == "HOLDS":
+                    # Phase A.5: adaptive quantile instead of fixed 0.55
+                    _dq_hist = self._ml_prob_history.get(_quant_key)
+                    if _dq_hist is not None and len(_dq_hist) >= 20:
+                        # Top 15% = 85th percentile of rolling window
+                        import numpy as _np_local
+                        _q85 = float(_np_local.percentile(list(_dq_hist), 85))
+                        # Safety floor: never lower than Phase 4.8 baseline (0.55)
+                        # Safety ceiling: never tighter than 0.75 (too selective)
+                        _q_thresh = max(0.55, min(0.75, _q85))
+                        ml_threshold = max(_base_threshold, _q_thresh)
+                        _verdict_action = "QUANTILE_HOLDS"
+                        logger.info(
+                            "A.5 QUANTILE: %s %s n=%d p85=%.3f → threshold=%.3f",
+                            symbol, best_sr.scanner_name, len(_dq_hist), _q85, ml_threshold,
+                        )
+                    else:
+                        # Insufficient samples → Phase 4.8 fixed threshold
+                        ml_threshold = max(_base_threshold, 0.55)
+                        _verdict_action = "TIGHTEN_HOLDS"
+                elif _edge_verdict == "UNCLEAR":
+                    ml_threshold = min(_base_threshold + 0.03, 0.60)
+                    _verdict_action = "PENALTY_UNCLEAR"
+                elif _edge_verdict == "NO_EDGE":
+                    # Fail-safe: NO_EDGE models shouldn't be served but if one
+                    # slipped past the Phase 4.5 gate, defang it with a very
+                    # high threshold (0.75) — effectively skip every trade.
+                    ml_threshold = max(_base_threshold, 0.75)
+                    _verdict_action = "DEFANG_NO_EDGE"
+                else:
+                    # WEAK or None: base threshold, no tightening
+                    ml_threshold = _base_threshold
+                    _verdict_action = "BASE"
+
+                # Log the effective gating decision
+                if _edge_verdict in ("HOLDS", "UNCLEAR", "NO_EDGE"):
+                    logger.info(
+                        "ML GATE [%s]: %s %s edge=%s base=%.2f → effective=%.2f",
+                        _verdict_action, symbol, best_sr.scanner_name,
+                        _edge_verdict, _base_threshold, ml_threshold,
+                    )
+
                 if ml_prob < ml_threshold:
                     self._funnel["blocked_ml"] = self._funnel.get("blocked_ml", 0) + 1
                     # Log for ML retraining data collection
@@ -2770,6 +3072,88 @@ class ScalpStrategy(BaseStrategy):
                             best.side.value.upper() if best.side else "?",
                             symbol, ml_prob, ml_threshold, best_sr.scanner_name, ml_verdict,
                         )
+
+                        # ── Phase 3.6 P3.6 CONSERVATIVE ML LIVE BLOCK ──
+                        # Loss taxonomy showed 40 of 65 losses (62%, -$77) had ml_verdict=WEAK.
+                        # Even though ML is in shadow mode, we can SAFELY block the worst combos:
+                        # WEAK ML + low conf + no HTF tailwind = guaranteed loser pattern.
+                        # This adds a SECOND-OPINION check that fires only when MULTIPLE quality
+                        # signals are weak, minimizing false positives.
+                        if not hasattr(self, '_p3_6_ml_conservative_block'):
+                            self._p3_6_ml_conservative_block = True  # default ON
+                        try:
+                            _verdict_upper = str(ml_verdict).upper()
+                            _conf_p36 = getattr(best, 'confidence', 100)
+                            _side_str_p36 = best.side.value if best.side else ""
+                            _htf_aligned_p36 = (
+                                (htf_bias > 0 and _side_str_p36 == "long") or
+                                (htf_bias < 0 and _side_str_p36 == "short")
+                            )
+                            _grade_p36 = getattr(best, 'grade', '') or ''
+                            _regime_lower_p36 = str(regime).lower() if regime else ""
+                            _chop_regimes_p36 = ("high_volatility", "sideways", "mean_reversion", "ranging")
+                            _is_chop_p36 = _regime_lower_p36 in _chop_regimes_p36
+
+                            # ── P3.22 TIGHTENING (2026-04-11) ──
+                            # OLD: only blocked WEAK + conf<70 + not-HTF-aligned
+                            # NEW: data-driven reasons to block ML=WEAK:
+                            #
+                            # Rule A (original): WEAK + conf<70 + not HTF aligned
+                            # Rule B (NEW):      WEAK + chop regime (regardless of HTF/grade/conf)
+                            #                    Justification: today's losers were all chop+WEAK
+                            #                    including A+ grades that paper WOULD have traded
+                            # Rule C (NEW):      WEAK + ml_prob < 0.45 (very low prob)
+                            #                    Justification: ML is telling us NO
+                            #
+                            # A+ ESCAPE (preserved): grade=A+ with htf_aligned=True AND trending
+                            # regime still fires (high-conviction setups)
+                            _a_plus_escape = (
+                                _grade_p36 == "A+"
+                                and _htf_aligned_p36
+                                and _regime_lower_p36 in ("trending_up", "trending_down", "breakout")
+                            )
+
+                            _rule_a = (
+                                _verdict_upper == "WEAK"
+                                and _conf_p36 < 70
+                                and not _htf_aligned_p36
+                            )
+                            _rule_b = (
+                                _verdict_upper == "WEAK"
+                                and _is_chop_p36
+                                and not _a_plus_escape
+                            )
+                            _rule_c = (
+                                _verdict_upper == "WEAK"
+                                and float(ml_prob) < 0.45
+                                and not _a_plus_escape
+                            )
+                            _p36_block = (
+                                self._p3_6_ml_conservative_block
+                                and (_rule_a or _rule_b or _rule_c)
+                            )
+                            if _p36_block:
+                                _trigger_rule = (
+                                    "A (low_conf+not_htf)" if _rule_a else
+                                    ("B (chop_regime)" if _rule_b else "C (very_low_prob)")
+                                )
+                                logger.warning(
+                                    "P3.6 ML LIVE BLOCK [rule %s]: %s %s prob=%.3f WEAK conf=%d grade=%s regime=%s — BLOCKED",
+                                    _trigger_rule, _side_str_p36.upper(), symbol, ml_prob,
+                                    _conf_p36, _grade_p36, _regime_lower_p36,
+                                )
+                                try:
+                                    from bot import pipeline_metrics as _pm
+                                    _pm.record_hotfix_veto(
+                                        "p3_6_ml_weak_block",
+                                        f"{symbol}_{_side_str_p36}_{_trigger_rule}_conf{_conf_p36}_prob{ml_prob:.2f}",
+                                    )
+                                except Exception:
+                                    pass
+                                self._funnel["blocked_ml_p3_6"] = self._funnel.get("blocked_ml_p3_6", 0) + 1
+                                return []
+                        except Exception as _p36_exc:
+                            logger.debug("P3.6 ML check failed: %s", _p36_exc)
                 elif ml_prob < 0.55:
                     _ml_conf_adj = 0    # baseline, no adjustment
                 elif ml_prob >= 0.65:
@@ -2836,6 +3220,30 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
         signal.metadata["ml_threshold"] = self._ml_thresholds.get(symbol, 0.65)
         signal.metadata["ml_model_version"] = ml_result.get("model_version", "unknown")
+        # Phase 4.5: which model scope actually scored this trade
+        signal.metadata["ml_resolved_scope"] = ml_result.get("resolved_scope", "scanner")
+        signal.metadata["ml_resolved_family"] = ml_result.get("resolved_family")
+        signal.metadata["ml_file_key"] = ml_result.get("file_key", best_sr.scanner_name)
+        # Phase 4.8: edge verdict + effective threshold applied (for per-verdict calibration analysis)
+        signal.metadata["ml_edge_verdict"] = ml_result.get("edge_verdict")
+        signal.metadata["ml_oos_mean"] = ml_result.get("oos_mean")
+        signal.metadata["ml_overfit_gap"] = ml_result.get("overfit_gap")
+        # _effective_threshold is set in the veto gate block above if the path ran
+        try:
+            signal.metadata["ml_effective_threshold"] = ml_threshold
+            signal.metadata["ml_verdict_action"] = _verdict_action
+        except NameError:
+            # ABSTAIN path skipped the gate entirely — no effective threshold applied
+            signal.metadata["ml_effective_threshold"] = None
+            signal.metadata["ml_verdict_action"] = "ABSTAIN_BYPASS" if ml_is_abstain else "LEARNING_BYPASS"
+        # Phase 4.6: snapshot the feature vector + prob at entry time so closed-loop
+        # analytics can correlate what we scored WITH vs what actually happened.
+        # Cap at 32 feature names to keep metadata small — these are typically the
+        # top features we already log for debugging.
+        signal.metadata["ml_features_matched"] = ml_result.get("features_matched", 0)
+        signal.metadata["ml_features_expected"] = ml_result.get("features_expected", 0)
+        signal.metadata["ml_match_pct"] = ml_result.get("match_pct", 1.0)
+        signal.metadata["ml_feature_schema_hash"] = ml_result.get("feature_schema_hash", "")
 
         # ── Per-scanner SL/TP config ──
         if scanner_exits:

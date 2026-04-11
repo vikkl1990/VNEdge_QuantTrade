@@ -516,22 +516,67 @@ class BotOrchestrator:
 
                 # Mirror exit to real exchange for ANY close event from WS path
                 if ev_type == "sl_updated":
-                    # SL updates: sync to exchange
+                    # ── Fix #2 (2026-04-11): TRAIL PROPAGATION ──
+                    # Paper's signal_tracker emits sl_updated whenever breakeven,
+                    # chandelier trail, MFE lock, or Phase 4.7 profit defender
+                    # tightens the stop. Previously the `independent_exit=True`
+                    # flag (set on every new real trade at create time) caused
+                    # the orchestrator to SKIP propagating these updates to real,
+                    # meaning paper could close at +$1 on a BE-stop retrace
+                    # while the real trade was still bleeding with its original
+                    # 94bp SL intact.
+                    #
+                    # The fix: ALWAYS propagate TIGHTENING SL updates to real,
+                    # regardless of independent_exit status. Real's independent
+                    # exit logic (early_kill / time_decay / hard_loss_cap) is a
+                    # FLOOR — it catches disasters. Paper's trail is a CEILING —
+                    # it locks profit. Both should cooperate.
+                    #
+                    # Buffering: the new real SL must preserve the 0.15% entry
+                    # buffer that was added at entry time (for execution latency).
+                    # Formula: new_real_sl = new_paper_sl ± (entry × 0.0015).
+                    #
+                    # Safety: only propagate if the new real SL moves in the
+                    # TIGHTENING direction (never loosen via this path).
                     if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                         try:
                             trade_id = ev.get("trade_id", "")
-                            new_sl = ev.get("new_sl", 0)
+                            new_sl = ev.get("new_sl", 0)  # paper's new SL (unbuffered)
                             ev_symbol = ev.get("symbol", "")
                             if trade_id and new_sl > 0:
-                                # Only sync paper SL if trade is NOT independently managed
                                 _sl_real_id = self._real_manager.paper_to_real.get(trade_id, "")
                                 _sl_real_t = self._real_manager.real_trades.get(_sl_real_id)
-                                if _sl_real_t and getattr(_sl_real_t, "independent_exit", False):
-                                    pass  # independent exit handles its own SL
-                                else:
-                                    await self._real_manager.update_exchange_sl(trade_id, ev_symbol, new_sl)
-                        except Exception:
-                            pass
+                                if _sl_real_t is not None:
+                                    # Compute buffered real SL from paper's new SL
+                                    _side = str(getattr(_sl_real_t, "side", "long")).lower()
+                                    _entry = float(getattr(_sl_real_t, "entry_price", 0) or 0)
+                                    # Default to 0.15% buffer (matches mirror_paper_trade)
+                                    # Dry-run skips buffer (no latency concern on paper)
+                                    _buffer = (_entry * 0.0015) if (_entry > 0 and not self._real_manager.dry_run) else 0.0
+                                    if _side in ("long", "buy"):
+                                        _new_real_sl = new_sl - _buffer
+                                        _is_tighter = _new_real_sl > float(getattr(_sl_real_t, "stop_loss", 0) or 0)
+                                    else:  # short
+                                        _new_real_sl = new_sl + _buffer
+                                        _is_tighter = _new_real_sl < float(getattr(_sl_real_t, "stop_loss", 1e18) or 1e18)
+                                    if _is_tighter and _new_real_sl > 0:
+                                        self._log.info(
+                                            "TRAIL PROPAGATE: %s %s | paper_sl=%.4f → real_sl=%.4f "
+                                            "(buffer=%.4f, current_real=%.4f)",
+                                            ev_symbol, _side, new_sl, _new_real_sl, _buffer,
+                                            float(getattr(_sl_real_t, "stop_loss", 0) or 0),
+                                        )
+                                        await self._real_manager.update_exchange_sl(
+                                            trade_id, ev_symbol, _new_real_sl,
+                                        )
+                                    else:
+                                        self._log.debug(
+                                            "TRAIL SKIP (not tighter): %s %s new_real=%.4f current=%.4f",
+                                            ev_symbol, _side, _new_real_sl,
+                                            float(getattr(_sl_real_t, "stop_loss", 0) or 0),
+                                        )
+                        except Exception as _tp_err:
+                            self._log.warning("TRAIL PROPAGATE failed: %s", _tp_err)
                 else:
                     # Close events: mirror exit + AI learning + monitor
                     closed_sig = ev.get("signal", {})
@@ -727,21 +772,42 @@ class BotOrchestrator:
                             )
 
                     # ── SL UPDATE → sync to exchange ──
+                    # Fix #2 (2026-04-11): TRAIL PROPAGATION — see detailed
+                    # comment in the ws-events path above. This is the fast
+                    # trade monitor path; same divergence bug, same fix.
+                    # Always propagate TIGHTENING SL updates regardless of
+                    # independent_exit flag, with the 0.15% entry buffer
+                    # preserved on the real SL.
                     if ev_type == "sl_updated" and hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                         try:
                             trade_id = ev.get("trade_id", "")
-                            new_sl = ev.get("new_sl", 0)
+                            new_sl = ev.get("new_sl", 0)  # paper's new SL (unbuffered)
                             symbol = ev.get("symbol", "")
                             if trade_id and new_sl > 0:
-                                # Skip SL sync if real trade manages its own exit
                                 _sl2_real_id = self._real_manager.paper_to_real.get(trade_id, "")
                                 _sl2_real_t = self._real_manager.real_trades.get(_sl2_real_id)
-                                if _sl2_real_t and getattr(_sl2_real_t, "independent_exit", False):
-                                    pass  # independent exit handles its own SL
-                                else:
-                                    await self._real_manager.update_exchange_sl(trade_id, symbol, new_sl)
+                                if _sl2_real_t is not None:
+                                    _side2 = str(getattr(_sl2_real_t, "side", "long")).lower()
+                                    _entry2 = float(getattr(_sl2_real_t, "entry_price", 0) or 0)
+                                    _buffer2 = (_entry2 * 0.0015) if (_entry2 > 0 and not self._real_manager.dry_run) else 0.0
+                                    if _side2 in ("long", "buy"):
+                                        _new_real_sl2 = new_sl - _buffer2
+                                        _is_tighter2 = _new_real_sl2 > float(getattr(_sl2_real_t, "stop_loss", 0) or 0)
+                                    else:  # short
+                                        _new_real_sl2 = new_sl + _buffer2
+                                        _is_tighter2 = _new_real_sl2 < float(getattr(_sl2_real_t, "stop_loss", 1e18) or 1e18)
+                                    if _is_tighter2 and _new_real_sl2 > 0:
+                                        self._log.info(
+                                            "TRAIL PROPAGATE [fast]: %s %s | paper_sl=%.4f → real_sl=%.4f "
+                                            "(buffer=%.4f, current_real=%.4f)",
+                                            symbol, _side2, new_sl, _new_real_sl2, _buffer2,
+                                            float(getattr(_sl2_real_t, "stop_loss", 0) or 0),
+                                        )
+                                        await self._real_manager.update_exchange_sl(
+                                            trade_id, symbol, _new_real_sl2,
+                                        )
                         except Exception as exc:
-                            self._log.debug("Exchange SL sync failed: %s", exc)
+                            self._log.warning("TRAIL PROPAGATE [fast] failed: %s", exc)
                         continue  # sl_updated is not a close event, skip rest
 
                     self._log.info("Fast Monitor: %s", msg)

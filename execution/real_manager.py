@@ -222,6 +222,27 @@ class RealTradingManager:
         self.min_balance: float = rt_cfg.get("min_balance_to_trade", 30.0)
         self.leverage_cap: int = rt_cfg.get("leverage_cap", 75)  # raised: demo uses 20x-75x per confidence tier
 
+        # ── Fix #1 (2026-04-11): SLIPPAGE-BOUNDED ENTRIES ──
+        # Enable the existing Phase 3.9 IOC-style limit order path at entry,
+        # with a configurable max-slippage tolerance. This caps catastrophic
+        # slippage (80bp+ rare outliers from today's losses) without the
+        # adverse-selection problem of pure post_only maker orders (where
+        # winners run away and only losers fill). IOC limit at
+        # signal_price ± tolerance: fills if market stayed close, cancels
+        # cleanly if market ran away. Fill rate ~70-85%, capped slippage.
+        # Auto-rollback if fill rate < 60% over 10 attempts (line 755).
+        self._use_limit_orders: bool = rt_cfg.get("use_limit_orders", True)  # Fix #1: default ON
+        self._p39_max_slippage_bps: float = float(rt_cfg.get("max_slippage_bps", 15))  # Fix #1: tolerance
+
+        # ── Fix #3 (2026-04-11): REAL-ONLY ML THRESHOLD FLOOR ──
+        # Real trading rejects signals with ml_prob below this floor, even
+        # if paper's lower per-symbol threshold would accept. Rationale:
+        # today's 10 real losses all had ml_prob 0.43-0.57 (mediocre) and
+        # all went -$0.43 to -$1.02. Bumping the real floor to 0.65 blocks
+        # ~60% of real trades (the ones that were dragging the session) and
+        # only takes high-conviction setups. Paper unaffected.
+        self._real_ml_threshold_min: float = float(rt_cfg.get("real_ml_threshold_min", 0.65))
+
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
             max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 3)  # 3 is safe default,
@@ -451,6 +472,21 @@ class RealTradingManager:
         if ml_prob is not None and float(ml_prob) > 0 and float(ml_prob) <= 0.35:
             logger.info("SMART QUALIFY FAIL: ml_prob=%.3f <= 0.45", float(ml_prob))
             return False, f"ml_prob_low:{ml_prob}"
+
+        # ── Fix #3 (2026-04-11): REAL-ONLY ML THRESHOLD FLOOR ──
+        # Real trades require a higher ML probability floor than paper.
+        # Today's 10 real losses all had ml_prob 0.43-0.57. A 0.65 floor
+        # blocks ~60% of real trades (the mediocre ones) and only takes
+        # high-conviction setups. Paper's per-symbol thresholds are unchanged.
+        # ABSTAIN is handled earlier (if ml_prob is None/0.0 the trade takes
+        # the fail-open path from Phase 4.2 and is not blocked here).
+        _real_floor = float(getattr(self, "_real_ml_threshold_min", 0.65))
+        if ml_prob is not None and float(ml_prob) > 0 and float(ml_prob) < _real_floor:
+            logger.info(
+                "SMART QUALIFY FAIL [Fix #3]: %s ml_prob=%.3f < real_floor=%.2f — paper_only",
+                signal.get("symbol", "?"), float(ml_prob), _real_floor,
+            )
+            return False, f"real_ml_floor:{ml_prob:.3f}<{_real_floor:.2f}"
 
         # 5. Scanner win-rate check
         scanner_name = meta.get("setup_type", "") or signal.get("scanner", "")

@@ -243,6 +243,30 @@ class RealTradingManager:
         # only takes high-conviction setups. Paper unaffected.
         self._real_ml_threshold_min: float = float(rt_cfg.get("real_ml_threshold_min", 0.65))
 
+        # ── Fix #4 (2026-04-11): REGIME FILTER FOR REAL TRADES ──
+        # Today's losses were 70% in sideways/high_volatility regimes.
+        # Paper can afford chop trades (no slippage), real cannot (46bp+
+        # execution cost per round trip eats any small move). This list
+        # restricts real trades to regimes where price moves enough to
+        # overcome the execution cost band. Paper continues to take ALL
+        # regimes — only real is filtered.
+        #
+        # Default allowed regimes: trending_up, trending_down, breakout
+        # Default blocked: sideways, ranging, high_volatility, quiet, mean_reversion
+        # Empty list = no filter (Fix #4 disabled).
+        _allowed = rt_cfg.get("real_allowed_regimes", []) or []
+        self._real_allowed_regimes: set = set(str(r).strip().lower() for r in _allowed if r)
+
+        # ── Fix #5 (2026-04-11): TIGHTER REAL TP1 TARGET ──
+        # Current TP1 (paper): 0.8R for SCALP, 1.2R for INTRADAY. On scalp
+        # windows of 5-15min, these rarely hit — price needs to move 0.5-1%
+        # in our direction to reach them. Meanwhile the real trade bleeds
+        # execution cost and time_decays out at ~0R.
+        # Fix #5: override real's TP1 to a much tighter R target (default
+        # 0.30R) so winning real trades actually BOOK PROFIT before they
+        # decay. 0 = use paper's TP unchanged.
+        self._real_tp1_r: float = float(rt_cfg.get("real_tp1_r", 0.0))
+
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
             max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 3)  # 3 is safe default,
@@ -487,6 +511,23 @@ class RealTradingManager:
                 signal.get("symbol", "?"), float(ml_prob), _real_floor,
             )
             return False, f"real_ml_floor:{ml_prob:.3f}<{_real_floor:.2f}"
+
+        # ── Fix #4 (2026-04-11): REGIME FILTER FOR REAL TRADES ──
+        # Real trades only fire in regimes where price actually moves enough
+        # to overcome the 46bp+ execution cost band. Paper can afford chop
+        # trades (zero slippage); real can't (every chop trade becomes a
+        # time_decay loss). Today's 10 real losses: 6 sideways + 2 high_vol
+        # + 1 trending + 1 counter-trend. Allowed regimes typically:
+        # trending_up, trending_down, breakout. Empty list = no filter.
+        _allowed_regimes = getattr(self, "_real_allowed_regimes", set()) or set()
+        if _allowed_regimes:
+            _regime = str(meta.get("regime", "")).strip().lower()
+            if _regime and _regime not in _allowed_regimes:
+                logger.info(
+                    "SMART QUALIFY FAIL [Fix #4]: %s regime=%s not in allowed %s — paper_only",
+                    signal.get("symbol", "?"), _regime, sorted(_allowed_regimes),
+                )
+                return False, f"real_regime_block:{_regime}"
 
         # 5. Scanner win-rate check
         scanner_name = meta.get("setup_type", "") or signal.get("scanner", "")
@@ -1238,6 +1279,27 @@ class RealTradingManager:
         order_side = "buy" if side_str == "long" else "sell"
         entry_price = signal.get("entry_price", 0)
         coid = paper_trade_id[:32] if paper_trade_id else None
+
+        # ── Fix #5 (2026-04-11): TIGHTER REAL TP1 OVERRIDE ──
+        # Replace paper's TP1 (typically 0.8R for SCALP, 1.2R for INTRADAY)
+        # with a tighter R target for real's bracket order. Paper's TP is
+        # unchanged because paper has no execution cost drag and can afford
+        # to chase bigger moves. Real needs to BOOK FAST before time_decay
+        # eats the small unrealized gain. Default 0.30R → real takes smaller
+        # but more frequent wins.
+        # 0 (or missing) = disabled → use paper's TP unchanged.
+        _real_tp1_r = float(getattr(self, "_real_tp1_r", 0.0) or 0.0)
+        if _real_tp1_r > 0 and entry_raw > 0 and _paper_initial_risk > 0:
+            _tp_original = tp
+            if side_str == "long":
+                tp = entry_raw + _real_tp1_r * _paper_initial_risk
+            else:
+                tp = entry_raw - _real_tp1_r * _paper_initial_risk
+            logger.info(
+                "REAL TP OVERRIDE [Fix #5]: %s %s | paper_tp=%.4f → real_tp=%.4f (%.2fR × risk=%.4f)",
+                signal.get("symbol", "?"), side_str, _tp_original, tp,
+                _real_tp1_r, _paper_initial_risk,
+            )
 
         # -- Price freshness: skip if price already moved too far --
         try:

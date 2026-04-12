@@ -1529,10 +1529,15 @@ class BotOrchestrator:
         except Exception:
             pass
 
+        _side_log = sig_dict.get("side", signal_type)
+        if hasattr(_side_log, "value"):
+            _side_log = _side_log.value
+        _scanner_log = (sig_dict.get("metadata", {}) or {}).get("setup_type", "")
         self._log.info(
-            "Signal: %s %s | grade=%s confidence=%.2f",
+            "Signal: %s %s %s | grade=%s confidence=%.2f",
             symbol,
-            signal_type,
+            str(_side_log).upper(),
+            _scanner_log,
             sig_dict.get("grade", "?"),
             sig_dict.get("confidence", 0),
         )

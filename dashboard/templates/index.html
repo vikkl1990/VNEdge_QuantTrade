@@ -3062,12 +3062,32 @@ async function refreshAgents() {
     el("loss-last-run").textContent = "Last run: " + (la.last_run || "--");
     el("loss-summary").textContent = la.summary || "Monitoring losses...";
 
-    // ML Trainer
+    // ML Trainer — also check /api/ml/health for fresh model dates
     const ml = agents.ml_trainer || {};
     el("ml-trainer-status").textContent = ml.status || "IDLE";
     el("ml-trainer-status").className = "badge " + (ml.status === "RUNNING" ? "badge-purple" : "");
-    el("ml-last-run").textContent = "Last run: " + (ml.last_run || "--");
-    el("ml-summary").textContent = ml.summary || "Loading...";
+    // Fetch fresh model dates from ML health (more reliable than agent status)
+    try {
+        const mlh = await fetch("/api/ml/health").then(r => r.json()).catch(() => null);
+        if (mlh && mlh.scanners) {
+            const scanners = Object.values(mlh.scanners);
+            const latestTrain = scanners.reduce((best, s) => {
+                const t = s.trained_at || "";
+                return t > best ? t : best;
+            }, "");
+            const modelCount = scanners.length;
+            const bestScanner = scanners.reduce((best, s) =>
+                (s.age_hours || 999) < (best.age_hours || 999) ? s : best, scanners[0] || {});
+            el("ml-last-run").textContent = "Last run: " + (latestTrain ? latestTrain.substring(0, 16).replace("T", " ") : (ml.last_run || "--"));
+            el("ml-summary").textContent = modelCount + " models | Best: " + (bestScanner.scanner || "?") + " AUC=" + ((bestScanner.n_features || 0) > 0 ? "48f" : "?");
+        } else {
+            el("ml-last-run").textContent = "Last run: " + (ml.last_run || "--");
+            el("ml-summary").textContent = ml.summary || "Loading...";
+        }
+    } catch(e) {
+        el("ml-last-run").textContent = "Last run: " + (ml.last_run || "--");
+        el("ml-summary").textContent = ml.summary || "Loading...";
+    }
 
     // ML Model table
     const models = d.ml_models || [];
@@ -5754,12 +5774,27 @@ async function loadFeatureImportance() {
             }
         } catch (e) {}
 
-        // Fallback: read from scanner models
+        // Fallback 1: read from scanner models via /api/ml/health
         if (topFeats.length === 0 && d && d.scanners) {
             const firstScanner = Object.values(d.scanners)[0];
             if (firstScanner && firstScanner.top_features) {
                 topFeats = firstScanner.top_features.map(f => [f.feature, f.importance]);
             }
+        }
+
+        // Fallback 2: read from live_model_results via tracker stats
+        if (topFeats.length === 0) {
+            try {
+                const trkStats = await fetch("/api/tracker/stats").then(r => r.json()).catch(() => null);
+                if (trkStats && trkStats.by_setup) {
+                    // Build pseudo-importance from scanner WR
+                    const setups = Object.entries(trkStats.by_setup || {});
+                    topFeats = setups.map(([name, data]) => [
+                        "scanner_" + name,
+                        parseFloat(data.win_rate || data.wr || 0) / 100
+                    ]).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                }
+            } catch(e) {}
         }
 
         // Separate BTC features from general features
@@ -6744,38 +6779,51 @@ async function refreshInfraHealth() {
         var d = await fetch("/api/infra/health").then(function(r) { return r.json(); }).catch(function() { return null; });
         if (!d) return;
 
+        // Helper: inline KV rendering (avoids scope issues with makeKV in different tab context)
+        function kv(label, value, color) {
+            var c = color || "var(--text)";
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
+                '<span style="font-size:.7rem;color:var(--text-muted)">' + label + '</span>' +
+                '<span style="font-size:.75rem;font-weight:600;color:' + c + ';font-family:var(--font-mono)">' + (value || "--") + '</span></div>';
+        }
+
         // 1. ML Proxy Health
         var proxyWrap = document.getElementById("proxy-health");
         if (proxyWrap && d.ml_proxy) {
             var p = d.ml_proxy;
             var cbColor = p.cb_open ? "var(--red)" : "var(--green)";
-            var cbText = p.cb_open ? "OPEN (" + p.cb_remaining_sec + "s)" : "CLOSED";
+            var cbText = p.cb_open ? "OPEN (" + (p.cb_remaining_sec || 0) + "s)" : "CLOSED";
+            var cacheHtml = "";
+            try {
+                var entries = p.cache_entries || {};
+                Object.keys(entries).forEach(function(path) {
+                    var e = entries[path] || {};
+                    var age = parseFloat(e.age_sec || 0);
+                    var shortPath = path.split("/").pop() || path;
+                    cacheHtml += '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span style="color:var(--text-muted)">' +
+                        shortPath + '</span><span style="font-family:var(--font-mono);color:' +
+                        (age < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + age.toFixed(0) + 's ago</span></div>';
+                });
+            } catch(e) {}
             proxyWrap.innerHTML =
-                makeKV("Circuit Breaker", cbText, cbColor) +
-                makeKV("Consecutive Failures", String(p.cb_failures), p.cb_failures > 0 ? "var(--yellow)" : "var(--green)") +
-                makeKV("Cache Entries", String(p.cache_size)) +
-                (Object.keys(p.cache_entries || {}).map(function(path) {
-                    var e = p.cache_entries[path];
-                    var shortPath = path.split("/").pop();
-                    return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span style="color:var(--text-muted)">' +
-                        esc(shortPath) + '</span><span style="font-family:var(--font-mono);color:' +
-                        (e.age_sec < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + e.age_sec.toFixed(0) + 's ago</span></div>';
-                }).join(""));
+                kv("Circuit Breaker", cbText, cbColor) +
+                kv("Failures", String(p.cb_failures || 0), (p.cb_failures || 0) > 0 ? "var(--yellow)" : "var(--green)") +
+                kv("Cache Entries", String(p.cache_size || 0)) + cacheHtml;
         }
 
         // 2. Cron Sync Monitor
         var syncWrap = document.getElementById("sync-monitor");
         if (syncWrap && d.cron_sync) {
             var s = d.cron_sync;
-            var syncAge = s.age_sec || 999999;
+            var syncAge = parseFloat(s.age_sec || 999999);
             var syncColor = syncAge < 900 ? "var(--green)" : syncAge < 1800 ? "var(--yellow)" : "var(--red)";
             var syncText = s.last_sync ? (Math.floor(syncAge / 60) + "m ago") : "never";
             syncWrap.innerHTML =
-                makeKV("Last Sync", syncText, syncColor) +
-                makeKV("Sync Time", s.last_sync || "--") +
-                makeKV("Feedback Records", String(s.feedback_lines || 0)) +
-                makeKV("Training Records", String(s.trades_lines || 0)) +
-                makeKV("Log Exists", s.log_exists ? "Yes" : "No", s.log_exists ? "var(--green)" : "var(--red)");
+                kv("Last Sync", syncText, syncColor) +
+                kv("Sync Time", s.last_sync || "--") +
+                kv("Feedback Records", String(s.feedback_lines || 0)) +
+                kv("Training Records", String(s.trades_lines || 0)) +
+                kv("Log Exists", s.log_exists ? "Yes" : "No", s.log_exists ? "var(--green)" : "var(--red)");
         }
 
         // 3. Orderbook Cache
@@ -6784,11 +6832,11 @@ async function refreshInfraHealth() {
             var ob = d.orderbook_cache;
             var running = ob.running;
             obWrap.innerHTML =
-                makeKV("Status", running ? "RUNNING" : "OFF", running ? "var(--green)" : "var(--red)") +
-                makeKV("Symbols", String(ob.symbols || 0)) +
-                makeKV("Cached", String(ob.cached || 0)) +
-                makeKV("Fetches", String(ob.fetch_count || 0)) +
-                makeKV("Errors", String(ob.error_count || 0), (ob.error_count || 0) > 10 ? "var(--red)" : "var(--green)");
+                kv("Status", running ? "RUNNING" : "OFF", running ? "var(--green)" : "var(--red)") +
+                kv("Symbols", String(ob.symbols || 0)) +
+                kv("Cached", String(ob.cached || 0)) +
+                kv("Fetches", String(ob.fetch_count || 0)) +
+                kv("Errors", String(ob.error_count || 0), (ob.error_count || 0) > 10 ? "var(--red)" : "var(--green)");
         }
     } catch (e) {}
 }

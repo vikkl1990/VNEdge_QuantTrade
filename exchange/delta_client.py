@@ -757,6 +757,29 @@ class DeltaClient:
         return {}
 
 
+    def get_funding_rate(self, symbol: str) -> Optional[Dict]:
+        """Fetch current funding rate for a perpetual contract.
+
+        Delta India API: funding info is embedded in the ticker response
+        (fields: funding_rate, predicted_funding_rate, next_funding_rebalance_time).
+        """
+        try:
+            product_id = self._get_product_id(symbol)
+            resp = self._client.request("GET", f"/v2/tickers/{product_id}")
+            if resp and isinstance(resp, dict):
+                return {
+                    "symbol": symbol,
+                    "funding_rate": float(resp.get("funding_rate", 0) or 0),
+                    "predicted_rate": float(resp.get("predicted_funding_rate", 0) or 0),
+                    "next_rebalance": resp.get("next_funding_rebalance_time", ""),
+                    "mark_price": float(resp.get("mark_price", 0) or 0),
+                    "open_interest": float(resp.get("open_interest", 0) or resp.get("oi", 0) or 0),
+                    "volume_24h": float(resp.get("turnover_24h", 0) or resp.get("volume", 0) or 0),
+                }
+        except Exception as e:
+            logger.debug("get_funding_rate(%s) failed: %s", symbol, e)
+        return None
+
     def get_l2_orderbook(self, symbol: str, depth: int = 20) -> Optional[Dict]:
         """Fetch L2 order book from Delta REST API.
 

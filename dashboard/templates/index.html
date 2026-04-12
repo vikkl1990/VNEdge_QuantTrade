@@ -832,6 +832,34 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- ═══ VISION TIER 3: Resolution Clock + Market Map + Catalyst Calendar ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 2fr 1fr;gap:8px;margin-bottom:8px">
+
+    <!-- Resolution Clock -->
+    <div class="panel" style="border-left:3px solid #ec4899">
+      <div class="panel-title">Resolution Clock</div>
+      <div id="resolution-clock" style="display:flex;flex-direction:column;gap:6px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Market Map -->
+    <div class="panel" style="border-left:3px solid #3b82f6">
+      <div class="panel-title">Market Map <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">· capital deployed by family</span></div>
+      <div id="market-map" style="min-height:120px">
+        <div class="empty">Loading market data...</div>
+      </div>
+    </div>
+
+    <!-- Catalyst Calendar -->
+    <div class="panel" style="border-left:3px solid #f97316">
+      <div class="panel-title">Catalyst Calendar</div>
+      <div id="catalyst-calendar" style="display:flex;flex-direction:column;gap:4px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
   <div class="panel" id="symbol-scanner-status" style="margin-bottom:8px">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
@@ -6316,6 +6344,217 @@ async function loadResearchEngine() {
 }
 
 // ── WIRE TIER 2+3 into refresh cycles ──
+// ══════════════════════════════════════════════════════════
+// VISION TIER 3: Resolution Clock + Market Map + Catalyst Calendar
+// ══════════════════════════════════════════════════════════
+
+// ── RESOLUTION CLOCK ──
+// Forward-looking thesis timeline showing key price levels and regime questions
+function updateResolutionClock(thesis, prices) {
+    var wrap = document.getElementById("resolution-clock");
+    if (!wrap) return;
+
+    var btc = (prices && prices["BTC/USDT"]) || 0;
+    var eth = (prices && prices["ETH/USDT"]) || 0;
+    var regime = (thesis && thesis.regime) || "unknown";
+    var conf = (thesis && thesis.regime_confidence) || 0;
+
+    // Build resolution questions based on current state
+    var questions = [];
+
+    // BTC key levels
+    if (btc > 0) {
+        var btcRound = Math.round(btc / 1000) * 1000;
+        var btcDist = ((btc - btcRound) / btc * 100).toFixed(2);
+        var direction = btc > btcRound ? "above" : "below";
+        questions.push({
+            question: "BTC hold $" + btcRound.toLocaleString() + "?",
+            pressure: Math.max(0, 100 - Math.abs(btcDist) * 20),
+            status: direction + " (" + Math.abs(btcDist) + "%)",
+            color: btc > btcRound ? "var(--green)" : "var(--red)",
+        });
+    }
+
+    // Regime stability
+    questions.push({
+        question: "Regime stable?",
+        pressure: conf * 100,
+        status: regime.replace("_", " ") + " (" + (conf * 100).toFixed(0) + "%)",
+        color: conf > 0.7 ? "var(--green)" : conf > 0.4 ? "var(--yellow)" : "var(--red)",
+    });
+
+    // Trend continuation
+    var side = (thesis && thesis.dominant_side) || "NEUTRAL";
+    var wr = (thesis && thesis.recent_wr) || 0;
+    questions.push({
+        question: side + " thesis holds?",
+        pressure: wr,
+        status: "WR " + wr.toFixed(0) + "% (last 20)",
+        color: wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)",
+    });
+
+    // Session timing
+    var hour = new Date().getUTCHours();
+    var isActiveSession = (hour >= 3 && hour < 21);
+    questions.push({
+        question: "Active session?",
+        pressure: isActiveSession ? 80 : 20,
+        status: isActiveSession ? "YES (UTC " + hour + ":00)" : "low volume (UTC " + hour + ":00)",
+        color: isActiveSession ? "var(--green)" : "var(--text-muted)",
+    });
+
+    wrap.innerHTML = questions.map(function(q) {
+        return '<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
+            '<div style="display:flex;justify-content:space-between;font-size:.62rem;margin-bottom:3px">' +
+            '<span style="color:var(--text);font-weight:600">' + q.question + '</span>' +
+            '<span style="font-family:var(--font-mono);color:' + q.color + '">' + q.pressure.toFixed(0) + '%</span></div>' +
+            '<div style="height:4px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden">' +
+            '<div style="height:100%;width:' + q.pressure.toFixed(0) + '%;background:' + q.color + ';border-radius:2px;transition:width .5s"></div></div>' +
+            '<div style="font-size:.5rem;color:var(--text-muted);margin-top:2px">' + q.status + '</div></div>';
+    }).join("");
+}
+
+// ── MARKET MAP ──
+// Capital deployed by symbol/family with visual nodes
+async function loadMarketMap() {
+    try {
+        var d = await fetch("/api/market-map").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("market-map");
+        if (!wrap || !d || !d.symbols) return;
+
+        var families = d.families || {};
+        var familyColors = {
+            liquid_majors: "#06b6d4", secondary: "#8b5cf6", high_beta: "#f59e0b",
+        };
+
+        var html = '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+
+        for (var famName in families) {
+            var syms = families[famName] || [];
+            var fColor = familyColors[famName] || "var(--text-muted)";
+            var famExposure = 0;
+            var famPnl = 0;
+            var famTrades = 0;
+
+            var nodes = syms.map(function(sym) {
+                var s = d.symbols[sym] || {};
+                var exposure = (s.paper_exposure || 0) + (s.real_exposure || 0);
+                famExposure += exposure;
+                famPnl += (s.pnl || 0);
+                famTrades += (s.trades || 0);
+
+                var size = Math.max(36, Math.min(70, 36 + exposure / 50));
+                var pnlColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
+                var borderColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.3)" : "rgba(255,59,92,.3)";
+                var coin = sym.replace("/USDT", "");
+
+                return '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + pnlColor +
+                    ';border:1px solid ' + borderColor + ';display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:default" ' +
+                    'title="' + sym + ': $' + (s.price || 0).toFixed(2) + ' | ' + (s.trades || 0) + ' trades | WR ' + (s.wr || 0).toFixed(0) + '% | PnL $' + (s.pnl || 0).toFixed(2) + '">' +
+                    '<span style="font-size:.55rem;font-weight:800;color:' + fColor + '">' + coin + '</span>' +
+                    '<span style="font-size:.45rem;font-family:var(--font-mono);color:var(--text-muted)">' + (s.wr || 0).toFixed(0) + '%</span></div>';
+            }).join("");
+
+            html += '<div style="text-align:center">' +
+                '<div style="font-size:.55rem;font-weight:700;color:' + fColor + ';text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">' +
+                famName.replace("_", " ") + '</div>' +
+                '<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center">' + nodes + '</div>' +
+                '<div style="font-size:.5rem;color:var(--text-muted);margin-top:3px">$' + famExposure.toFixed(0) + ' exp · ' +
+                famTrades + 't · <span style="color:' + (famPnl >= 0 ? 'var(--green)' : 'var(--red)') + '">$' + famPnl.toFixed(0) + '</span></div></div>';
+        }
+
+        html += '</div>';
+
+        // Totals bar
+        html += '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:.6rem">' +
+            '<span style="color:var(--text-muted)">Paper: <b style="color:var(--cyan)">$' + (d.total_paper_exposure || 0).toFixed(0) + '</b></span>' +
+            '<span style="color:var(--text-muted)">Real: <b style="color:var(--red)">$' + (d.total_real_exposure || 0).toFixed(0) + '</b></span></div>';
+
+        wrap.innerHTML = html;
+    } catch (e) {}
+}
+
+// ── CATALYST CALENDAR ──
+async function loadCatalystCalendar() {
+    try {
+        var d = await fetch("/api/catalyst-calendar").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("catalyst-calendar");
+        if (!wrap || !d) return;
+
+        var html = "";
+
+        // 1. Current session indicator
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:rgba(255,255,255,.02);border-radius:3px;margin-bottom:4px">' +
+            '<span style="font-size:.6rem;font-weight:700;color:var(--cyan)">' + (d.current_session || "?") + '</span>' +
+            '<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--text-muted)">' + (d.utc_time || "") + '</span></div>';
+
+        // 2. Session timeline (compact horizontal bar)
+        var sessions = d.sessions || [];
+        html += '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;margin-bottom:6px">';
+        sessions.forEach(function(s) {
+            var width = ((s.utc_end - s.utc_start) / 24 * 100);
+            var bg = s.active ? "rgba(6,182,212,.3)" : "rgba(255,255,255,.03)";
+            var border = s.active ? "rgba(6,182,212,.5)" : "rgba(255,255,255,.05)";
+            html += '<div style="width:' + width + '%;background:' + bg + ';border-right:1px solid ' + border +
+                ';display:flex;align-items:center;justify-content:center" title="' + s.name + ' (UTC ' + s.utc_start + '-' + s.utc_end + ')">' +
+                '<span style="font-size:.4rem;color:' + (s.active ? 'var(--cyan)' : 'rgba(255,255,255,.15)') + '">' +
+                (width > 10 ? s.name.split(" ")[0] : "") + '</span></div>';
+        });
+        html += '</div>';
+
+        // 3. Funding rates
+        var funding = d.funding || {};
+        var fundingKeys = Object.keys(funding);
+        if (fundingKeys.length > 0) {
+            html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:3px">Funding Rates</div>';
+            fundingKeys.forEach(function(sym) {
+                var f = funding[sym];
+                var rate = f.rate_8h || 0;
+                var col = rate > 0 ? "var(--green)" : rate < 0 ? "var(--red)" : "var(--text-muted)";
+                var bias = f.bias === "longs_pay" ? "L pay" : f.bias === "shorts_pay" ? "S pay" : "neutral";
+                html += '<div style="display:flex;justify-content:space-between;font-size:.58rem;padding:1px 0">' +
+                    '<span style="color:var(--text-muted)">' + sym.replace("/USDT", "") + '</span>' +
+                    '<span style="font-family:var(--font-mono);color:' + col + '">' + rate.toFixed(4) + '% <span style="font-size:.5rem">(' + bias + ')</span></span></div>';
+            });
+        }
+
+        // 4. Upcoming events
+        var events = d.upcoming_events || [];
+        if (events.length > 0) {
+            html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-top:6px;margin-bottom:3px">Upcoming Events</div>';
+            events.forEach(function(e) {
+                var impactCol = e.impact === "high" ? "var(--red)" : e.impact === "medium" ? "var(--yellow)" : "var(--text-muted)";
+                html += '<div style="display:flex;gap:6px;align-items:flex-start;font-size:.55rem;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.02)">' +
+                    '<span style="color:var(--text-muted);min-width:42px;font-family:var(--font-mono)">' + e.date.substring(5) + '</span>' +
+                    '<span style="width:4px;height:4px;border-radius:50%;background:' + impactCol + ';margin-top:4px;flex-shrink:0"></span>' +
+                    '<span style="color:var(--text)">' + e.event + '</span></div>';
+                });
+        }
+
+        wrap.innerHTML = html || '<div class="empty">No catalyst data</div>';
+    } catch (e) {}
+}
+
+// ── Wire Tier 3 into Tier 2+3 refresh cycle ──
+(function wireVisionTier3() {
+    async function loadTier3() {
+        try {
+            var thesis = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
+            var prices = (thesis && thesis.btc_price) ? {"BTC/USDT": thesis.btc_price} : {};
+            // Also get full prices from status
+            try {
+                var st = await fetch("/api/status").then(function(r) { return r.json(); }).catch(function() { return {}; });
+                prices = st.prices || prices;
+            } catch(e) {}
+            updateResolutionClock(thesis, prices);
+        } catch (e) {}
+        try { await loadMarketMap(); } catch (e) {}
+        try { await loadCatalystCalendar(); } catch (e) {}
+    }
+    setTimeout(loadTier3, 4000);
+    setInterval(loadTier3, 20000);  // every 20s (funding rates don't change faster)
+})();
+
 (function wireVisionTier23() {
     // Thesis + agents + pipeline trace + research — load every 15s
     async function loadTier23() {

@@ -601,6 +601,10 @@ class DashboardServer:
         app.router.add_get("/api/research/correlations", self._handle_research_correlations)
         app.router.add_get("/api/pipeline/trace", self._handle_pipeline_trace)
 
+        # ── Vision Tier 3: Resolution Clock + Market Map + Catalyst Calendar ──
+        app.router.add_get("/api/market-map", self._handle_market_map)
+        app.router.add_get("/api/catalyst-calendar", self._handle_catalyst_calendar)
+
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
             app.router.add_post("/api/login", self._handle_login)
@@ -2302,6 +2306,180 @@ class DashboardServer:
             return web.json_response({
                 "batches": sorted_batches[:20],
                 "total_journeys": len(journeys),
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ==================================================================
+    # Vision Tier 3: Market Map + Catalyst Calendar
+    # ==================================================================
+
+    async def _handle_market_map(self, request: web.Request) -> web.Response:
+        """Market Map: capital deployed by symbol/family with performance data.
+
+        Combines: prices, paper positions exposure, real positions exposure,
+        per-symbol historical performance, and family groupings.
+        """
+        try:
+            # Hardcoded to avoid importing heavy training module at runtime
+            PAIR_FAMILIES = {
+                "liquid_majors": "BTC,ETH,SOL",
+                "secondary": "AVAX,LINK,XRP,LTC,ADA,DOT",
+                "high_beta": "DOGE,TAO",
+            }
+            try:
+                from ml_training.candidate_trainer import PAIR_FAMILIES as _PF
+                PAIR_FAMILIES = _PF
+            except Exception:
+                pass
+            prices = dict(getattr(self, '_prices', {}) or {})
+            tracker = getattr(self, '_signal_tracker', None)
+            if not tracker:
+                orch = getattr(self, '_orchestrator', None)
+                tracker = getattr(orch, '_signal_tracker', None) if orch else None
+
+            mgr = self._get_real_manager()
+
+            # Per-symbol data
+            symbols_data = {}
+            families = {}
+            for fam_name, fam_syms in PAIR_FAMILIES.items():
+                # Handle both "BTC,ETH,SOL" (str) and ["BTC", "ETH", "SOL"] (list) formats
+                if isinstance(fam_syms, str):
+                    raw_list = [s.strip() for s in fam_syms.split(",") if s.strip()]
+                elif isinstance(fam_syms, (list, tuple)):
+                    raw_list = [str(s).strip() for s in fam_syms]
+                else:
+                    raw_list = []
+                sym_list = [(s + "/USDT" if "/USDT" not in s else s) for s in raw_list]
+                families[fam_name] = sym_list
+                for sym in sym_list:
+                    symbols_data[sym] = {
+                        "family": fam_name,
+                        "price": prices.get(sym, 0),
+                        "paper_exposure": 0,
+                        "real_exposure": 0,
+                        "trades": 0,
+                        "wr": 0,
+                        "pnl": 0,
+                        "avg_r": 0,
+                    }
+
+            # Paper exposure (active trades)
+            if tracker:
+                for tid, ts in list(getattr(tracker, '_active', {}).items()):
+                    sym = getattr(ts, 'symbol', '')
+                    pos_usd = float(getattr(ts, 'position_size_usd', 0) or 0)
+                    if sym in symbols_data:
+                        symbols_data[sym]["paper_exposure"] += pos_usd
+
+            # Real exposure
+            if mgr:
+                for tid, t in list(getattr(mgr, 'real_trades', {}).items()):
+                    sym = getattr(t, 'symbol', '')
+                    margin = float(getattr(t, 'margin', 0) or 0)
+                    lev = float(getattr(t, 'leverage', 1) or 1)
+                    if sym in symbols_data:
+                        symbols_data[sym]["real_exposure"] += margin * lev
+
+            # Historical performance
+            if tracker:
+                try:
+                    stats = tracker.get_stats()
+                    by_sym = stats.get("by_symbol", {}) if isinstance(stats, dict) else {}
+                    for sym, data in by_sym.items():
+                        if sym in symbols_data and isinstance(data, dict):
+                            symbols_data[sym]["trades"] = int(data.get("total", 0) or data.get("trades", 0) or 0)
+                            symbols_data[sym]["wr"] = float(data.get("win_rate", 0) or data.get("wr", 0) or 0)
+                            symbols_data[sym]["pnl"] = float(data.get("pnl", 0) or 0)
+                            symbols_data[sym]["avg_r"] = float(data.get("avg_r", 0) or 0)
+                except Exception:
+                    pass
+
+            return web.json_response({
+                "symbols": symbols_data,
+                "families": families,
+                "total_paper_exposure": sum(s["paper_exposure"] for s in symbols_data.values()),
+                "total_real_exposure": sum(s["real_exposure"] for s in symbols_data.values()),
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_catalyst_calendar(self, request: web.Request) -> web.Response:
+        """Catalyst Calendar: funding rates + session schedule + market events.
+
+        Pulls live funding rates from Delta exchange for all monitored symbols.
+        Also provides session windows (India, Asia, Europe, US) and known events.
+        """
+        try:
+            import asyncio
+            symbols = list(getattr(self, '_symbols', []) or [])[:10]
+
+            # Fetch funding rates in parallel via thread pool
+            funding = {}
+            try:
+                orch = getattr(self, '_orchestrator', None)
+                mgr = self._get_real_manager()
+                delta = None
+                if mgr:
+                    delta = getattr(mgr, '_delta_live', None)
+                if delta:
+                    for sym in symbols[:6]:  # top 6 to avoid rate limits
+                        try:
+                            fr = await asyncio.to_thread(delta.get_funding_rate, sym)
+                            if fr:
+                                funding[sym] = fr
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Session windows (from Indian market config)
+            import datetime as _dt
+            utc_now = _dt.datetime.now(_dt.timezone.utc)
+            sessions = [
+                {"name": "Asia Late", "utc_start": 0, "utc_end": 3, "active": 0 <= utc_now.hour < 3},
+                {"name": "India Morning", "utc_start": 3, "utc_end": 6, "active": 3 <= utc_now.hour < 6},
+                {"name": "India Midday", "utc_start": 6, "utc_end": 9, "active": 6 <= utc_now.hour < 9},
+                {"name": "Europe", "utc_start": 9, "utc_end": 15, "active": 9 <= utc_now.hour < 15},
+                {"name": "US", "utc_start": 13, "utc_end": 21, "active": 13 <= utc_now.hour < 21},
+                {"name": "Asia Early", "utc_start": 21, "utc_end": 24, "active": 21 <= utc_now.hour < 24},
+            ]
+            current_session = next((s["name"] for s in sessions if s["active"]), "Off-hours")
+
+            # Static event calendar (upcoming known events)
+            events = [
+                {"date": "2026-04-14", "event": "BTC Options Expiry (Monthly)", "impact": "high", "symbol": "BTC/USDT"},
+                {"date": "2026-04-18", "event": "ETH Shapella Anniversary", "impact": "medium", "symbol": "ETH/USDT"},
+                {"date": "2026-04-25", "event": "BTC Options Expiry (Monthly)", "impact": "high", "symbol": "BTC/USDT"},
+                {"date": "2026-04-30", "event": "Quarter End Rebalancing", "impact": "medium", "symbol": "ALL"},
+            ]
+            # Filter to next 14 days
+            today = utc_now.strftime("%Y-%m-%d")
+            upcoming = [e for e in events if e["date"] >= today][:5]
+
+            # Funding summary
+            funding_summary = {}
+            for sym, fr in funding.items():
+                rate = fr.get("funding_rate", 0)
+                annualized = rate * 3 * 365 * 100  # 8h intervals, annualized %
+                funding_summary[sym] = {
+                    "rate_8h": round(rate * 100, 4),  # as percentage
+                    "predicted": round(fr.get("predicted_rate", 0) * 100, 4),
+                    "annualized_pct": round(annualized, 1),
+                    "next_rebalance": fr.get("next_rebalance", ""),
+                    "oi": fr.get("open_interest", 0),
+                    "vol_24h": fr.get("volume_24h", 0),
+                    "bias": "longs_pay" if rate > 0 else "shorts_pay" if rate < 0 else "neutral",
+                }
+
+            return web.json_response({
+                "funding": funding_summary,
+                "sessions": sessions,
+                "current_session": current_session,
+                "utc_hour": utc_now.hour,
+                "utc_time": utc_now.strftime("%H:%M UTC"),
+                "upcoming_events": upcoming,
             }, dumps=_safe_dumps)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)

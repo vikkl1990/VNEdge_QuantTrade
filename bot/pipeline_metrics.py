@@ -53,6 +53,7 @@ _HOTFIX_NAMES = (
     "p3_21_slip_recheck_kept",    # Phase 3.21: Hybrid A+D — slip recheck kept trade alive
     "p4_fee_drag_chop",
     "p5_cvd_universal_veto",      # Phase 5: CVD flow divergence veto (cross-scanner)
+    "p6_btc_momentum_guard",      # Phase 6: BTC momentum guard blocking alt longs during BTC dump
 )
 
 # Day-boundary tracking for rolling 24h reset

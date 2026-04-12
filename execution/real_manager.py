@@ -267,6 +267,10 @@ class RealTradingManager:
         # decay. 0 = use paper's TP unchanged.
         self._real_tp1_r: float = float(rt_cfg.get("real_tp1_r", 0.0))
 
+        # ── Architect review (2026-04-12): overtrading + portfolio heat guards ──
+        self._max_daily_trades: int = int(rt_cfg.get("max_daily_trades", 15))
+        self._max_portfolio_heat_pct: float = float(rt_cfg.get("max_portfolio_heat_pct", 500))
+
         # ── Track D (2026-04-11): FIX-LAYER HIT COUNTERS ──
         # Exposed via get_status() for the dashboard REAL OPS strip.
         # Each Fix increments its counter at the fire site so the UI can
@@ -477,11 +481,31 @@ class RealTradingManager:
             logger.info("SMART QUALIFY FAIL: %s not in whitelist", symbol)
             return False, f"symbol_blocked:{symbol}"
 
-        # 2. Daily trade limit (max 5 real trades per day)
-        MAX_DAILY_TRADES = 999  # no daily limit
-        if self.circuit_breaker.trade_count_today >= MAX_DAILY_TRADES:
-            logger.info("SMART QUALIFY FAIL: %d/%d daily trades used", self.circuit_breaker.trade_count_today, MAX_DAILY_TRADES)
-            return False, f"daily_limit:{self.circuit_breaker.trade_count_today}/{MAX_DAILY_TRADES}"
+        # 2. Daily trade limit — prevent overtrading death spiral
+        # At $20 margin + fees, 15 trades/day = $300 notional churn.
+        # Configurable via settings.yaml real_trading.max_daily_trades (default 15).
+        _max_daily = int(getattr(self, '_max_daily_trades', 15) or 15)
+        if self.circuit_breaker.trade_count_today >= _max_daily:
+            logger.warning("DAILY TRADE LIMIT: %d/%d — blocking new real entries",
+                          self.circuit_breaker.trade_count_today, _max_daily)
+            return False, f"daily_limit:{self.circuit_breaker.trade_count_today}/{_max_daily}"
+
+        # 2b. Portfolio heat cap — total open notional vs balance
+        # Prevents 5 × 20x = 100x effective leverage on $22 account
+        _max_heat_pct = float(getattr(self, '_max_portfolio_heat_pct', 500) or 500)  # 500% = 5x balance
+        try:
+            _total_notional = sum(
+                float(getattr(t, 'margin', 0) or 0) * float(getattr(t, 'leverage', 1) or 1)
+                for t in self.real_trades.values()
+            )
+            _balance = self._cached_balance or 22.0
+            _heat_pct = (_total_notional / _balance * 100) if _balance > 0 else 0
+            if _heat_pct >= _max_heat_pct:
+                logger.warning("PORTFOLIO HEAT: %.0f%% >= %.0f%% cap (notional=$%.0f, balance=$%.0f) — blocked",
+                              _heat_pct, _max_heat_pct, _total_notional, _balance)
+                return False, f"portfolio_heat:{_heat_pct:.0f}%>={_max_heat_pct:.0f}%"
+        except Exception:
+            pass
 
         # 3. Circuit breaker
         allowed, cb_reason = self.circuit_breaker.is_allowed()
@@ -699,6 +723,19 @@ class RealTradingManager:
         else:
             target_margin = 50.0   # minimum — still fee-viable
         
+        # Architect review #6: Volatility-scaled sizing
+        # If ATR is 2× average, halve the margin. If ATR is 0.5× average, keep full size.
+        # This prevents oversized positions in volatile regimes while maintaining
+        # full conviction in calm markets. Pure scaling — doesn't change base margin logic.
+        try:
+            _atr_ratio = float(meta.get("atr_ratio", 1.0) or 1.0)
+            if _atr_ratio > 0.5:
+                _vol_scale = min(1.0, 1.0 / _atr_ratio)  # ATR=2.0 → scale=0.5, ATR=0.5 → scale=1.0
+                _vol_scale = max(0.3, _vol_scale)  # never less than 30% of base
+                target_margin = target_margin * _vol_scale
+        except Exception:
+            pass
+
         # Cap to balance limits
         margin = min(target_margin, self.max_margin)
         margin = min(margin, usable * 0.45)  # max 45% of usable per trade
@@ -1455,6 +1492,25 @@ class RealTradingManager:
 
             # Slippage
             slippage_bps = abs(fill_price - entry_price) / entry_price * 10000 if entry_price > 0 else 0
+
+            # ── Architect review #4: CATASTROPHIC FILL REJECTION ──
+            # If fill deviates > 200bp (2%) from signal, something is deeply wrong
+            # (exchange bug, stale price, market halted). Hard-reject and close immediately.
+            _catastrophic_slip_bp = 200.0
+            if slippage_bps > _catastrophic_slip_bp and not self.dry_run:
+                logger.critical(
+                    "CATASTROPHIC FILL: %s %s | signal=%.4f fill=%.4f slip=%.0fbp > %dbp — "
+                    "REJECTING + closing position",
+                    symbol, side_str, entry_price, fill_price, slippage_bps, int(_catastrophic_slip_bp),
+                )
+                # Emergency close
+                try:
+                    close_side = "sell" if side_str == "long" else "buy"
+                    delta.place_market_order(symbol=symbol, side=close_side, lots=lots, reduce_only=True)
+                except Exception:
+                    pass
+                self._fix_stats["catastrophic_fill_reject"] = self._fix_stats.get("catastrophic_fill_reject", 0) + 1
+                return {"status": "catastrophic_fill_rejected", "slippage_bps": slippage_bps}, fill_price
 
             # ── Phase 3.21 HYBRID A+D: SMART SLIPPAGE TOLERANCE ──
             # Evidence (2026-04-11): paper made +$14.08 on XRP while real auto-closed

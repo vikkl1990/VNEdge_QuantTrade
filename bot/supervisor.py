@@ -104,6 +104,12 @@ class Supervisor:
         # 4. Paper/real drift (only if both trackers available)
         anomalies.extend(self._check_paper_real_drift())
 
+        # 5. Orphan position reconciliation (#2/#8)
+        anomalies.extend(self._check_orphan_positions())
+
+        # 6. External uptime ping (#3)
+        self._ping_uptime_monitor()
+
         # Record anomalies
         if anomalies:
             self._anomaly_count += len(anomalies)
@@ -289,6 +295,90 @@ class Supervisor:
         except Exception:
             pass
         return alerts
+
+    def _check_orphan_positions(self) -> List[Dict[str, Any]]:
+        """Architect review #2/#8: Periodic reconciliation — bot state vs exchange.
+
+        Fetches open positions from Delta exchange and compares to bot's
+        real_trades dict. If exchange has a position the bot doesn't know
+        about, alert as orphan. If bot thinks a position is open but
+        exchange says it's closed, alert as ghost.
+
+        Read-only: never closes positions. Just alerts for manual review.
+        """
+        alerts = []
+        try:
+            if not self._real_manager:
+                return []
+            # Only check every 5th cycle (~5 min) to avoid rate limits
+            _cycle = getattr(self, '_recon_cycle', 0)
+            self._recon_cycle = _cycle + 1
+            if _cycle % 5 != 0:
+                return []
+
+            delta = getattr(self._real_manager, '_delta_live', None)
+            if not delta:
+                return []
+
+            # Fetch exchange positions
+            try:
+                exchange_positions = {}
+                for sym in ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"):
+                    try:
+                        pos = delta.get_position(sym)
+                        if pos and abs(float(pos.get("size", 0) or 0)) > 0:
+                            exchange_positions[sym] = pos
+                    except Exception:
+                        pass
+
+                bot_symbols = set()
+                for tid, t in list(getattr(self._real_manager, 'real_trades', {}).items()):
+                    bot_symbols.add(getattr(t, 'symbol', ''))
+
+                # Orphan: on exchange but not in bot
+                for sym, pos in exchange_positions.items():
+                    if sym not in bot_symbols:
+                        size = float(pos.get("size", 0) or 0)
+                        alerts.append({
+                            "check": "orphan_position",
+                            "severity": "critical",
+                            "detail": f"ORPHAN on exchange: {sym} size={size} — bot has no record!",
+                            "symbol": sym,
+                        })
+
+                # Ghost: in bot but not on exchange (only if bot has >0 real trades)
+                if len(getattr(self._real_manager, 'real_trades', {})) > 0 and not exchange_positions:
+                    for sym in bot_symbols:
+                        if sym and sym not in exchange_positions:
+                            alerts.append({
+                                "check": "ghost_position",
+                                "severity": "warning",
+                                "detail": f"GHOST in bot: {sym} tracked but not on exchange (may have been closed externally)",
+                                "symbol": sym,
+                            })
+            except Exception as e:
+                self._log.debug("Reconciliation fetch failed: %s", e)
+        except Exception:
+            pass
+        return alerts
+
+    def _ping_uptime_monitor(self) -> None:
+        """Architect review #3: External uptime heartbeat.
+
+        Pings an external monitoring URL every supervisor cycle (60s).
+        If the bot crashes, the monitor detects missed pings and alerts.
+        Uses a simple HTTP GET to healthchecks.io or similar service.
+        """
+        try:
+            _url = getattr(self, '_uptime_monitor_url', None)
+            if not _url:
+                # Default: log-only (no external URL configured)
+                # User can set via: supervisor._uptime_monitor_url = "https://hc-ping.com/UUID"
+                return
+            import urllib.request
+            urllib.request.urlopen(_url, timeout=5)
+        except Exception:
+            pass  # Never let uptime ping failure affect the bot
 
     @property
     def status(self) -> Dict[str, Any]:

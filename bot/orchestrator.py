@@ -1299,6 +1299,13 @@ class BotOrchestrator:
             _pm.heartbeat("candle_close")
         except Exception:
             pass
+
+        # Architect review #11: track BTC 5m-ago price for momentum guard
+        try:
+            if symbol == "BTC/USDT" and timeframe == "5m":
+                self._btc_price_5m_ago = float(candle.get("close", 0) or 0)
+        except Exception:
+            pass
         # Phase 2.5 B2: Current action banner — surface last-scanned pair + TF
         try:
             import time as _t
@@ -1490,6 +1497,60 @@ class BotOrchestrator:
                     try:
                         from bot import pipeline_metrics as _pm
                         _pm.record_hotfix_veto("p5_cvd_universal_veto", f"{symbol}_{_side_str}_{scanner}_cvd{_cvd_val:.1f}")
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
+
+        # -- Architect review #9: Paper consecutive loss kill switch --
+        # If paper (not just real) has 8+ consecutive losses, the ML/scanner combo
+        # is in a bad patch. Pause new signal processing for 10 minutes to let
+        # the market regime stabilize. Prevents ML from training on cascading bad data.
+        try:
+            _paper_streak = int(self._trade_monitor._metrics.get("current_streak", 0) or 0)
+            _paper_loss_pause_threshold = 8
+            _paper_loss_pause_sec = 600  # 10 min
+            if _paper_streak <= -_paper_loss_pause_threshold:
+                _last_pause = getattr(self, '_paper_loss_pause_until', 0) or 0
+                import time as _t
+                if _t.time() < _last_pause:
+                    self._log.info("PAPER LOSS PAUSE: %d consecutive losses, paused until %.0fs from now",
+                                  abs(_paper_streak), _last_pause - _t.time())
+                    return
+                elif _paper_streak <= -_paper_loss_pause_threshold and _t.time() >= _last_pause:
+                    self._paper_loss_pause_until = _t.time() + _paper_loss_pause_sec
+                    self._log.warning(
+                        "PAPER LOSS PAUSE TRIGGERED: %d consecutive losses — pausing new signals for %ds",
+                        abs(_paper_streak), _paper_loss_pause_sec,
+                    )
+                    return
+        except Exception:
+            pass
+
+        # -- Architect review #11: BTC momentum guard for alt entries --
+        # If BTC dropped > 1.5% in last 5 minutes, block new alt LONG entries.
+        # Correlation drag makes alt longs unprofitable during BTC dumps.
+        try:
+            _btc_price = (getattr(self, '_prices', {}) or {}).get("BTC/USDT", 0)
+            _side_str = str(sig_dict.get("side", "")).lower()
+            if _side_str in ("long", "buy") and symbol != "BTC/USDT" and _btc_price > 0:
+                _btc_5m_ago = getattr(self, '_btc_price_5m_ago', _btc_price)
+                _btc_drop_pct = (_btc_price - _btc_5m_ago) / _btc_5m_ago * 100 if _btc_5m_ago > 0 else 0
+                if _btc_drop_pct < -1.5:
+                    self._log.warning(
+                        "BTC MOMENTUM GUARD: %s %s LONG blocked — BTC dropped %.2f%% in 5m (threshold -1.5%%)",
+                        symbol, scanner, _btc_drop_pct,
+                    )
+                    try:
+                        _SJ.stamp(sig_dict, "hard_block", passed=False,
+                                  reason=f"btc_momentum_guard_drop={_btc_drop_pct:.2f}%")
+                        _SJ.close(sig_dict)
+                    except Exception:
+                        pass
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p6_btc_momentum_guard", f"{symbol}_{scanner}_btc{_btc_drop_pct:.1f}%")
                     except Exception:
                         pass
                     return

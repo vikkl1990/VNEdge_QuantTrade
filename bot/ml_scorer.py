@@ -59,6 +59,41 @@ class MLScorer:
         if not self._enabled:
             return {"probability": 0.5, "verdict": "DISABLED", "scanner": scanner_name}
 
+        # Architect review #10: Model staleness kill switch
+        # If the ML model on VM4 hasn't been retrained in >48h, degrade to
+        # rules-only (return 0.5 probability = neutral). Prevents stale
+        # models from confidently misfiring on changed market conditions.
+        try:
+            _stale_threshold_h = 48
+            _last_health = getattr(self, '_last_health_check', {}) or {}
+            _health_age = time.time() - float(_last_health.get("ts", 0) or 0)
+            # Re-check health every 5 minutes
+            if _health_age > 300:
+                import requests as _rq
+                try:
+                    _hr = _rq.get(self._url.replace("/api/score", "/api/ml/health"), timeout=3)
+                    if _hr.status_code == 200:
+                        _hd = _hr.json()
+                        _scanners = _hd.get("scanners", {})
+                        _max_age_h = 0
+                        for _sn, _sv in _scanners.items():
+                            _max_age_h = max(_max_age_h, float(_sv.get("age_hours", 0) or 0))
+                        self._last_health_check = {"ts": time.time(), "max_age_h": _max_age_h}
+                except Exception:
+                    pass
+            _model_age_h = float((getattr(self, '_last_health_check', {}) or {}).get("max_age_h", 0) or 0)
+            if _model_age_h > _stale_threshold_h:
+                logger.warning(
+                    "MODEL STALE: oldest model is %.1fh old (threshold=%dh) — returning neutral 0.5",
+                    _model_age_h, _stale_threshold_h,
+                )
+                return {
+                    "probability": 0.5, "verdict": "STALE_MODEL",
+                    "scanner": scanner_name, "model_age_h": _model_age_h,
+                }
+        except Exception:
+            pass
+
         import requests  # lazy import — not needed if disabled
 
         self._stats["calls"] += 1
@@ -139,7 +174,7 @@ class MLScorer:
                         self._stats["family_counts"].get(_family or "?", 0) + 1
                     )
 
-                # Phase 4.2: warn if training-serving skew is moderate (80-99%)
+                # Phase 4.2 + Architect review #7: concept drift detection
                 match_pct = result.get("match_pct", 1.0)
                 if match_pct < 0.99 and match_pct >= 0.80:
                     logger.info(
@@ -148,6 +183,29 @@ class MLScorer:
                         result.get("features_matched", 0),
                         result.get("features_expected", 0),
                     )
+
+                # Architect review #7: Track rolling drift rate
+                # If >30% of recent scores had match_pct < 90%, the model is
+                # experiencing concept drift and predictions are unreliable.
+                try:
+                    _drift_window = getattr(self, '_drift_window', [])
+                    _drift_window.append(match_pct)
+                    if len(_drift_window) > 50:
+                        _drift_window = _drift_window[-50:]
+                    self._drift_window = _drift_window
+                    _drift_rate = sum(1 for m in _drift_window if m < 0.90) / len(_drift_window)
+                    if _drift_rate > 0.30 and len(_drift_window) >= 20:
+                        logger.warning(
+                            "CONCEPT DRIFT DETECTED: %.0f%% of last %d scores had feature skew (match<90%%)",
+                            _drift_rate * 100, len(_drift_window),
+                        )
+                        self._stats["concept_drift_detected"] = True
+                        self._stats["concept_drift_rate"] = round(_drift_rate, 2)
+                    else:
+                        self._stats["concept_drift_detected"] = False
+                        self._stats["concept_drift_rate"] = round(_drift_rate, 2)
+                except Exception:
+                    pass
 
                 # Log for analysis
                 self._scores_log.append({

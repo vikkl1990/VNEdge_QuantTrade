@@ -140,6 +140,12 @@ class DashboardServer:
             "settlement": paper_cfg.get("settlement_fee_rate", 0.0006),
         }
 
+        # ── Item #7: ML proxy resilience (retry + circuit breaker + cache) ──
+        self._ml_proxy_session: Optional[Any] = None  # lazy aiohttp.ClientSession
+        self._ml_proxy_cb_failures: int = 0
+        self._ml_proxy_cb_open_until: float = 0.0
+        self._ml_proxy_cache: Dict[str, tuple] = {}  # path → (ts, body_bytes, content_type)
+
         # Auth config — ALWAYS enabled, generate random password if not set
         self._auth_user = os.getenv("DASHBOARD_USER", "admin")
         self._auth_password = os.getenv("DASHBOARD_PASSWORD", "")
@@ -569,6 +575,16 @@ class DashboardServer:
         app.router.add_get("/api/pipeline/loss_taxonomy", self._handle_loss_taxonomy)
         app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
         app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
+
+        # ── Track A (2026-04-11): LOCK 75% + Force Flat ──
+        # A.2: close 75% of a specific real position (lock profit, keep runner)
+        # A.3: force flat — close ALL open real positions immediately
+        app.router.add_post("/api/real/lock_75", self._handle_lock_75)
+        app.router.add_post("/api/real/force_flat", self._handle_force_flat)
+
+        # ── Items #6+8: Config Editor + Hot-Reload ──
+        app.router.add_get("/api/config", self._handle_config_get)
+        app.router.add_post("/api/config", self._handle_config_post)
 
         # ── Track C (2026-04-11): ML dashboard proxy ──
         # VM1 (live bot) dashboard proxies to VM4 (ML dashboard) private-IP
@@ -1068,39 +1084,88 @@ class DashboardServer:
             return web.json_response(self._grid_bot.get_open_positions(), dumps=_safe_dumps)
         return web.json_response([])
 
+    def _get_ml_session(self):
+        """Lazy shared aiohttp session for ML proxy (avoid per-request overhead)."""
+        import aiohttp
+        if self._ml_proxy_session is None or self._ml_proxy_session.closed:
+            self._ml_proxy_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5),
+            )
+        return self._ml_proxy_session
+
     async def _handle_ml_proxy(self, request: web.Request) -> web.Response:
         """Track C (2026-04-11): Proxy ML dashboard requests to VM4.
 
-        VM1 (live bot) is on an OCI public IP. VM4 (ML dashboard) is on
-        an OCI private IP (10.0.2.4). The browser can't reach 10.0.2.4
-        directly, so we proxy the /api/ml/* namespace through VM1.
-
-        Target: http://10.0.2.4:8081
-        Query string is forwarded unchanged. 5-second timeout.
+        Item #7 hardening (2026-04-12):
+        - Shared aiohttp session (no per-request overhead)
+        - TTL cache: 30s for /health, 10s for others
+        - Retry: 2 attempts with 1s backoff
+        - Circuit breaker: 3 consecutive failures → 60s cooldown, return cached
         """
-        import aiohttp
-        path = request.path  # e.g. /api/ml/family-verdict-matrix
+        import time as _t
+
+        path = request.path
         qs = request.query_string
+        cache_key = f"{path}?{qs}" if qs else path
+
+        # TTL: 30s for health (rarely changes), 10s for live data
+        ttl = 30 if path.endswith("/health") else 10
+
+        # 1. Serve from cache if fresh
+        cached = self._ml_proxy_cache.get(cache_key)
+        if cached:
+            ts, body, ct = cached
+            if _t.time() - ts < ttl:
+                return web.Response(body=body, status=200, content_type=ct)
+
+        # 2. Circuit breaker: if open, return cached or 502
+        now = _t.time()
+        if now < self._ml_proxy_cb_open_until:
+            if cached:
+                _, body, ct = cached
+                return web.Response(body=body, status=200, content_type=ct)
+            return web.json_response(
+                {"error": "circuit_open", "retry_after_s": int(self._ml_proxy_cb_open_until - now)},
+                status=502,
+            )
+
+        # 3. Try up to 2 attempts with 1s backoff
         vm4_url = f"http://10.0.2.4:8081{path}"
         if qs:
             vm4_url += f"?{qs}"
-        try:
-            timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+
+        session = self._get_ml_session()
+        last_err = None
+        for attempt in range(2):
+            try:
                 async with session.get(vm4_url) as resp:
                     body = await resp.read()
-                    content_type = resp.headers.get("Content-Type", "application/json")
-                    return web.Response(
-                        body=body,
-                        status=resp.status,
-                        content_type=content_type.split(";")[0].strip(),
-                    )
-        except Exception as e:
-            logger.debug("ML proxy failed for %s: %s", path, e)
-            return web.json_response(
-                {"error": "vm4_unreachable", "path": path, "detail": str(e)},
-                status=502,
-            )
+                    ct = resp.headers.get("Content-Type", "application/json").split(";")[0].strip()
+                    # Success: reset CB, update cache
+                    self._ml_proxy_cb_failures = 0
+                    self._ml_proxy_cache[cache_key] = (_t.time(), body, ct)
+                    return web.Response(body=body, status=resp.status, content_type=ct)
+            except Exception as e:
+                last_err = e
+                if attempt < 1:
+                    await asyncio.sleep(1)  # 1s backoff before retry
+
+        # 4. Both attempts failed
+        self._ml_proxy_cb_failures += 1
+        if self._ml_proxy_cb_failures >= 3:
+            self._ml_proxy_cb_open_until = _t.time() + 60
+            logger.warning("ML proxy circuit breaker OPEN for 60s after %d failures",
+                          self._ml_proxy_cb_failures)
+
+        # Return stale cached response if available (better than 502)
+        if cached:
+            _, body, ct = cached
+            return web.Response(body=body, status=200, content_type=ct)
+
+        return web.json_response(
+            {"error": "vm4_unreachable", "path": path, "detail": str(last_err)},
+            status=502,
+        )
 
     async def _handle_real_status(self, request: web.Request) -> web.Response:
         """Return real trading manager status for dashboard."""
@@ -1680,6 +1745,249 @@ class DashboardServer:
                 },
                 "flags_applied": {"full": full, "reenable": reenable, "daily": reset_daily},
             })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ==================================================================
+    # Track A (2026-04-11): LOCK 75% + Force Flat
+    # ==================================================================
+    def _get_real_manager(self):
+        """Resolve the real_manager instance from self or the orchestrator."""
+        mgr = getattr(self, '_real_manager', None)
+        if mgr is None:
+            orch = getattr(self, '_orchestrator', None)
+            if orch:
+                mgr = getattr(orch, '_real_manager', None)
+        return mgr
+
+    async def _handle_lock_75(self, request: web.Request) -> web.Response:
+        """A.2: close 75% of a specific real position (profit lock, keep 25% runner).
+
+        POST body: {"trade_id": "live_xxx"}  OR  {"paper_trade_id": "abc123..."}
+        Uses real_manager.partial_close_real() with close_pct=0.75. The 25%
+        remainder continues to run with its existing SL/TP bracket.
+        """
+        try:
+            mgr = self._get_real_manager()
+            if mgr is None:
+                return web.json_response({"error": "real_manager_not_available"}, status=404)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            trade_id = body.get("trade_id", "")
+            paper_id = body.get("paper_trade_id", "")
+
+            # Resolve paper_trade_id from real trade_id if only that was given
+            if trade_id and not paper_id:
+                for pid, rid in list(getattr(mgr, "paper_to_real", {}).items()):
+                    if rid == trade_id:
+                        paper_id = pid
+                        break
+                if not paper_id:
+                    # Fallback: scan real_trades for a trade with matching id
+                    rt = getattr(mgr, "real_trades", {}) or {}
+                    t = rt.get(trade_id)
+                    if t is not None:
+                        paper_id = getattr(t, "paper_trade_id", "") or ""
+
+            if not paper_id:
+                return web.json_response({
+                    "error": "no_paper_id_resolved",
+                    "detail": "Could not resolve paper_trade_id from given identifiers",
+                }, status=400)
+
+            # Call partial_close_real via tp_level=0 sentinel (manual lock, not a TP hit)
+            try:
+                await mgr.partial_close_real(paper_id, 0, 0.75)
+                logger.warning("LOCK 75%% via dashboard: paper_id=%s", paper_id[:16])
+            except Exception as e:
+                return web.json_response({"error": f"partial_close_failed: {e}"}, status=500)
+
+            return web.json_response({
+                "ok": True,
+                "paper_trade_id": paper_id,
+                "close_pct": 0.75,
+                "remaining_pct": 0.25,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_force_flat(self, request: web.Request) -> web.Response:
+        """A.3: force flat — close ALL open real positions immediately.
+
+        Calls mirror_paper_exit("force_flat") on every entry in real_trades,
+        or falls back to partial_close_real(1.0) if mirror_paper_exit can't
+        resolve the paper side. Read-only at the per-trade level until all
+        closes fire. Intentionally sequential to avoid API rate spikes.
+        """
+        try:
+            mgr = self._get_real_manager()
+            if mgr is None:
+                return web.json_response({"error": "real_manager_not_available"}, status=404)
+            rt = dict(getattr(mgr, "real_trades", {}) or {})
+            if not rt:
+                return web.json_response({"ok": True, "closed": 0, "detail": "no_open_positions"})
+
+            results = []
+            for trade_id, t in rt.items():
+                try:
+                    paper_id = getattr(t, "paper_trade_id", "") or ""
+                    symbol = getattr(t, "symbol", "?")
+                    side = getattr(t, "side", "?")
+                    # Use current market price from paper engine / last-known
+                    px = float(getattr(t, "current_price", 0) or getattr(t, "entry_price", 0) or 0)
+                    ok = False
+                    if paper_id:
+                        r = await mgr.mirror_paper_exit(
+                            paper_id, px, "force_flat",
+                            paper_slippage_bps=0.0, symbol=symbol, side=side,
+                        )
+                        ok = bool(r and r.get("status") == "exited")
+                    if not ok:
+                        # Fallback path — 100% close via partial_close_real
+                        try:
+                            await mgr.partial_close_real(paper_id or trade_id, 0, 1.0)
+                            ok = True
+                        except Exception:
+                            ok = False
+                    results.append({
+                        "trade_id": trade_id, "symbol": symbol, "side": side, "ok": ok,
+                    })
+                except Exception as e:
+                    results.append({"trade_id": trade_id, "ok": False, "error": str(e)[:60]})
+
+            closed_n = sum(1 for r in results if r.get("ok"))
+            logger.warning("FORCE FLAT via dashboard: closed %d/%d open real positions",
+                           closed_n, len(results))
+            return web.json_response({
+                "ok": True,
+                "closed": closed_n,
+                "total": len(results),
+                "results": results,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ==================================================================
+    # Items #6+8: Config Editor + Hot-Reload
+    # ==================================================================
+
+    _SENSITIVE_KEYS = {"api_key", "api_secret", "bot_token", "passphrase", "password", "secret"}
+
+    def _strip_secrets(self, cfg, _depth=0):
+        """Recursively redact keys containing sensitive substrings."""
+        if _depth > 10 or not isinstance(cfg, dict):
+            return cfg
+        result = {}
+        for k, v in cfg.items():
+            kl = k.lower()
+            if kl in self._SENSITIVE_KEYS or any(s in kl for s in ("_key", "_secret", "_token", "_password")):
+                result[k] = "***REDACTED***"
+            elif isinstance(v, dict):
+                result[k] = self._strip_secrets(v, _depth + 1)
+            else:
+                result[k] = v
+        return result
+
+    def _has_sensitive_keys(self, d, _depth=0):
+        """Check if dict contains any sensitive keys (reject writes)."""
+        if _depth > 10 or not isinstance(d, dict):
+            return False
+        for k, v in d.items():
+            kl = k.lower()
+            if kl in self._SENSITIVE_KEYS or any(s in kl for s in ("_key", "_secret", "_token")):
+                return True
+            if isinstance(v, dict) and self._has_sensitive_keys(v, _depth + 1):
+                return True
+        return False
+
+    def _deep_merge(self, base, updates, _depth=0):
+        """Deep merge updates into base dict (updates win on leaf conflicts)."""
+        if _depth > 10:
+            return updates
+        merged = dict(base)
+        for k, v in updates.items():
+            if k in merged and isinstance(merged[k], dict) and isinstance(v, dict):
+                merged[k] = self._deep_merge(merged[k], v, _depth + 1)
+            else:
+                merged[k] = v
+        return merged
+
+    async def _handle_config_get(self, request: web.Request) -> web.Response:
+        """Return safe subset of settings.yaml (secrets redacted)."""
+        try:
+            import yaml
+            settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+            with open(settings_path) as f:
+                raw = yaml.safe_load(f) or {}
+            safe = self._strip_secrets(raw)
+            return web.json_response(safe, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_config_post(self, request: web.Request) -> web.Response:
+        """Validate, write updated config, hot-reload, and audit-trail."""
+        try:
+            import yaml, shutil
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid_json"}, status=400)
+
+        try:
+            # Reject secrets
+            if self._has_sensitive_keys(body):
+                return web.json_response({"error": "cannot_set_secrets_via_api"}, status=403)
+
+            settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+
+            # Read current
+            with open(settings_path) as f:
+                current = yaml.safe_load(f) or {}
+
+            # Deep merge
+            merged = self._deep_merge(current, body)
+
+            # Backup
+            import time as _t
+            backup = settings_path.with_suffix(f".yaml.bak.{int(_t.time())}")
+            shutil.copy2(settings_path, backup)
+
+            # Write
+            with open(settings_path, "w") as f:
+                yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
+
+            # Hot-reload typed config singleton
+            try:
+                from config import get_config
+                get_config(reload=True)
+            except Exception as e:
+                logger.warning("Config singleton reload failed: %s", e)
+
+            # Hot-reload RealTradingManager knobs
+            mgr = self._get_real_manager()
+            if mgr and hasattr(mgr, "reload_config"):
+                try:
+                    mgr.reload_config(merged)
+                except Exception as e:
+                    logger.warning("RealManager reload_config failed: %s", e)
+
+            # Audit trail
+            try:
+                import json as _json
+                audit_path = Path(__file__).resolve().parent.parent / "storage" / "config_audit.jsonl"
+                record = {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "changes": body,
+                    "source": "dashboard_api",
+                }
+                with open(audit_path, "a") as f:
+                    f.write(_json.dumps(record, default=str) + "\n")
+            except Exception:
+                pass
+
+            logger.warning("CONFIG UPDATED via dashboard API: %s", list(body.keys()))
+            return web.json_response({"ok": True, "keys_updated": list(body.keys())})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

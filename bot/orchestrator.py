@@ -413,6 +413,38 @@ class BotOrchestrator:
                 self._supervisor = None
                 self._log.warning("Supervisor failed to start: %s", _sup_err)
 
+            # 8c. Start OrderbookCache (Phase 5.0c — L2 REST poller)
+            self._ob_cache = None
+            try:
+                _ob_cfg = self._config.get("orderbook", {})
+                if _ob_cfg.get("enabled", False):
+                    from bot.orderbook_manager import OrderbookCache
+                    _delta_live = None
+                    if hasattr(self, '_real_manager') and self._real_manager:
+                        _delta_live = getattr(self._real_manager, '_delta_live', None)
+                    if _delta_live is None:
+                        from exchange.delta_client import DeltaClient
+                        _delta_live = DeltaClient(mode="live")
+                        _delta_live.connect()
+                    self._ob_cache = OrderbookCache(
+                        _delta_live,
+                        self._symbols,
+                        poll_interval=float(_ob_cfg.get("poll_interval", 10)),
+                        stale_threshold=float(_ob_cfg.get("stale_threshold", 30)),
+                        depth=int(_ob_cfg.get("depth", 20)),
+                    )
+                    await self._ob_cache.start()
+                    # Wire to strategy so build_scoring_features can access it
+                    if hasattr(self._strategy, '_ob_cache'):
+                        pass  # already set
+                    self._strategy._ob_cache = self._ob_cache
+                    self._log.info("OrderbookCache: started (symbols=%d)", len(self._symbols))
+                else:
+                    self._log.info("OrderbookCache: disabled (orderbook.enabled=false in config)")
+            except Exception as _ob_err:
+                self._ob_cache = None
+                self._log.warning("OrderbookCache failed to start: %s", _ob_err)
+
             # 9. Enter main loop
             await self._main_loop()
 
@@ -433,6 +465,13 @@ class BotOrchestrator:
         """Tear down all subsystems in reverse order."""
         self._running = False
         self._log.info("Shutting down components...")
+
+        # Stop OrderbookCache (Phase 5.0c)
+        try:
+            if getattr(self, '_ob_cache', None):
+                await self._ob_cache.stop()
+        except Exception:
+            pass
 
         # Stop Supervisor watchdog
         try:
@@ -550,9 +589,16 @@ class BotOrchestrator:
                                     # Compute buffered real SL from paper's new SL
                                     _side = str(getattr(_sl_real_t, "side", "long")).lower()
                                     _entry = float(getattr(_sl_real_t, "entry_price", 0) or 0)
-                                    # Default to 0.15% buffer (matches mirror_paper_trade)
-                                    # Dry-run skips buffer (no latency concern on paper)
-                                    _buffer = (_entry * 0.0015) if (_entry > 0 and not self._real_manager.dry_run) else 0.0
+                                    # Fix #3 (2026-04-11): DYNAMIC buffer = max(15bp, fill_slip*1.2)
+                                    # Static 0.15% was too tight when fills slipped 30-80bp. The SOL
+                                    # 2026-04-11 loss is the smoking gun — 46.6bp entry slip meant
+                                    # paper's trail SL 84.60 was ABOVE real's fill 84.64, and the
+                                    # static 0.15% buffer couldn't bridge it. Dynamic buffer
+                                    # scales with the original fill slippage so propagation has
+                                    # structural room on bad fills.
+                                    _fill_slip_bp = float(getattr(_sl_real_t, "slippage_bps", 0) or 0)
+                                    _buffer_bp = max(15.0, _fill_slip_bp * 1.2)
+                                    _buffer = (_entry * _buffer_bp / 10000.0) if (_entry > 0 and not self._real_manager.dry_run) else 0.0
                                     if _side in ("long", "buy"):
                                         _new_real_sl = new_sl - _buffer
                                         _is_tighter = _new_real_sl > float(getattr(_sl_real_t, "stop_loss", 0) or 0)
@@ -800,7 +846,10 @@ class BotOrchestrator:
                                 if _sl2_real_t is not None:
                                     _side2 = str(getattr(_sl2_real_t, "side", "long")).lower()
                                     _entry2 = float(getattr(_sl2_real_t, "entry_price", 0) or 0)
-                                    _buffer2 = (_entry2 * 0.0015) if (_entry2 > 0 and not self._real_manager.dry_run) else 0.0
+                                    # Fix #3 (2026-04-11): dynamic buffer (see ws-events path for context)
+                                    _fill_slip_bp2 = float(getattr(_sl2_real_t, "slippage_bps", 0) or 0)
+                                    _buffer_bp2 = max(15.0, _fill_slip_bp2 * 1.2)
+                                    _buffer2 = (_entry2 * _buffer_bp2 / 10000.0) if (_entry2 > 0 and not self._real_manager.dry_run) else 0.0
                                     if _side2 in ("long", "buy"):
                                         _new_real_sl2 = new_sl - _buffer2
                                         _is_tighter2 = _new_real_sl2 > float(getattr(_sl2_real_t, "stop_loss", 0) or 0)
@@ -1535,9 +1584,17 @@ class BotOrchestrator:
                         "(active before=%d, after=%d)",
                         symbol, signal_type, _tracker_active_before, _tracker_active_after,
                     )
+                    # Fix 2026-04-11: only stamp+close if the journey is still OPEN.
+                    # signal_tracker already writes a complete journey record when it
+                    # rejects (stages: strategy → risk_check → signal_tracker[FAIL]).
+                    # Stamping here on a closed journey auto-begins a new standalone
+                    # record with only ['orphan_prevention'], inflating JSONL by 19%
+                    # and breaking stage_stats funnel math. Guard: if _journey is
+                    # not present, the tracker already closed it — skip duplicate.
                     try:
-                        _SJ.stamp(sig_dict, "orphan_prevention", passed=False, reason="tracker_rejected_no_active_increment")
-                        _SJ.close(sig_dict)
+                        if "_journey" in sig_dict:
+                            _SJ.stamp(sig_dict, "orphan_prevention", passed=False, reason="tracker_rejected_no_active_increment")
+                            _SJ.close(sig_dict)
                     except Exception:
                         pass
                     # Phase 3.2: count orphan prevention as a hotfix

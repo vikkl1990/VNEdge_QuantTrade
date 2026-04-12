@@ -283,6 +283,23 @@ class RealTradingManager:
             "real_skips": 0,          # Total trades rejected (all reasons)
         }
 
+        # ── Activation banner (2026-04-11 hardening) ──
+        # Loud one-line snapshot at startup so the watcher + humans can
+        # verify every fix is actually wired, without grepping through
+        # settings.yaml. If any value looks wrong, the fix is mis-loaded.
+        try:
+            _indep_default = "False (mirror paper exits)"  # Fix #2: flipped 2026-04-11
+            _allowed = sorted(self._real_allowed_regimes) if self._real_allowed_regimes else ["*all*"]
+            logger.warning(
+                "REAL FIX STATUS | #1 IOC=%s tol=%dbp | #2 indep_exit_default=%s | "
+                "#3 ml_floor=%.2f | #4 regimes=%s | #5 real_tp1_r=%.2fR",
+                self._use_limit_orders, int(self._p39_max_slippage_bps),
+                _indep_default, self._real_ml_threshold_min,
+                ",".join(_allowed), self._real_tp1_r,
+            )
+        except Exception:
+            pass
+
         self.circuit_breaker = RealCircuitBreaker(
             daily_loss_limit=rt_cfg.get("daily_loss_limit_usd", 25.0),
             max_consecutive_losses=rt_cfg.get("max_consecutive_losses", 3)  # 3 is safe default,
@@ -333,6 +350,56 @@ class RealTradingManager:
 
         # Wire emergency close-all to circuit breaker
         self.circuit_breaker.on_trip = self._emergency_close_all
+
+    def reload_config(self, config: Dict[str, Any] = None) -> None:
+        """Hot-reload runtime knobs from config dict or settings.yaml.
+
+        Called by POST /api/config after settings.yaml is written.
+        Only reloads safe-to-change runtime knobs — does NOT recreate
+        exchange connections, execution engines, or circuit breakers.
+        """
+        if config is None:
+            try:
+                from config.loader import load_config
+                config = load_config()
+            except Exception as e:
+                logger.warning("reload_config: failed to load settings: %s", e)
+                return
+
+        self.config = config
+        rt_cfg = config.get("real_trading", {})
+        exec_cfg = config.get("execution", {})
+
+        # Safe-to-reload knobs (mirrors __init__ lines 212-268)
+        self.enabled = rt_cfg.get("enabled", self.enabled)
+        self.dry_run = rt_cfg.get("dry_run", self.dry_run)
+        self._order_type = exec_cfg.get("order_type", self._order_type)
+        self.min_margin = rt_cfg.get("min_margin_per_trade", self.min_margin)
+        self.max_margin = rt_cfg.get("max_margin_per_trade", self.max_margin)
+        self.max_open = rt_cfg.get("max_open_positions", self.max_open)
+        self.reserve_pct = rt_cfg.get("balance_reserve_pct", 15) / 100.0
+        self.min_balance = rt_cfg.get("min_balance_to_trade", self.min_balance)
+        self.leverage_cap = rt_cfg.get("leverage_cap", self.leverage_cap)
+        self._use_limit_orders = rt_cfg.get("use_limit_orders", self._use_limit_orders)
+        self._p39_max_slippage_bps = float(rt_cfg.get("max_slippage_bps", self._p39_max_slippage_bps))
+        self._real_ml_threshold_min = float(rt_cfg.get("real_ml_threshold_min", self._real_ml_threshold_min))
+        _allowed = rt_cfg.get("real_allowed_regimes", []) or []
+        self._real_allowed_regimes = set(str(r).strip().lower() for r in _allowed if r)
+        self._real_tp1_r = float(rt_cfg.get("real_tp1_r", self._real_tp1_r))
+
+        # Update circuit breaker limits
+        self.circuit_breaker.daily_loss_limit = rt_cfg.get(
+            "daily_loss_limit_usd", self.circuit_breaker.daily_loss_limit
+        )
+
+        logger.warning(
+            "REAL CONFIG RELOADED | IOC=%s tol=%dbp | ml_floor=%.2f | "
+            "regimes=%s | tp1=%.2fR | margin=%.0f-%.0f | max_open=%d",
+            self._use_limit_orders, int(self._p39_max_slippage_bps),
+            self._real_ml_threshold_min,
+            ",".join(sorted(self._real_allowed_regimes)) or "*all*",
+            self._real_tp1_r, self.min_margin, self.max_margin, self.max_open,
+        )
 
     def _resolve_post_only(self, signal: Dict[str, Any]) -> bool:
         """Return True if the entry order should be placed as post_only (maker).
@@ -817,13 +884,17 @@ class RealTradingManager:
         # Winners run away fast (miss fill), losers chop at entry (fill triggers).
         # This could reduce real WR below market-order baseline.
         #
-        # Defaults changed:
-        #   _use_limit_orders = False (DISABLED BY DEFAULT — ship safe, enable later)
+        # Defaults (post-2026-04-11 hardening):
+        #   _use_limit_orders = True (Fix #1: DEFAULT ON — IOC limit w/ 15bp tolerance)
         #   post_only = False (IOC-style limit, not maker-only)
         #   tolerance = 15bp (fills if price within 15bp, cancels otherwise)
         #
         # Auto-rollback: if fill rate < 60% over 10 attempts, auto-disable.
-        _use_limit = getattr(self, '_use_limit_orders', False)  # DEFAULT OFF for safety
+        # History: the SOL/USDT 2026-04-11 15:28 trade filled at 46.6bp slippage
+        # because this getattr() default was False and settings.yaml overrode True
+        # AFTER that process had already started. Hardened to True so even a
+        # missing config key still routes through IOC.
+        _use_limit = getattr(self, '_use_limit_orders', True)  # Fix #1: DEFAULT ON
         _limit_price = 0
         _p39_post_only = False  # IOC-style, NOT post-only maker
         if _use_limit and entry_price > 0:
@@ -1580,7 +1651,14 @@ class RealTradingManager:
                 "breakeven_set": False,
                 "chandelier_stop": 0.0,
                 "entry_atr": float(meta.get("atr", 0) or signal.get("signal_atr", 0) or 0),
-                "independent_exit": True,  # flag: this trade manages its own exits
+                # Fix #2 (2026-04-11): default flipped False so paper exits mirror
+                # to real via orchestrator.mirror_paper_exit(). Previously True
+                # caused real to run its own early_kill/time_decay logic while
+                # paper trailed to +$7 — 2026-04-11 SOL divergence was the smoking
+                # gun ($8.07 paper-real gap on one trade). Real's independent exit
+                # logic is still available as a FLOOR (hard_loss_cap, 4h max age
+                # via supervisor) but is no longer the DEFAULT entry routing.
+                "independent_exit": False,
             })()
 
             # Store in tracking maps
@@ -1642,6 +1720,14 @@ class RealTradingManager:
             if self._api_failures >= self._max_api_failures:
                 self.enabled = False
                 logger.critical("REAL TRADING AUTO-DISABLED: %d consecutive API failures", self._api_failures)
+            # Phase 1 observability: stamp the exec_fail stage so the dashboard
+            # journey viewer can show us exactly where real entries crash out.
+            try:
+                from bot.signal_journey import SignalJourney as _SJ
+                _SJ.stamp(signal, "exec_fail", passed=False, reason=str(e)[:80])
+                _SJ.close(signal)
+            except Exception:
+                pass
             return {"status": "failed", "reason": str(e)}
 
     # ==================================================================
@@ -1770,6 +1856,18 @@ class RealTradingManager:
                 mode_tag, t_symbol, side_str, entry_p, fill_price,
                 pnl_usd, fee, net_pnl, t_margin, t_leverage, reason,
             )
+
+            # Phase 1 observability: stamp real_mirror stage. The original
+            # signal dict is long gone at this point so we can't attach to
+            # that journey directly — instead we use the closed_signals path
+            # (signal_tracker.close_signal) which handles the exit stamp.
+            # This log line remains the single source of truth for a real
+            # exit_mirror event in the journal.
+            try:
+                _fs = getattr(self, "_fix_stats", {})
+                _fs["fix2_real_mirror"] = _fs.get("fix2_real_mirror", 0) + 1
+            except Exception:
+                pass
 
             return {"status": "exited", "pnl_usd": net_pnl, "trade_id": real_trade_id, "reason": reason}
 
@@ -2259,9 +2357,12 @@ class RealTradingManager:
                     setattr(self, _pfld, float(state[_pfld]) if "max_age" in _pfld or "started" in _pfld or "mult" in _pfld else int(state[_pfld]))
             # Restore open trades (dry run positions survive restart)
             for td in state.get("open_trades", []):
-                # Ensure all loaded trades have independent_exit fields
+                # Fix #2 (2026-04-11): default False so loaded trades also mirror
+                # paper exits. Pre-fix trades saved with True keep their value
+                # (no forced migration) — they still run independent exit logic
+                # until they close. New trades default False.
                 if "independent_exit" not in td:
-                    td["independent_exit"] = True
+                    td["independent_exit"] = False
                 if "initial_risk" not in td:
                     entry = td.get("entry_price", 0)
                     sl = td.get("stop_loss", 0)
@@ -2287,9 +2388,9 @@ class RealTradingManager:
                     td["entry_atr"] = td.get("initial_risk", 0)
                 if "trade_type" not in td:
                     td["trade_type"] = "SCALP"
-                # Backfill independent_exit fields for trades from older versions
+                # Fix #2 (2026-04-11): backfill default False (see note above).
                 if "independent_exit" not in td:
-                    td["independent_exit"] = True
+                    td["independent_exit"] = False
                 if "initial_risk" not in td:
                     _e = td.get("entry_price", 0)
                     _s = td.get("stop_loss", 0)

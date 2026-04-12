@@ -198,6 +198,122 @@ def _build_htf_block(df_ltf: pd.DataFrame, htf_df: pd.DataFrame, prefix: str) ->
     return aligned
 
 
+def _build_orderbook_block(orderbook: Optional[dict]) -> dict:
+    """Phase 5.0c — Orderbook microstructure features.
+
+    Builds 12 features from a single L2 snapshot (dict with 'buy' and 'sell'
+    lists of [price, size] levels). Returns a plain dict of scalar values.
+    If orderbook is None or empty, returns all zeros (graceful degradation
+    so ML pipeline never breaks when L2 isn't available).
+
+    Features:
+      ob_spread_bps       — bid-ask spread in basis points
+      ob_bid_depth_5      — total bid volume within top 5 levels
+      ob_bid_depth_10     — total bid volume within top 10 levels
+      ob_ask_depth_5      — total ask volume within top 5 levels
+      ob_ask_depth_10     — total ask volume within top 10 levels
+      ob_imbalance_5      — (bid_5 - ask_5) / (bid_5 + ask_5), normalized
+      ob_imbalance_10     — same for 10 levels
+      ob_wall_distance    — distance to nearest 3× avg-size wall, in bps
+      ob_taker_flow_proxy — imbalance_5 × spread_bps (high = pressure)
+      ob_bid_slope        — linear slope of bid volume across 10 levels
+      ob_ask_slope        — linear slope of ask volume across 10 levels
+      ob_microprice_offset — (microprice - midprice) / midprice in bps
+    """
+    zeros = {
+        "ob_spread_bps": 0.0, "ob_bid_depth_5": 0.0, "ob_bid_depth_10": 0.0,
+        "ob_ask_depth_5": 0.0, "ob_ask_depth_10": 0.0,
+        "ob_imbalance_5": 0.0, "ob_imbalance_10": 0.0,
+        "ob_wall_distance": 0.0, "ob_taker_flow_proxy": 0.0,
+        "ob_bid_slope": 0.0, "ob_ask_slope": 0.0, "ob_microprice_offset": 0.0,
+    }
+    if not orderbook or not isinstance(orderbook, dict):
+        return zeros
+
+    bids = orderbook.get("buy", [])  # [[price, size], ...]
+    asks = orderbook.get("sell", [])
+    if not bids or not asks:
+        return zeros
+
+    try:
+        best_bid = float(bids[0][0]) if bids else 0
+        best_ask = float(asks[0][0]) if asks else 0
+        mid = (best_bid + best_ask) / 2.0 if (best_bid > 0 and best_ask > 0) else 0
+
+        if mid <= 0:
+            return zeros
+
+        # Spread
+        spread_bps = (best_ask - best_bid) / mid * 10000.0
+
+        # Depth (cumulative volume at N levels)
+        bid_sizes = [float(lvl[1]) for lvl in bids[:10] if len(lvl) >= 2]
+        ask_sizes = [float(lvl[1]) for lvl in asks[:10] if len(lvl) >= 2]
+        bid_depth_5 = sum(bid_sizes[:5])
+        bid_depth_10 = sum(bid_sizes[:10])
+        ask_depth_5 = sum(ask_sizes[:5])
+        ask_depth_10 = sum(ask_sizes[:10])
+
+        # Imbalance (normalized -1 to +1)
+        total_5 = bid_depth_5 + ask_depth_5
+        total_10 = bid_depth_10 + ask_depth_10
+        imbalance_5 = (bid_depth_5 - ask_depth_5) / total_5 if total_5 > 0 else 0
+        imbalance_10 = (bid_depth_10 - ask_depth_10) / total_10 if total_10 > 0 else 0
+
+        # Wall distance (nearest level with size > 3× average)
+        all_sizes = bid_sizes + ask_sizes
+        avg_size = sum(all_sizes) / len(all_sizes) if all_sizes else 1
+        wall_threshold = avg_size * 3.0
+        wall_distance_bps = 500.0  # default: far away
+        for lvl in bids[:10]:
+            if len(lvl) >= 2 and float(lvl[1]) > wall_threshold:
+                wall_distance_bps = abs(float(lvl[0]) - mid) / mid * 10000.0
+                break
+        for lvl in asks[:10]:
+            if len(lvl) >= 2 and float(lvl[1]) > wall_threshold:
+                d = abs(float(lvl[0]) - mid) / mid * 10000.0
+                wall_distance_bps = min(wall_distance_bps, d)
+                break
+
+        # Taker flow proxy
+        taker_flow = imbalance_5 * spread_bps
+
+        # Volume slope across levels (linear regression proxy)
+        def _slope(sizes):
+            n = len(sizes)
+            if n < 2:
+                return 0.0
+            x_mean = (n - 1) / 2.0
+            y_mean = sum(sizes) / n
+            num = sum((i - x_mean) * (s - y_mean) for i, s in enumerate(sizes))
+            den = sum((i - x_mean) ** 2 for i in range(n))
+            return num / den if den > 0 else 0.0
+
+        bid_slope = _slope(bid_sizes)
+        ask_slope = _slope(ask_sizes)
+
+        # Microprice offset
+        microprice = (best_bid * ask_sizes[0] + best_ask * bid_sizes[0]) / (bid_sizes[0] + ask_sizes[0]) if (bid_sizes and ask_sizes and (bid_sizes[0] + ask_sizes[0]) > 0) else mid
+        microprice_offset_bps = (microprice - mid) / mid * 10000.0 if mid > 0 else 0
+
+        return {
+            "ob_spread_bps": round(spread_bps, 2),
+            "ob_bid_depth_5": round(bid_depth_5, 4),
+            "ob_bid_depth_10": round(bid_depth_10, 4),
+            "ob_ask_depth_5": round(ask_depth_5, 4),
+            "ob_ask_depth_10": round(ask_depth_10, 4),
+            "ob_imbalance_5": round(imbalance_5, 4),
+            "ob_imbalance_10": round(imbalance_10, 4),
+            "ob_wall_distance": round(wall_distance_bps, 2),
+            "ob_taker_flow_proxy": round(taker_flow, 4),
+            "ob_bid_slope": round(bid_slope, 4),
+            "ob_ask_slope": round(ask_slope, 4),
+            "ob_microprice_offset": round(microprice_offset_bps, 4),
+        }
+    except Exception:
+        return zeros
+
+
 def _build_btc_block(
     df_ltf: pd.DataFrame,
     btc_df: Optional[pd.DataFrame],
@@ -329,17 +445,22 @@ def build_features(
     htf_4h_df: Optional[pd.DataFrame] = None,
     btc_df: Optional[pd.DataFrame] = None,
     symbol: str = "",
+    orderbook: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Build ML features from pure candle math.
+    """Build ML features from pure candle math + optional L2 orderbook.
 
     Returns ~35 features derived from price movement, volatility, and participation.
+    Phase 5.0c adds 12 orderbook microstructure features when orderbook is provided.
     No raw indicators — only relationships.
 
     Phase 4.1a: added htf_1h_df + htf_4h_df for HTF feature fusion.
     Phase 5.0a: added btc_df for BTC cross-asset context features.
     """
     df = compute_indicators(df)
-    features = pd.DataFrame(index=df.index)
+    # Performance fix: collect features into a plain dict to avoid DataFrame
+    # column-by-column insertion fragmentation (201+ assignments). The dict
+    # is converted to DataFrame in one shot before the cleanup block.
+    features = {}
 
     c = df["close"].astype(float)
     h = df["high"].astype(float)
@@ -962,6 +1083,15 @@ def build_features(
             features[col] = 0.0
 
     # ================================================================
+    # Phase 5.0c: ORDERBOOK MICROSTRUCTURE FEATURES
+    # 12 features from L2 snapshot — scalar values broadcast to all rows
+    # (constant for this candle window since orderbook is a point-in-time snapshot)
+    # ================================================================
+    ob_feats = _build_orderbook_block(orderbook)
+    for k, v in ob_feats.items():
+        features[k] = v  # scalar → broadcast on dict→DataFrame conversion
+
+    # ================================================================
     # 26. LIQUIDITY SWEEP / GRAB DETECTION
     # Detects stop hunts: price sweeps above equal highs (or below equal lows)
     # then reverses. The #1 high-probability SMC setup.
@@ -1132,7 +1262,7 @@ def build_features(
     features["bos_impulse_decay"] = np.clip(np.nan_to_num(impulse_decay_raw, 0), 0, 1.0)
 
     # HTF alignment with BOS direction
-    if "htf_trend_bias" in features.columns:
+    if "htf_trend_bias" in features:
         htf_bias = features["htf_trend_bias"]
         htf_bos_align = np.where(
             bullish_bos.astype(bool) & (htf_bias > 0), 1.0,
@@ -1267,10 +1397,14 @@ def build_features(
         features["dist_from_round_number"] = 0
 
     # ================================================================
+    # CONVERT dict → DataFrame (one-shot, no fragmentation)
+    # ================================================================
+    features = pd.DataFrame(features, index=df.index)
+
+    # ================================================================
     # CLEANUP: Replace NaN/inf, mark warmup period
     # ================================================================
-    # Replace inf with NaN first
-    features = features.replace([np.inf, -np.inf], np.nan)
+    features.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # Add warmup flag — first 200 rows have unreliable indicator values
     WARMUP_ROWS = 200
@@ -1278,7 +1412,7 @@ def build_features(
     features.iloc[:WARMUP_ROWS, features.columns.get_loc("is_warmup")] = 1.0
 
     # Fill remaining NaN with 0.0 (after warmup flag is set)
-    features = features.fillna(0.0)
+    features.fillna(0.0, inplace=True)
 
     return features
 

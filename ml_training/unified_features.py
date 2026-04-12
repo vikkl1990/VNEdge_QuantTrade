@@ -339,6 +339,7 @@ def build_live_row(
     htf_4h: Optional[pd.DataFrame] = None,
     btc_df: Optional[pd.DataFrame] = None,
     skip_indicators: bool = False,
+    orderbook: Optional[dict] = None,
 ) -> Dict[str, float]:
     """Build the complete ML feature dict for a single bar.
 
@@ -355,9 +356,10 @@ def build_live_row(
         htf_4h: 4h HTF DataFrame (optional, adds ~14 features)
         btc_df: BTC/USDT 5m DataFrame (optional, Phase 5.0a — adds ~14 cross-asset features)
         skip_indicators: if True, assume df already has indicator columns
+        orderbook: L2 orderbook snapshot dict (optional, Phase 5.0c — adds 12 microstructure features)
 
     Returns:
-        Dict[str, float] with 170+ features (170 base + 34 HTF + 14 BTC when all provided)
+        Dict[str, float] with 170+ features (170 base + 34 HTF + 14 BTC + 12 OB when all provided)
         All feature names match what the trained model expects.
     """
     if idx < 0:
@@ -383,6 +385,7 @@ def build_live_row(
             htf_4h_df=htf_4h,
             btc_df=btc_df,       # Phase 5.0a
             symbol=symbol,       # Phase 5.0a
+            orderbook=orderbook, # Phase 5.0c
         )
     except Exception as e:
         logger.error("build_features failed in unified_features: %s", e, exc_info=True)

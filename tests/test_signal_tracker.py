@@ -86,14 +86,20 @@ def test_contract_size_mapping():
 
 
 def test_trade_type_config():
-    """Trade type configs should have required keys."""
+    """Trade type configs should have required keys.
+
+    Note: `trail_atr_mult` was removed in the Phase 4 refactor and replaced
+    by `chandelier_mult_ranging` / `chandelier_mult_trending` per regime.
+    """
     from bot.signal_tracker import TRADE_TYPE_CONFIG, TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY, TRADE_TYPE_RUNNER
 
     for tt in [TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY, TRADE_TYPE_RUNNER]:
         cfg = TRADE_TYPE_CONFIG[tt]
         assert "sl_atr_mult" in cfg
         assert "tp1_rr" in cfg
-        assert "trail_atr_mult" in cfg
+        # Regime-aware chandelier replaced the legacy trail_atr_mult constant
+        assert "chandelier_mult_ranging" in cfg
+        assert "chandelier_mult_trending" in cfg
         assert "max_age_sec" in cfg
         assert cfg["sl_atr_mult"] > 0
         assert cfg["max_age_sec"] > 0

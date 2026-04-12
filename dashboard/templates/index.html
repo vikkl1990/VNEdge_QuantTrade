@@ -708,6 +708,18 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
 
     </div>
+
+    <!-- Command Center 2.0: Quick Actions (Item #10) -->
+    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;padding:6px 12px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid rgba(255,255,255,.06)">
+      <button id="cc-pause-btn" data-paused="false" onclick="ccTogglePause()" style="padding:4px 10px;font-size:.62rem;font-weight:700;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.1);color:var(--yellow);border-radius:4px;cursor:pointer">&#x23F8; Pause</button>
+      <button id="cc-real-toggle-btn" onclick="ccToggleReal()" style="padding:4px 10px;font-size:.62rem;font-weight:700;border:1px solid rgba(255,59,92,.3);background:rgba(255,59,92,.08);color:var(--red);border-radius:4px;cursor:pointer">Real: <span id="cc-real-label">OFF</span></button>
+      <button id="cc-estop-btn" onclick="ccEmergencyStop()" style="padding:4px 10px;font-size:.62rem;font-weight:700;border:1px solid rgba(255,59,92,.5);background:rgba(255,59,92,.15);color:#ff3b5c;border-radius:4px;cursor:pointer">&#x26D4; STOP</button>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.72rem">
+        <span style="color:var(--text-muted)">Live PnL:</span>
+        <span id="cc-live-pnl" style="font-weight:900;font-size:1rem;color:var(--green)">$0.00</span>
+      </div>
+    </div>
+
     <!-- Market Highlight Bar -->
     <div style="margin-top:8px;padding:8px 12px;background:rgba(255,255,255,.02);border-radius:6px;display:flex;justify-content:space-between;align-items:center;font-size:.7rem">
       <span style="color:var(--text-muted)">Paper: <b id="mh-paper-bal" style="color:var(--green)">$--</b></span>
@@ -1276,14 +1288,26 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <!-- ═══ SECTION 5: Scanner Performance + Fee Impact (side by side) ═══ -->
   <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-bottom:12px">
     <div class="panel">
-      <div class="panel-title">Scanner Performance</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div class="panel-title" style="margin:0">Scanner Performance <span style="font-size:.6rem;color:var(--text-muted);font-weight:400">· sorted by EV</span></div>
+        <div style="display:flex;gap:4px" id="scanner-perf-toggle">
+          <button onclick="setScannerView('paper')" data-view="paper" class="sp-btn sp-active" style="padding:2px 10px;font-size:.6rem;border:1px solid rgba(6,182,212,.3);background:rgba(6,182,212,.08);color:var(--cyan);border-radius:3px;cursor:pointer;font-weight:700">PAPER</button>
+          <button onclick="setScannerView('real')" data-view="real" class="sp-btn" style="padding:2px 10px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">REAL</button>
+        </div>
+      </div>
       <div class="tbl-wrap">
         <table>
           <thead><tr>
-            <th>Scanner</th><th>Trades</th><th>WR%</th><th>PnL $</th><th>Avg R</th><th>Avg MFE</th><th>% of Total</th>
+            <th>Scanner</th><th>N</th><th>WR%</th><th>PnL $</th><th>EV $/tr</th><th>Avg R</th><th>% Mix</th>
           </tr></thead>
           <tbody id="per-scanner-perf-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
         </table>
+      </div>
+      <!-- B.4: W/L mini pie chart row for top 3 scanners -->
+      <div id="scanner-wl-pies" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div class="scanner-pie-slot" data-idx="0"><canvas id="sp-pie-0" width="70" height="70" style="max-height:70px"></canvas><div id="sp-lbl-0" style="font-size:.55rem;text-align:center;margin-top:2px;color:var(--text-muted)">—</div></div>
+        <div class="scanner-pie-slot" data-idx="1"><canvas id="sp-pie-1" width="70" height="70" style="max-height:70px"></canvas><div id="sp-lbl-1" style="font-size:.55rem;text-align:center;margin-top:2px;color:var(--text-muted)">—</div></div>
+        <div class="scanner-pie-slot" data-idx="2"><canvas id="sp-pie-2" width="70" height="70" style="max-height:70px"></canvas><div id="sp-lbl-2" style="font-size:.55rem;text-align:center;margin-top:2px;color:var(--text-muted)">—</div></div>
       </div>
       <!-- Scanner Diversity -->
       <div class="scanner-diversity-bar" id="scanner-diversity-bar" style="margin-top:8px"></div>
@@ -1358,6 +1382,90 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div class="stat-card"><div class="stat-value green" id="rk-win-streak" style="font-size:.9rem">--</div><div class="stat-label">Best Streak</div></div>
         <div class="stat-card"><div class="stat-value red" id="rk-loss-streak" style="font-size:.9rem">--</div><div class="stat-label">Worst Streak</div></div>
       </div>
+    </div>
+  </div>
+
+  <!-- ═══ SECTION 6.5: Extended Analytics (B.2 + B.6 + B.11 + C.1 + C.6/C.7 + A.1) ═══ -->
+
+  <!-- ROW 1: Drawdown Gauge + Fee Savings + Scanner Weights -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+
+    <!-- B.2: Drawdown Gauge -->
+    <div class="panel" style="border-left:3px solid var(--red)">
+      <div class="panel-title">Drawdown Gauge</div>
+      <div id="dd-gauge" style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- B.6: Fee Savings Tracker -->
+    <div class="panel" style="border-left:3px solid var(--green)">
+      <div class="panel-title">Fee Savings <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(Fix #1 IOC)</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+        <div class="stat-card"><div class="stat-value green" id="fs-ioc-fills" style="font-size:1.1rem">0</div><div class="stat-label">IOC Fills</div></div>
+        <div class="stat-card"><div class="stat-value cyan" id="fs-ioc-skips" style="font-size:1.1rem">0</div><div class="stat-label">Slippage Avoided</div></div>
+      </div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;font-size:.7rem">
+          <span style="color:var(--text-muted)">Avg slip (filled)</span>
+          <span id="fs-avg-slip" style="font-family:var(--font-mono);color:var(--green)">--</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:.7rem;margin-top:4px">
+          <span style="color:var(--text-muted)">Est. savings</span>
+          <span id="fs-est-savings" style="font-family:var(--font-mono);color:var(--green)">$--</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:.7rem;margin-top:4px">
+          <span style="color:var(--text-muted)">Fill rate</span>
+          <span id="fs-fill-rate" style="font-family:var(--font-mono)">--%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- B.11: AI Learner / Scanner Weights -->
+    <div class="panel" style="border-left:3px solid var(--purple)">
+      <div class="panel-title">Scanner Weights <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(AI Learner)</span></div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Scanner</th><th>Weight</th><th>Trend</th></tr></thead>
+          <tbody id="sw-body"><tr><td colspan="3" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 2: ML Insights — Verdict Sparklines + Feature Importance + BTC Cross -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+
+    <!-- C.1: Edge Verdict Trend Sparklines -->
+    <div class="panel" style="border-left:3px solid var(--yellow)">
+      <div class="panel-title">Edge Verdict Trend <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(last 24h)</span></div>
+      <div id="verdict-sparklines" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- C.6: Hotfix Feature Importance -->
+    <div class="panel" style="border-left:3px solid var(--cyan)">
+      <div class="panel-title">Top ML Features <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(model importance)</span></div>
+      <div id="feat-importance" style="display:flex;flex-direction:column;gap:3px;margin-top:6px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- C.7: BTC Cross-Asset Importance -->
+    <div class="panel" style="border-left:3px solid var(--orange, #f97316)">
+      <div class="panel-title">BTC Cross-Asset <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(feature block)</span></div>
+      <div id="btc-importance" style="display:flex;flex-direction:column;gap:3px;margin-top:6px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Opportunity Funnel Kanban (A.1) -->
+  <div class="panel" style="border-left:3px solid var(--blue, #3b82f6);margin-bottom:12px">
+    <div class="panel-title">Opportunity Funnel <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">(live pipeline)</span></div>
+    <div id="kanban-funnel" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:8px;min-height:80px">
+      <div class="empty" style="grid-column:1/-1">Loading funnel data...</div>
     </div>
   </div>
 
@@ -1615,8 +1723,40 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div id="bot-engine"><div class="empty">Loading...</div></div>
     </div>
     <div class="panel">
-      <div class="panel-title">Configuration</div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="panel-title" style="margin:0">Configuration</div>
+        <button id="config-edit-btn" onclick="toggleConfigEditor()" style="padding:3px 10px;font-size:.6rem;font-weight:700;border:1px solid rgba(6,182,212,.3);background:rgba(6,182,212,.08);color:var(--cyan);border-radius:3px;cursor:pointer">Edit</button>
+      </div>
       <div id="config-snapshot"><div class="empty">Loading...</div></div>
+      <div id="config-editor" style="display:none;margin-top:8px">
+        <textarea id="config-json" style="width:100%;height:280px;background:rgba(0,0,0,.3);color:var(--text);border:1px solid var(--border);border-radius:4px;font-family:var(--font-mono);font-size:.65rem;padding:8px;resize:vertical" spellcheck="false"></textarea>
+        <div style="margin-top:6px;display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="cancelConfigEdit()" style="padding:4px 12px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">Cancel</button>
+          <button onclick="saveConfig()" style="padding:4px 12px;font-size:.65rem;font-weight:700;border:1px solid rgba(0,255,157,.3);background:rgba(0,255,157,.1);color:var(--green);border-radius:3px;cursor:pointer">Save &amp; Reload</button>
+        </div>
+        <div id="config-save-msg" style="margin-top:4px;font-size:.6rem;display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Grid Bot Visual Map (Item #11) ═══ -->
+  <div class="panel" style="margin-top:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div class="panel-title" style="margin:0">Grid Bot</div>
+      <span class="badge" id="grid-status-badge" style="background:var(--text-muted);font-size:.55rem">PAUSED</span>
+    </div>
+    <div id="grid-disabled-msg" style="text-align:center;padding:16px;color:var(--text-muted);font-size:.75rem">
+      Grid Bot is paused. Enable in settings.yaml &rarr; grid.enabled: true
+    </div>
+    <div id="grid-active-content" style="display:none">
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px">
+        <div class="stat-card" style="text-align:center"><div class="stat-value" id="grid-total-fills" style="font-size:.9rem">0</div><div class="stat-label">Fills</div></div>
+        <div class="stat-card" style="text-align:center"><div class="stat-value green" id="grid-profit" style="font-size:.9rem">$0</div><div class="stat-label">Profit</div></div>
+        <div class="stat-card" style="text-align:center"><div class="stat-value yellow" id="grid-fees" style="font-size:.9rem">$0</div><div class="stat-label">Fees</div></div>
+        <div class="stat-card" style="text-align:center"><div class="stat-value" id="grid-fills-hr" style="font-size:.9rem">0</div><div class="stat-label">Fills/Hr</div></div>
+        <div class="stat-card" style="text-align:center"><div class="stat-value green" id="grid-profit-hr" style="font-size:.9rem">$0</div><div class="stat-label">$/Hr</div></div>
+      </div>
+      <div id="grid-ladders" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px"></div>
     </div>
   </div>
 </div>
@@ -3085,6 +3225,7 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
     updateFunnel(funnel);
     updateAlerts(alerts);
     updateVetoStats(funnel);
+    try { updateKanbanFunnel(funnel); } catch (e) {}
     // per-symbol status removed (consolidated into Symbol Scanner Status)
     updateSetupLifecycle(status, closed);
     updateRecentClosed(closed);
@@ -3092,6 +3233,8 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
     updateMTFChain(decision);
     // #10 Real active trades
     if (realStatus) updateRealActiveTrades(realStatus);
+    // Command Center 2.0: live PnL + real toggle state
+    try { updateCC20(status, realStatus); } catch (e) {}
 
     // Execution Quality metrics (slippage tracking)
     if (closed && Array.isArray(closed) && closed.length > 0) {
@@ -4553,36 +4696,71 @@ function laSelectSymbol(sym) {
 // TAB 3: SYSTEM REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshSystem() {
-    const [infra, status] = await Promise.all([api("/api/infra"), api("/api/status")]);
-    updateVMHealth(infra);
+    // B.8: parallel fetch — VM1 infra + status + VM4 ML health via proxy.
+    const [infra, status, ml4] = await Promise.all([
+        api("/api/infra"),
+        api("/api/status"),
+        api("/api/ml/health").catch(() => null),
+    ]);
+    updateVMHealth(infra, ml4);
     updateExchangeStatus(status);
     updateBotEngine(status);
     updateConfigSnapshot(status);
+    try { refreshGridBot(); } catch (e) {}
 }
 
-function updateVMHealth(infra) {
+// Track B.8: VM1 (bot host) + VM4 (ML server) side-by-side health cards.
+function updateVMHealth(infra, ml4) {
     const wrap = document.getElementById("vm-health");
-    if (!infra) { wrap.innerHTML = '<div class="empty">No infra data</div>'; return; }
-    const cpuPct = infra.cpu?.percent || infra.cpu_percent || 0;
-    const memPct = infra.memory?.percent || infra.memory_percent || 0;
-    const memUsed = infra.memory?.used_mb || 0;
-    const memTotal = infra.memory?.total_mb || 0;
-    const swapUsed = infra.memory?.swap_used_mb || 0;
-    const swapTotal = infra.memory?.swap_total_mb || 0;
+    if (!infra && !ml4) { wrap.innerHTML = '<div class="empty">No infra data</div>'; return; }
+    const cpuPct = (infra && (infra.cpu?.percent || infra.cpu_percent)) || 0;
+    const memPct = (infra && (infra.memory?.percent || infra.memory_percent)) || 0;
+    const memUsed = (infra && infra.memory?.used_mb) || 0;
+    const memTotal = (infra && infra.memory?.total_mb) || 0;
+    const swapUsed = (infra && infra.memory?.swap_used_mb) || 0;
+    const swapTotal = (infra && infra.memory?.swap_total_mb) || 0;
     const swapPct = swapTotal > 0 ? (swapUsed / swapTotal * 100) : 0;
-    const diskPct = infra.disk?.percent || infra.disk_percent || 0;
-    const diskUsed = infra.disk?.used_gb || 0;
-    const diskTotal = infra.disk?.total_gb || 0;
-    const uptime = infra.os_uptime || infra.uptime || "--";
-    const shape = infra.shape || "--";
-    let html = "";
-    html += makeHealthRow("CPU", cpuPct, "%", 100);
-    html += makeHealthRow("Memory", memPct, `% (${memUsed}/${memTotal} MB)`, 100);
-    html += makeHealthRow("Swap", swapPct, `% (${swapUsed}/${swapTotal} MB)`, 100);
-    html += makeHealthRow("Disk", diskPct, `% (${diskUsed}/${diskTotal} GB)`, 100);
-    html += makeKV("VM Uptime", uptime);
-    html += makeKV("Instance", shape);
-    wrap.innerHTML = html;
+    const diskPct = (infra && (infra.disk?.percent || infra.disk_percent)) || 0;
+    const diskUsed = (infra && infra.disk?.used_gb) || 0;
+    const diskTotal = (infra && infra.disk?.total_gb) || 0;
+    const uptime = (infra && (infra.os_uptime || infra.uptime)) || "--";
+    const shape = (infra && infra.shape) || "--";
+
+    // VM1 — bot host
+    let vm1 = '<div style="border-left:3px solid var(--green);padding:6px 8px;margin-bottom:8px">';
+    vm1 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span style="color:var(--green)">🟢 VM1 · bot host</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">150.230.171.48</span></div>';
+    vm1 += makeHealthRow("CPU", cpuPct, "%", 100);
+    vm1 += makeHealthRow("Memory", memPct, `% (${memUsed}/${memTotal} MB)`, 100);
+    if (swapTotal > 0) vm1 += makeHealthRow("Swap", swapPct, `% (${swapUsed}/${swapTotal} MB)`, 100);
+    vm1 += makeHealthRow("Disk", diskPct, `% (${diskUsed}/${diskTotal} GB)`, 100);
+    vm1 += makeKV("Uptime", uptime);
+    vm1 += makeKV("Shape", shape);
+    vm1 += '</div>';
+
+    // VM4 — ML server
+    let vm4 = '';
+    if (ml4 && (ml4.ok || ml4.status === "ok" || ml4.healthy)) {
+        const ml_uptime = ml4.uptime_sec ? (Math.floor(ml4.uptime_sec / 60) + "m") : (ml4.uptime || "--");
+        const ml_mem = ml4.memory_mb || ml4.mem_mb || "--";
+        const ml_cpu = ml4.cpu_percent || ml4.cpu || "--";
+        const ml_models = ml4.models_loaded || ml4.model_count || "--";
+        const ml_latency = ml4.avg_score_latency_ms || ml4.latency_ms || "--";
+        vm4 = '<div style="border-left:3px solid var(--purple);padding:6px 8px">';
+        vm4 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span style="color:var(--purple)">🟢 VM4 · ML server</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">10.0.2.4:8081</span></div>';
+        if (typeof ml_cpu === "number") vm4 += makeHealthRow("CPU", ml_cpu, "%", 100);
+        if (typeof ml_mem === "number") vm4 += makeKV("Memory", ml_mem + " MB");
+        vm4 += makeKV("Models Loaded", ml_models);
+        vm4 += makeKV("Avg Score Latency", typeof ml_latency === "number" ? ml_latency.toFixed(1) + " ms" : ml_latency);
+        vm4 += makeKV("Uptime", ml_uptime);
+        vm4 += '</div>';
+    } else {
+        vm4 = '<div style="border-left:3px solid var(--red);padding:6px 8px">';
+        vm4 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span style="color:var(--red)">🔴 VM4 · ML server</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">10.0.2.4:8081</span></div>';
+        vm4 += '<div style="font-size:.65rem;color:var(--text-muted);padding:6px 0">Proxy unreachable — check /api/ml/health from bot host</div>';
+        vm4 += '</div>';
+    }
+
+    wrap.innerHTML = vm1 + vm4;
 }
 
 function updateExchangeStatus(status) {
@@ -4997,12 +5175,20 @@ function updateRealActiveTrades(realStatus) {
         wrap.innerHTML = '<div class="empty">No real positions</div>';
         return;
     }
-    wrap.innerHTML = positions.map(p => {
+    // Track A.3: Force Flat button (top-level, closes ALL real positions)
+    const header = '<div style="display:flex;justify-content:flex-end;margin-bottom:6px">' +
+        '<button onclick="forceFlatReal()" style="padding:4px 10px;font-size:.65rem;font-weight:700;background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.35);border-radius:4px;cursor:pointer" title="Close ALL open real positions immediately">🚨 FORCE FLAT (' + positions.length + ')</button>' +
+        '</div>';
+
+    wrap.innerHTML = header + positions.map(p => {
         const sideColor = p.side === "long" ? "var(--green)" : "var(--red)";
         const upnl = p.upnl_usd || 0;
         const upnlColor = upnl >= 0 ? "var(--green)" : "var(--red)";
         const dur = (p.duration_min || 0) >= 60 ? (p.duration_min/60).toFixed(1)+"h" : (p.duration_min||0).toFixed(0)+"m";
         const dec = (p.symbol||"").includes("BTC") ? 2 : 4;
+        // Track A.2: LOCK 75% is only useful when position is in profit
+        const lockBtnDisabled = upnl <= 0;
+        const tidSafe = esc(p.trade_id || p.paper_trade_id || "");
         return '<div style="padding:10px;background:rgba(255,59,92,.04);border:1px solid rgba(255,59,92,.15);border-left:3px solid ' + sideColor + ';border-radius:8px;margin-bottom:6px">' +
             '<div style="display:flex;justify-content:space-between;align-items:center">' +
             '<div style="display:flex;align-items:center;gap:8px">' +
@@ -5022,8 +5208,58 @@ function updateRealActiveTrades(realStatus) {
             '<span style="color:var(--text-muted)">SL: <span style="color:var(--red)">' + (p.stop_loss||0).toFixed(dec) + '</span></span>' +
             '<span style="color:var(--text-muted)">TP1: <span style="color:var(--green)">' + (p.tp1 ? p.tp1.toFixed(dec) : "--") + '</span></span>' +
             '<span style="color:var(--text-muted)">Margin: $' + (p.margin||0).toFixed(2) + '</span>' +
+            '</div>' +
+            // Track A.2: per-position LOCK 75% button
+            '<div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">' +
+            '<button onclick="lockReal75(\'' + tidSafe + '\')" ' +
+            (lockBtnDisabled ? 'disabled title="LOCK 75% requires position in profit"' : 'title="Close 75% of this position to lock profit — keep 25% runner"') +
+            ' style="padding:3px 9px;font-size:.58rem;font-weight:700;background:' +
+            (lockBtnDisabled ? 'rgba(80,80,80,.1);color:var(--text-muted);cursor:not-allowed' : 'rgba(6,182,212,.12);color:var(--cyan);cursor:pointer') +
+            ';border:1px solid ' + (lockBtnDisabled ? 'var(--border)' : 'rgba(6,182,212,.35)') +
+            ';border-radius:3px">🔒 LOCK 75%</button>' +
             '</div></div>';
     }).join("");
+}
+
+// Track A.2: LOCK 75% action
+async function lockReal75(tradeId) {
+    if (!tradeId) return;
+    if (!confirm("Close 75% of this real position? Keeps 25% runner at current SL/TP.")) return;
+    try {
+        const r = await fetch("/api/real/lock_75", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({trade_id: tradeId}),
+        });
+        const d = await r.json();
+        if (d.ok) {
+            alert("✅ LOCK 75% sent — " + (d.paper_trade_id || tradeId).substring(0,12));
+        } else {
+            alert("❌ LOCK 75% failed: " + (d.error || "unknown"));
+        }
+    } catch (e) {
+        alert("❌ LOCK 75% network error: " + e.message);
+    }
+}
+
+// Track A.3: Force Flat action
+async function forceFlatReal() {
+    if (!confirm("🚨 FORCE FLAT: close ALL open real positions immediately?\n\nThis cannot be undone.")) return;
+    try {
+        const r = await fetch("/api/real/force_flat", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: "{}",
+        });
+        const d = await r.json();
+        if (d.ok) {
+            alert("✅ Force Flat: closed " + (d.closed || 0) + "/" + (d.total || 0) + " positions");
+        } else {
+            alert("❌ Force Flat failed: " + (d.error || "unknown"));
+        }
+    } catch (e) {
+        alert("❌ Force Flat network error: " + e.message);
+    }
 }
 
 // ── #2 + #9 MTF CHAIN UPDATE ─────────────────────────────
@@ -5087,37 +5323,567 @@ function updateScannerDiversity(closed) {
     }).join("");
 }
 
-// ── #1 PER-SCANNER PERFORMANCE ───────────────────────────
-function updatePerScannerPerf(closed) {
-    const body = document.getElementById("per-scanner-perf-body");
-    if (!body || !closed || !Array.isArray(closed) || closed.length === 0) {
-        if (body) body.innerHTML = '<tr><td colspan="7" class="empty">No data</td></tr>';
-        return;
-    }
+// ── #1 PER-SCANNER PERFORMANCE (B.4 + B.5: W/L pie + EV leaderboard) ──
+// Stores paper & real datasets separately and renders the selected view.
+let _scannerDataPaper = [];
+let _scannerDataReal = [];
+let _scannerView = "paper";  // "paper" | "real"
+let _spPieCharts = [null, null, null];
+
+function setScannerView(view) {
+    _scannerView = view;
+    document.querySelectorAll("#scanner-perf-toggle .sp-btn").forEach(b => {
+        const active = b.dataset.view === view;
+        b.className = "sp-btn" + (active ? " sp-active" : "");
+        if (active) {
+            const color = view === "paper" ? "rgba(6,182,212" : "rgba(255,59,92";
+            const text = view === "paper" ? "var(--cyan)" : "var(--red)";
+            b.style.cssText = "padding:2px 10px;font-size:.6rem;border:1px solid " + color + ",.3);background:" + color + ",.08);color:" + text + ";border-radius:3px;cursor:pointer;font-weight:700";
+        } else {
+            b.style.cssText = "padding:2px 10px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600";
+        }
+    });
+    _renderScannerPerfView();
+}
+
+function _aggScanner(trades) {
     const scanners = {};
-    closed.forEach(t => {
+    (trades || []).forEach(t => {
         const sc = t.setup_type || t.scanner || "unknown";
         if (!scanners[sc]) scanners[sc] = {trades:0, wins:0, pnl:0, rs:[]};
         const d = scanners[sc];
         d.trades++;
-        if ((t.pnl_usd||0) > 0) d.wins++;
-        d.pnl += (t.pnl_usd||0);
-        d.rs.push(t.exit_r || t.r_multiple || 0);
+        if ((t.pnl_usd || 0) > 0) d.wins++;
+        d.pnl += (t.pnl_usd || 0);
+        d.rs.push(t.exit_r || t.r_multiple || (t.peak_mfe_r || 0));
     });
-    const sorted = Object.entries(scanners).sort((a,b) => b[1].trades - a[1].trades);
-    body.innerHTML = sorted.map(([sc, d]) => {
-        const wr = d.trades > 0 ? (d.wins/d.trades*100) : 0;
-        const avgR = d.rs.length > 0 ? d.rs.reduce((a,b)=>a+b,0)/d.rs.length : 0;
-        const bestR = d.rs.length > 0 ? Math.max(...d.rs) : 0;
-        const worstR = d.rs.length > 0 ? Math.min(...d.rs) : 0;
-        return '<tr><td style="font-weight:600;color:' + (SCANNER_COLORS[sc]||'var(--text)') + '">' + esc(sc) + '</td>' +
-            '<td>' + d.trades + '</td>' +
-            '<td class="' + (wr>=50?'green':'red') + '">' + wr.toFixed(1) + '%</td>' +
-            '<td class="' + (d.pnl>=0?'pnl-pos':'pnl-neg') + '">$' + d.pnl.toFixed(2) + '</td>' +
-            '<td class="' + (avgR>=0?'green':'red') + '">' + avgR.toFixed(3) + 'R</td>' +
-            '<td class="green">+' + bestR.toFixed(2) + 'R</td>' +
-            '<td class="red">' + worstR.toFixed(2) + 'R</td></tr>';
+    return scanners;
+}
+
+function _renderScannerPerfView() {
+    const body = document.getElementById("per-scanner-perf-body");
+    if (!body) return;
+    const src = (_scannerView === "real") ? _scannerDataReal : _scannerDataPaper;
+    const scanners = _aggScanner(src);
+    const total = Object.values(scanners).reduce((a,d)=>a+d.trades,0);
+    if (total === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="empty">No ' + _scannerView + ' trades yet</td></tr>';
+        _renderScannerPies([]);
+        return;
+    }
+    // B.5: sort by EV (pnl per trade) descending
+    const rows = Object.entries(scanners).map(([sc, d]) => {
+        const wr = d.trades > 0 ? (d.wins / d.trades * 100) : 0;
+        const ev = d.trades > 0 ? (d.pnl / d.trades) : 0;
+        const avgR = d.rs.length ? d.rs.reduce((a,b)=>a+b,0) / d.rs.length : 0;
+        const pct = total ? (d.trades / total * 100) : 0;
+        return {sc, d, wr, ev, avgR, pct};
+    }).sort((a,b) => b.ev - a.ev);
+
+    body.innerHTML = rows.map((r, idx) => {
+        const rankMark = idx === 0 ? '🥇 ' : idx === 1 ? '🥈 ' : idx === 2 ? '🥉 ' : '';
+        return '<tr><td style="font-weight:600;color:' + (SCANNER_COLORS[r.sc] || 'var(--text)') + '">' +
+            rankMark + esc(r.sc) + '</td>' +
+            '<td>' + r.d.trades + '</td>' +
+            '<td class="' + (r.wr >= 50 ? 'green' : 'red') + '">' + r.wr.toFixed(0) + '%</td>' +
+            '<td class="' + (r.d.pnl >= 0 ? 'pnl-pos' : 'pnl-neg') + '">$' + r.d.pnl.toFixed(2) + '</td>' +
+            '<td class="' + (r.ev >= 0 ? 'pnl-pos' : 'pnl-neg') + '" style="font-weight:700">$' + r.ev.toFixed(3) + '</td>' +
+            '<td class="' + (r.avgR >= 0 ? 'green' : 'red') + '">' + r.avgR.toFixed(2) + 'R</td>' +
+            '<td>' + r.pct.toFixed(0) + '%</td></tr>';
     }).join("");
+
+    // B.4: render 3 W/L pies for top 3 EV scanners
+    _renderScannerPies(rows.slice(0, 3));
+}
+
+function _renderScannerPies(topRows) {
+    for (let i = 0; i < 3; i++) {
+        const canvas = document.getElementById("sp-pie-" + i);
+        const lbl = document.getElementById("sp-lbl-" + i);
+        if (!canvas) continue;
+        if (i >= topRows.length) {
+            if (_spPieCharts[i]) { _spPieCharts[i].destroy(); _spPieCharts[i] = null; }
+            if (lbl) lbl.textContent = "—";
+            continue;
+        }
+        const r = topRows[i];
+        const wins = r.d.wins;
+        const losses = Math.max(0, r.d.trades - wins);
+        const col = _scannerView === "real" ? ["#ff3b5c", "#4a1220"] : ["#06b6d4", "#164e5c"];
+        try {
+            if (_spPieCharts[i]) _spPieCharts[i].destroy();
+            _spPieCharts[i] = new Chart(canvas.getContext("2d"), {
+                type: "doughnut",
+                data: {
+                    labels: ["Wins", "Losses"],
+                    datasets: [{
+                        data: [wins, losses],
+                        backgroundColor: [col[0], col[1]],
+                        borderWidth: 0,
+                    }],
+                },
+                options: {
+                    responsive: false, maintainAspectRatio: false,
+                    cutout: "65%",
+                    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+                },
+            });
+            if (lbl) {
+                const wr = r.d.trades > 0 ? (wins / r.d.trades * 100).toFixed(0) : "0";
+                lbl.innerHTML = '<span style="color:' + (SCANNER_COLORS[r.sc] || 'var(--text)') + '">' +
+                    esc(r.sc.substring(0, 10)) + '</span><br><span style="color:' + col[0] + '">' +
+                    wr + '%</span> · $' + r.ev.toFixed(2) + '/tr';
+            }
+        } catch (e) { /* chart destroy race */ }
+    }
+}
+
+function updatePerScannerPerf(closed) {
+    _scannerDataPaper = Array.isArray(closed) ? closed : [];
+    _renderScannerPerfView();
+}
+
+// Real-trade scanner stats pulled from /api/real/status recent_trades
+function updateRealScannerPerf(recentReal) {
+    _scannerDataReal = Array.isArray(recentReal) ? recentReal : [];
+    if (_scannerView === "real") _renderScannerPerfView();
+}
+
+// ══════════════════════════════════════════════════════════
+// SECTION 6.5 RENDERERS (B.2 + B.6 + B.11 + C.1 + C.6/C.7 + A.1)
+// ══════════════════════════════════════════════════════════
+
+// ── B.2: DRAWDOWN GAUGE ──
+function updateDrawdownGauge(realStatus) {
+    const wrap = document.getElementById("dd-gauge");
+    if (!wrap) return;
+    const dd = (realStatus && realStatus.rolling_drawdown) || {};
+    if (!dd || Object.keys(dd).length === 0) {
+        wrap.innerHTML = '<div class="empty">No drawdown data</div>';
+        return;
+    }
+    const periods = [
+        { key: "1h", label: "1 Hour", limit: 15 },
+        { key: "24h", label: "24 Hour", limit: 25 },
+        { key: "7d", label: "7 Day", limit: 50 },
+    ];
+    wrap.innerHTML = periods.map(p => {
+        const d = dd[p.key] || {};
+        const pnl = d.pnl || 0;
+        const limit = d.limit || p.limit;
+        const pct = limit > 0 ? Math.min(100, Math.abs(pnl) / limit * 100) : 0;
+        const col = pct > 80 ? "var(--red)" : pct > 50 ? "var(--yellow)" : "var(--green)";
+        return '<div style="display:flex;align-items:center;gap:8px">' +
+            '<span style="font-size:.65rem;color:var(--text-muted);min-width:50px">' + p.label + '</span>' +
+            '<div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden;position:relative">' +
+            '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + col + ';border-radius:3px;transition:width .3s"></div>' +
+            '</div>' +
+            '<span style="font-size:.65rem;font-family:var(--font-mono);min-width:70px;text-align:right;color:' + col + '">' +
+            '$' + pnl.toFixed(2) + '/' + limit.toFixed(0) + '</span>' +
+            '</div>';
+    }).join("");
+}
+
+// ── B.6: FEE SAVINGS TRACKER ──
+function updateFeeSavings(realStatus) {
+    const fs = (realStatus && realStatus.fix_stats) || {};
+    const fills = fs.fix1_ioc_fill || 0;
+    const skips = fs.fix1_ioc_skip || 0;
+    const total = fills + skips;
+    const fillRate = total > 0 ? (fills / total * 100) : 0;
+    const el = id => document.getElementById(id);
+    if (el("fs-ioc-fills")) el("fs-ioc-fills").textContent = String(fills);
+    if (el("fs-ioc-skips")) el("fs-ioc-skips").textContent = String(skips);
+    // Estimate savings: each skipped trade avoided ~30bp * $20 margin * 20x leverage
+    const estSave = skips * 0.003 * 20 * 20;
+    if (el("fs-est-savings")) el("fs-est-savings").textContent = "$" + estSave.toFixed(2);
+    if (el("fs-fill-rate")) {
+        const rEl = el("fs-fill-rate");
+        rEl.textContent = total > 0 ? fillRate.toFixed(0) + "%" : "--";
+        rEl.style.color = fillRate >= 70 ? "var(--green)" : fillRate >= 50 ? "var(--yellow)" : "var(--red)";
+    }
+    // Avg slippage from closed real trades
+    const rt = (realStatus && realStatus.recent_trades) || [];
+    if (rt.length > 0 && el("fs-avg-slip")) {
+        const slips = rt.filter(t => (t.slippage_bps || 0) > 0).map(t => t.slippage_bps);
+        const avg = slips.length > 0 ? slips.reduce((a, b) => a + b, 0) / slips.length : 0;
+        el("fs-avg-slip").textContent = avg.toFixed(1) + " bp";
+    }
+}
+
+// ── B.11: SCANNER WEIGHTS TABLE ──
+async function loadScannerWeights() {
+    try {
+        const d = await fetch("/api/ml/live-calibration").then(r => r.json()).catch(() => null);
+        const body = document.getElementById("sw-body");
+        if (!body) return;
+        if (!d || !d.buckets) {
+            body.innerHTML = '<tr><td colspan="3" class="empty">No calibration data</td></tr>';
+            return;
+        }
+        // Aggregate by scanner from buckets
+        const scanners = {};
+        (d.buckets || []).forEach(b => {
+            const sc = b.scanner || "unknown";
+            if (!scanners[sc]) scanners[sc] = { total: 0, ok: 0, drift: 0 };
+            scanners[sc].total++;
+            if (b.status === "OK") scanners[sc].ok++;
+            if (b.status === "DRIFTING") scanners[sc].drift++;
+        });
+        const rows = Object.entries(scanners).sort((a, b) => b[1].ok - a[1].ok);
+        body.innerHTML = rows.map(([sc, v]) => {
+            const health = v.total > 0 ? (v.ok / v.total * 100) : 0;
+            const trendIcon = v.drift > 0 ? '<span style="color:var(--red)">&#x25BC;</span>' :
+                              health >= 80 ? '<span style="color:var(--green)">&#x25B2;</span>' :
+                              '<span style="color:var(--yellow)">&#x25CF;</span>';
+            return '<tr><td style="font-weight:600;color:' + (SCANNER_COLORS[sc] || 'var(--text)') + '">' + esc(sc) + '</td>' +
+                '<td style="font-family:var(--font-mono)">' + health.toFixed(0) + '%</td>' +
+                '<td>' + trendIcon + (v.drift > 0 ? ' <span style="font-size:.6rem;color:var(--red)">' + v.drift + ' drift</span>' : '') + '</td></tr>';
+        }).join("");
+    } catch (e) {}
+}
+
+// ── C.1: EDGE VERDICT TREND SPARKLINES ──
+async function loadVerdictSparklines() {
+    try {
+        const d = await fetch("/api/ml/edge-verdict-trend").then(r => r.json()).catch(() => null);
+        const wrap = document.getElementById("verdict-sparklines");
+        if (!wrap) return;
+        if (!d || (!d.trend && !d.data)) {
+            wrap.innerHTML = '<div class="empty">No verdict trend data</div>';
+            return;
+        }
+        const trend = d.trend || d.data || d;
+        const cats = ["HOLDS", "WEAK", "UNCLEAR", "NO_EDGE"];
+        const colors = { "HOLDS": "var(--green)", "WEAK": "var(--yellow)", "UNCLEAR": "var(--text-muted)", "NO_EDGE": "var(--red)" };
+        let html = "";
+        if (Array.isArray(trend)) {
+            // Array of {ts, verdict} — aggregate counts
+            const counts = {};
+            cats.forEach(c => counts[c] = 0);
+            trend.forEach(t => {
+                const v = (t.verdict || t.edge_verdict || "").toUpperCase();
+                if (counts[v] !== undefined) counts[v]++;
+            });
+            const total = trend.length || 1;
+            html = cats.map(c => {
+                const n = counts[c] || 0;
+                const pct = (n / total * 100);
+                return '<div style="display:flex;align-items:center;gap:6px">' +
+                    '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
+                    '<div style="flex:1;height:10px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                    '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
+                    '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
+            }).join("");
+        } else if (typeof trend === "object") {
+            // Dict keyed by verdict
+            const total = Object.values(trend).reduce((a, v) => a + (typeof v === "number" ? v : (v.count || 0)), 0) || 1;
+            html = cats.map(c => {
+                const val = trend[c] || trend[c.toLowerCase()] || 0;
+                const n = typeof val === "number" ? val : (val.count || 0);
+                const pct = (n / total * 100);
+                return '<div style="display:flex;align-items:center;gap:6px">' +
+                    '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
+                    '<div style="flex:1;height:10px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                    '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
+                    '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
+            }).join("");
+        }
+        wrap.innerHTML = html || '<div class="empty">Unexpected data format</div>';
+    } catch (e) {
+        var w = document.getElementById("verdict-sparklines");
+        if (w) w.innerHTML = '<div class="empty">Fetch failed</div>';
+    }
+}
+
+// ── C.6 + C.7: FEATURE IMPORTANCE + BTC CROSS-ASSET ──
+async function loadFeatureImportance() {
+    try {
+        const d = await fetch("/api/ml/health").then(r => r.json()).catch(() => null);
+        const fiWrap = document.getElementById("feat-importance");
+        const btcWrap = document.getElementById("btc-importance");
+        if (!fiWrap && !btcWrap) return;
+
+        // Try live_model_results for top features
+        let topFeats = [];
+        let btcFeats = [];
+        try {
+            const lm = await fetch("/api/ml/live-calibration").then(r => r.json()).catch(() => null);
+            if (lm && lm.feature_importances) {
+                topFeats = Object.entries(lm.feature_importances).sort((a, b) => b[1] - a[1]).slice(0, 12);
+            }
+        } catch (e) {}
+
+        // Fallback: read from scanner models
+        if (topFeats.length === 0 && d && d.scanners) {
+            const firstScanner = Object.values(d.scanners)[0];
+            if (firstScanner && firstScanner.top_features) {
+                topFeats = firstScanner.top_features.map(f => [f.feature, f.importance]);
+            }
+        }
+
+        // Separate BTC features from general features
+        const allFeats = topFeats.length > 0 ? topFeats : [];
+        btcFeats = allFeats.filter(([name]) => name.startsWith("btc_") || name.includes("_btc_"));
+        const nonBtcFeats = allFeats.filter(([name]) => !name.startsWith("btc_") && !name.includes("_btc_")).slice(0, 10);
+
+        // Render general feature importance (C.6)
+        if (fiWrap) {
+            if (nonBtcFeats.length === 0) {
+                fiWrap.innerHTML = '<div class="empty">No feature data yet</div>';
+            } else {
+                const maxImp = Math.max(...nonBtcFeats.map(f => f[1])) || 1;
+                fiWrap.innerHTML = nonBtcFeats.map(([name, imp]) => {
+                    const pct = (imp / maxImp * 100);
+                    const shortName = name.replace(/_/g, " ").replace(/^(scanner |regime )/, "");
+                    return '<div style="display:flex;align-items:center;gap:6px">' +
+                        '<span style="font-size:.58rem;min-width:85px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(name) + '">' + esc(shortName) + '</span>' +
+                        '<div style="flex:1;height:8px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                        '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:var(--cyan);border-radius:2px"></div></div>' +
+                        '<span style="font-size:.55rem;font-family:var(--font-mono);min-width:35px;text-align:right">' + (imp * 100).toFixed(1) + '%</span></div>';
+                }).join("");
+            }
+        }
+
+        // Render BTC cross-asset features (C.7)
+        if (btcWrap) {
+            if (btcFeats.length === 0) {
+                // Show known BTC block features from schema even if no importance yet
+                const knownBtc = ["btc_return_1", "btc_return_5", "btc_atr_ratio", "btc_dist_from_vwap",
+                                  "btc_ema8_slope", "btc_trend_bias", "btc_range_pos", "symbol_btc_corr_60", "symbol_btc_beta_60"];
+                btcWrap.innerHTML = '<div style="font-size:.6rem;color:var(--text-muted);margin-bottom:6px">BTC context features (14) built by _build_btc_block():</div>' +
+                    knownBtc.map(f => '<span style="display:inline-block;font-size:.55rem;padding:2px 6px;margin:1px;border-radius:3px;background:rgba(249,115,22,.08);color:#f97316;border:1px solid rgba(249,115,22,.2)">' + f + '</span>').join("");
+            } else {
+                const maxBtc = Math.max(...btcFeats.map(f => f[1])) || 1;
+                btcWrap.innerHTML = btcFeats.map(([name, imp]) => {
+                    const pct = (imp / maxBtc * 100);
+                    return '<div style="display:flex;align-items:center;gap:6px">' +
+                        '<span style="font-size:.58rem;min-width:85px;color:#f97316;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(name) + '</span>' +
+                        '<div style="flex:1;height:8px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                        '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:#f97316;border-radius:2px"></div></div>' +
+                        '<span style="font-size:.55rem;font-family:var(--font-mono);min-width:35px;text-align:right">' + (imp * 100).toFixed(1) + '%</span></div>';
+                }).join("");
+            }
+        }
+    } catch (e) {}
+}
+
+// ── A.1: OPPORTUNITY FUNNEL KANBAN ──
+function updateKanbanFunnel(funnelData) {
+    const wrap = document.getElementById("kanban-funnel");
+    if (!wrap) return;
+    const f = (funnelData && funnelData.funnel) || funnelData || {};
+    if (!f || Object.keys(f).length === 0) {
+        wrap.innerHTML = '<div class="empty" style="grid-column:1/-1">No funnel data</div>';
+        return;
+    }
+    // Standard funnel stages
+    const stages = [
+        { key: "scanned", label: "Scanned", color: "var(--text-muted)", icon: "&#x1F50D;" },
+        { key: "passed_filter", label: "Filtered", color: "var(--yellow)", icon: "&#x2705;" },
+        { key: "ml_scored", label: "ML Scored", color: "var(--purple)", icon: "&#x1F916;" },
+        { key: "tracked", label: "Tracked", color: "var(--cyan)", icon: "&#x1F4CA;" },
+        { key: "executed", label: "Executed", color: "var(--green)", icon: "&#x2B50;" },
+    ];
+    wrap.innerHTML = stages.map(s => {
+        const count = f[s.key] || f[s.key + "_count"] || f[s.key + "s"] || 0;
+        const nStr = typeof count === "number" ? count : (count.total || count.count || 0);
+        return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center">' +
+            '<div style="font-size:1.2rem">' + s.icon + '</div>' +
+            '<div style="font-size:1.3rem;font-weight:800;font-family:var(--font-mono);color:' + s.color + ';margin:4px 0">' + nStr + '</div>' +
+            '<div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">' + s.label + '</div>' +
+            '</div>';
+    }).join("");
+}
+
+// ── WIRE SECTION 6.5 into existing data flows ──
+// Hook into the main refresh cycle to populate these panels
+(function wireSection65() {
+    // Drawdown + Fee Savings from real status (already fetched every 5s by loadRealOps)
+    const origUpdateRealOps = window.updateRealActiveTrades;
+    if (origUpdateRealOps) {
+        window.updateRealActiveTrades = function(realStatus) {
+            origUpdateRealOps(realStatus);
+            try { updateDrawdownGauge(realStatus); } catch (e) {}
+            try { updateFeeSavings(realStatus); } catch (e) {}
+        };
+    }
+    // Scanner weights + verdict sparklines + feature importance — load every 30s
+    async function loadSection65Slow() {
+        try { await loadScannerWeights(); } catch (e) {}
+        try { await loadVerdictSparklines(); } catch (e) {}
+        try { await loadFeatureImportance(); } catch (e) {}
+    }
+    loadSection65Slow();
+    setInterval(loadSection65Slow, 30000);
+})();
+
+// ══════════════════════════════════════════════════════════
+// ITEM #10: COMMAND CENTER 2.0 — Quick Actions
+// ══════════════════════════════════════════════════════════
+
+async function ccTogglePause() {
+    var btn = document.getElementById("cc-pause-btn");
+    var isPaused = btn.dataset.paused === "true";
+    var endpoint = isPaused ? "/api/control/resume" : "/api/control/pause";
+    try {
+        await fetch(endpoint, { method: "POST" });
+        btn.dataset.paused = isPaused ? "false" : "true";
+        btn.innerHTML = isPaused ? "&#x23F8; Pause" : "&#x25B6; Resume";
+    } catch (e) { console.warn("Pause toggle error:", e); }
+}
+
+async function ccToggleReal() {
+    var label = document.getElementById("cc-real-label");
+    var isOn = label.textContent !== "OFF";
+    try {
+        await fetch("/api/real/toggle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !isOn }),
+        });
+        label.textContent = isOn ? "OFF" : "ON";
+        label.parentElement.style.borderColor = isOn ? "rgba(255,59,92,.3)" : "rgba(0,255,157,.3)";
+        label.parentElement.style.color = isOn ? "var(--red)" : "var(--green)";
+    } catch (e) { console.warn("Real toggle error:", e); }
+}
+
+async function ccEmergencyStop() {
+    if (!confirm("EMERGENCY STOP: disable ALL trading. Continue?")) return;
+    try {
+        await fetch("/api/emergency-stop", { method: "POST" });
+        var btn = document.getElementById("cc-estop-btn");
+        btn.style.opacity = "0.4";
+        btn.textContent = "STOPPED";
+    } catch (e) { alert("Emergency stop failed: " + e.message); }
+}
+
+// Update CC 2.0 real label + live PnL on every refresh
+function updateCC20(status, realStatus) {
+    try {
+        var lbl = document.getElementById("cc-real-label");
+        if (lbl && realStatus) {
+            lbl.textContent = realStatus.enabled ? "ON" : "OFF";
+        }
+        var pnlEl = document.getElementById("cc-live-pnl");
+        if (pnlEl && status) {
+            var pnl = parseFloat(status.paper_pnl_usd || status.daily_pnl || 0);
+            pnlEl.textContent = "$" + pnl.toFixed(2);
+            pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
+        }
+    } catch (e) {}
+}
+
+// ══════════════════════════════════════════════════════════
+// ITEMS #6+8: CONFIG EDITOR + HOT-RELOAD
+// ══════════════════════════════════════════════════════════
+
+async function toggleConfigEditor() {
+    var editor = document.getElementById("config-editor");
+    var snapshot = document.getElementById("config-snapshot");
+    var btn = document.getElementById("config-edit-btn");
+    if (editor.style.display === "none") {
+        try {
+            var r = await fetch("/api/config");
+            var d = await r.json();
+            document.getElementById("config-json").value = JSON.stringify(d, null, 2);
+            editor.style.display = "block";
+            snapshot.style.display = "none";
+            btn.textContent = "Cancel";
+        } catch (e) {
+            alert("Failed to load config: " + e.message);
+        }
+    } else {
+        cancelConfigEdit();
+    }
+}
+
+function cancelConfigEdit() {
+    document.getElementById("config-editor").style.display = "none";
+    document.getElementById("config-snapshot").style.display = "block";
+    document.getElementById("config-edit-btn").textContent = "Edit";
+    document.getElementById("config-save-msg").style.display = "none";
+}
+
+async function saveConfig() {
+    var msg = document.getElementById("config-save-msg");
+    try {
+        var text = document.getElementById("config-json").value;
+        var parsed = JSON.parse(text);
+        var r = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsed),
+        });
+        var d = await r.json();
+        if (d.ok) {
+            msg.textContent = "Saved & reloaded: " + (d.keys_updated || []).join(", ");
+            msg.style.color = "var(--green)";
+            msg.style.display = "block";
+            setTimeout(cancelConfigEdit, 2000);
+        } else {
+            msg.textContent = "Error: " + (d.error || "unknown");
+            msg.style.color = "var(--red)";
+            msg.style.display = "block";
+        }
+    } catch (e) {
+        msg.textContent = "Invalid JSON or network error: " + e.message;
+        msg.style.color = "var(--red)";
+        msg.style.display = "block";
+    }
+}
+
+// ══════════════════════════════════════════════════════════
+// ITEM #11: GRID BOT VISUAL MAP
+// ══════════════════════════════════════════════════════════
+
+async function refreshGridBot() {
+    try {
+        var status = await fetch("/api/grid/status").then(function(r) { return r.json(); }).catch(function() { return { enabled: false }; });
+        var badge = document.getElementById("grid-status-badge");
+        var disabledMsg = document.getElementById("grid-disabled-msg");
+        var activeContent = document.getElementById("grid-active-content");
+        if (!badge) return;
+
+        if (!status.enabled) {
+            badge.textContent = "PAUSED";
+            badge.style.background = "var(--text-muted)";
+            if (disabledMsg) disabledMsg.style.display = "block";
+            if (activeContent) activeContent.style.display = "none";
+            return;
+        }
+
+        badge.textContent = "ACTIVE";
+        badge.style.background = "var(--green)";
+        if (disabledMsg) disabledMsg.style.display = "none";
+        if (activeContent) activeContent.style.display = "block";
+
+        var s = status;
+        var el = function(id) { return document.getElementById(id); };
+        if (el("grid-total-fills")) el("grid-total-fills").textContent = s.total_fills || 0;
+        if (el("grid-profit")) el("grid-profit").textContent = "$" + (s.total_profit || 0).toFixed(2);
+        if (el("grid-fees")) el("grid-fees").textContent = "$" + (s.total_fees || 0).toFixed(2);
+        if (el("grid-fills-hr")) el("grid-fills-hr").textContent = (s.fills_per_hour || 0).toFixed(1);
+        if (el("grid-profit-hr")) el("grid-profit-hr").textContent = "$" + (s.profit_per_hour || 0).toFixed(2);
+
+        // Grid ladders visualization
+        var ladders = document.getElementById("grid-ladders");
+        if (ladders && s.symbols) {
+            var html = "";
+            for (var sym in s.symbols) {
+                var info = s.symbols[sym] || {};
+                var center = info.center || info.last_price || 0;
+                var openCount = info.open || 0;
+                var dec = sym.includes("BTC") ? 2 : 4;
+                html += '<div style="padding:8px;border:1px solid var(--border);border-radius:6px">' +
+                    '<div style="font-weight:700;font-size:.72rem">' + esc(sym.replace("/USDT","")) + '</div>' +
+                    '<div style="font-size:.62rem;color:var(--cyan)">Center: $' + center.toFixed(dec) + '</div>' +
+                    '<div style="font-size:.62rem;color:var(--text-muted)">Open: ' + openCount + '</div>' +
+                    '</div>';
+            }
+            ladders.innerHTML = html || '<div class="empty">No grid symbols</div>';
+        }
+    } catch (e) {}
 }
 
 // ── #13 DAILY PNL BAR CHART ──────────────────────────────
@@ -5227,6 +5993,8 @@ function updateTradeCorrelation(closed, realStatus) {
         if (el("corr-real-wr")) el("corr-real-wr").textContent = rWR.toFixed(1) + "%";
         if (el("corr-real-r")) el("corr-real-r").textContent = rAvgR.toFixed(2) + "%";
     }
+    // B.4/B.5: feed real trades into the Scanner Performance panel
+    try { updateRealScannerPerf(realTrades); } catch (e) {}
 }
 
 // Load config when tab is switched

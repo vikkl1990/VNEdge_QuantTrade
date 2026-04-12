@@ -195,13 +195,21 @@ class Supervisor:
         return alerts
 
     def _check_wal_consistency(self) -> List[Dict[str, Any]]:
-        """Check WAL for opened events without matching close."""
+        """Check WAL for opened events without matching close.
+
+        Ignores pre-link garbage rows where trade_id is literally "pending"
+        — these come from a historical code path that wrote the WAL row at
+        order-send time, before the exchange response provided a real id.
+        The supervisor should not CRITICAL-alert on these forever, so we
+        treat them as structural noise (filter out before orphan check).
+        """
         alerts = []
         try:
             wal = Path("storage/real_trades.wal.jsonl")
             if not wal.exists():
                 return []
             events = {}
+            junk_rows = 0
             with open(wal) as f:
                 for line in f:
                     line = line.strip()
@@ -211,8 +219,12 @@ class Supervisor:
                         rec = json.loads(line)
                         tid = rec.get("trade_id", "")
                         ev = rec.get("event", "")
-                        if tid:
-                            events[tid] = ev
+                        # Filter pre-link garbage: trade_id=="pending" is a
+                        # pre-confirm placeholder that never got rewritten.
+                        if not tid or tid == "pending":
+                            junk_rows += 1
+                            continue
+                        events[tid] = ev
                     except Exception:
                         continue
 
@@ -231,6 +243,14 @@ class Supervisor:
                     "detail": f"{len(orphans)} WAL orphan(s): {orphans[:3]}",
                     "orphan_count": len(orphans),
                 })
+            # One-time informational log if we filtered junk — helps catch
+            # unexpected garbage quantity but never alerts the user.
+            if junk_rows > 0 and not getattr(self, "_wal_junk_logged", False):
+                self._log.info(
+                    "SUPERVISOR: filtered %d pre-link 'pending' WAL row(s) (structural, not an alert)",
+                    junk_rows,
+                )
+                self._wal_junk_logged = True
         except Exception:
             pass
         return alerts

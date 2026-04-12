@@ -2885,6 +2885,14 @@ class ScalpStrategy(BaseStrategy):
             # Phase 4.1b: pass 15m + 1h + 4h HTF frames so unified_features
             # can compute the full 204-feature schema (was 73 pre-4.1b).
             # Phase 5.0a: also pass cached BTC 5m df for cross-asset features.
+            # Phase 5.0c: pass orderbook snapshot from cache if available
+            _ob_snap = None
+            try:
+                _ob_cache = getattr(self, "_ob_cache", None)
+                if _ob_cache is not None:
+                    _ob_snap = _ob_cache.get(symbol)
+            except Exception:
+                pass
             ml_features = build_scoring_features(
                 df, idx=-1, side=best.side.value if best.side else "long",
                 symbol=symbol,
@@ -2894,6 +2902,7 @@ class ScalpStrategy(BaseStrategy):
                 htf_1h=df_1h,     # 1h (Phase 4.1a macro trend features)
                 htf_4h=df_4h,     # 4h (Phase 4.1a session/structure features)
                 btc_df=getattr(self, "_btc_df_cache", None),  # Phase 5.0a
+                orderbook=_ob_snap,  # Phase 5.0c
             )
             # Add context features not in candle data
             ml_features["confidence"] = float(best.confidence)

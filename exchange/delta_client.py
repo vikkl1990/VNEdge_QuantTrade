@@ -757,6 +757,37 @@ class DeltaClient:
         return {}
 
 
+    def get_l2_orderbook(self, symbol: str, depth: int = 20) -> Optional[Dict]:
+        """Fetch L2 order book from Delta REST API.
+
+        GET /v2/l2orderbook/{product_id}?depth={depth}
+        Returns: {"buy": [[price, size], ...], "sell": [[price, size], ...], "symbol": ...}
+        or None on error. Phase 5.0c: orderbook microstructure features.
+        """
+        try:
+            product_id = self._get_product_id(symbol)
+            resp = self._client.request("GET", f"/v2/l2orderbook/{product_id}", params={"depth": depth})
+            if resp and isinstance(resp, dict):
+                buy_raw = resp.get("buy", [])
+                sell_raw = resp.get("sell", [])
+                # Normalize to [[price, size], ...]
+                bids = []
+                for lvl in buy_raw[:depth]:
+                    if isinstance(lvl, dict):
+                        bids.append([float(lvl.get("price", 0) or 0), float(lvl.get("size", 0) or 0)])
+                    elif isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+                        bids.append([float(lvl[0]), float(lvl[1])])
+                asks = []
+                for lvl in sell_raw[:depth]:
+                    if isinstance(lvl, dict):
+                        asks.append([float(lvl.get("price", 0) or 0), float(lvl.get("size", 0) or 0)])
+                    elif isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+                        asks.append([float(lvl[0]), float(lvl[1])])
+                return {"buy": bids, "sell": asks, "symbol": symbol}
+        except Exception as e:
+            logger.debug("get_l2_orderbook(%s) failed: %s", symbol, e)
+        return None
+
     def get_open_orders(self) -> List[Dict]:
         """Get all open orders."""
         try:

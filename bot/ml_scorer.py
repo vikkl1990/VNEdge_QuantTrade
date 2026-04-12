@@ -229,6 +229,7 @@ def build_scoring_features(
     htf_1h: "pd.DataFrame | None" = None,
     htf_4h: "pd.DataFrame | None" = None,
     btc_df: "pd.DataFrame | None" = None,   # Phase 5.0a
+    orderbook: "dict | None" = None,         # Phase 5.0c
 ) -> Dict[str, float]:
     """Build the feature dict for ML scoring from live candle data.
 
@@ -267,6 +268,7 @@ def build_scoring_features(
             htf_1h=htf_1h,
             htf_4h=htf_4h,
             btc_df=btc_df,      # Phase 5.0a
+            orderbook=orderbook, # Phase 5.0c
         )
     except ImportError as e:
         logger.warning(

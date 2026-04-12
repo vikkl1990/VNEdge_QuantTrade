@@ -1460,6 +1460,42 @@ class BotOrchestrator:
                     pass
                 return
 
+        # -- CVD UNIVERSAL VETO (Upgrade Plan Priority 5) --
+        # If CVD proxy diverges from the signal side, the trade is fighting
+        # the flow. cvd_proxy_10 > 0 = buying pressure, < 0 = selling.
+        # Veto: long when cvd strongly negative, short when cvd strongly positive.
+        # Threshold ±1.5 (normalized, clipped ±5 in feature_builder).
+        # Only for non-CVD scanners (cvd_divergence scanner has its own logic).
+        try:
+            _cvd_val = float(meta.get("cvd_proxy_10", 0) or 0)
+            _side_str = str(sig_dict.get("side", "")).lower()
+            _cvd_threshold = 1.5
+            if scanner != "cvd_divergence" and _cvd_val != 0:
+                _cvd_against = (
+                    (_side_str in ("long", "buy") and _cvd_val < -_cvd_threshold) or
+                    (_side_str in ("short", "sell") and _cvd_val > _cvd_threshold)
+                )
+                if _cvd_against:
+                    self._log.warning(
+                        "CVD VETO: %s %s %s | cvd_proxy_10=%.2f (threshold=%.1f) — "
+                        "flow diverges from signal side, blocked",
+                        symbol, _side_str, scanner, _cvd_val, _cvd_threshold,
+                    )
+                    try:
+                        _SJ.stamp(sig_dict, "hard_block", passed=False,
+                                  reason=f"cvd_veto_{_side_str}_cvd={_cvd_val:.2f}")
+                        _SJ.close(sig_dict)
+                    except Exception:
+                        pass
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p5_cvd_universal_veto", f"{symbol}_{_side_str}_{scanner}_cvd{_cvd_val:.1f}")
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
+
         # -- Sync loss streak to AI learner for confidence reduction --
         try:
             self._signal_learner.set_current_streak(

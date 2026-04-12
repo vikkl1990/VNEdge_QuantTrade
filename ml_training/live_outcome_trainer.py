@@ -18,6 +18,13 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
+
+# Phase 5.3: LightGBM upgrade — faster, better with categoricals.
+try:
+    import lightgbm as lgb
+    _HAS_LGBM = True
+except ImportError:
+    _HAS_LGBM = False
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import roc_auc_score, accuracy_score
 import joblib
@@ -177,14 +184,18 @@ def train_live_model(min_trades: int = 100) -> Optional[Dict]:
         if len(y_train.unique()) < 2 or len(y_test) < 10:
             continue
 
-        model = GradientBoostingClassifier(
-            n_estimators=50,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            min_samples_leaf=10,
-            random_state=42 + fold,
-        )
+        if _HAS_LGBM:
+            model = lgb.LGBMClassifier(
+                n_estimators=50, max_depth=4, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8, n_jobs=1,
+                is_unbalance=True, min_child_samples=10,
+                random_state=42 + fold, verbosity=-1,
+            )
+        else:
+            model = GradientBoostingClassifier(
+                n_estimators=50, max_depth=4, learning_rate=0.05,
+                subsample=0.8, min_samples_leaf=10, random_state=42 + fold,
+            )
         model.fit(X_train, y_train)
 
         # Evaluate
@@ -213,14 +224,18 @@ def train_live_model(min_trades: int = 100) -> Optional[Dict]:
     logger.info("Average OOS: AUC=%.4f Acc=%.1f%%", avg_auc, avg_acc)
 
     # Train final model on ALL data
-    final_model = GradientBoostingClassifier(
-        n_estimators=50,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        min_samples_leaf=10,
-        random_state=42,
-    )
+    if _HAS_LGBM:
+        final_model = lgb.LGBMClassifier(
+            n_estimators=50, max_depth=4, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, n_jobs=1,
+            is_unbalance=True, min_child_samples=10,
+            random_state=42, verbosity=-1,
+        )
+    else:
+        final_model = GradientBoostingClassifier(
+            n_estimators=50, max_depth=4, learning_rate=0.05,
+            subsample=0.8, min_samples_leaf=10, random_state=42,
+        )
     final_model.fit(X, y)
 
     # Feature importance ranking

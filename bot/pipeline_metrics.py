@@ -52,6 +52,7 @@ _HOTFIX_NAMES = (
     "p3_11_chop_long_block",      # Phase 3.11: chop+long+low_conf + no ML support block
     "p3_21_slip_recheck_kept",    # Phase 3.21: Hybrid A+D — slip recheck kept trade alive
     "p4_fee_drag_chop",
+    "p5_cvd_universal_veto",      # Phase 5: CVD flow divergence veto (cross-scanner)
 )
 
 # Day-boundary tracking for rolling 24h reset

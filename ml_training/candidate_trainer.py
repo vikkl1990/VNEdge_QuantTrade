@@ -33,6 +33,14 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingRegressor
+
+# Phase 5.3: LightGBM upgrade — faster, handles 200+ features better, native categoricals.
+# Falls back to sklearn if not installed.
+try:
+    import lightgbm as lgb
+    _HAS_LGBM = True
+except ImportError:
+    _HAS_LGBM = False
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
@@ -834,16 +842,27 @@ class CandidateTrainer:
                               max_features: int = 40,
                               regression: bool = False) -> List[str]:
         """Select top N features by importance. Reduces overfitting."""
-        # Quick RF to get importances — use regressor for continuous labels
-        if regression:
-            quick_rf = RandomForestRegressor(
-                n_estimators=30, max_depth=4, random_state=42, n_jobs=1,
-            )
+        # Quick model to get importances — LightGBM when available (much faster on 200+ cols)
+        if _HAS_LGBM:
+            if regression:
+                quick_rf = lgb.LGBMRegressor(
+                    n_estimators=30, max_depth=4, random_state=42, n_jobs=1, verbosity=-1,
+                )
+            else:
+                quick_rf = lgb.LGBMClassifier(
+                    n_estimators=30, max_depth=4, random_state=42, n_jobs=1,
+                    is_unbalance=True, verbosity=-1,
+                )
         else:
-            quick_rf = RandomForestClassifier(
-                n_estimators=30, max_depth=4, random_state=42,
-                class_weight="balanced", n_jobs=1,
-            )
+            if regression:
+                quick_rf = RandomForestRegressor(
+                    n_estimators=30, max_depth=4, random_state=42, n_jobs=1,
+                )
+            else:
+                quick_rf = RandomForestClassifier(
+                    n_estimators=30, max_depth=4, random_state=42,
+                    class_weight="balanced", n_jobs=1,
+                )
         quick_rf.fit(X.fillna(0), y)
 
         importances = dict(zip(X.columns, quick_rf.feature_importances_))
@@ -1028,14 +1047,29 @@ class CandidateTrainer:
                     "test_mean_r": round(float(y_test.mean()), 4),
                 })
             else:
-                clf = RandomForestClassifier(
-                    n_estimators=n_estimators,
-                    max_depth=max_depth,
-                    n_jobs=1,
-                    random_state=42 + fold_idx,
-                    class_weight="balanced",
-                    min_samples_leaf=5,
-                )
+                # Phase 5.3: LightGBM for classification (5-10× faster, better with 200+ features)
+                if _HAS_LGBM:
+                    clf = lgb.LGBMClassifier(
+                        n_estimators=n_estimators,
+                        max_depth=max_depth,
+                        learning_rate=0.05,
+                        subsample=0.8,
+                        colsample_bytree=0.8,
+                        n_jobs=1,
+                        random_state=42 + fold_idx,
+                        is_unbalance=True,
+                        min_child_samples=5,
+                        verbosity=-1,
+                    )
+                else:
+                    clf = RandomForestClassifier(
+                        n_estimators=n_estimators,
+                        max_depth=max_depth,
+                        n_jobs=1,
+                        random_state=42 + fold_idx,
+                        class_weight="balanced",
+                        min_samples_leaf=5,
+                    )
                 clf.fit(X_train, y_train)
                 probs = clf.predict_proba(X_test)[:, 1]
                 preds = (probs >= 0.5).astype(int)
@@ -1113,23 +1147,50 @@ class CandidateTrainer:
 
         # Train final model on all data
         if regression:
-            self._model = GradientBoostingRegressor(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                learning_rate=0.05,
-                subsample=0.8,
-                random_state=42,
-                min_samples_leaf=10,
-            )
+            if _HAS_LGBM:
+                self._model = lgb.LGBMRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    n_jobs=1,
+                    random_state=42,
+                    min_child_samples=10,
+                    verbosity=-1,
+                )
+            else:
+                self._model = GradientBoostingRegressor(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    random_state=42,
+                    min_samples_leaf=10,
+                )
         else:
-            self._model = RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                n_jobs=1,
-                random_state=42,
-                class_weight="balanced",
-                min_samples_leaf=5,
-            )
+            if _HAS_LGBM:
+                self._model = lgb.LGBMClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=0.05,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    n_jobs=1,
+                    random_state=42,
+                    is_unbalance=True,
+                    min_child_samples=5,
+                    verbosity=-1,
+                )
+            else:
+                self._model = RandomForestClassifier(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    n_jobs=1,
+                    random_state=42,
+                    class_weight="balanced",
+                    min_samples_leaf=5,
+                )
         self._model.fit(X, y)
 
         # Feature importances

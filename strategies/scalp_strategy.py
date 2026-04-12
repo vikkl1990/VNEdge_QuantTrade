@@ -3227,6 +3227,8 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ml_verdict"] = ml_result.get("verdict", "?")
         signal.metadata["ml_latency_ms"] = ml_result.get("latency_ms", 0)
         signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
+        # Phase 5 CVD veto: pass CVD proxy to orchestrator for universal veto check
+        signal.metadata["cvd_proxy_10"] = ml_features.get("mkt_cvd_proxy_10", ml_features.get("cvd_proxy_10", 0))
         signal.metadata["ml_threshold"] = self._ml_thresholds.get(symbol, 0.65)
         signal.metadata["ml_model_version"] = ml_result.get("model_version", "unknown")
         # Phase 4.5: which model scope actually scored this trade

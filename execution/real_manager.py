@@ -592,10 +592,10 @@ class RealTradingManager:
 
         # 4. ML probability
 
-        # ACTIVE PAIRS FILTER: only trade pairs we monitor
-        REAL_ACTIVE_PAIRS = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"}
-        if symbol not in REAL_ACTIVE_PAIRS:
-            logger.info("SMART QUALIFY FAIL: %s not in active pairs %s", symbol, REAL_ACTIVE_PAIRS)
+        # ACTIVE PAIRS FILTER: use LIVE_ALLOWED_SYMBOLS (all mapped pairs)
+        # Was hardcoded to 4 symbols, blocking A+ signals on TAO/DOGE/ADA etc.
+        if symbol not in self.LIVE_ALLOWED_SYMBOLS:
+            logger.info("SMART QUALIFY FAIL: %s not in LIVE_ALLOWED_SYMBOLS", symbol)
             return False, f"pair_not_active:{symbol}"
 
         # ML verdict filter: only trade when ML says TAKE or STRONG_TAKE

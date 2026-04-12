@@ -4855,18 +4855,18 @@ function laSelectSymbol(sym) {
 // TAB 3: SYSTEM REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshSystem() {
-    // B.8: parallel fetch — VM1 infra + status + VM4 ML health via proxy.
-    const [infra, status, ml4] = await Promise.all([
-        api("/api/infra"),
-        api("/api/status"),
-        api("/api/ml/health").catch(() => null),
-    ]);
-    updateVMHealth(infra, ml4);
-    updateExchangeStatus(status);
-    updateBotEngine(status);
-    updateConfigSnapshot(status);
-    try { refreshGridBot(); } catch (e) {}
-    try { refreshInfraHealth(); } catch (e) {}
+    // Each fetch independent — one failure can't block others
+    var infra = null, status = null, ml4 = null;
+    try { infra = await fetch("/api/infra").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
+    try { status = await fetch("/api/status").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
+    try { ml4 = await fetch("/api/ml/health").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
+
+    try { updateVMHealth(infra, ml4); } catch(e) { console.error("updateVMHealth:", e); }
+    try { updateExchangeStatus(status); } catch(e) { console.error("updateExchangeStatus:", e); }
+    try { updateBotEngine(status); } catch(e) { console.error("updateBotEngine:", e); }
+    try { updateConfigSnapshot(status); } catch(e) { console.error("updateConfigSnapshot:", e); }
+    try { await refreshGridBot(); } catch(e) {}
+    try { await refreshInfraHealth(); } catch(e) { console.error("infraHealth:", e); }
 }
 
 // Track B.8: VM1 (bot host) + VM4 (ML server) side-by-side health cards.
@@ -4933,7 +4933,7 @@ function updateExchangeStatus(status) {
     const settlePct = fees.settlement != null ? (fees.settlement * 100).toFixed(2) + "%" : "--";
     let html = "";
     html += makeKV("Connection", connected ? "Connected" : "Disconnected", connected ? "var(--green)" : "var(--red)");
-    html += makeKV("Balance", "$" + (realStatus && realStatus.balance ? realStatus.balance.toFixed(2) : "--"), "var(--green)");
+    html += makeKV("Balance", "$" + (typeof realStatus !== "undefined" && realStatus && realStatus.balance ? realStatus.balance.toFixed(2) : "--"), "var(--green)");
     html += makeKV("Maker Fee", makerPct);
     html += makeKV("Taker Fee", takerPct);
     html += makeKV("Settlement Fee", settlePct);
@@ -6838,8 +6838,14 @@ async function refreshInfraHealth() {
                 kv("Fetches", String(ob.fetch_count || 0)) +
                 kv("Errors", String(ob.error_count || 0), (ob.error_count || 0) > 10 ? "var(--red)" : "var(--green)");
         }
-    } catch (e) {}
+    } catch (e) { console.error("refreshInfraHealth error:", e); }
 }
+// Self-init: also load infra health independently every 10s
+// (in case refreshSystem fails or System tab isn't clicked)
+(function() {
+    setTimeout(function() { refreshInfraHealth().catch(function(){}); }, 5000);
+    setInterval(function() { refreshInfraHealth().catch(function(){}); }, 10000);
+})();
 
 // ── #13 DAILY PNL BAR CHART ──────────────────────────────
 let dailyPnlChart = null;

@@ -458,28 +458,37 @@ class DataFeed:
         self._state = FeedState.POLLING
         logger.info("REST polling active – interval=%.1f s", self._poll_interval)
 
+        # Per-symbol error tracking (prevents one bad symbol from killing all feeds)
+        _sym_errors: Dict[str, int] = {}
+        _sym_disabled: set = set()
+
         while not self._stop_event.is_set():
             for sub in self._subscriptions.values():
+                # Skip symbols that have been disabled due to persistent errors
+                if sub.symbol in _sym_disabled:
+                    continue
                 for tf in sub.timeframes:
                     try:
                         await self._poll_once(sub, tf)
+                        # Success: reset this symbol's error count
+                        _sym_errors[sub.symbol] = 0
                     except asyncio.CancelledError:
                         return
                     except Exception:
-                        logger.exception(
+                        logger.warning(
                             "REST poll error for %s/%s", sub.symbol, tf
                         )
-                        self._consecutive_errors += 1
-                        if self._consecutive_errors >= self._max_consecutive_errors:
-                            logger.critical(
-                                "Too many consecutive REST errors – stopping feed"
+                        _sym_errors[sub.symbol] = _sym_errors.get(sub.symbol, 0) + 1
+                        # Per-symbol circuit breaker: disable after 15 consecutive errors
+                        # (3 poll cycles × 5 timeframes = 15). Other symbols unaffected.
+                        if _sym_errors[sub.symbol] >= 15:
+                            logger.error(
+                                "REST DISABLED for %s: %d consecutive errors — "
+                                "skipping until restart (other symbols unaffected)",
+                                sub.symbol, _sym_errors[sub.symbol],
                             )
-                            await self._emit(
-                                event="feed_error",
-                                feed_error="max consecutive REST errors reached",
-                            )
-                            self._state = FeedState.STOPPED
-                            return
+                            _sym_disabled.add(sub.symbol)
+                            break  # skip remaining TFs for this symbol
 
             try:
                 await asyncio.wait_for(

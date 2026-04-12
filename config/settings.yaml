@@ -15,15 +15,12 @@ symbols:
 - TAO/USDT
 - DOGE/USDT
 - LINK/USDT
-# Meme / high-beta alts (added 2026-04-12)
-- PEPE/USDT
-- SHIB/USDT
-- FLOKI/USDT
-- WIF/USDT
-- SUI/USDT
-- NEAR/USDT
-- BONK/USDT
 - AVAX/USDT
+# NOTE: PEPE/SHIB/FLOKI/WIF/SUI/NEAR/BONK removed from scanning.
+# They use 1000x multiplier contracts (1000PEPEUSD etc.) that CCXT REST
+# poller can't resolve → "Too many REST errors" → kills entire feed
+# including BTC/ETH/SOL. Still whitelisted for real trading in PRODUCT_MAP
+# if manually triggered. Re-add after CCXT symbol mapping is fixed.
 exchange:
   name: delta
   region: india

@@ -109,6 +109,71 @@ PRODUCT_MAP = {
         "tick_size": 0.001,
         "tick_size_demo": 0.001,
     },
+    # ── Meme / high-beta alts (added 2026-04-12 per performance review) ──
+    "PEPE/USDT": {
+        "demo_id": 0,
+        "prod_id": 114716,
+        "symbol": "1000PEPEUSD",
+        "contract_size": 1000.0,  # 1 lot = 1000 PEPE (1000x multiplier)
+        "tick_size": 0.0000001,
+        "tick_size_demo": 0.0000001,
+    },
+    "SHIB/USDT": {
+        "demo_id": 0,
+        "prod_id": 114715,
+        "symbol": "1000SHIBUSD",
+        "contract_size": 1000.0,  # 1 lot = 1000 SHIB
+        "tick_size": 0.000001,
+        "tick_size_demo": 0.000001,
+    },
+    "FLOKI/USDT": {
+        "demo_id": 0,
+        "prod_id": 114717,
+        "symbol": "1000FLOKIUSD",
+        "contract_size": 100.0,  # 1 lot = 100 FLOKI
+        "tick_size": 0.00001,
+        "tick_size_demo": 0.00001,
+    },
+    "WIF/USDT": {
+        "demo_id": 0,
+        "prod_id": 15367,
+        "symbol": "WIFUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    "SUI/USDT": {
+        "demo_id": 0,
+        "prod_id": 17328,
+        "symbol": "SUIUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    "NEAR/USDT": {
+        "demo_id": 0,
+        "prod_id": 16615,
+        "symbol": "NEARUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    "BONK/USDT": {
+        "demo_id": 0,
+        "prod_id": 114718,
+        "symbol": "1000BONKUSD",
+        "contract_size": 1000.0,  # 1 lot = 1000 BONK
+        "tick_size": 0.000001,
+        "tick_size_demo": 0.000001,
+    },
+    "AVAX/USDT": {
+        "demo_id": 0,
+        "prod_id": 14830,
+        "symbol": "AVAXUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
 }
 
 # Demo balance asset ID (USD on testnet)

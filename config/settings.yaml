@@ -15,6 +15,15 @@ symbols:
 - TAO/USDT
 - DOGE/USDT
 - LINK/USDT
+# Meme / high-beta alts (added 2026-04-12)
+- PEPE/USDT
+- SHIB/USDT
+- FLOKI/USDT
+- WIF/USDT
+- SUI/USDT
+- NEAR/USDT
+- BONK/USDT
+- AVAX/USDT
 exchange:
   name: delta
   region: india

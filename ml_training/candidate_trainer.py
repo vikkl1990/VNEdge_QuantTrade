@@ -80,8 +80,8 @@ SESSION_CATEGORIES = ["asia_late", "asia_early", "europe", "us"]
 # model. This map must stay in sync between training and serving.
 PAIR_FAMILIES: Dict[str, List[str]] = {
     "liquid_majors": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
-    "secondary":     ["AVAX/USDT", "LINK/USDT"],
-    "high_beta":     ["DOGE/USDT", "WIF/USDT", "SUI/USDT"],
+    "secondary":     ["AVAX/USDT", "LINK/USDT", "XRP/USDT", "LTC/USDT", "ADA/USDT", "DOT/USDT", "NEAR/USDT", "TAO/USDT"],
+    "high_beta":     ["DOGE/USDT", "WIF/USDT", "SUI/USDT", "PEPE/USDT", "SHIB/USDT", "FLOKI/USDT", "BONK/USDT"],
 }
 
 

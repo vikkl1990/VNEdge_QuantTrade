@@ -468,7 +468,12 @@ class RealTradingManager:
     # Smart Qualification & Sizing (V2)
     # ==================================================================
 
-    SMART_WHITELIST = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LTC/USDT", "DOGE/USDT", "LINK/USDT", "DOT/USDT", "TAO/USDT", "ADA/USDT"}
+    SMART_WHITELIST = {
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LTC/USDT",
+        "DOGE/USDT", "LINK/USDT", "DOT/USDT", "TAO/USDT", "ADA/USDT",
+        "PEPE/USDT", "SHIB/USDT", "FLOKI/USDT", "WIF/USDT", "SUI/USDT",
+        "NEAR/USDT", "BONK/USDT", "AVAX/USDT",
+    }
     SMART_GRADE_ALLOW = {"A+", "A", "B"}  # REJECT and C removed — data: conf<50 trades are instant SL hits  # REJECT has 75.8% WR -- data proves profitable  # C has 84.9% WR (highest grade!)
 
     def _smart_qualify(self, signal: dict) -> Tuple[bool, str]:
@@ -1950,7 +1955,13 @@ class RealTradingManager:
     # ==================================================================
 
     # Symbols allowed for live trading (proven liquidity + correct product IDs)
-    LIVE_ALLOWED_SYMBOLS = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LTC/USDT", "DOGE/USDT", "LINK/USDT", "DOT/USDT", "TAO/USDT", "ADA/USDT"}  # all mapped pairs
+    LIVE_ALLOWED_SYMBOLS = {
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "LTC/USDT",
+        "DOGE/USDT", "LINK/USDT", "DOT/USDT", "TAO/USDT", "ADA/USDT",
+        # Meme / high-beta alts (added 2026-04-12)
+        "PEPE/USDT", "SHIB/USDT", "FLOKI/USDT", "WIF/USDT", "SUI/USDT",
+        "NEAR/USDT", "BONK/USDT", "AVAX/USDT",
+    }
 
     async def _preflight_checks(self, symbol: str, signal: dict) -> Tuple[bool, str]:
         """Run all safety checks before placing a real order."""

@@ -110,6 +110,9 @@ class Supervisor:
         # 6. External uptime ping (#3)
         self._ping_uptime_monitor()
 
+        # 7. Stale feed auto-restart
+        await self._check_stale_feed_restart()
+
         # Record anomalies
         if anomalies:
             self._anomaly_count += len(anomalies)
@@ -295,6 +298,76 @@ class Supervisor:
         except Exception:
             pass
         return alerts
+
+    STALE_FEED_RESTART_SEC = 300  # 5 minutes of stale feeds → auto-restart
+    STALE_FEED_MAX_RESTARTS = 3  # max restarts per hour to prevent restart loop
+
+    async def _check_stale_feed_restart(self) -> None:
+        """Auto-restart the bot if ALL candle feeds are stale for >5 minutes.
+
+        The 2026-04-12 incident: Delta India WS dropped, REST fallback failed,
+        bot sat with zero candle data for 2h 9m while appearing "active (running)".
+        This check detects the condition and triggers systemctl restart.
+
+        Safety: max 3 restarts per hour to prevent infinite restart loops.
+        Only triggers if the heartbeat system reports ALL feeds stale — a single
+        stale symbol (e.g., DOT on weekends) won't trigger restart.
+        """
+        try:
+            from bot import pipeline_metrics as _pm
+
+            # Check if candle_close heartbeat is stale
+            now = time.time()
+            candle_ts = _pm._heartbeats.get("candle_close", 0)
+            stale_sec = now - candle_ts if candle_ts > 0 else 0
+
+            # Also check if ANY individual symbol has recent activity
+            any_recent = False
+            for comp, ts in _pm._heartbeats.items():
+                if comp.startswith("candle_close:") and (now - ts) < self.STALE_FEED_RESTART_SEC:
+                    any_recent = True
+                    break
+
+            if stale_sec < self.STALE_FEED_RESTART_SEC or any_recent:
+                # Reset consecutive stale counter on recovery
+                if hasattr(self, '_stale_restart_count_reset_at'):
+                    if now - self._stale_restart_count_reset_at > 3600:
+                        self._stale_restart_count = 0
+                        self._stale_restart_count_reset_at = now
+                return
+
+            # ALL feeds stale for >5 min — consider restart
+            restart_count = getattr(self, '_stale_restart_count', 0)
+            if not hasattr(self, '_stale_restart_count_reset_at'):
+                self._stale_restart_count_reset_at = now
+
+            if restart_count >= self.STALE_FEED_MAX_RESTARTS:
+                self._log.critical(
+                    "STALE FEED: ALL feeds dead for %.0fs but already restarted %d times this hour — "
+                    "NOT restarting (possible exchange outage, manual intervention needed)",
+                    stale_sec, restart_count,
+                )
+                return
+
+            self._log.critical(
+                "STALE FEED AUTO-RESTART: ALL candle feeds dead for %.0fs (>%ds threshold) — "
+                "triggering systemctl restart (attempt %d/%d this hour)",
+                stale_sec, self.STALE_FEED_RESTART_SEC,
+                restart_count + 1, self.STALE_FEED_MAX_RESTARTS,
+            )
+
+            self._stale_restart_count = restart_count + 1
+
+            # Trigger restart via subprocess (non-blocking)
+            import subprocess
+            subprocess.Popen(
+                ["sudo", "systemctl", "restart", "cryptobot"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            self._log.debug("Stale feed restart check failed: %s", e)
 
     def _check_orphan_positions(self) -> List[Dict[str, Any]]:
         """Architect review #2/#8: Periodic reconciliation — bot state vs exchange.

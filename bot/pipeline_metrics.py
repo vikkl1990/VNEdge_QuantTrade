@@ -54,6 +54,8 @@ _HOTFIX_NAMES = (
     "p4_fee_drag_chop",
     "p5_cvd_universal_veto",      # Phase 5: CVD flow divergence veto (cross-scanner)
     "p6_btc_momentum_guard",      # Phase 6: BTC momentum guard blocking alt longs during BTC dump
+    "p7_zero_atr_block",          # Phase 7: zero ATR = trail system blind, block trade
+    "p7_fee_cap_universal",       # Phase 7: universal fee_drag >0.50 cap (all trade types)
 )
 
 # Day-boundary tracking for rolling 24h reset

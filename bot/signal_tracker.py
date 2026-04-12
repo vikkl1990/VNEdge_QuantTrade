@@ -475,6 +475,22 @@ class TrackedSignal:
         # Extract ATR from signal metadata for trailing stop
         signal_atr = float(meta.get("atr", 0))
 
+        # ── FIX: ZERO ATR GUARD ──
+        # DOT/USDT 2026-04-12 loss: ATR was 0.0, chandelier trail couldn't
+        # tighten (0 × multiplier = 0). Trade went +0.40R then reversed to SL.
+        # If ATR is zero, the entire trail system is blind. Block the trade.
+        if signal_atr <= 0 and entry > 0:
+            logger.warning(
+                "ZERO ATR BLOCK: %s %s | atr=%.6f — trail system blind, blocking trade",
+                sig.get("symbol", ""), sig.get("side", ""), signal_atr,
+            )
+            try:
+                from bot import pipeline_metrics as _pm
+                _pm.record_hotfix_veto("p7_zero_atr_block", f"{sig.get('symbol', '?')}_{sig.get('side', '?')}")
+            except Exception:
+                pass
+            return []
+
         # ── MINIMUM POSITION SIZE ENFORCEMENT ──
         # Positions below $50 have fee ratios too high for any edge to survive
         MIN_POSITION_USD = 50.0
@@ -585,6 +601,28 @@ class TrackedSignal:
                     except Exception:
                         pass
             except (ValueError, TypeError):
+                pass
+
+            # ── FIX B: UNIVERSAL fee_drag cap for ALL trade types ──
+            # Weekend 2026-04-12: 98.8% fee/gross ratio. RUNNER trades with
+            # fee_drag=0.40-0.52 bypassed the P4 chop filter (which only applies
+            # to SCALP/INTRADAY). Add a hard universal cap at 0.50 — no trade
+            # type can justify >50% of risk going to fees.
+            try:
+                _fdr = float(fee_check.get("fee_drag_r", 0) or 0)
+                if _fdr > 0.50 and confidence > 0:
+                    logger.warning(
+                        "FEE CAP: %s %s | fee_drag=%.2fR (>0.50 universal) | type=%s — blocked",
+                        sig.get("symbol", ""), sig.get("side", ""), _fdr, pre_trade_type,
+                    )
+                    confidence = 0
+                    meta["fee_cap_block"] = f"fee_drag={_fdr:.2f}_type={pre_trade_type}"
+                    try:
+                        from bot import pipeline_metrics as _pm
+                        _pm.record_hotfix_veto("p7_fee_cap_universal", f"{sig.get('symbol','?')}_{pre_trade_type}_fd{_fdr:.2f}")
+                    except Exception:
+                        pass
+            except Exception:
                 pass
 
         # Store fee analysis in metadata

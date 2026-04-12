@@ -1892,6 +1892,37 @@ textarea.contact-input{min-height:100px;resize:vertical}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ═══ Infra Health: Proxy CB + Cron Sync + OB Cache ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
+
+    <!-- ML Proxy Health -->
+    <div class="panel" style="border-left:3px solid var(--cyan)">
+      <div class="panel-title">ML Proxy Health</div>
+      <div id="proxy-health" style="display:flex;flex-direction:column;gap:4px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Cron Sync Monitor -->
+    <div class="panel" style="border-left:3px solid var(--green)">
+      <div class="panel-title">VM1→VM4 Sync</div>
+      <div id="sync-monitor" style="display:flex;flex-direction:column;gap:4px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+
+    <!-- Orderbook Cache -->
+    <div class="panel" style="border-left:3px solid var(--purple)">
+      <div class="panel-title">Orderbook Cache</div>
+      <div id="ob-cache-health" style="display:flex;flex-direction:column;gap:4px">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 5: ABOUT                                           -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-about">
@@ -4843,6 +4874,7 @@ async function refreshSystem() {
     updateBotEngine(status);
     updateConfigSnapshot(status);
     try { refreshGridBot(); } catch (e) {}
+    try { refreshInfraHealth(); } catch (e) {}
 }
 
 // Track B.8: VM1 (bot host) + VM4 (ML server) side-by-side health cards.
@@ -6730,6 +6762,61 @@ async function refreshGridBot() {
                     '</div>';
             }
             ladders.innerHTML = html || '<div class="empty">No grid symbols</div>';
+        }
+    } catch (e) {}
+}
+
+// ── INFRA HEALTH: Proxy CB + Cron Sync + OB Cache ────────
+async function refreshInfraHealth() {
+    try {
+        var d = await fetch("/api/infra/health").then(function(r) { return r.json(); }).catch(function() { return null; });
+        if (!d) return;
+
+        // 1. ML Proxy Health
+        var proxyWrap = document.getElementById("proxy-health");
+        if (proxyWrap && d.ml_proxy) {
+            var p = d.ml_proxy;
+            var cbColor = p.cb_open ? "var(--red)" : "var(--green)";
+            var cbText = p.cb_open ? "OPEN (" + p.cb_remaining_sec + "s)" : "CLOSED";
+            proxyWrap.innerHTML =
+                makeKV("Circuit Breaker", cbText, cbColor) +
+                makeKV("Consecutive Failures", String(p.cb_failures), p.cb_failures > 0 ? "var(--yellow)" : "var(--green)") +
+                makeKV("Cache Entries", String(p.cache_size)) +
+                (Object.keys(p.cache_entries || {}).map(function(path) {
+                    var e = p.cache_entries[path];
+                    var shortPath = path.split("/").pop();
+                    return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span style="color:var(--text-muted)">' +
+                        esc(shortPath) + '</span><span style="font-family:var(--font-mono);color:' +
+                        (e.age_sec < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + e.age_sec.toFixed(0) + 's ago</span></div>';
+                }).join(""));
+        }
+
+        // 2. Cron Sync Monitor
+        var syncWrap = document.getElementById("sync-monitor");
+        if (syncWrap && d.cron_sync) {
+            var s = d.cron_sync;
+            var syncAge = s.age_sec || 999999;
+            var syncColor = syncAge < 900 ? "var(--green)" : syncAge < 1800 ? "var(--yellow)" : "var(--red)";
+            var syncText = s.last_sync ? (Math.floor(syncAge / 60) + "m ago") : "never";
+            syncWrap.innerHTML =
+                makeKV("Last Sync", syncText, syncColor) +
+                makeKV("Sync Time", s.last_sync || "--") +
+                makeKV("Feedback Records", String(s.feedback_lines || 0)) +
+                makeKV("Training Records", String(s.trades_lines || 0)) +
+                makeKV("Log Exists", s.log_exists ? "Yes" : "No", s.log_exists ? "var(--green)" : "var(--red)");
+        }
+
+        // 3. Orderbook Cache
+        var obWrap = document.getElementById("ob-cache-health");
+        if (obWrap && d.orderbook_cache) {
+            var ob = d.orderbook_cache;
+            var running = ob.running;
+            obWrap.innerHTML =
+                makeKV("Status", running ? "RUNNING" : "OFF", running ? "var(--green)" : "var(--red)") +
+                makeKV("Symbols", String(ob.symbols || 0)) +
+                makeKV("Cached", String(ob.cached || 0)) +
+                makeKV("Fetches", String(ob.fetch_count || 0)) +
+                makeKV("Errors", String(ob.error_count || 0), (ob.error_count || 0) > 10 ? "var(--red)" : "var(--green)");
         }
     } catch (e) {}
 }

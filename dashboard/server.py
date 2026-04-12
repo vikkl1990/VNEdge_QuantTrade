@@ -605,6 +605,9 @@ class DashboardServer:
         app.router.add_get("/api/market-map", self._handle_market_map)
         app.router.add_get("/api/catalyst-calendar", self._handle_catalyst_calendar)
 
+        # ── Infra health: proxy CB + sync monitoring ──
+        app.router.add_get("/api/infra/health", self._handle_infra_health)
+
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
             app.router.add_post("/api/login", self._handle_login)
@@ -1925,16 +1928,72 @@ class DashboardServer:
         return merged
 
     async def _handle_config_get(self, request: web.Request) -> web.Response:
-        """Return safe subset of settings.yaml (secrets redacted)."""
+        """Return safe subset of settings.yaml (secrets redacted) + validation schema."""
         try:
             import yaml
             settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
             with open(settings_path) as f:
                 raw = yaml.safe_load(f) or {}
             safe = self._strip_secrets(raw)
+            # Include schema so UI can show min/max hints per knob
+            safe["_schema"] = self.CONFIG_SCHEMA
             return web.json_response(safe, dumps=_safe_dumps)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    # B.10: Config validation schema — min/max bounds per editable knob.
+    # Used by POST /api/config to reject out-of-range values before writing.
+    # Also returned by GET /api/config under "schema" key for UI hints.
+    CONFIG_SCHEMA = {
+        "real_trading.use_limit_orders": {"type": "bool"},
+        "real_trading.max_slippage_bps": {"type": "float", "min": 5, "max": 100, "unit": "bp"},
+        "real_trading.real_ml_threshold_min": {"type": "float", "min": 0.3, "max": 0.95},
+        "real_trading.real_tp1_r": {"type": "float", "min": 0.0, "max": 2.0, "unit": "R"},
+        "real_trading.daily_loss_limit_usd": {"type": "float", "min": 1, "max": 500, "unit": "$"},
+        "real_trading.max_consecutive_losses": {"type": "int", "min": 1, "max": 20},
+        "real_trading.min_margin_per_trade": {"type": "float", "min": 5, "max": 200, "unit": "$"},
+        "real_trading.max_margin_per_trade": {"type": "float", "min": 5, "max": 500, "unit": "$"},
+        "real_trading.max_open_positions": {"type": "int", "min": 1, "max": 20},
+        "real_trading.leverage_cap": {"type": "int", "min": 1, "max": 100, "unit": "x"},
+        "real_trading.min_balance_to_trade": {"type": "float", "min": 1, "max": 1000, "unit": "$"},
+        "real_trading.balance_reserve_pct": {"type": "int", "min": 0, "max": 50, "unit": "%"},
+        "real_trading.real_allowed_regimes": {"type": "list", "allowed": ["trending_up", "trending_down", "breakout", "mean_reversion", "ranging", "sideways", "high_volatility", "quiet"]},
+        "orderbook.enabled": {"type": "bool"},
+        "orderbook.poll_interval": {"type": "int", "min": 5, "max": 60, "unit": "s"},
+        "orderbook.depth": {"type": "int", "min": 5, "max": 50},
+        "grid.enabled": {"type": "bool"},
+        "grid.num_levels": {"type": "int", "min": 3, "max": 50},
+        "grid.position_usd": {"type": "float", "min": 10, "max": 500, "unit": "$"},
+    }
+
+    def _validate_config(self, updates: dict, _path: str = "") -> list:
+        """Validate config values against schema bounds. Returns list of error strings."""
+        errors = []
+        for k, v in updates.items():
+            full_key = f"{_path}.{k}" if _path else k
+            if isinstance(v, dict):
+                errors.extend(self._validate_config(v, full_key))
+            else:
+                rule = self.CONFIG_SCHEMA.get(full_key)
+                if rule:
+                    t = rule.get("type")
+                    if t == "float" and isinstance(v, (int, float)):
+                        if "min" in rule and v < rule["min"]:
+                            errors.append(f"{full_key}={v} below min {rule['min']}")
+                        if "max" in rule and v > rule["max"]:
+                            errors.append(f"{full_key}={v} above max {rule['max']}")
+                    elif t == "int" and isinstance(v, (int, float)):
+                        if "min" in rule and v < rule["min"]:
+                            errors.append(f"{full_key}={v} below min {rule['min']}")
+                        if "max" in rule and v > rule["max"]:
+                            errors.append(f"{full_key}={v} above max {rule['max']}")
+                    elif t == "list" and isinstance(v, list):
+                        allowed = set(rule.get("allowed", []))
+                        if allowed:
+                            bad = [x for x in v if str(x).strip().lower() not in allowed]
+                            if bad:
+                                errors.append(f"{full_key}: invalid values {bad}, allowed: {sorted(allowed)}")
+        return errors
 
     async def _handle_config_post(self, request: web.Request) -> web.Response:
         """Validate, write updated config, hot-reload, and audit-trail."""
@@ -1948,6 +2007,14 @@ class DashboardServer:
             # Reject secrets
             if self._has_sensitive_keys(body):
                 return web.json_response({"error": "cannot_set_secrets_via_api"}, status=403)
+
+            # B.10: Schema validation
+            validation_errors = self._validate_config(body)
+            if validation_errors:
+                return web.json_response({
+                    "error": "validation_failed",
+                    "violations": validation_errors,
+                }, status=400)
 
             settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
 
@@ -2313,6 +2380,103 @@ class DashboardServer:
     # ==================================================================
     # Vision Tier 3: Market Map + Catalyst Calendar
     # ==================================================================
+
+    async def _handle_infra_health(self, request: web.Request) -> web.Response:
+        """Infra health: ML proxy circuit breaker + cron sync status."""
+        try:
+            import time as _t, os
+
+            # ML Proxy CB state
+            now = _t.time()
+            cb_open = now < self._ml_proxy_cb_open_until
+            cb_remaining = max(0, self._ml_proxy_cb_open_until - now) if cb_open else 0
+            cache_size = len(self._ml_proxy_cache)
+            cache_entries = {}
+            for path, (ts, _, _) in self._ml_proxy_cache.items():
+                cache_entries[path] = {"age_sec": round(now - ts, 1)}
+
+            proxy = {
+                "cb_open": cb_open,
+                "cb_failures": self._ml_proxy_cb_failures,
+                "cb_remaining_sec": round(cb_remaining, 0),
+                "cache_size": cache_size,
+                "cache_entries": cache_entries,
+            }
+
+            # Cron sync status (read the sync log from VM1)
+            sync = {"last_sync": None, "age_sec": None, "feedback_lines": 0, "trades_lines": 0}
+            try:
+                sync_log = Path(__file__).resolve().parent.parent / "logs" / "ml_sync.log"
+                if sync_log.exists():
+                    # Read last sync timestamp from log tail
+                    with open(sync_log, "rb") as f:
+                        f.seek(0, 2)
+                        size = f.tell()
+                        chunk = min(size, 2000)
+                        f.seek(max(0, size - chunk))
+                        lines = f.read().decode("utf-8", errors="replace").strip().split("\n")
+
+                    last_ts = None
+                    feedback_n = 0
+                    trades_n = 0
+                    for line in reversed(lines):
+                        if "sync done" in line:
+                            # Extract timestamp: === 2026-04-12T02:43:42Z sync done ===
+                            parts = line.strip().split()
+                            for p in parts:
+                                if "T" in p and "Z" in p:
+                                    last_ts = p
+                                    break
+                        if "feedback:" in line and not feedback_n:
+                            try:
+                                feedback_n = int(line.split("(")[1].split(" ")[0])
+                            except Exception:
+                                pass
+                        if "trades:" in line and not trades_n:
+                            try:
+                                trades_n = int(line.split("(")[1].split(" ")[0])
+                            except Exception:
+                                pass
+                        if last_ts and feedback_n and trades_n:
+                            break
+
+                    if last_ts:
+                        from datetime import datetime, timezone
+                        try:
+                            dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                            sync["last_sync"] = last_ts
+                            sync["age_sec"] = round(now - dt.timestamp(), 0)
+                        except Exception:
+                            sync["last_sync"] = last_ts
+                    sync["feedback_lines"] = feedback_n
+                    sync["trades_lines"] = trades_n
+                    sync["log_exists"] = True
+                else:
+                    sync["log_exists"] = False
+            except Exception:
+                pass
+
+            # Orderbook cache status
+            ob_cache = {}
+            try:
+                orch = getattr(self, '_orchestrator', None)
+                ob = getattr(orch, '_ob_cache', None) if orch else None
+                if ob:
+                    ob_cache = getattr(ob, 'status', {})
+                    if callable(ob_cache):
+                        ob_cache = ob_cache
+                    else:
+                        ob_cache = ob.status if hasattr(ob, 'status') else {}
+            except Exception:
+                pass
+
+            return web.json_response({
+                "ml_proxy": proxy,
+                "cron_sync": sync,
+                "orderbook_cache": ob_cache,
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_market_map(self, request: web.Request) -> web.Response:
         """Market Map: capital deployed by symbol/family with performance data.

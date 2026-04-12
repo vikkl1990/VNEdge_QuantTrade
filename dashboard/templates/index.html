@@ -2860,7 +2860,8 @@ async function setRealMode(mode) {
     } catch (e) { alert("Mode change failed: " + e); }
 }
 // Legacy support
-async function toggleRealTrading(enabled) { setRealMode(enabled ? "dry_run" : "disabled"); }
+// REMOVED: stale toggleRealTrading(enabled) — conflicts with robust version at line ~8224.
+// The robust version reads current state from API, confirms, and flips.
 
 function healthColor(pct) {
     if (pct > 85) return "var(--red)";
@@ -4017,37 +4018,12 @@ async function refreshAnalytics() {
     // #12 Trade correlation
     const realSt = await api("/api/real/status");
     updateTradeCorrelation(closed, realSt);
-    // Risk-return scatter table
-    refreshRiskReturn();
+    // Risk-return scatter table — REMOVED: risk-return-body element doesn't exist (dead code cleanup)
 }
 
-async function refreshRiskReturn() {
-    try {
-        const resp = await api('/api/risk-return');
-        if (!resp || !resp.scanners) return;
-        const tbody = document.getElementById('risk-return-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        for (const s of resp.scanners) {
-            const row = document.createElement('tr');
-            row.style.borderBottom = '1px solid rgba(255,255,255,.04)';
-            const typeColor = s.category === 'momentum' ? '#00aaff' : '#ff8800';
-            const avgClass = s.avg_return >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-            const sharpeClass = s.sharpe >= 0.5 ? 'color:var(--green)' : s.sharpe >= 0 ? 'color:var(--yellow)' : 'color:var(--red)';
-            const pnlClass = s.total_pnl >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-            row.innerHTML = `
-                <td style="padding:5px 8px;font-weight:600">${s.scanner}</td>
-                <td style="text-align:center;padding:5px 4px;color:${typeColor}">${s.category}</td>
-                <td style="text-align:center;padding:5px 4px">${s.trades}</td>
-                <td style="text-align:right;padding:5px 4px;${avgClass}">${(s.avg_return * 100).toFixed(3)}%</td>
-                <td style="text-align:right;padding:5px 4px">${(s.volatility * 100).toFixed(3)}%</td>
-                <td style="text-align:right;padding:5px 4px;${sharpeClass}">${s.sharpe}</td>
-                <td style="text-align:center;padding:5px 4px">${(s.win_rate * 100).toFixed(1)}%</td>
-                <td style="text-align:right;padding:5px 4px;color:var(--red)">${s.max_drawdown.toFixed(2)}%</td>
-                <td style="text-align:right;padding:5px 4px;${pnlClass}">${s.total_pnl.toFixed(2)}%</td>
-            `;
-            tbody.appendChild(row);
-        }
+// REMOVED: refreshRiskReturn() — dead code, risk-return-body element doesn't exist in DOM.
+// The risk-return functionality is handled by the Scanner Performance panel (B.4+B.5).
+function refreshRiskReturn() { /* dead code cleaned up 2026-04-12 */ }
     } catch(e) { console.error('Risk-return fetch error:', e); }
 }
 
@@ -7192,27 +7168,8 @@ function updateSessionSummary(closed) {
 }
 
 
-function switchAnalyticsAccount(mode) {
-    // Update button styles
-    var pb = document.getElementById("analytics-paper-btn");
-    var rb = document.getElementById("analytics-real-btn");
-    var pn = document.getElementById("analytics-paper-note");
-    var rn = document.getElementById("analytics-real-note");
-    if (mode === "paper") {
-        if(pb){pb.style.background="rgba(0,212,255,.15)";pb.style.color="var(--cyan)";pb.style.borderColor="rgba(0,212,255,.4)";}
-        if(rb){rb.style.background="transparent";rb.style.color="var(--text-muted)";rb.style.borderColor="var(--border)";}
-        if(pn)pn.style.display="";
-        if(rn)rn.style.display="none";
-    } else {
-        if(rb){rb.style.background="rgba(255,59,92,.15)";rb.style.color="var(--red)";rb.style.borderColor="rgba(255,59,92,.4)";}
-        if(pb){pb.style.background="transparent";pb.style.color="var(--text-muted)";pb.style.borderColor="var(--border)";}
-        if(pn)pn.style.display="none";
-        if(rn)rn.style.display="";
-    }
-    window._analyticsMode = mode;
-    // Trigger refresh to reload with correct data
-    refreshAnalytics();
-}
+// REMOVED: switchAnalyticsAccount() — dead code, buttons hidden (display:none).
+// Analytics paper/real toggle handled by the Scanner Performance panel (B.4 setScannerView).
 window._analyticsMode = "paper";
 
 async function dashUpdate() {

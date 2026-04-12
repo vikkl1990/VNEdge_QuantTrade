@@ -3257,6 +3257,100 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ml_match_pct"] = ml_result.get("match_pct", 1.0)
         signal.metadata["ml_feature_schema_hash"] = ml_result.get("feature_schema_hash", "")
 
+        # ══════════════════════════════════════════════════════════════
+        # SNIPER SYSTEM (2026-04-12): 5 precision features
+        # ══════════════════════════════════════════════════════════════
+
+        # ── SNIPER 1: Confluence Score ──
+        # Count how many scanners agree on this symbol + direction.
+        # Already computed at line ~1750 as confluence_bonus. Here we
+        # formalize it as a metadata field for the real qualify gate.
+        _confluence_count = 1  # at least the triggering scanner
+        try:
+            _triggered = [sr for sr in scan_results if sr.setup_result is not None]
+            _same_side = [sr for sr in _triggered if sr.side == best.side]
+            _confluence_count = len(_same_side)
+        except Exception:
+            pass
+        signal.metadata["confluence_count"] = _confluence_count
+        signal.metadata["confluence_scanners"] = ",".join(
+            [sr.scanner_name for sr in _same_side] if '_same_side' in dir() else [best_sr.scanner_name]
+        )
+
+        # ── SNIPER 2: Conviction Score (0-100) ──
+        # Composite of ML prob + grade + confluence + regime alignment.
+        # Used for position sizing and sniper mode ranking.
+        _conviction = 0
+        try:
+            _ml_p = float(signal.metadata.get("ml_probability", 0.5) or 0.5)
+            _grade_mult = {"A+": 1.0, "A": 0.85, "B": 0.65, "C": 0.45}.get(signal.grade, 0.4)
+            _regime_mult = 1.2 if regime in ("trending_up", "trending_down", "breakout") else 0.8 if regime in ("sideways", "quiet") else 1.0
+            _confluence_mult = 1.0 + (_confluence_count - 1) * 0.15  # +15% per extra scanner
+            _conviction = int(min(100, _ml_p * 100 * _grade_mult * _regime_mult * _confluence_mult))
+        except Exception:
+            _conviction = 50
+        signal.metadata["conviction_score"] = _conviction
+
+        # ── SNIPER 3: Sniper Mode (top-N daily filter) ──
+        # If conviction < daily threshold, mark as "sniper_skip".
+        # Real qualify gate uses this to only take the best signals.
+        # Default: top 30% conviction = sniper_min_conviction=70
+        _sniper_min = int(getattr(self, '_sniper_min_conviction', 60) or 60)
+        signal.metadata["sniper_eligible"] = _conviction >= _sniper_min
+        if _conviction < _sniper_min:
+            signal.metadata["sniper_skip"] = f"conviction={_conviction}<{_sniper_min}"
+
+        # ── SNIPER 4: 1m Candle Confirmation ──
+        # Check if the most recent 1m candle confirms the signal direction.
+        # Avoids entering at the TOP of a move (candle already extended).
+        try:
+            _1m_df = candles_dict.get("1m") if candles_dict else None
+            if _1m_df is not None and len(_1m_df) >= 2:
+                _1m_close = float(_1m_df.iloc[-1]["close"])
+                _1m_prev = float(_1m_df.iloc[-2]["close"])
+                _1m_dir = "up" if _1m_close > _1m_prev else "down"
+                _sig_dir = "down" if best.side and best.side.value in ("short", "sell") else "up"
+                signal.metadata["1m_confirmed"] = (_1m_dir == _sig_dir)
+                signal.metadata["1m_direction"] = _1m_dir
+            else:
+                signal.metadata["1m_confirmed"] = True  # no 1m data = allow
+        except Exception:
+            signal.metadata["1m_confirmed"] = True
+
+        # ── SNIPER 5: Kill Zone Check ──
+        # Check if current price is near a key level (round number,
+        # daily high/low, or VWAP). Snipers prefer entries AT key levels.
+        try:
+            _price = float(best.entry_price or 0)
+            if _price > 0:
+                # Round number proximity (within 0.3%)
+                if _price > 100:
+                    _round = round(_price / 1000) * 1000
+                elif _price > 1:
+                    _round = round(_price / 10) * 10
+                else:
+                    _round = round(_price, 1)
+                _dist_pct = abs(_price - _round) / _price * 100
+                signal.metadata["near_round_number"] = _dist_pct < 0.3
+                signal.metadata["round_number_dist_pct"] = round(_dist_pct, 3)
+
+                # VWAP proximity (from indicators)
+                _vwap = float(indicators.get("vwap", 0) or 0) if indicators else 0
+                if _vwap > 0:
+                    _vwap_dist = abs(_price - _vwap) / _price * 100
+                    signal.metadata["near_vwap"] = _vwap_dist < 0.2
+                    signal.metadata["vwap_dist_pct"] = round(_vwap_dist, 3)
+
+                # Kill zone composite
+                _in_kill_zone = (
+                    signal.metadata.get("near_round_number", False) or
+                    signal.metadata.get("near_vwap", False) or
+                    _confluence_count >= 2
+                )
+                signal.metadata["in_kill_zone"] = _in_kill_zone
+        except Exception:
+            signal.metadata["in_kill_zone"] = True  # default allow
+
         # ── Per-scanner SL/TP config ──
         if scanner_exits:
             signal.metadata["scanner_sl_atr"] = scanner_exits.get("sl_atr", self.sl_atr_mult)

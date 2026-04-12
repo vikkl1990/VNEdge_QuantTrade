@@ -643,6 +643,23 @@ class RealTradingManager:
                 self._fix_stats["fix4_regime_block"] = self._fix_stats.get("fix4_regime_block", 0) + 1
                 return False, f"real_regime_block:{_regime}"
 
+        # ── SNIPER GATES (2026-04-12): precision filtering ──
+
+        # Sniper 2+3: Conviction score filter — only take high-conviction signals
+        _conviction = int(meta.get("conviction_score", 50) or 50)
+        _sniper_eligible = meta.get("sniper_eligible", True)
+        if not _sniper_eligible:
+            logger.info("SNIPER SKIP: %s conviction=%d (below threshold) — paper only",
+                       signal.get("symbol", "?"), _conviction)
+            return False, f"sniper_conviction:{_conviction}"
+
+        # Sniper 4: 1m candle confirmation — don't enter against the 1m flow
+        _1m_confirmed = meta.get("1m_confirmed", True)
+        if not _1m_confirmed:
+            logger.info("SNIPER SKIP: %s 1m_direction=%s vs signal — NOT confirmed",
+                       signal.get("symbol", "?"), meta.get("1m_direction", "?"))
+            return False, f"sniper_1m_not_confirmed"
+
         # 5. Scanner win-rate check
         scanner_name = meta.get("setup_type", "") or signal.get("scanner", "")
         if scanner_name:
@@ -713,11 +730,13 @@ class RealTradingManager:
         else:
             sl_distance_pct = 0.02  # default 2%
 
-        # Direct margin targeting: $15-$50 based on confidence and balance
-        # Higher confidence = higher margin allocation
+        # SNIPER: Conviction-scaled margin targeting
+        # Base margin from grade, then scaled by conviction score (0-100).
+        # High conviction (90+) = full size. Low conviction (60) = 60% of base.
         confidence = signal.get("confidence", 70)
         grade = signal.get("grade", "C")
-        
+        _conviction = int(meta.get("conviction_score", 50) or 50)
+
         # Grade-based margin tiers (raised for fee viability)
         if grade in ("A+",):
             target_margin = 75.0   # max conviction — full size
@@ -738,6 +757,14 @@ class RealTradingManager:
                 _vol_scale = min(1.0, 1.0 / _atr_ratio)  # ATR=2.0 → scale=0.5, ATR=0.5 → scale=1.0
                 _vol_scale = max(0.3, _vol_scale)  # never less than 30% of base
                 target_margin = target_margin * _vol_scale
+        except Exception:
+            pass
+
+        # SNIPER: Conviction-scaled sizing
+        # conviction 90+ = 100% of target, conviction 60 = 70%, conviction 40 = 50%
+        try:
+            _conv_scale = max(0.5, min(1.0, _conviction / 90.0))
+            target_margin = target_margin * _conv_scale
         except Exception:
             pass
 

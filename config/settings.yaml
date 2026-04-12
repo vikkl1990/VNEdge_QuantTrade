@@ -40,15 +40,26 @@ execution:
   min_trail_hold_sec: 15
 real_trading:
   enabled: true
-  dry_run: true
+  dry_run: false
   daily_loss_limit_usd: 15.0
   max_consecutive_losses: 3
-  min_margin_per_trade: 50.0
-  max_margin_per_trade: 75.0
-  max_open_positions: 1
+  min_margin_per_trade: 20.0
+  max_margin_per_trade: 20.0
+  max_open_positions: 3
   balance_reserve_pct: 15
-  min_balance_to_trade: 30.0
+  min_balance_to_trade: 15.0
   leverage_cap: 75
+  # Fix #1-5 knobs (MUST stay in sync with VM1)
+  use_limit_orders: true
+  max_slippage_bps: 15
+  real_ml_threshold_min: 0.65
+  real_allowed_regimes:
+  - trending_up
+  - trending_down
+  - breakout
+  real_tp1_r: 0.30
+  max_daily_trades: 15
+  max_portfolio_heat_pct: 500
 ml:
   shadow_mode: true
   veto_skip: true

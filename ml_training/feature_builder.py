@@ -1254,9 +1254,11 @@ def build_features(
     # Compare body/ATR of current bar vs the BOS bar's displacement
     bos_disp = features["bos_displacement"]
     current_body_atr = body_vals / atr.replace(0, np.nan)
+    # bos_disp is a numpy array (from np.where), so use np.where instead of .replace()
+    bos_disp_safe = np.where(bos_disp == 0, np.nan, bos_disp)
     impulse_decay_raw = np.where(
         bos_disp > 0.5,
-        1.0 - (current_body_atr / bos_disp.replace(0, np.nan)),
+        1.0 - (current_body_atr / bos_disp_safe),
         0.0
     )
     features["bos_impulse_decay"] = np.clip(np.nan_to_num(impulse_decay_raw, 0), 0, 1.0)

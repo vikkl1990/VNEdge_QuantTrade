@@ -730,6 +730,66 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- ═══ VISION TIER 1: Attention Rail + KPIs + Signal Radar ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+
+    <!-- Attention Rail -->
+    <div class="panel" style="border-left:3px solid #f59e0b;grid-row:span 2">
+      <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Attention Rail</span>
+        <span style="font-size:.55rem;padding:2px 6px;border-radius:3px;background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.2)" id="attn-count">0 items</span>
+      </div>
+      <div id="attention-rail" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto">
+        <div class="empty">Scanning...</div>
+      </div>
+    </div>
+
+    <!-- Deployable Capital -->
+    <div class="panel" style="border-left:3px solid var(--green)">
+      <div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600">Deployable Capital</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
+        <span id="kpi-deployable" style="font-size:1.6rem;font-weight:900;font-family:var(--font-mono);color:var(--green)">$--</span>
+        <span id="kpi-deploy-pct" style="font-size:.7rem;color:var(--text-muted)">of $--</span>
+      </div>
+      <div style="height:30px;margin-top:6px"><canvas id="kpi-deploy-spark" style="max-height:30px"></canvas></div>
+      <div style="display:flex;justify-content:space-between;font-size:.6rem;color:var(--text-muted);margin-top:4px">
+        <span>Reserved: <b id="kpi-reserved" style="color:var(--yellow)">$--</b></span>
+        <span>DD Buffer: <b id="kpi-dd-buffer" style="color:var(--red)">$--</b></span>
+      </div>
+    </div>
+
+    <!-- Live Edge Estimate -->
+    <div class="panel" style="border-left:3px solid var(--cyan)">
+      <div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600">Live Edge</div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
+        <span id="kpi-edge" style="font-size:1.6rem;font-weight:900;font-family:var(--font-mono);color:var(--cyan)">--R</span>
+        <span id="kpi-edge-label" style="font-size:.65rem;color:var(--text-muted)">avg R (last 20)</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
+        <div><div style="font-size:.55rem;color:var(--text-muted)">Win Rate</div><div id="kpi-edge-wr" style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--green)">--%</div></div>
+        <div><div style="font-size:.55rem;color:var(--text-muted)">Expectancy</div><div id="kpi-edge-ev" style="font-size:1rem;font-weight:800;font-family:var(--font-mono)">$--</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+        <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Win</div><div id="kpi-avg-win" style="font-size:.8rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">$--</div></div>
+        <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Loss</div><div id="kpi-avg-loss" style="font-size:.8rem;font-weight:700;font-family:var(--font-mono);color:var(--red)">$--</div></div>
+      </div>
+    </div>
+
+    <!-- Signal Radar -->
+    <div class="panel" style="border-left:3px solid var(--purple);grid-column:span 2">
+      <div class="panel-title">Signal Radar <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">· conviction × probability</span></div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div style="width:180px;height:180px;position:relative">
+          <canvas id="signal-radar-chart" width="180" height="180"></canvas>
+          <div id="radar-lock-label" style="position:absolute;bottom:4px;left:50%;transform:translateX(-50%);font-size:.6rem;font-family:var(--font-mono);color:var(--text-muted)">RADAR LOCK: --</div>
+        </div>
+        <div id="radar-legend" style="flex:1;display:flex;flex-direction:column;gap:3px;font-size:.62rem">
+          <div class="empty">No active signals</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
   <div class="panel" id="symbol-scanner-status" style="margin-bottom:8px">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
@@ -3236,6 +3296,12 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
     // Command Center 2.0: live PnL + real toggle state
     try { updateCC20(status, realStatus); } catch (e) {}
 
+    // Vision Tier 1: Attention Rail + KPIs + Signal Radar
+    try { updateAttentionRail(status, decision, active, realStatus, funnel); } catch (e) {}
+    try { updateDeployableCapital(realStatus); } catch (e) {}
+    try { updateLiveEdge(closed); } catch (e) {}
+    try { updateSignalRadar(signals, status); } catch (e) {}
+
     // Execution Quality metrics (slippage tracking)
     if (closed && Array.isArray(closed) && closed.length > 0) {
         const recent50 = closed.slice(-50);
@@ -5719,6 +5785,318 @@ function updateKanbanFunnel(funnelData) {
 })();
 
 // ══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
+// VISION TIER 1: Attention Rail + KPIs + Signal Radar
+// ══════════════════════════════════════════════════════════
+
+// ── ATTENTION RAIL ──
+// Prioritized list of what the bot is focusing on RIGHT NOW.
+// Sources: active trades approaching SL, regime changes, scanner triggers,
+// ML drift alerts, unusual volume, real trade events.
+function updateAttentionRail(status, decision, active, realStatus, funnel) {
+    var rail = document.getElementById("attention-rail");
+    var countEl = document.getElementById("attn-count");
+    if (!rail) return;
+
+    var items = [];
+    var now = Date.now() / 1000;
+
+    // 1. Active trades approaching SL (highest priority)
+    try {
+        var tracker = (active && active.active) || active || [];
+        if (Array.isArray(tracker)) {
+            tracker.forEach(function(t) {
+                var mfe = parseFloat(t.peak_mfe_r || t.mfe_r || 0);
+                var currentR = parseFloat(t.current_r || 0);
+                if (currentR < 0.05 && mfe > 0.3) {
+                    items.push({pri: 1, color: "#ff3b5c", icon: "&#x26A0;",
+                        text: (t.symbol || "?") + " retracing from " + mfe.toFixed(2) + "R peak — near SL"});
+                }
+            });
+        }
+    } catch(e){}
+
+    // 2. Real trade events
+    try {
+        if (realStatus) {
+            var openR = realStatus.open_count || 0;
+            if (openR > 0) {
+                items.push({pri: 2, color: "#ff3b5c", icon: "&#x1F534;",
+                    text: openR + " real position(s) open — monitoring"});
+            }
+            var cb = realStatus.circuit_breaker || {};
+            if (cb.is_tripped) {
+                items.push({pri: 0, color: "#ff3b5c", icon: "&#x1F6A8;",
+                    text: "CIRCUIT BREAKER TRIPPED: " + (cb.trip_reason || "unknown")});
+            }
+            if ((cb.consecutive_losses || 0) >= 2) {
+                items.push({pri: 1, color: "#f59e0b", icon: "&#x26A0;",
+                    text: cb.consecutive_losses + " consecutive real losses — approaching CB trip"});
+            }
+        }
+    } catch(e){}
+
+    // 3. Regime info from decision
+    try {
+        if (decision) {
+            var regime = (decision.regime || decision.market_regime || "").toLowerCase();
+            if (regime && regime !== "unknown") {
+                var regimeColor = regime.includes("trend") ? "var(--green)" :
+                                  regime.includes("break") ? "var(--cyan)" :
+                                  regime.includes("sideways") || regime.includes("rang") ? "var(--yellow)" : "var(--text-muted)";
+                items.push({pri: 3, color: regimeColor, icon: "&#x1F30A;",
+                    text: "Regime: " + regime.toUpperCase() + " — " +
+                          (regime.includes("trend") ? "scanners active, expecting signals" :
+                           regime.includes("break") ? "breakout mode, watching for entries" :
+                           "sideways/quiet, reduced signal generation")});
+            }
+        }
+    } catch(e){}
+
+    // 4. Scanner triggers from funnel
+    try {
+        var f = (funnel && funnel.funnel) || funnel || {};
+        var nearMisses = funnel ? (funnel.near_misses || {}) : {};
+        var nmCount = 0;
+        for (var sym in nearMisses) {
+            nmCount += (nearMisses[sym] || []).length;
+        }
+        if (nmCount > 0) {
+            items.push({pri: 4, color: "var(--yellow)", icon: "&#x1F50D;",
+                text: nmCount + " near-miss signal(s) — close to qualifying but didn't pass filters"});
+        }
+    } catch(e){}
+
+    // 5. Bot status
+    try {
+        if (status) {
+            var uptime = status.uptime || "--";
+            items.push({pri: 5, color: "var(--text-muted)", icon: "&#x2705;",
+                text: "Bot running: " + uptime + " | " + (status.symbols || []).length + " symbols scanning"});
+        }
+    } catch(e){}
+
+    // Sort by priority (0=highest)
+    items.sort(function(a, b) { return a.pri - b.pri; });
+
+    if (items.length === 0) {
+        rail.innerHTML = '<div class="empty">All quiet — no active signals or alerts</div>';
+    } else {
+        rail.innerHTML = items.map(function(item) {
+            return '<div style="display:flex;align-items:flex-start;gap:6px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,.02);border-left:2px solid ' + item.color + '">' +
+                '<span style="font-size:.7rem;flex-shrink:0">' + item.icon + '</span>' +
+                '<span style="font-size:.62rem;color:var(--text);line-height:1.3">' + item.text + '</span></div>';
+        }).join("");
+    }
+    if (countEl) countEl.textContent = items.length + " items";
+}
+
+// ── DEPLOYABLE CAPITAL KPI ──
+var _deploySparkData = [];
+var _deploySparkChart = null;
+
+function updateDeployableCapital(realStatus) {
+    if (!realStatus) return;
+    var balance = realStatus.balance || 0;
+    var openCount = realStatus.open_count || 0;
+    var margin = 20; // per-trade margin
+    var reserved = openCount * margin;
+    var dd = realStatus.rolling_drawdown || {};
+    var dd1h = (dd["1h"] || {}).pnl || 0;
+    var ddBuffer = Math.max(0, Math.abs(dd1h) * 2); // 2x recent drawdown as buffer
+    var deployable = Math.max(0, balance - reserved - ddBuffer);
+
+    var el = function(id) { return document.getElementById(id); };
+    if (el("kpi-deployable")) el("kpi-deployable").textContent = "$" + deployable.toFixed(0);
+    if (el("kpi-deploy-pct")) el("kpi-deploy-pct").textContent = "of $" + balance.toFixed(0);
+    if (el("kpi-reserved")) el("kpi-reserved").textContent = "$" + reserved.toFixed(0);
+    if (el("kpi-dd-buffer")) el("kpi-dd-buffer").textContent = "$" + ddBuffer.toFixed(1);
+
+    // Sparkline (rolling 30 data points)
+    _deploySparkData.push(deployable);
+    if (_deploySparkData.length > 30) _deploySparkData.shift();
+    try {
+        var canvas = document.getElementById("kpi-deploy-spark");
+        if (canvas && _deploySparkData.length > 2) {
+            if (_deploySparkChart) _deploySparkChart.destroy();
+            _deploySparkChart = new Chart(canvas.getContext("2d"), {
+                type: "line",
+                data: {
+                    labels: _deploySparkData.map(function(_, i) { return ""; }),
+                    datasets: [{
+                        data: _deploySparkData,
+                        borderColor: "rgba(0,255,157,.6)",
+                        backgroundColor: "rgba(0,255,157,.05)",
+                        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+                    }],
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: { x: { display: false }, y: { display: false } },
+                },
+            });
+        }
+    } catch(e) {}
+}
+
+// ── LIVE EDGE ESTIMATE KPI ──
+function updateLiveEdge(closed) {
+    if (!closed || !Array.isArray(closed) || closed.length < 5) return;
+    var recent = closed.slice(-20);
+    var wins = 0, totalPnl = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
+    recent.forEach(function(t) {
+        var pnl = parseFloat(t.pnl_usd || 0);
+        var r = parseFloat(t.exit_r || t.r_multiple || 0);
+        totalPnl += pnl;
+        if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
+        else { lossPnl += Math.abs(pnl); lossCount++; }
+    });
+    var wr = recent.length > 0 ? (wins / recent.length * 100) : 0;
+    var avgR = recent.length > 0 ? (totalPnl / recent.length) : 0;
+    var avgWin = winCount > 0 ? (winPnl / winCount) : 0;
+    var avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
+    var ev = recent.length > 0 ? (totalPnl / recent.length) : 0;
+
+    var el = function(id) { return document.getElementById(id); };
+    if (el("kpi-edge")) {
+        var edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
+        el("kpi-edge").textContent = edgeR.toFixed(2) + "R";
+        el("kpi-edge").style.color = edgeR >= 1.0 ? "var(--green)" : edgeR >= 0.5 ? "var(--yellow)" : "var(--red)";
+    }
+    if (el("kpi-edge-wr")) {
+        el("kpi-edge-wr").textContent = wr.toFixed(0) + "%";
+        el("kpi-edge-wr").style.color = wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)";
+    }
+    if (el("kpi-edge-ev")) {
+        el("kpi-edge-ev").textContent = "$" + ev.toFixed(2);
+        el("kpi-edge-ev").style.color = ev >= 0 ? "var(--green)" : "var(--red)";
+    }
+    if (el("kpi-avg-win")) el("kpi-avg-win").textContent = "$" + avgWin.toFixed(2);
+    if (el("kpi-avg-loss")) el("kpi-avg-loss").textContent = "$" + avgLoss.toFixed(2);
+}
+
+// ── SIGNAL RADAR ──
+var _radarChart = null;
+
+function updateSignalRadar(signals, status) {
+    var canvas = document.getElementById("signal-radar-chart");
+    var legend = document.getElementById("radar-legend");
+    var lockLabel = document.getElementById("radar-lock-label");
+    if (!canvas) return;
+
+    // Collect recent scanner triggers from signals
+    var scannerData = {};
+    var symbols = (status && status.symbols) || [];
+    var prices = (status && status.prices) || {};
+
+    // Build per-symbol scanner data from signals
+    try {
+        var sigs = (signals && Array.isArray(signals)) ? signals.slice(-20) : [];
+        sigs.forEach(function(s) {
+            var sym = (s.symbol || "").replace("/USDT", "");
+            var scanner = (s.metadata || {}).setup_type || (s.metadata || {}).scanner || "unknown";
+            var conf = parseFloat(s.confidence || 0);
+            var mlProb = parseFloat((s.metadata || {}).ml_probability || 0.5);
+            var side = s.side || "?";
+            if (conf > 0) {
+                var key = sym + "_" + scanner;
+                scannerData[key] = {sym: sym, scanner: scanner, conf: conf, mlProb: mlProb, side: side};
+            }
+        });
+    } catch(e) {}
+
+    var entries = Object.values(scannerData);
+
+    // Radar labels = symbols being scanned
+    var radarSymbols = symbols.map(function(s) { return s.replace("/USDT", ""); }).slice(0, 10);
+    if (radarSymbols.length === 0) radarSymbols = ["BTC", "ETH", "SOL", "XRP"];
+
+    // Build data: conviction per symbol (max conf × ml_prob from recent signals)
+    var convictions = radarSymbols.map(function(sym) {
+        var best = 0;
+        entries.forEach(function(e) {
+            if (e.sym === sym) {
+                var conviction = (e.conf / 100) * e.mlProb;
+                if (conviction > best) best = conviction;
+            }
+        });
+        return Math.round(best * 100);
+    });
+
+    try {
+        if (_radarChart) _radarChart.destroy();
+        _radarChart = new Chart(canvas.getContext("2d"), {
+            type: "radar",
+            data: {
+                labels: radarSymbols,
+                datasets: [{
+                    label: "Conviction",
+                    data: convictions,
+                    backgroundColor: "rgba(6,182,212,.12)",
+                    borderColor: "rgba(6,182,212,.7)",
+                    borderWidth: 1.5,
+                    pointRadius: 3,
+                    pointBackgroundColor: convictions.map(function(v) {
+                        return v > 50 ? "#00ff9d" : v > 25 ? "#06b6d4" : "rgba(255,255,255,.2)";
+                    }),
+                }],
+            },
+            options: {
+                responsive: false, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    r: {
+                        min: 0, max: 100,
+                        ticks: { display: false, stepSize: 25 },
+                        grid: { color: "rgba(255,255,255,.06)" },
+                        angleLines: { color: "rgba(255,255,255,.06)" },
+                        pointLabels: { color: "rgba(255,255,255,.5)", font: { size: 9, family: "var(--font-mono)" } },
+                    },
+                },
+            },
+        });
+    } catch(e) {}
+
+    // Legend: top signals
+    if (legend) {
+        if (entries.length === 0) {
+            legend.innerHTML = '<div class="empty" style="font-size:.6rem">No recent signals — scanners running</div>';
+        } else {
+            var sorted = entries.sort(function(a, b) { return (b.conf * b.mlProb) - (a.conf * a.mlProb); }).slice(0, 6);
+            legend.innerHTML = sorted.map(function(e) {
+                var conviction = (e.conf / 100 * e.mlProb * 100).toFixed(0);
+                var sideColor = e.side === "long" || e.side === "buy" ? "var(--green)" : "var(--red)";
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">' +
+                    '<span style="color:' + sideColor + ';font-weight:700">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
+                    '<span style="color:var(--text-muted)">' + e.scanner.substring(0, 8) + '</span>' +
+                    '<span style="font-family:var(--font-mono);color:var(--cyan)">' + conviction + '%</span></div>';
+            }).join("");
+        }
+    }
+
+    // Lock label: strongest signal
+    if (lockLabel) {
+        if (entries.length > 0) {
+            var best = entries[0];
+            lockLabel.textContent = "LOCK: " + best.sym + " " + best.side.toUpperCase().charAt(0) + " " +
+                (best.conf * best.mlProb / 100 * 100).toFixed(0) + "%";
+            lockLabel.style.color = "var(--cyan)";
+        } else {
+            lockLabel.textContent = "RADAR LOCK: scanning...";
+            lockLabel.style.color = "var(--text-muted)";
+        }
+    }
+}
+
+// ── WIRE VISION TIER 1 into main refresh ──
+// Uses a wrapper on the existing refreshLive to inject new data
+(function wireVisionTier1() {
+    // Attention Rail + Signal Radar need signals + status + decision + realStatus
+    // These are all available in the main refreshLive function at line ~3180+
+    // We hook into the existing funnel/signals update calls
+})();
+
 // ITEM #10: COMMAND CENTER 2.0 — Quick Actions
 // ══════════════════════════════════════════════════════════
 

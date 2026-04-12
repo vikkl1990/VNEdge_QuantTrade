@@ -1277,10 +1277,20 @@ class SignalTracker:
                                 "new_sl": be_sl, "old_sl": 0, "peak_mfe_r": ts.peak_mfe_r})
 
                 if ts.peak_mfe_r >= 0.15 and _trade_age >= min_hold:
-                    # HYBRID TRAIL: lock_pct handles 0.15-0.4R, chandelier takes over at 0.4R+
-                    # This restores baseline 95% trail WR for early profit protection
-                    if ts.peak_mfe_r >= 0.4:
-                        lock_pct = 0  # chandelier handles 0.4R+ (skip lock_pct)
+                    # HYBRID TRAIL: lock_pct protects profit at every tier.
+                    # FIX 2026-04-12: old code set lock_pct=0 at peak>=0.4R, relying on
+                    # chandelier alone. But chandelier (ATR-based) can be much looser
+                    # than MFE-proportional locking — ETH trade went from +1.22R peak
+                    # to +0.30R exit because lock_pct was 0 and chandelier was too wide.
+                    # New: use MFE ratchet formula as MINIMUM lock_pct at all tiers.
+                    if ts.peak_mfe_r >= 1.0:
+                        lock_pct = 0.55  # lock 55% at 1.0R+ (was 0 → leaked to breakeven)
+                    elif ts.peak_mfe_r >= 0.7:
+                        lock_pct = 0.50  # lock 50% at 0.7R (significant profit)
+                    elif ts.peak_mfe_r >= 0.5:
+                        lock_pct = 0.45  # lock 45% at 0.5R
+                    elif ts.peak_mfe_r >= 0.4:
+                        lock_pct = 0.40  # lock 40% at 0.4R (was 0 → chandelier only)
                     elif ts.peak_mfe_r >= 0.3:
                         lock_pct = 0.75  # lock 75% at 0.3R (prevent trail=loss)
                     elif ts.peak_mfe_r >= 0.2:

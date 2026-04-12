@@ -4021,11 +4021,7 @@ async function refreshAnalytics() {
     // Risk-return scatter table — REMOVED: risk-return-body element doesn't exist (dead code cleanup)
 }
 
-// REMOVED: refreshRiskReturn() — dead code, risk-return-body element doesn't exist in DOM.
-// The risk-return functionality is handled by the Scanner Performance panel (B.4+B.5).
-function refreshRiskReturn() { /* dead code cleaned up 2026-04-12 */ }
-    } catch(e) { console.error('Risk-return fetch error:', e); }
-}
+// REMOVED: refreshRiskReturn() — dead code cleaned up 2026-04-12
 
 function updateEquityChart(closed) {
     if (!closed || !Array.isArray(closed) || closed.length === 0) return;

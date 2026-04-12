@@ -650,7 +650,10 @@ class DashboardServer:
             return web.Response(text="Dashboard template not found", status=500)
         if True:  # always reload template (cache was serving stale login form)
             self._idx_cache = index_path.read_text(encoding="utf-8")
-        return web.Response(text=self._idx_cache, content_type="text/html")
+        return web.Response(
+            text=self._idx_cache, content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         async with self._lock:

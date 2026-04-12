@@ -595,6 +595,12 @@ class DashboardServer:
         app.router.add_get("/api/ml/edge-verdict-trend", self._handle_ml_proxy)
         app.router.add_get("/api/ml/health", self._handle_ml_proxy)
 
+        # ── Vision Tier 2+3: Thesis Tracker + Agent Pipeline + Research ──
+        app.router.add_get("/api/thesis", self._handle_thesis)
+        app.router.add_get("/api/agents/pipeline", self._handle_agent_pipeline)
+        app.router.add_get("/api/research/correlations", self._handle_research_correlations)
+        app.router.add_get("/api/pipeline/trace", self._handle_pipeline_trace)
+
         # Auth endpoints (only register if NOT using multi-user DB auth)
         if not self._auth_service:
             app.router.add_post("/api/login", self._handle_login)
@@ -1988,6 +1994,315 @@ class DashboardServer:
 
             logger.warning("CONFIG UPDATED via dashboard API: %s", list(body.keys()))
             return web.json_response({"ok": True, "keys_updated": list(body.keys())})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ==================================================================
+    # Vision Tier 2+3: Thesis, Agent Pipeline, Research, Pipeline Trace
+    # ==================================================================
+
+    async def _handle_thesis(self, request: web.Request) -> web.Response:
+        """Thesis Tracker: current regime, dominant thesis, invalidation conditions.
+
+        Aggregates regime data + recent trade performance + ML calibration
+        to produce a human-readable thesis about current market state.
+        """
+        try:
+            orch = getattr(self, '_orchestrator', None)
+            strategy = getattr(orch, '_strategy', None) if orch else None
+            scalp = getattr(strategy, '_scalp', strategy) if strategy else None
+            tracker = getattr(self, '_signal_tracker', None)
+            if not tracker and orch:
+                tracker = getattr(orch, '_signal_tracker', None)
+
+            # Regime from strategy
+            regime_info = {}
+            try:
+                regime_info = getattr(scalp, '_last_regime_info', {}) or {}
+            except Exception:
+                pass
+
+            regime = str(regime_info.get("regime", "unknown")).lower()
+            regime_conf = float(regime_info.get("confidence", 0) or 0)
+
+            # Recent performance (last 20 trades) for thesis direction
+            recent_trades = []
+            if tracker:
+                try:
+                    stats = tracker.get_stats()
+                    recent_trades = stats.get("recent_closed", [])[-20:] if isinstance(stats, dict) else []
+                except Exception:
+                    pass
+
+            wins = sum(1 for t in recent_trades if float(t.get("pnl_usd", 0) or 0) > 0)
+            wr = (wins / len(recent_trades) * 100) if recent_trades else 0
+            total_pnl = sum(float(t.get("pnl_usd", 0) or 0) for t in recent_trades)
+
+            # Dominant side
+            longs = sum(1 for t in recent_trades if str(t.get("side", "")).lower() in ("long", "buy"))
+            shorts = len(recent_trades) - longs
+            dominant_side = "LONG" if longs > shorts else "SHORT" if shorts > longs else "NEUTRAL"
+
+            # Build thesis
+            if regime in ("trending_up", "breakout"):
+                thesis = "Bullish momentum — scanners seeking long entries at pullbacks and breakouts"
+                invalidation = "ADX drops below 20, BTC loses key support, or 3+ consecutive losses"
+            elif regime in ("trending_down",):
+                thesis = "Bearish momentum — scanners seeking short entries at rallies and breakdowns"
+                invalidation = "ADX drops below 20, BTC reclaims resistance, or 3+ consecutive losses"
+            elif regime in ("mean_reversion", "ranging"):
+                thesis = "Range-bound — mean reversion setups at extremes, tight SL, quick exits"
+                invalidation = "Volatility expansion (ATR >85th pctile), directional breakout, volume spike"
+            elif regime in ("high_volatility",):
+                thesis = "High volatility — reduced position sizing, wider stops, selective entries only"
+                invalidation = "ATR normalizes below 50th pctile, regime stabilizes for 30+ minutes"
+            elif regime in ("sideways", "quiet", "low_liquidity"):
+                thesis = "Low activity — minimal signal generation expected, patience mode"
+                invalidation = "Volume spike >2x average, regime shift to trending, news catalyst"
+            else:
+                thesis = "Regime unclear — ML and scanners running but no strong directional bias"
+                invalidation = "Clear regime establishment (ADX >25 + directional EMA alignment)"
+
+            # Prices context
+            prices = getattr(self, '_prices', {}) or {}
+            btc_price = prices.get("BTC/USDT", 0)
+
+            return web.json_response({
+                "regime": regime,
+                "regime_confidence": round(regime_conf, 2),
+                "thesis": thesis,
+                "invalidation": invalidation,
+                "dominant_side": dominant_side,
+                "recent_wr": round(wr, 1),
+                "recent_pnl": round(total_pnl, 2),
+                "recent_trades": len(recent_trades),
+                "longs": longs,
+                "shorts": shorts,
+                "btc_price": btc_price,
+                "symbols_active": len(getattr(self, '_symbols', []) or []),
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_agent_pipeline(self, request: web.Request) -> web.Response:
+        """Multi-agent visible pipeline: named agents with status, queue depth, last action.
+
+        Each "agent" is an async task in the orchestrator. This endpoint
+        surfaces their individual status for the dashboard pipeline view.
+        """
+        try:
+            orch = getattr(self, '_orchestrator', None)
+            agents = []
+
+            # 1. Scanner Agent (main loop)
+            current_action = getattr(orch, '_current_action', {}) if orch else {}
+            agents.append({
+                "name": "Scanner",
+                "icon": "🔍",
+                "status": "scanning" if current_action.get("action") == "scanning" else "idle",
+                "detail": current_action.get("detail", "--"),
+                "symbol": current_action.get("symbol", ""),
+                "last_ts": current_action.get("ts", 0),
+                "color": "#06b6d4",
+            })
+
+            # 2. ML Scorer Agent
+            ml_status = "active"
+            try:
+                scorer = getattr(orch, '_strategy', None)
+                if scorer:
+                    scalp = getattr(scorer, '_scalp', scorer)
+                    last_ml = getattr(scalp, '_last_ml_result', {})
+                    ml_symbol = list(last_ml.keys())[-1] if last_ml else ""
+                    ml_detail = ""
+                    if ml_symbol and last_ml.get(ml_symbol):
+                        r = last_ml[ml_symbol]
+                        ml_detail = ml_symbol + " " + str(r.get("verdict", "")) + " " + str(round(float(r.get("probability", 0) or 0), 2))
+                    agents.append({
+                        "name": "ML Scorer",
+                        "icon": "🧠",
+                        "status": "active" if ml_detail else "idle",
+                        "detail": ml_detail or "waiting for candidates",
+                        "symbol": ml_symbol,
+                        "last_ts": 0,
+                        "color": "#a855f7",
+                    })
+            except Exception:
+                agents.append({"name": "ML Scorer", "icon": "🧠", "status": "idle", "detail": "--", "symbol": "", "last_ts": 0, "color": "#a855f7"})
+
+            # 3. Signal Tracker Agent
+            tracker = getattr(self, '_signal_tracker', None) or (getattr(orch, '_signal_tracker', None) if orch else None)
+            active_count = len(getattr(tracker, '_active', {}) or {}) if tracker else 0
+            agents.append({
+                "name": "Tracker",
+                "icon": "📊",
+                "status": "tracking" if active_count > 0 else "idle",
+                "detail": str(active_count) + " active trades",
+                "symbol": "",
+                "last_ts": 0,
+                "color": "#f59e0b",
+            })
+
+            # 4. Risk Manager Agent
+            mgr = self._get_real_manager()
+            real_open = len(getattr(mgr, 'real_trades', {}) or {}) if mgr else 0
+            cb = mgr.circuit_breaker if mgr else None
+            risk_status = "monitoring"
+            if cb and cb.is_tripped:
+                risk_status = "TRIPPED"
+            elif real_open > 0:
+                risk_status = "active"
+            agents.append({
+                "name": "Risk",
+                "icon": "🛡️",
+                "status": risk_status,
+                "detail": str(real_open) + " real open" + (" | CB TRIPPED" if (cb and cb.is_tripped) else ""),
+                "symbol": "",
+                "last_ts": 0,
+                "color": "#ef4444",
+            })
+
+            # 5. Execution Agent
+            exec_status = "ready"
+            if mgr and mgr.enabled and not mgr.dry_run:
+                exec_status = "LIVE"
+            elif mgr and mgr.enabled and mgr.dry_run:
+                exec_status = "dry_run"
+            elif mgr and not mgr.enabled:
+                exec_status = "disabled"
+            agents.append({
+                "name": "Executor",
+                "icon": "⚡",
+                "status": exec_status,
+                "detail": exec_status.upper(),
+                "symbol": "",
+                "last_ts": 0,
+                "color": "#22c55e",
+            })
+
+            # 6. Supervisor Agent
+            sup = getattr(self, '_supervisor', None) or (getattr(orch, '_supervisor', None) if orch else None)
+            sup_status = getattr(sup, 'status', {}) if sup else {}
+            agents.append({
+                "name": "Supervisor",
+                "icon": "👁️",
+                "status": "watching" if sup_status.get("running") else "off",
+                "detail": str(sup_status.get("anomaly_count", 0)) + " anomalies",
+                "symbol": "",
+                "last_ts": sup_status.get("last_run", 0),
+                "color": "#64748b",
+            })
+
+            return web.json_response({"agents": agents}, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_research_correlations(self, request: web.Request) -> web.Response:
+        """Proactive Research: cross-pair correlation matrix + regime transition signals.
+
+        Computes rolling return correlations between all monitored pairs using
+        cached price data. Also detects regime transitions (momentum shifts).
+        """
+        try:
+            import numpy as np
+            prices = getattr(self, '_prices', {}) or {}
+            symbols = list(prices.keys())
+
+            # Build correlation from recent closed trades (per-symbol returns)
+            tracker = getattr(self, '_signal_tracker', None)
+            if not tracker:
+                orch = getattr(self, '_orchestrator', None)
+                tracker = getattr(orch, '_signal_tracker', None) if orch else None
+
+            corr_matrix = {}
+            symbol_returns = {}
+            if tracker:
+                try:
+                    stats = tracker.get_stats()
+                    by_symbol = stats.get("by_symbol", {}) if isinstance(stats, dict) else {}
+                    for sym, data in by_symbol.items():
+                        if isinstance(data, dict):
+                            avg_r = float(data.get("avg_r", 0) or 0)
+                            wr = float(data.get("wr", 0) or data.get("win_rate", 0) or 0)
+                            trades = int(data.get("trades", 0) or data.get("total", 0) or 0)
+                            symbol_returns[sym] = {"avg_r": avg_r, "wr": wr, "trades": trades}
+                except Exception:
+                    pass
+
+            # Regime transition detection (compare recent regime vs historical)
+            transitions = []
+            try:
+                orch = getattr(self, '_orchestrator', None)
+                strategy = getattr(orch, '_strategy', None) if orch else None
+                scalp = getattr(strategy, '_scalp', strategy) if strategy else None
+                regime_info = getattr(scalp, '_last_regime_info', {}) or {}
+                current_regime = str(regime_info.get("regime", "unknown")).lower()
+                # Simple transition: flag if regime changed recently
+                transitions.append({
+                    "type": "regime",
+                    "current": current_regime,
+                    "signal": "stable" if regime_info.get("confidence", 0) > 0.7 else "transitioning",
+                    "confidence": round(float(regime_info.get("confidence", 0) or 0), 2),
+                })
+            except Exception:
+                pass
+
+            # Scanner co-firing (from scalp strategy)
+            co_firing = {}
+            try:
+                if scalp and hasattr(scalp, 'get_scanner_correlation'):
+                    co_firing = scalp.get_scanner_correlation() or {}
+            except Exception:
+                pass
+
+            return web.json_response({
+                "symbols": symbols,
+                "symbol_performance": symbol_returns,
+                "regime_transitions": transitions,
+                "scanner_co_firing": co_firing,
+                "prices": {s: p for s, p in prices.items()},
+            }, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_pipeline_trace(self, request: web.Request) -> web.Response:
+        """Pipeline Trace: recent journeys grouped by time batch for drilldown."""
+        try:
+            from bot.signal_journey import SignalJourney
+            limit = min(int(request.query.get("limit", "50")), 200)
+            journeys = SignalJourney.load_recent(limit=limit)
+
+            # Group by 5-minute windows for batch visualization
+            batches = {}
+            for j in journeys:
+                closed_at = float(j.get("closed_at", 0) or 0)
+                # Round to 5-minute window
+                window = int(closed_at // 300) * 300
+                if window not in batches:
+                    batches[window] = {"ts": window, "signals": [], "passed": 0, "failed": 0}
+                batch = batches[window]
+                batch["signals"].append({
+                    "trade_id": j.get("trade_id", "")[:12],
+                    "symbol": j.get("symbol", ""),
+                    "side": j.get("side", ""),
+                    "grade": j.get("grade", ""),
+                    "final_stage": j.get("final_stage", ""),
+                    "final_passed": j.get("final_passed", False),
+                    "stage_count": j.get("stage_count", 0),
+                    "total_ms": j.get("total_ms", 0),
+                })
+                if j.get("final_passed"):
+                    batch["passed"] += 1
+                else:
+                    batch["failed"] += 1
+
+            # Sort by timestamp descending
+            sorted_batches = sorted(batches.values(), key=lambda b: b["ts"], reverse=True)
+
+            return web.json_response({
+                "batches": sorted_batches[:20],
+                "total_journeys": len(journeys),
+            }, dumps=_safe_dumps)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

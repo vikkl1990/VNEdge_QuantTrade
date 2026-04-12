@@ -790,6 +790,48 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- ═══ VISION TIER 2+3: Thesis + Agent Pipeline + Research + Pipeline Trace ═══ -->
+
+  <!-- ROW: Thesis Tracker + Agent Pipeline -->
+  <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
+
+    <!-- Thesis Tracker -->
+    <div class="panel" style="border-left:3px solid #8b5cf6">
+      <div class="panel-title">Thesis <span id="thesis-regime-badge" class="badge" style="font-size:.55rem;background:var(--text-muted)">--</span></div>
+      <div id="thesis-content" style="font-size:.72rem;line-height:1.5">
+        <div class="empty">Loading thesis...</div>
+      </div>
+    </div>
+
+    <!-- Multi-Agent Pipeline -->
+    <div class="panel" style="border-left:3px solid var(--cyan)">
+      <div class="panel-title">Agent Pipeline <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">· live status</span></div>
+      <div id="agent-pipeline" style="display:flex;gap:6px;align-items:stretch;overflow-x:auto;padding-bottom:4px">
+        <div class="empty">Loading agents...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW: Pipeline Trace + Research Correlations -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+
+    <!-- Pipeline Trace (per-run drilldown) -->
+    <div class="panel" style="border-left:3px solid var(--green)">
+      <div class="panel-title">Pipeline Trace <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">· per-batch drilldown</span></div>
+      <div id="pipeline-trace" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto">
+        <div class="empty">Loading trace...</div>
+      </div>
+    </div>
+
+    <!-- Research: Correlations + Regime Transitions -->
+    <div class="panel" style="border-left:3px solid #f97316">
+      <div class="panel-title">Research Engine <span style="font-size:.55rem;color:var(--text-muted);font-weight:400">· correlations + transitions</span></div>
+      <div id="research-content" style="display:flex;flex-direction:column;gap:6px">
+        <div class="empty">Loading research data...</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
   <div class="panel" id="symbol-scanner-status" style="margin-bottom:8px">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
@@ -6095,6 +6137,195 @@ function updateSignalRadar(signals, status) {
     // Attention Rail + Signal Radar need signals + status + decision + realStatus
     // These are all available in the main refreshLive function at line ~3180+
     // We hook into the existing funnel/signals update calls
+})();
+
+// ══════════════════════════════════════════════════════════
+// VISION TIER 2+3: Thesis + Agent Pipeline + Research + Pipeline Trace
+// ══════════════════════════════════════════════════════════
+
+// ── THESIS TRACKER ──
+async function loadThesis() {
+    try {
+        var d = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("thesis-content");
+        var badge = document.getElementById("thesis-regime-badge");
+        if (!wrap || !d) return;
+
+        var regime = d.regime || "unknown";
+        var regimeColors = {
+            trending_up: "var(--green)", trending_down: "var(--red)", breakout: "var(--cyan)",
+            mean_reversion: "var(--yellow)", ranging: "var(--yellow)",
+            sideways: "var(--text-muted)", quiet: "var(--text-muted)", high_volatility: "#f97316",
+        };
+        var rc = regimeColors[regime] || "var(--text-muted)";
+
+        if (badge) {
+            badge.textContent = regime.toUpperCase().replace("_", " ");
+            badge.style.background = rc;
+            badge.style.color = "#000";
+        }
+
+        var confBar = '<div style="height:4px;background:rgba(255,255,255,.06);border-radius:2px;margin:4px 0">' +
+            '<div style="height:100%;width:' + (d.regime_confidence * 100).toFixed(0) + '%;background:' + rc + ';border-radius:2px"></div></div>';
+
+        wrap.innerHTML =
+            '<div style="color:' + rc + ';font-weight:700;margin-bottom:4px">📋 ' + (d.thesis || "No thesis") + '</div>' +
+            confBar +
+            '<div style="color:var(--text-muted);font-size:.62rem;margin-top:6px">🔄 <b>Invalidation:</b> ' + (d.invalidation || "--") + '</div>' +
+            '<div style="display:flex;gap:12px;margin-top:8px;font-size:.65rem">' +
+            '<span style="color:var(--text-muted)">Bias: <b style="color:' + (d.dominant_side === "LONG" ? "var(--green)" : d.dominant_side === "SHORT" ? "var(--red)" : "var(--text-muted)") + '">' + d.dominant_side + '</b></span>' +
+            '<span style="color:var(--text-muted)">WR: <b>' + (d.recent_wr || 0).toFixed(0) + '%</b></span>' +
+            '<span style="color:var(--text-muted)">PnL: <b style="color:' + (d.recent_pnl >= 0 ? "var(--green)" : "var(--red)") + '">$' + (d.recent_pnl || 0).toFixed(2) + '</b></span>' +
+            '<span style="color:var(--text-muted)">BTC: <b>$' + (d.btc_price || 0).toFixed(0) + '</b></span>' +
+            '</div>';
+    } catch (e) {}
+}
+
+// ── MULTI-AGENT PIPELINE ──
+async function loadAgentPipeline() {
+    try {
+        var d = await fetch("/api/agents/pipeline").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("agent-pipeline");
+        if (!wrap || !d || !d.agents) return;
+
+        var statusIcons = {
+            scanning: "◉", active: "◉", tracking: "◉", monitoring: "◉", watching: "◉",
+            LIVE: "●", ready: "○", idle: "○", disabled: "◌", off: "◌",
+            TRIPPED: "⊘", dry_run: "◎",
+        };
+
+        wrap.innerHTML = d.agents.map(function(a, idx) {
+            var statusIcon = statusIcons[a.status] || "○";
+            var isActive = ["scanning", "active", "tracking", "monitoring", "watching", "LIVE"].indexOf(a.status) >= 0;
+            var arrow = idx < d.agents.length - 1 ? '<div style="display:flex;align-items:center;color:rgba(255,255,255,.15);font-size:1.2rem;padding:0 2px">→</div>' : '';
+
+            return '<div style="flex:1;min-width:90px;padding:8px 6px;background:rgba(255,255,255,.02);border:1px solid ' +
+                (isActive ? a.color + '40' : 'var(--border)') + ';border-top:2px solid ' + (isActive ? a.color : 'var(--border)') +
+                ';border-radius:6px;text-align:center">' +
+                '<div style="font-size:1.1rem;margin-bottom:2px">' + a.icon + '</div>' +
+                '<div style="font-size:.65rem;font-weight:700;color:' + (isActive ? a.color : 'var(--text-muted)') + '">' + a.name + '</div>' +
+                '<div style="font-size:.55rem;color:' + (isActive ? a.color : 'var(--text-muted)') + ';margin-top:2px">' +
+                statusIcon + ' ' + a.status + '</div>' +
+                '<div style="font-size:.5rem;color:var(--text-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(a.detail || "") + '">' +
+                esc((a.detail || "--").substring(0, 25)) + '</div>' +
+                '</div>' + arrow;
+        }).join("");
+    } catch (e) {}
+}
+
+// ── PIPELINE TRACE (per-batch drilldown) ──
+async function loadPipelineTrace() {
+    try {
+        var d = await fetch("/api/pipeline/trace?limit=50").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("pipeline-trace");
+        if (!wrap || !d || !d.batches) return;
+
+        if (d.batches.length === 0) {
+            wrap.innerHTML = '<div class="empty">No pipeline trace data yet</div>';
+            return;
+        }
+
+        wrap.innerHTML = d.batches.slice(0, 12).map(function(batch) {
+            var total = batch.passed + batch.failed;
+            var passRate = total > 0 ? (batch.passed / total * 100) : 0;
+            var barColor = passRate >= 60 ? "var(--green)" : passRate >= 30 ? "var(--yellow)" : "var(--red)";
+            var ts = new Date(batch.ts * 1000);
+            var timeStr = ts.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+
+            // Compact signal icons
+            var sigIcons = (batch.signals || []).slice(0, 8).map(function(s) {
+                var col = s.final_passed ? "var(--green)" : "var(--red)";
+                var sym = (s.symbol || "?").replace("/USDT", "").substring(0, 3);
+                return '<span style="font-size:.5rem;padding:1px 3px;border-radius:2px;background:' +
+                    (s.final_passed ? 'rgba(0,255,157,.1)' : 'rgba(255,59,92,.1)') +
+                    ';color:' + col + ';border:1px solid ' + col + '30" title="' +
+                    esc(s.symbol + ' ' + (s.side || '') + ' → ' + s.final_stage) + '">' + sym + '</span>';
+            }).join(" ");
+
+            return '<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
+                '<span style="font-size:.6rem;font-family:var(--font-mono);color:var(--text-muted);min-width:42px">' + timeStr + '</span>' +
+                '<div style="flex:1;height:8px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden;min-width:60px">' +
+                '<div style="height:100%;width:' + passRate.toFixed(0) + '%;background:' + barColor + ';border-radius:2px"></div></div>' +
+                '<span style="font-size:.55rem;font-family:var(--font-mono);min-width:35px;text-align:right;color:' + barColor + '">' +
+                batch.passed + '/' + total + '</span>' +
+                '<div style="display:flex;gap:2px;flex-wrap:wrap;max-width:160px">' + sigIcons + '</div>' +
+                '</div>';
+        }).join("");
+    } catch (e) {}
+}
+
+// ── RESEARCH ENGINE (correlations + regime transitions) ──
+async function loadResearchEngine() {
+    try {
+        var d = await fetch("/api/research/correlations").then(function(r) { return r.json(); }).catch(function() { return null; });
+        var wrap = document.getElementById("research-content");
+        if (!wrap || !d) return;
+
+        var html = "";
+
+        // 1. Regime transitions
+        var transitions = d.regime_transitions || [];
+        if (transitions.length > 0) {
+            html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Regime Status</div>';
+            transitions.forEach(function(t) {
+                var col = t.signal === "stable" ? "var(--green)" : "var(--yellow)";
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;background:rgba(255,255,255,.02);border-radius:3px;border-left:2px solid ' + col + '">' +
+                    '<span style="font-size:.65rem;color:' + col + ';font-weight:700">' + (t.current || "?").toUpperCase() + '</span>' +
+                    '<span style="font-size:.55rem;color:var(--text-muted)">' + t.signal + ' · conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%</span></div>';
+            });
+        }
+
+        // 2. Symbol performance heatmap
+        var perf = d.symbol_performance || {};
+        var symbols = Object.keys(perf);
+        if (symbols.length > 0) {
+            html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:8px;margin-bottom:4px">Symbol Performance</div>';
+            html += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
+            symbols.sort(function(a, b) { return (perf[b].avg_r || 0) - (perf[a].avg_r || 0); });
+            symbols.forEach(function(sym) {
+                var p = perf[sym];
+                var avgR = p.avg_r || 0;
+                var wr = p.wr || 0;
+                var trades = p.trades || 0;
+                var col = avgR > 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
+                var textCol = avgR > 0 ? "var(--green)" : "var(--red)";
+                html += '<div style="padding:3px 6px;border-radius:3px;background:' + col + ';border:1px solid ' + textCol + '30;text-align:center;min-width:55px">' +
+                    '<div style="font-size:.6rem;font-weight:700;color:' + textCol + '">' + sym.replace("/USDT", "") + '</div>' +
+                    '<div style="font-size:.55rem;font-family:var(--font-mono);color:' + textCol + '">' + avgR.toFixed(2) + 'R</div>' +
+                    '<div style="font-size:.5rem;color:var(--text-muted)">' + trades + 't · ' + wr.toFixed(0) + '%</div></div>';
+            });
+            html += '</div>';
+        }
+
+        // 3. Scanner co-firing
+        var coFiring = d.scanner_co_firing || {};
+        var coKeys = Object.keys(coFiring).filter(function(k) { return coFiring[k] > 0.1; });
+        if (coKeys.length > 0) {
+            html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:8px;margin-bottom:4px">Scanner Co-Firing</div>';
+            coKeys.sort(function(a, b) { return coFiring[b] - coFiring[a]; });
+            html += coKeys.slice(0, 5).map(function(k) {
+                var v = coFiring[k];
+                return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0">' +
+                    '<span style="color:var(--text-muted)">' + k + '</span>' +
+                    '<span style="font-family:var(--font-mono);color:var(--cyan)">' + (v * 100).toFixed(0) + '%</span></div>';
+            }).join("");
+        }
+
+        wrap.innerHTML = html || '<div class="empty">No research data</div>';
+    } catch (e) {}
+}
+
+// ── WIRE TIER 2+3 into refresh cycles ──
+(function wireVisionTier23() {
+    // Thesis + agents + pipeline trace + research — load every 15s
+    async function loadTier23() {
+        try { await loadThesis(); } catch (e) {}
+        try { await loadAgentPipeline(); } catch (e) {}
+        try { await loadPipelineTrace(); } catch (e) {}
+        try { await loadResearchEngine(); } catch (e) {}
+    }
+    setTimeout(loadTier23, 3000); // initial load after 3s
+    setInterval(loadTier23, 15000); // refresh every 15s
 })();
 
 // ITEM #10: COMMAND CENTER 2.0 — Quick Actions

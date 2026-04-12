@@ -499,17 +499,28 @@ class DataFeed:
                 pass
 
     async def _poll_once(self, sub: _Subscription, tf: str) -> None:
-        """Fetch the latest candles for one (symbol, tf) pair via REST."""
+        """Fetch the latest candles for one (symbol, tf) pair via REST.
+
+        Primary: CCXT fetch_ohlcv (works for BTC/ETH/SOL etc.)
+        Fallback: Delta India native REST API using PRODUCT_MAP symbol mapping
+        (works for 1000SHIBUSD, WIFUSD, SUIUSD etc. that CCXT can't resolve).
+        """
         assert self._exchange is not None
         ex_symbol = self._to_exchange_symbol(sub.symbol)
         since = sub.last_candle_ts.get(tf)
-        ohlcv = await self._exchange.fetch_ohlcv(
-            ex_symbol, timeframe=tf, since=int(since) if since else None, limit=10
-        )
+
+        ohlcv = None
+        try:
+            ohlcv = await self._exchange.fetch_ohlcv(
+                ex_symbol, timeframe=tf, since=int(since) if since else None, limit=10
+            )
+        except Exception:
+            # CCXT failed — try Delta native candle API
+            ohlcv = await self._delta_native_candles(sub.symbol, tf, limit=10)
+
         if not ohlcv:
             return
 
-        self._consecutive_errors = 0
         sub.last_data_time = time.monotonic()
 
         for row in ohlcv:
@@ -539,6 +550,82 @@ class DataFeed:
         await self._emit(
             event="price_update", symbol=sub.symbol, price=last_close
         )
+
+    # ------------------------------------------------------------------
+    # Delta India native candle fetcher (bypass CCXT for unmapped symbols)
+    # ------------------------------------------------------------------
+
+    _TF_TO_RESOLUTION = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "1d": "1d", "1w": "1w",
+    }
+
+    async def _delta_native_candles(self, symbol: str, tf: str, limit: int = 10):
+        """Fetch candles from Delta India REST API directly (not CCXT).
+
+        Uses GET /v2/history/candles?resolution=X&symbol=Y&start=Z&end=W
+        Works for ALL Delta symbols including 1000SHIBUSD, WIFUSD etc.
+        Returns OHLCV in the same [[ts, o, h, l, c, v], ...] format as CCXT.
+        """
+        try:
+            from exchange.delta_client import PRODUCT_MAP
+            import aiohttp
+
+            pinfo = PRODUCT_MAP.get(symbol)
+            if not pinfo:
+                return None
+
+            delta_symbol = pinfo.get("symbol", "")  # e.g., "1000SHIBUSD"
+            if not delta_symbol:
+                return None
+
+            resolution = self._TF_TO_RESOLUTION.get(tf, tf)
+            now = int(time.time())
+            # Estimate start time from limit + timeframe
+            tf_seconds = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+                          "1h": 3600, "4h": 14400, "1d": 86400}.get(tf, 300)
+            start = now - (limit * tf_seconds * 2)  # 2× for safety margin
+
+            url = (
+                f"https://api.india.delta.exchange/v2/history/candles"
+                f"?resolution={resolution}&symbol={delta_symbol}&start={start}&end={now}"
+            )
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+
+            if not data.get("success"):
+                return None
+
+            result = data.get("result", [])
+            if not result:
+                return None
+
+            # Convert to CCXT format: [[timestamp_ms, open, high, low, close, volume], ...]
+            ohlcv = []
+            for c in result[-limit:]:
+                ohlcv.append([
+                    int(c["time"]) * 1000,  # Delta returns seconds, CCXT uses milliseconds
+                    float(c["open"]),
+                    float(c["high"]),
+                    float(c["low"]),
+                    float(c["close"]),
+                    float(c.get("volume", 0)),
+                ])
+
+            if ohlcv:
+                logger.debug(
+                    "Delta native candles: %s %s → %d candles (symbol=%s)",
+                    symbol, tf, len(ohlcv), delta_symbol,
+                )
+            return ohlcv if ohlcv else None
+
+        except Exception as e:
+            logger.debug("Delta native candle fetch failed for %s/%s: %s", symbol, tf, e)
+            return None
 
     # ------------------------------------------------------------------
     # Stale data detection

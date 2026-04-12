@@ -3018,9 +3018,10 @@ class ScalpStrategy(BaseStrategy):
                         # Top 15% = 85th percentile of rolling window
                         import numpy as _np_local
                         _q85 = float(_np_local.percentile(list(_dq_hist), 85))
-                        # Safety floor: never lower than Phase 4.8 baseline (0.55)
+                        # Safety floor: 0.45 (data proves 0.45-0.55 band = 71% WR, +$0.54/trade)
+                        # Was 0.55 — blocked 34 profitable trades in last 500.
                         # Safety ceiling: never tighter than 0.75 (too selective)
-                        _q_thresh = max(0.55, min(0.75, _q85))
+                        _q_thresh = max(0.45, min(0.75, _q85))
                         ml_threshold = max(_base_threshold, _q_thresh)
                         _verdict_action = "QUANTILE_HOLDS"
                         logger.info(
@@ -3028,8 +3029,8 @@ class ScalpStrategy(BaseStrategy):
                             symbol, best_sr.scanner_name, len(_dq_hist), _q85, ml_threshold,
                         )
                     else:
-                        # Insufficient samples → Phase 4.8 fixed threshold
-                        ml_threshold = max(_base_threshold, 0.55)
+                        # Insufficient samples → use base (data-driven, was 0.55 fixed)
+                        ml_threshold = max(_base_threshold, 0.45)
                         _verdict_action = "TIGHTEN_HOLDS"
                 elif _edge_verdict == "UNCLEAR":
                     ml_threshold = min(_base_threshold + 0.03, 0.60)

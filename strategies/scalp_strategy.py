@@ -359,7 +359,9 @@ class ScalpStrategy(BaseStrategy):
         self.scanner_auto_shadow_wr = 48  # auto-shadow if WR < 48% last 80 trades
 
         # Scalper window config (attached to each signal)
-        self.scalper_windows = {"BTC": 14 * 60, "ETH": 6 * 60, "AVAX": 6 * 60}
+        # Delta India Scalper Offer (verified 2026-04-13):
+        # BTC + ETH: 30 min free exit | Others: 15 min free exit
+        self.scalper_windows = {"BTC": 30 * 60, "ETH": 30 * 60}
 
         # --- RSI divergence lookback ---
         self.div_lookback: int = 30          # bars to scan for divergence (was 14)
@@ -2823,7 +2825,7 @@ class ScalpStrategy(BaseStrategy):
         # Estimate: bars_to_tp = TP1_dist / (ATR_1bar × directional_factor)
         # ══════════════════════════════════════════════════════
         if _edge_atr > 0 and best.entry_price > 0:
-            scalper_window_min = 27 if "BTC" in symbol else 12
+            scalper_window_min = 30 if ("BTC" in symbol or "ETH" in symbol) else 15
             risk_dist = abs(best.entry_price - best.stop_loss)
             tp1_dist = risk_dist * self.tp1_rr
             # ATR per 5m bar → estimated bars to reach TP1
@@ -3360,7 +3362,8 @@ class ScalpStrategy(BaseStrategy):
 
         # ── Scalper window: attach to signal for tracker to enforce ──
         coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
-        signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 6 * 60)
+        # Delta Scalper Offer: BTC+ETH=30min, others=15min
+        signal.metadata["scalper_window_sec"] = self.scalper_windows.get(coin_base, 15 * 60)
         signal.metadata["structure_bounce_only"] = self.structure_bounce_only
         # Determine entry order type from config
         if self._order_type == "maker":

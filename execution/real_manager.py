@@ -647,10 +647,13 @@ class RealTradingManager:
 
         # ── SNIPER GATES (relaxed 2026-04-13 for data collection) ──
 
-        # Sniper conviction: lowered to 52 (was 60) for probation period
+        # Sniper conviction: DISABLED during probation (was 60 → 52 → now 0)
+        # The conviction score uses cold indicator data after restart which
+        # produces artificially low scores (17 instead of 60+). Re-enable
+        # after bot has 24h+ uninterrupted runtime.
         _conviction = int(meta.get("conviction_score", 50) or 50)
-        _sniper_min = 52  # probation: was 60
-        if _conviction < _sniper_min:
+        _sniper_min = 0  # probation: disabled
+        if _sniper_min > 0 and _conviction < _sniper_min:
             logger.info("SNIPER SKIP: %s conviction=%d (below %d) — paper only",
                        signal.get("symbol", "?"), _conviction, _sniper_min)
             return False, f"sniper_conviction:{_conviction}"

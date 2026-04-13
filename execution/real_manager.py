@@ -474,7 +474,9 @@ class RealTradingManager:
         "PEPE/USDT", "SHIB/USDT", "FLOKI/USDT", "WIF/USDT", "SUI/USDT",
         "NEAR/USDT", "BONK/USDT", "AVAX/USDT",
     }
-    SMART_GRADE_ALLOW = {"A+", "A", "B"}  # REJECT and C removed — data: conf<50 trades are instant SL hits  # REJECT has 75.8% WR -- data proves profitable  # C has 84.9% WR (highest grade!)
+    # Probation mode (2026-04-13): allow C grade with reduced sizing to collect data.
+    # Will tighten back to A+/A/B after 200+ real trades validate the edge.
+    SMART_GRADE_ALLOW = {"A+", "A", "B", "C"}
 
     def _smart_qualify(self, signal: dict) -> Tuple[bool, str]:
         """Gate every real entry through a strict qualification pipeline."""
@@ -643,22 +645,35 @@ class RealTradingManager:
                 self._fix_stats["fix4_regime_block"] = self._fix_stats.get("fix4_regime_block", 0) + 1
                 return False, f"real_regime_block:{_regime}"
 
-        # ── SNIPER GATES (2026-04-12): precision filtering ──
+        # ── SNIPER GATES (relaxed 2026-04-13 for data collection) ──
 
-        # Sniper 2+3: Conviction score filter — only take high-conviction signals
+        # Sniper conviction: lowered to 52 (was 60) for probation period
         _conviction = int(meta.get("conviction_score", 50) or 50)
-        _sniper_eligible = meta.get("sniper_eligible", True)
-        if not _sniper_eligible:
-            logger.info("SNIPER SKIP: %s conviction=%d (below threshold) — paper only",
-                       signal.get("symbol", "?"), _conviction)
+        _sniper_min = 52  # probation: was 60
+        if _conviction < _sniper_min:
+            logger.info("SNIPER SKIP: %s conviction=%d (below %d) — paper only",
+                       signal.get("symbol", "?"), _conviction, _sniper_min)
             return False, f"sniper_conviction:{_conviction}"
 
-        # Sniper 4: 1m candle confirmation — don't enter against the 1m flow
+        # 1m confirmation: changed from hard block to confidence penalty
+        # (logged but NOT blocking — the conviction score already penalizes unconfirmed)
         _1m_confirmed = meta.get("1m_confirmed", True)
         if not _1m_confirmed:
-            logger.info("SNIPER SKIP: %s 1m_direction=%s vs signal — NOT confirmed",
-                       signal.get("symbol", "?"), meta.get("1m_direction", "?"))
-            return False, f"sniper_1m_not_confirmed"
+            logger.info("SNIPER NOTE: %s 1m not confirmed (penalty applied, not blocking)",
+                       signal.get("symbol", "?"))
+
+        # ── PROBATION SIZING MULTIPLIERS (2026-04-13) ──
+        # Grade C = 0.5× sizing, sideways regime = 0.6× sizing
+        # Stored in meta for _smart_size to pick up
+        _sizing_mult = 1.0
+        if grade == "C":
+            _sizing_mult *= 0.5
+            logger.info("PROBATION SIZE: grade=C → 0.5× sizing")
+        _regime = str(meta.get("regime", "")).strip().lower()
+        if _regime in ("sideways", "quiet", "ranging"):
+            _sizing_mult *= 0.6
+            logger.info("PROBATION SIZE: regime=%s → 0.6× sizing", _regime)
+        meta["probation_sizing_mult"] = _sizing_mult
 
         # 5. Scanner win-rate check
         scanner_name = meta.get("setup_type", "") or signal.get("scanner", "")
@@ -697,8 +712,15 @@ class RealTradingManager:
                 logger.info("SMART QUALIFY FAIL: %s already has open position", symbol)
                 return False, f"duplicate:{symbol}"
 
-        logger.info("SMART QUALIFY PASS: %s %s | grade=%s ml=%.3f scanner=%s",
-                    symbol, side_str, grade, float(ml_prob or 0), scanner_name)
+        # Pass-rate logging for diagnostics
+        _regime = str(meta.get("regime", "")).strip().lower()
+        logger.warning(
+            "REAL QUALIFY PASS: %s %s | grade=%s ml=%.3f regime=%s conviction=%d "
+            "sizing_mult=%.1f scanner=%s | ALL GATES PASSED",
+            symbol, side_str, grade, float(ml_prob or 0), _regime,
+            _conviction, float(meta.get("probation_sizing_mult", 1.0) or 1.0),
+            scanner_name,
+        )
         return True, "qualified"
 
     def _smart_size(self, signal: dict) -> Tuple[float, int, int]:
@@ -767,6 +789,11 @@ class RealTradingManager:
             target_margin = target_margin * _conv_scale
         except Exception:
             pass
+
+        # PROBATION: grade C (0.5×) and sideways regime (0.6×) sizing reduction
+        _prob_mult = float(meta.get("probation_sizing_mult", 1.0) or 1.0)
+        if _prob_mult < 1.0:
+            target_margin = target_margin * _prob_mult
 
         # Cap to balance limits
         margin = min(target_margin, self.max_margin)

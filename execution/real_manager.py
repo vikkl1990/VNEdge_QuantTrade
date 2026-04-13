@@ -1530,6 +1530,11 @@ class RealTradingManager:
                 grade=_grade, confidence=_conf, signal=signal,
             )
 
+            # Check for limit_no_fill — IOC order didn't fill, skip position creation
+            if order.get("status") == "limit_no_fill":
+                logger.info("REAL ENTRY SKIPPED: %s %s — IOC limit not filled (avoided slippage)", symbol, order_side)
+                return {"status": "limit_no_fill", "reason": "IOC order did not fill"}
+
             if order.get("error"):
                 # Clean up any orphan orders from failed entry
                 try:

@@ -52,7 +52,7 @@ real_trading:
   # Fix #1-5 knobs (MUST stay in sync with VM1)
   use_limit_orders: true
   max_slippage_bps: 15
-  real_ml_threshold_min: 0.65
+  real_ml_threshold_min: 0.55
   real_allowed_regimes:
   - trending_up
   - trending_down

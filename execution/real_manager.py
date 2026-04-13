@@ -474,9 +474,7 @@ class RealTradingManager:
         "PEPE/USDT", "SHIB/USDT", "FLOKI/USDT", "WIF/USDT", "SUI/USDT",
         "NEAR/USDT", "BONK/USDT", "AVAX/USDT",
     }
-    # Probation mode (2026-04-13): allow C grade with reduced sizing to collect data.
-    # Will tighten back to A+/A/B after 200+ real trades validate the edge.
-    SMART_GRADE_ALLOW = {"A+", "A", "B", "C"}
+    SMART_GRADE_ALLOW = {"A+", "A", "B"}
 
     def _smart_qualify(self, signal: dict) -> Tuple[bool, str]:
         """Gate every real entry through a strict qualification pipeline."""
@@ -647,36 +645,23 @@ class RealTradingManager:
 
         # ── SNIPER GATES (relaxed 2026-04-13 for data collection) ──
 
-        # Sniper conviction: DISABLED during probation (was 60 → 52 → now 0)
-        # The conviction score uses cold indicator data after restart which
-        # produces artificially low scores (17 instead of 60+). Re-enable
-        # after bot has 24h+ uninterrupted runtime.
+        # Sniper conviction gate
         _conviction = int(meta.get("conviction_score", 50) or 50)
-        _sniper_min = 0  # probation: disabled
-        if _sniper_min > 0 and _conviction < _sniper_min:
+        _sniper_min = 60
+        if _conviction < _sniper_min:
             logger.info("SNIPER SKIP: %s conviction=%d (below %d) — paper only",
                        signal.get("symbol", "?"), _conviction, _sniper_min)
             return False, f"sniper_conviction:{_conviction}"
 
-        # 1m confirmation: changed from hard block to confidence penalty
-        # (logged but NOT blocking — the conviction score already penalizes unconfirmed)
+        # 1m candle confirmation
         _1m_confirmed = meta.get("1m_confirmed", True)
         if not _1m_confirmed:
-            logger.info("SNIPER NOTE: %s 1m not confirmed (penalty applied, not blocking)",
+            logger.info("SNIPER SKIP: %s 1m not confirmed — blocking",
                        signal.get("symbol", "?"))
+            return False, "sniper_1m_not_confirmed"
 
-        # ── PROBATION SIZING MULTIPLIERS (2026-04-13) ──
-        # Grade C = 0.5× sizing, sideways regime = 0.6× sizing
-        # Stored in meta for _smart_size to pick up
-        _sizing_mult = 1.0
-        if grade == "C":
-            _sizing_mult *= 0.5
-            logger.info("PROBATION SIZE: grade=C → 0.5× sizing")
-        _regime = str(meta.get("regime", "")).strip().lower()
-        if _regime in ("sideways", "quiet", "ranging"):
-            _sizing_mult *= 0.6
-            logger.info("PROBATION SIZE: regime=%s → 0.6× sizing", _regime)
-        meta["probation_sizing_mult"] = _sizing_mult
+        # Sizing multiplier (reserved for future use)
+        meta["probation_sizing_mult"] = 1.0
 
         # 5. Scanner win-rate check
         scanner_name = meta.get("setup_type", "") or signal.get("scanner", "")

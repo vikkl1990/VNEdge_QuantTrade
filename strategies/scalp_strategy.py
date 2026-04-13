@@ -3014,14 +3014,22 @@ class ScalpStrategy(BaseStrategy):
                 #  NO_EDGE → shouldn't reach here (blocked at save), but we fail-safe to base.
                 #  None    → pre-4.5 model (no edge_verdict). Use base unchanged.
                 if _edge_verdict == "HOLDS":
-                    # PROBATION (2026-04-13): Quantile ranking DISABLED.
-                    # The adaptive p85 threshold was pushing XRP to 0.75, ETH to 0.56,
-                    # making it nearly impossible for ML to pass. The model's output
-                    # is compressed in a 0.45-0.63 band, so taking "top 15%" blocks
-                    # almost everything. Use base threshold only during probation.
-                    # Will re-enable after 200+ real trades validate the edge.
-                    ml_threshold = _base_threshold
-                    _verdict_action = "BASE_HOLDS_PROBATION"
+                    # Phase A.5: adaptive quantile — top 15% of rolling window
+                    _dq_hist = self._ml_prob_history.get(_quant_key)
+                    if _dq_hist is not None and len(_dq_hist) >= 20:
+                        import numpy as _np_local
+                        _q85 = float(_np_local.percentile(list(_dq_hist), 85))
+                        # Floor 0.55, ceiling 0.75
+                        _q_thresh = max(0.55, min(0.75, _q85))
+                        ml_threshold = max(_base_threshold, _q_thresh)
+                        _verdict_action = "QUANTILE_HOLDS"
+                        logger.info(
+                            "A.5 QUANTILE: %s %s n=%d p85=%.3f → threshold=%.3f",
+                            symbol, best_sr.scanner_name, len(_dq_hist), _q85, ml_threshold,
+                        )
+                    else:
+                        ml_threshold = max(_base_threshold, 0.55)
+                        _verdict_action = "TIGHTEN_HOLDS"
                 elif _edge_verdict == "UNCLEAR":
                     ml_threshold = min(_base_threshold + 0.03, 0.60)
                     _verdict_action = "PENALTY_UNCLEAR"

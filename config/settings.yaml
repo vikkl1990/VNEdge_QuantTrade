@@ -57,6 +57,7 @@ real_trading:
   - trending_up
   - trending_down
   - breakout
+  - mean_reversion
   real_tp1_r: 0.30
   max_daily_trades: 15
   max_portfolio_heat_pct: 500

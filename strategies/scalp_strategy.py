@@ -3014,26 +3014,14 @@ class ScalpStrategy(BaseStrategy):
                 #  NO_EDGE → shouldn't reach here (blocked at save), but we fail-safe to base.
                 #  None    → pre-4.5 model (no edge_verdict). Use base unchanged.
                 if _edge_verdict == "HOLDS":
-                    # Phase A.5: adaptive quantile instead of fixed 0.55
-                    _dq_hist = self._ml_prob_history.get(_quant_key)
-                    if _dq_hist is not None and len(_dq_hist) >= 20:
-                        # Top 15% = 85th percentile of rolling window
-                        import numpy as _np_local
-                        _q85 = float(_np_local.percentile(list(_dq_hist), 85))
-                        # Safety floor: 0.45 (data proves 0.45-0.55 band = 71% WR, +$0.54/trade)
-                        # Was 0.55 — blocked 34 profitable trades in last 500.
-                        # Safety ceiling: never tighter than 0.75 (too selective)
-                        _q_thresh = max(0.45, min(0.75, _q85))
-                        ml_threshold = max(_base_threshold, _q_thresh)
-                        _verdict_action = "QUANTILE_HOLDS"
-                        logger.info(
-                            "A.5 QUANTILE: %s %s n=%d p85=%.3f → threshold=%.3f",
-                            symbol, best_sr.scanner_name, len(_dq_hist), _q85, ml_threshold,
-                        )
-                    else:
-                        # Insufficient samples → use base (data-driven, was 0.55 fixed)
-                        ml_threshold = max(_base_threshold, 0.45)
-                        _verdict_action = "TIGHTEN_HOLDS"
+                    # PROBATION (2026-04-13): Quantile ranking DISABLED.
+                    # The adaptive p85 threshold was pushing XRP to 0.75, ETH to 0.56,
+                    # making it nearly impossible for ML to pass. The model's output
+                    # is compressed in a 0.45-0.63 band, so taking "top 15%" blocks
+                    # almost everything. Use base threshold only during probation.
+                    # Will re-enable after 200+ real trades validate the edge.
+                    ml_threshold = _base_threshold
+                    _verdict_action = "BASE_HOLDS_PROBATION"
                 elif _edge_verdict == "UNCLEAR":
                     ml_threshold = min(_base_threshold + 0.03, 0.60)
                     _verdict_action = "PENALTY_UNCLEAR"

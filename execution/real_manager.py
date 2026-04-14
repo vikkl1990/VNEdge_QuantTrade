@@ -617,6 +617,14 @@ class RealTradingManager:
         # ABSTAIN is handled earlier (if ml_prob is None/0.0 the trade takes
         # the fail-open path from Phase 4.2 and is not blocked here).
         _real_floor = float(getattr(self, "_real_ml_threshold_min", 0.65))
+        # BotBrain: dynamic ML threshold override
+        if hasattr(self, '_brain') and self._brain:
+            try:
+                _brain_overrides = self._brain.consult_pre_qualify(signal)
+                if _brain_overrides.ml_threshold_override is not None:
+                    _real_floor = _brain_overrides.ml_threshold_override
+            except Exception:
+                pass
         if ml_prob is not None and float(ml_prob) > 0 and float(ml_prob) < _real_floor:
             logger.info(
                 "SMART QUALIFY FAIL [Fix #3]: %s ml_prob=%.3f < real_floor=%.2f — paper_only",

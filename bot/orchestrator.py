@@ -141,6 +141,21 @@ class BotOrchestrator:
         # Decision engine for TRADE/WAIT directive
         self._decision_engine = DecisionEngine()
 
+        # BotBrain — central nervous system (unified memory + agent coordinator)
+        try:
+            from bot.brain import BotBrain
+            self._brain = BotBrain(config)
+            self._brain._signal_learner = self._signal_learner
+            self._brain._trade_monitor = self._trade_monitor
+            if hasattr(self, '_strategy') and self._strategy:
+                self._strategy._brain = self._brain
+            if hasattr(self, '_real_manager') and self._real_manager:
+                self._real_manager._brain = self._brain
+            self._log.info("BotBrain initialized (dry_run=%s)", self._brain._dry_run)
+        except Exception as exc:
+            self._log.warning("BotBrain init failed (continuing without): %s", exc)
+            self._brain = None
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -674,6 +689,13 @@ class BotOrchestrator:
                             self._trade_monitor.analyze_trade(closed_sig)
                         except Exception:
                             pass
+                        # BotBrain: learn from trade outcome
+                        if self._brain:
+                            try:
+                                _regime = (closed_sig.get("metadata", {}) or {}).get("regime", "unknown")
+                                self._brain.on_trade_closed(closed_sig, _regime)
+                            except Exception:
+                                pass
                         # Mirror exit to real
                         if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
                             try:
@@ -908,6 +930,13 @@ class BotOrchestrator:
                         self._trade_monitor.analyze_trade(closed_sig)
                     except Exception as exc:
                         self._log.warning("Trade monitor analysis failed: %s", exc)
+                    # BotBrain: learn from trade outcome
+                    if self._brain:
+                        try:
+                            _regime = (closed_sig.get("metadata", {}) or {}).get("regime", "unknown")
+                            self._brain.on_trade_closed(closed_sig, _regime)
+                        except Exception:
+                            pass
 
                     # Notify strategy of trade close (per-symbol cooling)
                     try:

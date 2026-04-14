@@ -590,6 +590,13 @@ class DashboardServer:
         app.router.add_get("/api/config", self._handle_config_get)
         app.router.add_post("/api/config", self._handle_config_post)
 
+        # ── BotBrain endpoints ──
+        app.router.add_get("/api/brain/state", self._handle_brain_state)
+        app.router.add_get("/api/brain/matrix", self._handle_brain_matrix)
+        app.router.add_get("/api/brain/regime-history", self._handle_brain_regime_history)
+        app.router.add_get("/api/brain/hourly-heatmap", self._handle_brain_hourly_heatmap)
+        app.router.add_get("/api/brain/sessions", self._handle_brain_sessions)
+
         # ── Track C (2026-04-11): ML dashboard proxy ──
         # VM1 (live bot) dashboard proxies to VM4 (ML dashboard) private-IP
         # endpoints so the browser can fetch ML data without CORS or direct
@@ -1933,6 +1940,63 @@ class DashboardServer:
             else:
                 merged[k] = v
         return merged
+
+    # ── BotBrain API handlers ──
+
+    def _get_brain(self):
+        """Get BotBrain reference from orchestrator."""
+        orch = self._orchestrator
+        return getattr(orch, '_brain', None) if orch else None
+
+    async def _handle_brain_state(self, request: web.Request) -> web.Response:
+        """Return full BotBrain state — active directives, session, optimizer."""
+        brain = self._get_brain()
+        if not brain:
+            return web.json_response({"error": "BotBrain not initialized"}, status=503)
+        try:
+            return web.json_response(brain.get_dashboard_state(), dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_brain_matrix(self, request: web.Request) -> web.Response:
+        """Return setup x regime performance matrix for heatmap."""
+        brain = self._get_brain()
+        if not brain:
+            return web.json_response({"error": "BotBrain not initialized"}, status=503)
+        try:
+            return web.json_response(brain.get_matrix_data(), dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_brain_regime_history(self, request: web.Request) -> web.Response:
+        """Return per-symbol regime history + transition predictions."""
+        brain = self._get_brain()
+        if not brain:
+            return web.json_response({"error": "BotBrain not initialized"}, status=503)
+        try:
+            return web.json_response(brain.get_regime_data(), dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_brain_hourly_heatmap(self, request: web.Request) -> web.Response:
+        """Return 24-hour performance heatmap."""
+        brain = self._get_brain()
+        if not brain:
+            return web.json_response({"error": "BotBrain not initialized"}, status=503)
+        try:
+            return web.json_response(brain.get_hourly_data(), dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_brain_sessions(self, request: web.Request) -> web.Response:
+        """Return daily/weekly session summaries."""
+        brain = self._get_brain()
+        if not brain:
+            return web.json_response({"error": "BotBrain not initialized"}, status=503)
+        try:
+            return web.json_response(brain.get_sessions_data(), dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_config_get(self, request: web.Request) -> web.Response:
         """Return safe subset of settings.yaml (secrets redacted) + validation schema."""

@@ -705,6 +705,12 @@ class ScalpStrategy(BaseStrategy):
         else:
             self._regime_age[symbol] = 1
             self._prev_regime[symbol] = regime
+            # BotBrain: record regime transition
+            if hasattr(self, '_brain') and self._brain:
+                try:
+                    self._brain.on_regime_change(symbol, regime, context.get("bb_width", 0.5))
+                except Exception:
+                    pass
 
         transition = detect_regime_transition(
             regime, prev_regime, self._regime_age[symbol]

@@ -1711,6 +1711,20 @@ class RealTradingManager:
 
                 return {"error": f"slippage_{slippage_bps:.0f}bp"}, fill_price
 
+            # ── PARALLEL ARCHITECTURE: Recalculate SL from REAL fill price ──
+            # Paper uses signal price for SL. Real must use its OWN fill price
+            # because slippage changes the effective risk distance. Without this,
+            # a 30bp entry slip on a 100bp SL eats 30% of the risk budget.
+            if fill_price > 0 and entry_price > 0 and fill_price != entry_price:
+                _sl_shift = fill_price - entry_price  # positive = filled higher (worse for long)
+                _old_sl = sl
+                sl = sl + _sl_shift  # shift SL by the same amount as the fill slip
+                if sl > 0:
+                    logger.info(
+                        "REAL SL RECALC: %s %s | signal=%.4f fill=%.4f slip=%.4f | SL %.4f → %.4f",
+                        symbol, side_str, entry_price, fill_price, _sl_shift, _old_sl, sl,
+                    )
+
             # Build trade tracking object
             order_id = order.get("id", order.get("order_id", ""))
             mode_prefix = "demo" if self.dry_run else "live"

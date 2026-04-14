@@ -1267,8 +1267,22 @@ class BotOrchestrator:
     # Candle close handler
     # ------------------------------------------------------------------
 
+    def _log_real_task_error(self, task):
+        """Callback for fire-and-forget real trade task — logs errors without blocking paper."""
+        try:
+            exc = task.exception()
+            if exc:
+                self._log.error("Real trade task failed: %s", exc)
+        except (asyncio.CancelledError, asyncio.InvalidStateError):
+            pass
+
     async def _safe_mirror_trade(self, symbol, sig_dict, paper_trade_id):
-        """Mirror trade to real exchange — runs as background task."""
+        """Mirror trade to real exchange — runs as independent background task.
+
+        Real trade uses its OWN fill price and calculates its OWN risk from
+        the actual exchange fill, not paper's theoretical price. Paper is
+        unaffected by real's success or failure.
+        """
         try:
             await self._real_manager.mirror_paper_trade(
                 symbol, sig_dict, paper_trade_id,
@@ -1760,23 +1774,29 @@ class BotOrchestrator:
                 )
                 return
 
-        # -- Fire real trade in parallel (don't wait for paper to complete first) --
-        # This was sequential before — real trade started 300-700ms AFTER signal.
-        # Now both fire simultaneously, reducing entry delay to near-zero.
+        # -- Fire real trade in TRUE PARALLEL --
+        # Real runs completely independently from paper:
+        # 1. Uses raw signal (not paper's order_result)
+        # 2. Gets its OWN fill price from exchange
+        # 3. Calculates its OWN SL from real fill price + ATR
+        # 4. Monitors its OWN exits independently
+        # Paper stays the master for signal generation + ML training data.
         if hasattr(self, '_real_manager') and self._real_manager and self._real_manager.enabled:
             try:
+                # Extract paper_trade_id if available (for mapping, not for blocking)
                 paper_trade_id = None
                 if order_result and hasattr(order_result, 'trade_id'):
                     paper_trade_id = order_result.trade_id
                 elif isinstance(order_result, dict):
                     paper_trade_id = order_result.get('trade_id')
-                # Fire and forget — don't await, let it run in background
+                # Fire and forget — paper continues immediately, real runs in background
                 import asyncio
-                asyncio.create_task(
+                _real_task = asyncio.create_task(
                     self._safe_mirror_trade(symbol, sig_dict, paper_trade_id)
                 )
+                _real_task.add_done_callback(self._log_real_task_error)
             except Exception as exc:
-                self._log.error("Real trade mirror failed (paper unaffected): %s", exc)
+                self._log.error("Real trade spawn failed (paper unaffected): %s", exc)
 
         # -- Journal --
         try:

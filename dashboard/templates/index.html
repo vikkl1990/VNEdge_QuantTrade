@@ -759,20 +759,41 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- Live Edge Estimate -->
-    <div class="panel" style="border-left:3px solid var(--cyan)">
-      <div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600">Live Edge</div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
-        <span id="kpi-edge" style="font-size:1.6rem;font-weight:900;font-family:var(--font-mono);color:var(--cyan)">--R</span>
-        <span id="kpi-edge-label" style="font-size:.65rem;color:var(--text-muted)">avg R (last 20)</span>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px">
-        <div><div style="font-size:.55rem;color:var(--text-muted)">Win Rate</div><div id="kpi-edge-wr" style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--green)">--%</div></div>
-        <div><div style="font-size:.55rem;color:var(--text-muted)">Expectancy</div><div id="kpi-edge-ev" style="font-size:1rem;font-weight:800;font-family:var(--font-mono)">$--</div></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
-        <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Win</div><div id="kpi-avg-win" style="font-size:.8rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">$--</div></div>
-        <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Loss</div><div id="kpi-avg-loss" style="font-size:.8rem;font-weight:700;font-family:var(--font-mono);color:var(--red)">$--</div></div>
+    <!-- Live Edge: Paper vs Real split -->
+    <div class="panel" style="border-left:3px solid var(--cyan);grid-column:span 2">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <!-- Paper Edge -->
+        <div style="border-right:1px solid #333;padding-right:12px">
+          <div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600">Paper Edge <span style="color:var(--cyan)">(last 20)</span></div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
+            <span id="kpi-edge" style="font-size:1.4rem;font-weight:900;font-family:var(--font-mono);color:var(--cyan)">--R</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Win Rate</div><div id="kpi-edge-wr" style="font-size:.9rem;font-weight:800;font-family:var(--font-mono);color:var(--green)">--%</div></div>
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Expectancy</div><div id="kpi-edge-ev" style="font-size:.9rem;font-weight:800;font-family:var(--font-mono)">$--</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Win</div><div id="kpi-avg-win" style="font-size:.75rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">$--</div></div>
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Loss</div><div id="kpi-avg-loss" style="font-size:.75rem;font-weight:700;font-family:var(--font-mono);color:var(--red)">$--</div></div>
+          </div>
+          <div style="margin-top:4px;font-size:.55rem;color:var(--text-muted)">Trades: <span id="kpi-paper-count" style="color:var(--cyan)">--</span></div>
+        </div>
+        <!-- Real Edge -->
+        <div>
+          <div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600">Real Edge <span style="color:var(--orange)">(all time)</span></div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-top:4px">
+            <span id="kpi-real-edge" style="font-size:1.4rem;font-weight:900;font-family:var(--font-mono);color:var(--orange)">--R</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px">
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Win Rate</div><div id="kpi-real-wr" style="font-size:.9rem;font-weight:800;font-family:var(--font-mono);color:var(--green)">--%</div></div>
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Total PnL</div><div id="kpi-real-pnl" style="font-size:.9rem;font-weight:800;font-family:var(--font-mono)">$--</div></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Win</div><div id="kpi-real-avg-win" style="font-size:.75rem;font-weight:700;font-family:var(--font-mono);color:var(--green)">$--</div></div>
+            <div><div style="font-size:.55rem;color:var(--text-muted)">Avg Loss</div><div id="kpi-real-avg-loss" style="font-size:.75rem;font-weight:700;font-family:var(--font-mono);color:var(--red)">$--</div></div>
+          </div>
+          <div style="margin-top:4px;font-size:.55rem;color:var(--text-muted)">Trades: <span id="kpi-real-count" style="color:var(--orange)">0</span> | CB: <span id="kpi-real-cb" style="color:var(--green)">OK</span></div>
+        </div>
       </div>
     </div>
 
@@ -3510,6 +3531,7 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
     try { updateAttentionRail(status, decision, active, realStatus, funnel); } catch (e) {}
     try { updateDeployableCapital(realStatus); } catch (e) {}
     try { updateLiveEdge(closed); } catch (e) {}
+    try { updateRealEdge(realStatus); } catch (e) {}
     try { updateSignalRadar(signals, status); } catch (e) {}
 
     // Execution Quality metrics (slippage tracking)
@@ -6172,6 +6194,62 @@ function updateLiveEdge(closed) {
     }
     if (el("kpi-avg-win")) el("kpi-avg-win").textContent = "$" + avgWin.toFixed(2);
     if (el("kpi-avg-loss")) el("kpi-avg-loss").textContent = "$" + avgLoss.toFixed(2);
+    if (el("kpi-paper-count")) el("kpi-paper-count").textContent = closed.length;
+}
+
+// ── REAL EDGE (split panel) ──
+function updateRealEdge(realStatus) {
+    if (!realStatus) return;
+    var el = function(id) { return document.getElementById(id); };
+    var closed = realStatus.closed_trades || [];
+    var totalPnl = parseFloat(realStatus.total_pnl || 0);
+
+    if (closed.length === 0) {
+        if (el("kpi-real-edge")) el("kpi-real-edge").textContent = "--R";
+        if (el("kpi-real-wr")) el("kpi-real-wr").textContent = "--%";
+        if (el("kpi-real-pnl")) { el("kpi-real-pnl").textContent = "$0"; el("kpi-real-pnl").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-count")) el("kpi-real-count").textContent = "0";
+        if (el("kpi-real-cb")) {
+            var cb = realStatus.circuit_breaker || {};
+            var tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
+            el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
+            el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
+        }
+        return;
+    }
+
+    var wins = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
+    closed.forEach(function(t) {
+        var pnl = parseFloat(t.pnl_usd || 0);
+        if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
+        else { lossPnl += Math.abs(pnl); lossCount++; }
+    });
+    var wr = closed.length > 0 ? (wins / closed.length * 100) : 0;
+    var avgWin = winCount > 0 ? (winPnl / winCount) : 0;
+    var avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
+    var edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
+
+    if (el("kpi-real-edge")) {
+        el("kpi-real-edge").textContent = edgeR.toFixed(2) + "R";
+        el("kpi-real-edge").style.color = edgeR >= 1.0 ? "var(--green)" : edgeR >= 0.5 ? "var(--yellow)" : "var(--red)";
+    }
+    if (el("kpi-real-wr")) {
+        el("kpi-real-wr").textContent = wr.toFixed(0) + "%";
+        el("kpi-real-wr").style.color = wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)";
+    }
+    if (el("kpi-real-pnl")) {
+        el("kpi-real-pnl").textContent = "$" + totalPnl.toFixed(2);
+        el("kpi-real-pnl").style.color = totalPnl >= 0 ? "var(--green)" : "var(--red)";
+    }
+    if (el("kpi-real-avg-win")) el("kpi-real-avg-win").textContent = "$" + avgWin.toFixed(2);
+    if (el("kpi-real-avg-loss")) el("kpi-real-avg-loss").textContent = "$" + avgLoss.toFixed(2);
+    if (el("kpi-real-count")) el("kpi-real-count").textContent = closed.length;
+    if (el("kpi-real-cb")) {
+        var cb = realStatus.circuit_breaker || {};
+        var tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
+        el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
+        el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
+    }
 }
 
 // ── SIGNAL RADAR ──

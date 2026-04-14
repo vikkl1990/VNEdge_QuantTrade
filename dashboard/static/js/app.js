@@ -455,13 +455,14 @@ function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
-    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer);
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer); if(typeof adminTimer!=='undefined')clearInterval(adminTimer);
     if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
     if (tab === "latency") { refreshLatencyArb(); latencyTimer = setInterval(refreshLatencyArb, 1000); }
     if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
     if (tab === "system") { refreshSystem(); systemTimer = setInterval(refreshSystem, 5000); }
     if (tab === "agents") { refreshAgents(); agentsTimer = setInterval(refreshAgents, 15000); }
     if (tab === "brain") { refreshBrainTab(); brainTimer = setInterval(refreshBrainTab, 10000); }
+    if (tab === "admin") { refreshAdmin(); adminTimer = setInterval(refreshAdmin, 15000); }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -6437,4 +6438,135 @@ try {
   loadAnalytics();
   setInterval(loadAnalytics, 30000);
 } catch(e) {}
+
+// ═══ ADMIN TAB ═══════════════════════════════════════════
+// Show admin tab button only for admin users
+async function checkAdminAccess() {
+    try {
+        const r = await fetch("/api/session", {credentials:"same-origin"});
+        if (r.ok) {
+            const d = await r.json();
+            if (d.role === "admin") {
+                var btn = document.getElementById("admin-tab-btn");
+                if (btn) btn.style.display = "";
+            }
+        }
+    } catch(e) {}
+}
+// Check on session verify
+setTimeout(checkAdminAccess, 2000);
+
+var adminTimer = null;
+
+async function refreshAdmin() {
+    var tab = document.getElementById("tab-admin");
+    if (!tab || tab.style.display === "none") return;
+
+    try {
+        var [users, sessions, audit] = await Promise.all([
+            fetch("/api/admin/users", {credentials:"same-origin"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/admin/sessions", {credentials:"same-origin"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/admin/audit?limit=50", {credentials:"same-origin"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+        ]);
+
+        // Users table
+        if (users && Array.isArray(users)) {
+            var countEl = document.getElementById("admin-user-count");
+            if (countEl) countEl.textContent = users.length + " users";
+            var statEl = document.getElementById("admin-stat-users");
+            if (statEl) statEl.textContent = users.length;
+
+            var body = document.getElementById("admin-users-body");
+            if (body) {
+                body.innerHTML = users.map(function(u) {
+                    var roleColor = u.role === "admin" ? "var(--danger)" : u.role === "trader" ? "var(--success)" : "var(--text-muted)";
+                    var modeColor = u.bot_mode === "live" ? "var(--danger)" : u.bot_mode === "demo" ? "var(--info)" : "var(--text-muted)";
+                    var activeColor = u.is_active ? "var(--success)" : "var(--danger)";
+                    var lastLogin = u.last_login ? formatTime(u.last_login) : "Never";
+                    return '<tr>' +
+                        '<td class="font-semibold">' + (u.email||"--") + '</td>' +
+                        '<td><span class="badge badge--sm" style="color:' + roleColor + '">' + (u.role||"--").toUpperCase() + '</span></td>' +
+                        '<td><span class="badge badge--sm" style="color:' + modeColor + '">' + (u.bot_mode||"paper").toUpperCase() + '</span></td>' +
+                        '<td style="color:' + activeColor + '">' + (u.is_active ? "Active" : "Disabled") + '</td>' +
+                        '<td class="text-muted text-xs">' + lastLogin + '</td>' +
+                        '<td>' +
+                            '<button class="btn btn--sm btn--ghost" onclick="adminToggleUser(\'' + u.id + '\',' + !u.is_active + ')" title="' + (u.is_active?"Deactivate":"Activate") + '">' + (u.is_active?"Disable":"Enable") + '</button>' +
+                        '</td>' +
+                    '</tr>';
+                }).join("");
+            }
+        }
+
+        // Sessions table
+        if (sessions && Array.isArray(sessions)) {
+            var sessStatEl = document.getElementById("admin-stat-sessions");
+            if (sessStatEl) sessStatEl.textContent = sessions.length;
+
+            var sessBody = document.getElementById("admin-sessions-body");
+            if (sessBody) {
+                if (sessions.length === 0) {
+                    sessBody.innerHTML = '<tr><td colspan="5" class="empty-state">No active sessions</td></tr>';
+                } else {
+                    sessBody.innerHTML = sessions.map(function(s) {
+                        return '<tr>' +
+                            '<td class="font-semibold">' + (s.email||s.user_id||"--") + '</td>' +
+                            '<td class="text-muted font-mono text-xs">' + (s.ip_address||"--") + '</td>' +
+                            '<td class="text-xs">' + (s.last_activity ? formatTime(s.last_activity) : "--") + '</td>' +
+                            '<td class="font-mono">' + (s.request_count||0) + '</td>' +
+                            '<td><button class="btn btn--sm btn--danger" onclick="adminKillSession(\'' + (s.token||"").substring(0,8) + '\')">Kill</button></td>' +
+                        '</tr>';
+                    }).join("");
+                }
+            }
+        }
+
+        // Audit log
+        if (audit && Array.isArray(audit)) {
+            var auditBody = document.getElementById("admin-audit-body");
+            if (auditBody) {
+                if (audit.length === 0) {
+                    auditBody.innerHTML = '<tr><td colspan="5" class="empty-state">No login history</td></tr>';
+                } else {
+                    auditBody.innerHTML = audit.map(function(a) {
+                        var resultColor = a.success ? "var(--success)" : "var(--danger)";
+                        return '<tr>' +
+                            '<td class="text-xs text-muted">' + formatTime(a.created_at) + '</td>' +
+                            '<td class="font-semibold">' + (a.email||"--") + '</td>' +
+                            '<td class="text-xs font-mono text-muted">' + (a.ip_address||"--") + '</td>' +
+                            '<td style="color:' + resultColor + '">' + (a.success ? "OK" : "FAIL") + '</td>' +
+                            '<td class="text-xs text-muted">' + (a.failure_reason||"--") + '</td>' +
+                        '</tr>';
+                    }).join("");
+                }
+            }
+        }
+
+    } catch(e) { console.error("refreshAdmin:", e); }
+}
+
+async function refreshAdminUsers() { await refreshAdmin(); }
+
+async function adminToggleUser(userId, newState) {
+    if (!confirm((newState ? "Activate" : "Deactivate") + " this user?")) return;
+    try {
+        await fetch("/api/admin/users/" + userId, {
+            method: "PUT",
+            headers: {"Content-Type":"application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({is_active: newState})
+        });
+        refreshAdmin();
+    } catch(e) { alert("Failed: " + e); }
+}
+
+async function adminKillSession(tokenPrefix) {
+    if (!confirm("Force logout this session?")) return;
+    try {
+        await fetch("/api/admin/sessions/" + tokenPrefix, {
+            method: "DELETE",
+            credentials: "same-origin"
+        });
+        refreshAdmin();
+    } catch(e) { alert("Failed: " + e); }
+}
 

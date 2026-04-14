@@ -517,6 +517,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <button class="tab-btn" data-tab="agents" onclick="switchTab('agents')">Agents</button>
   <button class="tab-btn" data-tab="profile" onclick="switchTab('profile')">Profile</button>
   <button class="tab-btn tab-btn--brain" data-tab="brain" onclick="switchTab('brain')">Brain</button>
+  <button class="tab-btn" data-tab="admin" onclick="switchTab('admin')" id="admin-tab-btn" style="display:none">Admin</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
@@ -2523,6 +2524,110 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="card-title">Daily Session History</div>
     <div id="brain-sessions-container" style="max-height:300px;overflow-y:auto">
       <div style="text-align:center;color:#666;padding:20px">Session summaries appear after daily rollover (00:00 UTC).</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB: ADMIN (visible to admin role only)                -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-admin">
+
+  <!-- Row 1: User Management + Active Sessions -->
+  <div class="grid-2" style="margin-bottom:var(--gap)">
+
+    <!-- User Management -->
+    <div class="glass-card">
+      <div class="card-title">User Management</div>
+      <div style="margin-bottom:12px">
+        <button class="btn btn--info btn--sm" onclick="refreshAdminUsers()">Refresh</button>
+        <span class="text-muted text-xs ml-auto" id="admin-user-count">0 users</span>
+      </div>
+      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <table class="data-table" id="admin-users-table">
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Mode</th>
+              <th>Active</th>
+              <th>Last Login</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="admin-users-body">
+            <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Active Sessions -->
+    <div class="glass-card">
+      <div class="card-title">Active Sessions</div>
+      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <table class="data-table" id="admin-sessions-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>IP</th>
+              <th>Last Activity</th>
+              <th>Requests</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="admin-sessions-body">
+            <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Row 2: Audit Log + Per-User Real Trading Overview -->
+  <div class="grid-2" style="margin-bottom:var(--gap)">
+
+    <!-- Audit Log -->
+    <div class="glass-card">
+      <div class="card-title">Login Audit Trail</div>
+      <div style="overflow-x:auto;max-height:350px;overflow-y:auto">
+        <table class="data-table" id="admin-audit-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Email</th>
+              <th>IP</th>
+              <th>Result</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="admin-audit-body">
+            <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Per-User Real Trading Overview -->
+    <div class="glass-card">
+      <div class="card-title">Per-User Real Trading</div>
+      <div id="admin-real-overview" style="max-height:350px;overflow-y:auto">
+        <div class="empty-state">No users with active real trading</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Row 3: System Stats -->
+  <div class="glass-card">
+    <div class="card-title">Database Stats</div>
+    <div class="grid-4" id="admin-db-stats">
+      <div class="stat-mini"><span class="metric-label">Total Users</span><span class="stat-value--sm text-info" id="admin-stat-users">--</span></div>
+      <div class="stat-mini"><span class="metric-label">Active Sessions</span><span class="stat-value--sm text-success" id="admin-stat-sessions">--</span></div>
+      <div class="stat-mini"><span class="metric-label">Total Trades</span><span class="stat-value--sm text-warning" id="admin-stat-trades">--</span></div>
+      <div class="stat-mini"><span class="metric-label">API Keys</span><span class="stat-value--sm text-purple" id="admin-stat-keys">--</span></div>
     </div>
   </div>
 

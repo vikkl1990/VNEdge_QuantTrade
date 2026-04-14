@@ -500,6 +500,14 @@ class DashboardServer:
             register_admin_routes(self._app, self._auth_service, self._db_pool)
             logger.info("Multi-user routes registered (user profile, API keys, admin)")
 
+            # Per-user real trading routes
+            orch = getattr(self, '_orchestrator', None)
+            user_registry = getattr(orch, '_user_registry', None) if orch else None
+            if user_registry:
+                from dashboard.user_trading_routes import register_user_trading_routes
+                register_user_trading_routes(self._app, user_registry, self._db_pool)
+                logger.info("Per-user trading routes registered (8 endpoints)")
+
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)

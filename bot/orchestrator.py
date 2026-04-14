@@ -156,6 +156,18 @@ class BotOrchestrator:
             self._log.warning("BotBrain init failed (continuing without): %s", exc)
             self._brain = None
 
+        # UserRealRegistry — per-user real trading (multi-tenant)
+        self._user_registry = None
+        try:
+            db_pool = config.get("_db_pool")  # injected by main.py if PostgreSQL is available
+            if db_pool:
+                from execution.user_registry import UserRealRegistry
+                self._user_registry = UserRealRegistry(db_pool)
+                self._user_registry.set_price_feed(self)
+                self._log.info("UserRealRegistry created (per-user real trading)")
+        except Exception as exc:
+            self._log.warning("UserRealRegistry init failed (continuing without): %s", exc)
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -1840,6 +1852,14 @@ class BotOrchestrator:
                 _real_task.add_done_callback(self._log_real_task_error)
             except Exception as exc:
                 self._log.error("Real trade spawn failed (paper unaffected): %s", exc)
+
+        # Per-user real trading: broadcast to all active users
+        if self._user_registry:
+            try:
+                import asyncio
+                asyncio.create_task(self._user_registry.broadcast_signal(sig_dict))
+            except Exception as exc:
+                self._log.debug("User registry broadcast failed: %s", exc)
 
         # -- Journal --
         try:

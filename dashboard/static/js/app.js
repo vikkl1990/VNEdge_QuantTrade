@@ -5179,8 +5179,9 @@ async function showJourney(tradeId) {
     body.innerHTML = '<div style="color:var(--red);font-size:.75rem">Error: ' + e.message + '</div>';
   }
 }
-document.getElementById('journey-modal').addEventListener('click', function(e) {
-  if (e.target === this) this.style.display = 'none';
+document.addEventListener('DOMContentLoaded', function() {
+  var jm = document.getElementById('journey-modal');
+  if (jm) jm.addEventListener('click', function(e) { if (e.target === this) this.style.display = 'none'; });
 });
 
 // ══════════════════════════════════════════════════════════

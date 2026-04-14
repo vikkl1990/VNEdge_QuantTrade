@@ -466,6 +466,14 @@ class BotOrchestrator:
         self._running = False
         self._log.info("Shutting down components...")
 
+        # Save candle cache for warm restart (indicators survive restarts)
+        try:
+            saved = self._data_manager.save_to_disk()
+            if saved > 0:
+                self._log.warning("WARM RESTART: saved %d candle entries to disk", saved)
+        except Exception as e:
+            self._log.warning("Candle cache save on shutdown failed: %s", e)
+
         # Stop OrderbookCache (Phase 5.0c)
         try:
             if getattr(self, '_ob_cache', None):

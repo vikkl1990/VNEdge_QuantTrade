@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from pathlib import Path as _Path
+
 from config import get_config
 
 logger = logging.getLogger(__name__)
@@ -121,13 +123,20 @@ class DataManager:
         # Latest price cache: symbol -> float
         self._latest_prices: Dict[str, float] = {}
 
+        # Candle persistence — survive restarts with warm indicators
+        self._cache_path = _Path("storage/candle_cache.pkl")
+
+        # Auto-load cached candles from previous session
+        _loaded = self._load_from_disk()
+
         logger.info(
             "DataManager initialised – symbols=%s, timeframes=%s, "
-            "max_cache_entries=%d, max_candles=%d",
+            "max_cache_entries=%d, max_candles=%d, restored=%d",
             self._symbols,
             self._timeframes,
             max_cache_entries,
             max_candles_per_key,
+            _loaded,
         )
 
     # ------------------------------------------------------------------
@@ -443,6 +452,78 @@ class DataManager:
     # ------------------------------------------------------------------
     # Diagnostics
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Candle persistence — warm restarts
+    # ------------------------------------------------------------------
+
+    def save_to_disk(self) -> int:
+        """Persist all cached candles to disk for warm restart.
+
+        Called by orchestrator on shutdown. Saves the entire _store dict
+        as a pickle file. On next startup, _load_from_disk() restores it
+        so indicators (EMA200 etc.) start warm instead of cold.
+
+        Returns number of symbol×timeframe entries saved.
+        """
+        try:
+            import pickle
+            with self._lock:
+                data = {}
+                for (sym, tf), df in self._store.items():
+                    if len(df) > 0:
+                        data[(sym, tf)] = df.copy()
+                if not data:
+                    return 0
+                self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._cache_path, "wb") as f:
+                    pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+                logger.info(
+                    "CANDLE CACHE SAVED: %d entries, %d total candles to %s",
+                    len(data),
+                    sum(len(df) for df in data.values()),
+                    self._cache_path,
+                )
+                return len(data)
+        except Exception as e:
+            logger.warning("Candle cache save failed: %s", e)
+            return 0
+
+    def _load_from_disk(self) -> int:
+        """Restore cached candles from disk on startup.
+
+        Returns number of symbol×timeframe entries restored. If the cache
+        file is missing, corrupt, or stale (>24h old), returns 0 and the
+        bot starts cold (normal first-run behavior).
+        """
+        try:
+            import pickle, time as _t
+            if not self._cache_path.exists():
+                return 0
+            # Skip if cache is >24h old (data would be too stale)
+            age_sec = _t.time() - self._cache_path.stat().st_mtime
+            if age_sec > 86400:
+                logger.info("Candle cache too old (%.0fh) — starting cold", age_sec / 3600)
+                return 0
+            with open(self._cache_path, "rb") as f:
+                data = pickle.load(f)
+            if not isinstance(data, dict):
+                return 0
+            restored = 0
+            for (sym, tf), df in data.items():
+                if isinstance(df, pd.DataFrame) and len(df) > 0:
+                    key = self._key(sym, tf)
+                    self._store[key] = df
+                    restored += 1
+            total_candles = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
+            logger.warning(
+                "CANDLE CACHE RESTORED: %d entries, %d candles from %s (%.0fm old)",
+                restored, total_candles, self._cache_path, age_sec / 60,
+            )
+            return restored
+        except Exception as e:
+            logger.warning("Candle cache load failed (starting cold): %s", e)
+            return 0
 
     def summary(self) -> Dict[str, Any]:
         """Return a diagnostic summary of stored data."""

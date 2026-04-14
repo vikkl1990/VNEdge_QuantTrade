@@ -370,9 +370,14 @@ class DashboardServer:
             session = self._verify_session(request)
             if session:
                 request["session"] = session
-                # Set user dict for multi-user session handler
-                if session.get("multi_user") and "user" not in request:
-                    request["user"] = {"email": "admin@vnedge.com", "role": "admin", "tier": "enterprise", "full_name": "VN Edge Admin", "user_id": 1}
+                # Set user dict for require_role decorator
+                if "user" not in request and (session.get("user_id") or session.get("email")):
+                    request["user"] = {
+                        "email": session.get("email", session.get("user", "")),
+                        "role": session.get("role", "admin"),
+                        "tier": session.get("tier", "free"),
+                        "user_id": session.get("user_id", ""),
+                    }
             return await handler(request)
 
         # POST requests: require auth (state-changing operations)
@@ -382,6 +387,14 @@ class DashboardServer:
         session = self._verify_session(request)
         if session:
             request["session"] = session
+            # Set user dict for require_role decorator (admin routes)
+            if session.get("user_id") or session.get("email"):
+                request["user"] = {
+                    "email": session.get("email", session.get("user", "")),
+                    "role": session.get("role", "trader"),
+                    "tier": session.get("tier", "free"),
+                    "user_id": session.get("user_id", ""),
+                }
             return await handler(request)
 
         # Not authenticated for POST

@@ -15,6 +15,7 @@ def register_admin_routes(app: web.Application, auth_service, db_pool):
     app.router.add_get("/api/admin/sessions", require_role("admin")(handler.handle_list_sessions))
     app.router.add_delete("/api/admin/sessions/{token}", require_role("admin")(handler.handle_force_logout))
     app.router.add_get("/api/admin/audit", require_role("admin")(handler.handle_audit_log))
+    app.router.add_post("/api/admin/users/{user_id}/reset-password", require_role("admin")(handler.handle_reset_password))
 
 
 class AdminRouteHandler:
@@ -74,6 +75,35 @@ class AdminRouteHandler:
 
         logger.info("Admin updated user %s: %s", user_id, updates)
         return web.json_response({"ok": True})
+
+    async def handle_reset_password(self, request: web.Request) -> web.Response:
+        """POST /api/admin/users/{user_id}/reset-password — admin resets a user's password."""
+        import bcrypt
+        user_id = request.match_info.get("user_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        new_password = body.get("new_password", "")
+        if not new_password or len(new_password) < 8:
+            return web.json_response({"error": "Password must be at least 8 characters"}, status=400)
+
+        password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt(12)).decode()
+
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
+                password_hash, user_id,
+            )
+            # Also kill all their sessions to force re-login
+            await conn.execute(
+                "DELETE FROM sessions WHERE user_id = $1",
+                user_id,
+            )
+
+        logger.warning("Admin RESET PASSWORD for user %s (sessions killed)", user_id)
+        return web.json_response({"ok": True, "message": "Password reset. User will need to login again."})
 
     async def handle_list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/admin/sessions — all active sessions."""

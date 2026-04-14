@@ -6478,7 +6478,9 @@ async function refreshAdmin() {
         ]);
 
         // Users table — API returns {users: [...]} or direct array
+        console.log("ADMIN RAW users:", JSON.stringify(users).substring(0,200));
         if (users && users.users) users = users.users;
+        console.log("ADMIN unwrapped users:", Array.isArray(users), users ? users.length : 0);
         if (users && Array.isArray(users)) {
             var countEl = document.getElementById("admin-user-count");
             if (countEl) countEl.textContent = users.length + " users";
@@ -6486,23 +6488,30 @@ async function refreshAdmin() {
             if (statEl) statEl.textContent = users.length;
 
             var body = document.getElementById("admin-users-body");
-            if (body) {
-                body.innerHTML = users.map(function(u) {
-                    var roleColor = u.role === "admin" ? "var(--danger)" : u.role === "trader" ? "var(--success)" : "var(--text-muted)";
-                    var modeColor = u.bot_mode === "live" ? "var(--danger)" : u.bot_mode === "demo" ? "var(--info)" : "var(--text-muted)";
-                    var activeColor = u.is_active ? "var(--success)" : "var(--danger)";
+            // Build full table HTML and replace entire table
+            var tbl = document.getElementById("admin-users-table");
+            if (tbl) {
+                var fullHtml = "<thead><tr><th>Email</th><th>Role</th><th>Mode</th><th>Active</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>";
+                for (var i = 0; i < users.length; i++) {
+                    var u = users[i];
+                    var roleColor = u.role === "admin" ? "#ff3b5c" : "#00ff9d";
+                    var modeColor = u.bot_mode === "live" ? "#ff3b5c" : u.bot_mode === "demo" ? "#00d4ff" : "#5a7090";
+                    var activeColor = u.is_active ? "#00ff9d" : "#ff3b5c";
                     var lastLogin = u.last_login ? formatTime(u.last_login) : "Never";
-                    return '<tr>' +
-                        '<td class="font-semibold">' + (u.email||"--") + '</td>' +
-                        '<td><span class="badge badge--sm" style="color:' + roleColor + '">' + (u.role||"--").toUpperCase() + '</span></td>' +
-                        '<td><span class="badge badge--sm" style="color:' + modeColor + '">' + (u.bot_mode||"paper").toUpperCase() + '</span></td>' +
-                        '<td style="color:' + activeColor + '">' + (u.is_active ? "Active" : "Disabled") + '</td>' +
-                        '<td class="text-muted text-xs">' + lastLogin + '</td>' +
-                        '<td>' +
-                            '<button class="btn btn--sm btn--ghost" onclick="adminToggleUser(\'' + u.id + '\',' + !u.is_active + ')" title="' + (u.is_active?"Deactivate":"Activate") + '">' + (u.is_active?"Disable":"Enable") + '</button>' +
-                        '</td>' +
-                    '</tr>';
-                }).join("");
+                    fullHtml += "<tr style='border-bottom:1px solid rgba(255,255,255,.05)'>" +
+                        "<td style='padding:10px;font-weight:600;color:#e8ecf4'>" + (u.email||"--") + "</td>" +
+                        "<td style='padding:10px;color:" + roleColor + ";font-weight:700'>" + (u.role||"--").toUpperCase() + "</td>" +
+                        "<td style='padding:10px;color:" + modeColor + ";font-weight:600'>" + (u.bot_mode||"paper").toUpperCase() + "</td>" +
+                        "<td style='padding:10px;color:" + activeColor + "'>" + (u.is_active ? "Active" : "Disabled") + "</td>" +
+                        "<td style='padding:10px;color:#5a7090;font-size:12px'>" + lastLogin + "</td>" +
+                        "<td style='padding:10px;display:flex;gap:6px'>" +
+                            "<button onclick=\"adminToggleUser('" + u.id + "'," + !u.is_active + ")\" style='padding:4px 10px;font-size:11px;border:1px solid #333;background:rgba(255,255,255,.05);color:#aaa;border-radius:4px;cursor:pointer'>" + (u.is_active?"Disable":"Enable") + "</button>" +
+                            "<button onclick=\"adminResetPassword('" + u.id + "','" + (u.email||"") + "')\" style='padding:4px 10px;font-size:11px;border:1px solid #f97316;background:rgba(249,115,22,.1);color:#f97316;border-radius:4px;cursor:pointer'>Reset PW</button>" +
+                        "</td>" +
+                    "</tr>";
+                }
+                fullHtml += "</tbody>";
+                tbl.innerHTML = fullHtml;
             }
         }
 
@@ -6515,17 +6524,20 @@ async function refreshAdmin() {
             var sessBody = document.getElementById("admin-sessions-body");
             if (sessBody) {
                 if (sessions.length === 0) {
-                    sessBody.innerHTML = '<tr><td colspan="5" class="empty-state">No active sessions</td></tr>';
+                    sessBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No active sessions</td></tr>';
                 } else {
-                    sessBody.innerHTML = sessions.map(function(s) {
-                        return '<tr>' +
-                            '<td class="font-semibold">' + (s.email||s.user_id||"--") + '</td>' +
-                            '<td class="text-muted font-mono text-xs">' + (s.ip_address||"--") + '</td>' +
-                            '<td class="text-xs">' + (s.last_activity ? formatTime(s.last_activity) : "--") + '</td>' +
-                            '<td class="font-mono">' + (s.request_count||0) + '</td>' +
-                            '<td><button class="btn btn--sm btn--danger" onclick="adminKillSession(\'' + (s.token||"").substring(0,8) + '\')">Kill</button></td>' +
-                        '</tr>';
-                    }).join("");
+                    var shtml = "";
+                    for (var si = 0; si < sessions.length; si++) {
+                        var s = sessions[si];
+                        shtml += "<tr>" +
+                            "<td style='padding:8px;font-weight:600'>" + (s.email||s.user_id||"--") + "</td>" +
+                            "<td style='padding:8px;color:#5a7090;font-family:monospace;font-size:11px'>" + (s.ip_address||"--") + "</td>" +
+                            "<td style='padding:8px;font-size:12px'>" + (s.last_activity ? formatTime(s.last_activity) : "--") + "</td>" +
+                            "<td style='padding:8px;font-family:monospace'>" + (s.request_count||0) + "</td>" +
+                            "<td style='padding:8px'><button onclick=\"adminKillSession('" + (s.token||"").substring(0,8) + "')\" style='padding:3px 8px;font-size:11px;border:1px solid #ff3b5c;background:rgba(255,59,92,.1);color:#ff3b5c;border-radius:4px;cursor:pointer'>Kill</button></td>" +
+                        "</tr>";
+                    }
+                    sessBody.innerHTML = shtml;
                 }
             }
         }
@@ -6536,18 +6548,21 @@ async function refreshAdmin() {
             var auditBody = document.getElementById("admin-audit-body");
             if (auditBody) {
                 if (audit.length === 0) {
-                    auditBody.innerHTML = '<tr><td colspan="5" class="empty-state">No login history</td></tr>';
+                    auditBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No login history</td></tr>';
                 } else {
-                    auditBody.innerHTML = audit.map(function(a) {
-                        var resultColor = a.success ? "var(--success)" : "var(--danger)";
-                        return '<tr>' +
-                            '<td class="text-xs text-muted">' + formatTime(a.created_at) + '</td>' +
-                            '<td class="font-semibold">' + (a.email||"--") + '</td>' +
-                            '<td class="text-xs font-mono text-muted">' + (a.ip_address||"--") + '</td>' +
-                            '<td style="color:' + resultColor + '">' + (a.success ? "OK" : "FAIL") + '</td>' +
-                            '<td class="text-xs text-muted">' + (a.failure_reason||"--") + '</td>' +
-                        '</tr>';
-                    }).join("");
+                    var ahtml = "";
+                    for (var ai = 0; ai < audit.length; ai++) {
+                        var a = audit[ai];
+                        var resultColor = a.success ? "#00ff9d" : "#ff3b5c";
+                        ahtml += "<tr>" +
+                            "<td style='padding:8px;font-size:12px;color:#5a7090'>" + formatTime(a.created_at) + "</td>" +
+                            "<td style='padding:8px;font-weight:600'>" + (a.email||"--") + "</td>" +
+                            "<td style='padding:8px;font-family:monospace;font-size:11px;color:#5a7090'>" + (a.ip_address||"--") + "</td>" +
+                            "<td style='padding:8px;color:" + resultColor + ";font-weight:700'>" + (a.success ? "OK" : "FAIL") + "</td>" +
+                            "<td style='padding:8px;font-size:12px;color:#5a7090'>" + (a.failure_reason||"--") + "</td>" +
+                        "</tr>";
+                    }
+                    auditBody.innerHTML = ahtml;
                 }
             }
         }
@@ -6578,6 +6593,28 @@ async function adminKillSession(tokenPrefix) {
             credentials: "same-origin"
         });
         refreshAdmin();
+    } catch(e) { alert("Failed: " + e); }
+}
+
+async function adminResetPassword(userId, email) {
+    var newPass = prompt("Enter new password for " + email + "\n(minimum 8 characters):");
+    if (!newPass) return;
+    if (newPass.length < 8) { alert("Password must be at least 8 characters"); return; }
+    if (!confirm("Reset password for " + email + "?\nThey will be logged out of all sessions.")) return;
+    try {
+        var r = await fetch("/api/admin/users/" + userId + "/reset-password", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({new_password: newPass})
+        });
+        var d = await r.json();
+        if (d.ok) {
+            alert("Password reset for " + email + ". They need to login again.");
+            refreshAdmin();
+        } else {
+            alert("Error: " + (d.error || "unknown"));
+        }
     } catch(e) { alert("Failed: " + e); }
 }
 

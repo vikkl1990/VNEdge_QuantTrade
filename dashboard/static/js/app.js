@@ -380,7 +380,7 @@ function makeHealthRow(label, value, unit, max) {
     const p = max ? (value / max * 100) : value;
     return `<div style="margin-bottom:12px">
         <div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px">
-            <span style="color:var(--text-secondary)">${label}</span><span style="font-weight:700;font-family:var(--font-mono)">${num(value,1)}${unit}</span>
+            <span style="color:var(--text-secondary)">${label}</span><span class="font-bold font-mono">${num(value,1)}${unit}</span>
         </div>
         <div class="health-bar"><div class="health-fill" style="width:${Math.min(p,100)}%;background:${healthColor(p)}"></div></div>
     </div>`;
@@ -389,7 +389,7 @@ function makeHealthRow(label, value, unit, max) {
 function makeKV(label, value, color) {
     const c = color ? `color:${color}` : "";
     return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem">
-        <span style="color:var(--text-muted)">${label}</span><span style="font-weight:600;font-family:var(--font-mono);${c}">${value}</span>
+        <span class="text-muted">${label}</span><span style="font-weight:600;font-family:var(--font-mono);${c}">${value}</span>
     </div>`;
 }
 
@@ -531,7 +531,7 @@ async function refreshAgents() {
           const col = st === "ok" ? "var(--green)" : st === "stale" ? "var(--yellow)" : "var(--red)";
           return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:.72rem;padding:3px 0;border-bottom:1px solid var(--border)">
             <span style="color:var(--text-dim)">${comp}</span>
-            <span><span style="color:${col};font-weight:700">${st.toUpperCase()}</span> <span style="color:var(--text-muted)">${age.toFixed(0)}s ago</span></span>
+            <span><span style="color:${col};font-weight:700">${st.toUpperCase()}</span> <span class="text-muted">${age.toFixed(0)}s ago</span></span>
           </div>`;
         }).join("");
       } else {
@@ -1407,7 +1407,7 @@ function updateSetupLifecycle(status, closed) {
             '<div style="font-size:.75rem;font-family:var(--font-mono);color:var(--text-secondary);margin-bottom:4px">$' + price.toFixed(dec) + '</div>' +
             '<div style="display:flex;justify-content:center;gap:10px;font-size:.62rem">' +
             '<span style="color:' + wrColor + ';font-weight:700">WR: ' + (symTotal > 0 ? symWR + "%" : "--") + '</span>' +
-            '<span style="color:var(--text-muted)">' + symTotal + ' trades</span>' +
+            '<span class="text-muted">' + symTotal + ' trades</span>' +
             '</div>' +
             '</div>';
     }).join("");
@@ -1458,7 +1458,7 @@ function updateRecentClosed(closed) {
             <td class="${pnlUsd >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnlUsd >= 0 ? "+$" : "-$"}${Math.abs(pnlUsd).toFixed(2)}</td>
             <td class="${r >= 0 ? 'pnl-pos' : 'pnl-neg'}">${r >= 0 ? "+" : ""}${r.toFixed(2)}R</td>
             <td>${esc(t.exit_reason || "--")}</td>
-            <td style="color:var(--text-muted)">${dur}</td>
+            <td class="text-muted">${dur}</td>
             <td>${rowTid ? `<span onclick="event.stopPropagation();showJourney('${rowTid}')" style="cursor:pointer;font-size:.6rem;padding:1px 5px;border-radius:3px;background:rgba(99,102,241,.15);color:#818cf8;border:1px solid rgba(99,102,241,.25)" title="View journey">🔍</span>` : ''}</td>
         </tr>`;
     }).join("");
@@ -1867,7 +1867,7 @@ function updateSessionHeatmap(data) {
         return `<div style="background:${bgColor};border-radius:4px;padding:4px 2px;text-align:center;min-height:48px;display:flex;flex-direction:column;justify-content:center;cursor:default" title="${d.hour}:00 UTC | ${d.trades} trades | WR ${d.wr}% | Avg R ${d.avg_r} | PnL $${d.pnl}">
             <div style="font-size:.6rem;color:var(--text-muted)">${String(d.hour).padStart(2,'0')}</div>
             <div style="font-size:.75rem;font-weight:700;color:${textColor}">${d.trades > 0 ? d.wr + '%' : '-'}</div>
-            <div style="font-size:.55rem;color:var(--text-muted)">${d.trades}t</div>
+            <div class="metric-label">${d.trades}t</div>
         </div>`;
     }).join("");
 }
@@ -1988,7 +1988,7 @@ function updateClosedTrades(closed) {
             <td style="color:${mfe > 1 ? 'var(--green)' : 'var(--text-muted)'}">${mfe.toFixed(2)}R</td>
             <td>${t.metadata && t.metadata.ml_probability != null ? `<span style="color:${t.metadata.ml_probability >= 0.6 ? 'var(--green)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow)' : 'var(--red)'};font-weight:600;font-family:var(--font-mono)">${(t.metadata.ml_probability * 100).toFixed(0)}%</span>` : '--'}</td>
             <td>${esc(t.exit_reason || "--")}</td>
-            <td style="color:var(--text-muted)">${dur}</td>
+            <td class="text-muted">${dur}</td>
             <td style="font-size:.73rem">${tp !== "\u2014" ? "TP" + tp : "\u2014"}</td>
         </tr>`;
     }).join("");
@@ -2063,42 +2063,42 @@ async function refreshLatencyArb() {
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.73rem;font-family:var(--font-mono)">
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Binance</span>
+                        <span class="text-muted">Binance</span>
                         <span style="color:var(--cyan);font-weight:600">$${num(s.binance_mid)}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Delta</span>
+                        <span class="text-muted">Delta</span>
                         <span style="color:var(--purple);font-weight:600">$${num(s.delta_mid)}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Δ USD</span>
+                        <span class="text-muted">Δ USD</span>
                         <span style="font-weight:600;color:${dirColor}">$${num(s.dislocation_usd)}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Net Edge</span>
+                        <span class="text-muted">Net Edge</span>
                         <span style="font-weight:700;color:${netColor}">${netEdge>=0?'+':''}${netEdge.toFixed(3)}%</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Spread</span>
+                        <span class="text-muted">Spread</span>
                         <span>${num(s.spread_delta_pct,3)}%</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
-                        <span style="color:var(--text-muted)">Latency</span>
+                        <span class="text-muted">Latency</span>
                         <span>${num(s.avg_latency_ms,0)}ms</span>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;font-size:.65rem;text-align:center">
                     <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
                         <div style="font-weight:700;font-family:var(--font-mono);color:var(--yellow)">${num(s.avg_disl,3)}%</div>
-                        <div style="color:var(--text-muted)">AVG</div>
+                        <div class="text-muted">AVG</div>
                     </div>
                     <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
                         <div style="font-weight:700;font-family:var(--font-mono);color:var(--orange)">${num(s.p95_disl,3)}%</div>
-                        <div style="color:var(--text-muted)">P95</div>
+                        <div class="text-muted">P95</div>
                     </div>
                     <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
                         <div style="font-weight:700;font-family:var(--font-mono);color:${(s.tradeable_pct||0)>=5?'var(--green)':'var(--red)'}">${num(s.tradeable_pct,1)}%</div>
-                        <div style="color:var(--text-muted)">TRADEABLE</div>
+                        <div class="text-muted">TRADEABLE</div>
                     </div>
                 </div>
             </div>`;
@@ -2154,12 +2154,12 @@ async function refreshLatencyArb() {
                     <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${clsColor};background:${cls==='EXECUTABLE'?'rgba(0,255,157,.1)':cls==='WATCH'?'rgba(255,215,0,.08)':'rgba(90,112,144,.08)'};border:1px solid ${clsColor}">${cls}</span>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;font-family:var(--font-mono)">
-                    <span style="color:var(--text-muted)">Gross Disl:</span><span>${num(ne.gross_disl_pct,4)}%</span>
-                    <span style="color:var(--text-muted)">Spread:</span><span style="color:var(--yellow)">${num(ne.spread_pct,4)}%</span>
-                    <span style="color:var(--text-muted)">Total Cost:</span><span style="color:var(--red)">${num(ne.total_cost_pct,4)}%</span>
-                    <span style="color:var(--text-muted)">Net Edge:</span><span style="font-weight:700;color:${netEdge>0?'var(--green)':'var(--red)'}"> ${netEdge>0?'+':''}${num(netEdge,4)}%</span>
-                    <span style="color:var(--text-muted)">Safety Buffer:</span><span>${num(ne.safety_buffer,2)}%</span>
-                    <span style="color:var(--text-muted)">Est. Sigs/Day:</span><span style="color:var(--cyan)">${num(dailySigs,0)}</span>
+                    <span class="text-muted">Gross Disl:</span><span>${num(ne.gross_disl_pct,4)}%</span>
+                    <span class="text-muted">Spread:</span><span style="color:var(--yellow)">${num(ne.spread_pct,4)}%</span>
+                    <span class="text-muted">Total Cost:</span><span style="color:var(--red)">${num(ne.total_cost_pct,4)}%</span>
+                    <span class="text-muted">Net Edge:</span><span style="font-weight:700;color:${netEdge>0?'var(--green)':'var(--red)'}"> ${netEdge>0?'+':''}${num(netEdge,4)}%</span>
+                    <span class="text-muted">Safety Buffer:</span><span>${num(ne.safety_buffer,2)}%</span>
+                    <span class="text-muted">Est. Sigs/Day:</span><span style="color:var(--cyan)">${num(dailySigs,0)}</span>
                 </div>
             </div>`;
         });
@@ -2276,10 +2276,10 @@ async function refreshLatencyArb() {
                         <span style="font-size:.72rem;color:var(--text-muted)">${s.total_trades} simulated</span>
                     </div>
                     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;font-size:.72rem">
-                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div style="color:var(--text-muted)">Win Rate</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${netPnl>=0?'var(--green)':'var(--red)'}">${netPnl>=0?'+':''}${netPnl.toFixed(3)}%</div><div style="color:var(--text-muted)">Total P&L</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_net_pnl,3)}%</div><div style="color:var(--text-muted)">Avg Trade</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_hold_time_s,1)}s</div><div style="color:var(--text-muted)">Avg Hold</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div class="text-muted">Win Rate</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${netPnl>=0?'var(--green)':'var(--red)'}">${netPnl>=0?'+':''}${netPnl.toFixed(3)}%</div><div class="text-muted">Total P&L</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_net_pnl,3)}%</div><div class="text-muted">Avg Trade</div></div>
+                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_hold_time_s,1)}s</div><div class="text-muted">Avg Hold</div></div>
                     </div>
                 </div>`;
             });
@@ -2346,7 +2346,7 @@ async function refreshLatencyArb() {
                     hh += `<div style="margin-top:6px;font-size:.68rem">
                         <span style="font-weight:600">${short}:</span>
                         ${active.length > 0 ? `<span style="color:var(--green)"> Active: UTC ${active.join(', ')}</span>` : ''}
-                        ${quiet.length > 0 ? `<span style="color:var(--text-muted)"> | Quiet: UTC ${quiet.join(', ')}</span>` : ''}
+                        ${quiet.length > 0 ? `<span class="text-muted"> | Quiet: UTC ${quiet.join(', ')}</span>` : ''}
                     </div>`;
                 }
             });
@@ -2490,7 +2490,7 @@ function updateVetoStats(data) {
     for (var k in vs) {
         if (vs[k] > 0) parts.push('<span style="color:var(--red)">' + k + '</span>: ' + vs[k]);
     }
-    var vetoHtml = parts.length > 0 ? parts.join(' <span style="color:var(--text-muted)">|</span> ') : '<span style="color:var(--green)">None active</span>';
+    var vetoHtml = parts.length > 0 ? parts.join(' <span class="text-muted">|</span> ') : '<span style="color:var(--green)">None active</span>';
 }
 
 function renderVetoRows(wrap, vetoData) {
@@ -2873,11 +2873,11 @@ function updateRealActiveTrades(realStatus) {
             '<span style="color:var(--text-muted);font-size:.72rem">' + dur + '</span>' +
             '</div></div>' +
             '<div style="display:flex;gap:16px;margin-top:6px;font-size:.72rem;font-family:var(--font-mono)">' +
-            '<span style="color:var(--text-muted)">Entry: <span style="color:var(--text)">' + (p.entry_price||0).toFixed(dec) + '</span></span>' +
-            '<span style="color:var(--text-muted)">Current: <span style="color:var(--text)">' + (p.current_price||0).toFixed(dec) + '</span></span>' +
-            '<span style="color:var(--text-muted)">SL: <span style="color:var(--red)">' + (p.stop_loss||0).toFixed(dec) + '</span></span>' +
-            '<span style="color:var(--text-muted)">TP1: <span style="color:var(--green)">' + (p.tp1 ? p.tp1.toFixed(dec) : "--") + '</span></span>' +
-            '<span style="color:var(--text-muted)">Margin: $' + (p.margin||0).toFixed(2) + '</span>' +
+            '<span class="text-muted">Entry: <span style="color:var(--text)">' + (p.entry_price||0).toFixed(dec) + '</span></span>' +
+            '<span class="text-muted">Current: <span style="color:var(--text)">' + (p.current_price||0).toFixed(dec) + '</span></span>' +
+            '<span class="text-muted">SL: <span style="color:var(--red)">' + (p.stop_loss||0).toFixed(dec) + '</span></span>' +
+            '<span class="text-muted">TP1: <span style="color:var(--green)">' + (p.tp1 ? p.tp1.toFixed(dec) : "--") + '</span></span>' +
+            '<span class="text-muted">Margin: $' + (p.margin||0).toFixed(2) + '</span>' +
             '</div>' +
             // Track A.2: per-position LOCK 75% button
             '<div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px">' +
@@ -3744,7 +3744,7 @@ function updateSignalRadar(signals, status) {
                 var sideColor = e.side === "long" || e.side === "buy" ? "var(--green)" : "var(--red)";
                 return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">' +
                     '<span style="color:' + sideColor + ';font-weight:700">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
-                    '<span style="color:var(--text-muted)">' + e.scanner.substring(0, 8) + '</span>' +
+                    '<span class="text-muted">' + e.scanner.substring(0, 8) + '</span>' +
                     '<span style="font-family:var(--font-mono);color:var(--cyan)">' + conviction + '%</span></div>';
             }).join("");
         }
@@ -3806,10 +3806,10 @@ async function loadThesis() {
             confBar +
             '<div style="color:var(--text-muted);font-size:.62rem;margin-top:6px">🔄 <b>Invalidation:</b> ' + (d.invalidation || "--") + '</div>' +
             '<div style="display:flex;gap:12px;margin-top:8px;font-size:.65rem">' +
-            '<span style="color:var(--text-muted)">Bias: <b style="color:' + (d.dominant_side === "LONG" ? "var(--green)" : d.dominant_side === "SHORT" ? "var(--red)" : "var(--text-muted)") + '">' + d.dominant_side + '</b></span>' +
-            '<span style="color:var(--text-muted)">WR: <b>' + (d.recent_wr || 0).toFixed(0) + '%</b></span>' +
-            '<span style="color:var(--text-muted)">PnL: <b style="color:' + (d.recent_pnl >= 0 ? "var(--green)" : "var(--red)") + '">$' + (d.recent_pnl || 0).toFixed(2) + '</b></span>' +
-            '<span style="color:var(--text-muted)">BTC: <b>$' + (d.btc_price || 0).toFixed(0) + '</b></span>' +
+            '<span class="text-muted">Bias: <b style="color:' + (d.dominant_side === "LONG" ? "var(--green)" : d.dominant_side === "SHORT" ? "var(--red)" : "var(--text-muted)") + '">' + d.dominant_side + '</b></span>' +
+            '<span class="text-muted">WR: <b>' + (d.recent_wr || 0).toFixed(0) + '%</b></span>' +
+            '<span class="text-muted">PnL: <b style="color:' + (d.recent_pnl >= 0 ? "var(--green)" : "var(--red)") + '">$' + (d.recent_pnl || 0).toFixed(2) + '</b></span>' +
+            '<span class="text-muted">BTC: <b>$' + (d.btc_price || 0).toFixed(0) + '</b></span>' +
             '</div>';
     } catch (e) {}
 }
@@ -3904,7 +3904,7 @@ async function loadResearchEngine() {
                 var col = t.signal === "stable" ? "var(--green)" : "var(--yellow)";
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;background:rgba(255,255,255,.02);border-radius:3px;border-left:2px solid ' + col + '">' +
                     '<span style="font-size:.65rem;color:' + col + ';font-weight:700">' + (t.current || "?").toUpperCase() + '</span>' +
-                    '<span style="font-size:.55rem;color:var(--text-muted)">' + t.signal + ' · conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%</span></div>';
+                    '<span class="metric-label">' + t.signal + ' · conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%</span></div>';
             });
         }
 
@@ -3939,7 +3939,7 @@ async function loadResearchEngine() {
             html += coKeys.slice(0, 5).map(function(k) {
                 var v = coFiring[k];
                 return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0">' +
-                    '<span style="color:var(--text-muted)">' + k + '</span>' +
+                    '<span class="text-muted">' + k + '</span>' +
                     '<span style="font-family:var(--font-mono);color:var(--cyan)">' + (v * 100).toFixed(0) + '%</span></div>';
             }).join("");
         }
@@ -4072,8 +4072,8 @@ async function loadMarketMap() {
 
         // Totals bar
         html += '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:.6rem">' +
-            '<span style="color:var(--text-muted)">Paper: <b style="color:var(--cyan)">$' + (d.total_paper_exposure || 0).toFixed(0) + '</b></span>' +
-            '<span style="color:var(--text-muted)">Real: <b style="color:var(--red)">$' + (d.total_real_exposure || 0).toFixed(0) + '</b></span></div>';
+            '<span class="text-muted">Paper: <b style="color:var(--cyan)">$' + (d.total_paper_exposure || 0).toFixed(0) + '</b></span>' +
+            '<span class="text-muted">Real: <b style="color:var(--red)">$' + (d.total_real_exposure || 0).toFixed(0) + '</b></span></div>';
 
         wrap.innerHTML = html;
     } catch (e) {}
@@ -4118,7 +4118,7 @@ async function loadCatalystCalendar() {
                 var col = rate > 0 ? "var(--green)" : rate < 0 ? "var(--red)" : "var(--text-muted)";
                 var bias = f.bias === "longs_pay" ? "L pay" : f.bias === "shorts_pay" ? "S pay" : "neutral";
                 html += '<div style="display:flex;justify-content:space-between;font-size:.58rem;padding:1px 0">' +
-                    '<span style="color:var(--text-muted)">' + sym.replace("/USDT", "") + '</span>' +
+                    '<span class="text-muted">' + sym.replace("/USDT", "") + '</span>' +
                     '<span style="font-family:var(--font-mono);color:' + col + '">' + rate.toFixed(4) + '% <span style="font-size:.5rem">(' + bias + ')</span></span></div>';
             });
         }
@@ -4536,7 +4536,7 @@ async function refreshInfraHealth() {
                     var e = entries[path] || {};
                     var age = parseFloat(e.age_sec || 0);
                     var shortPath = path.split("/").pop() || path;
-                    cacheHtml += '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span style="color:var(--text-muted)">' +
+                    cacheHtml += '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span class="text-muted">' +
                         shortPath + '</span><span style="font-family:var(--font-mono);color:' +
                         (age < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + age.toFixed(0) + 's ago</span></div>';
                 });
@@ -4810,7 +4810,7 @@ function updateDashboardHeader(trkStats, closed, decision) {
         var el = document.getElementById("cmd-last-trade");
         if (el) {
             var color = lpnl >= 0 ? "var(--green)" : "var(--red)";
-            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span style="color:var(--text-muted)">' + sym + ' ' + side + '</span> <span style="font-size:.65rem;color:var(--text-muted)">' + reason + '</span>';
+            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span class="text-muted">' + sym + ' ' + side + '</span> <span style="font-size:.65rem;color:var(--text-muted)">' + reason + '</span>';
         }
     }
 }
@@ -5033,7 +5033,7 @@ async function dashUpdate() {
       }
     } else {
       var rle3=document.getElementById("cmd-last-real-trade");
-      if(rle3&&real&&real.total_closed>0)rle3.innerHTML='<span style="color:var(--text-muted)">No trades today</span>';
+      if(rle3&&real&&real.total_closed>0)rle3.innerHTML='<span class="text-muted">No trades today</span>';
     }
 
     // 8. Market highlight bar
@@ -5118,7 +5118,7 @@ async function dashUpdate() {
             }
             // Veto breakdown
             for (var vk in vs) {
-                if (vs[vk] > 0) reasons.push('<span style="color:var(--text-muted)">' + vk + ': ' + vs[vk] + '</span>');
+                if (vs[vk] > 0) reasons.push('<span class="text-muted">' + vk + ': ' + vs[vk] + '</span>');
             }
             // Real trade specific
             var cb2 = (real && real.circuit_breaker) || {};
@@ -5128,7 +5128,7 @@ async function dashUpdate() {
                 reasons.push('<span style="color:var(--cyan)">Scanning... ' + f.scanned + ' checked, waiting for setup</span>');
             }
 
-            diag.innerHTML = reasons.join(' <span style="color:var(--border)">|</span> ');
+            diag.innerHTML = reasons.join(' <span class="text-dim">|</span> ');
         }
       }
     } catch(e) {}
@@ -5235,12 +5235,12 @@ async function renderPipelineObs() {
             const status = d.status || 'dormant';
             const countColor = blocked > 0 ? m.color : 'var(--text-muted)';
             const ageText = blocked > 0 ? formatAge(age) : '—';
-            return `<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--text-muted)"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${countColor};margin-right:5px;box-shadow:${blocked>0?'0 0 4px '+m.color:'none'}"></span>${m.label}</span><span><span style="color:${countColor};font-weight:800">${blocked}</span><span style="color:var(--text-muted);font-size:.6rem;margin-left:6px">${ageText}</span></span></div>`;
+            return `<div style="display:flex;justify-content:space-between;align-items:center"><span class="text-muted"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${countColor};margin-right:5px;box-shadow:${blocked>0?'0 0 4px '+m.color:'none'}"></span>${m.label}</span><span><span style="color:${countColor};font-weight:800">${blocked}</span><span style="color:var(--text-muted);font-size:.6rem;margin-left:6px">${ageText}</span></span></div>`;
           }).join('');
           // Summary line
           const sum = fixes._summary || {};
           const totalBlocked = sum.total_blocked || 0;
-          hfEl.innerHTML += `<div style="border-top:1px dotted rgba(255,255,255,.05);margin-top:4px;padding-top:3px;display:flex;justify-content:space-between;font-size:.6rem"><span style="color:var(--text-muted)">total blocked</span><span style="color:${totalBlocked>0?'#818cf8':'var(--text-muted)'};font-weight:700">${totalBlocked}</span></div>`;
+          hfEl.innerHTML += `<div style="border-top:1px dotted rgba(255,255,255,.05);margin-top:4px;padding-top:3px;display:flex;justify-content:space-between;font-size:.6rem"><span class="text-muted">total blocked</span><span style="color:${totalBlocked>0?'#818cf8':'var(--text-muted)'};font-weight:700">${totalBlocked}</span></div>`;
         }
       }
     } catch(_){}
@@ -5257,7 +5257,7 @@ async function renderPipelineObs() {
     const rowsEl = document.getElementById('po-stage-rows');
     if (rowsEl) {
       const r = (label, val, color) =>
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">${label}</span><span style="color:${color||'var(--text-dim)'};font-weight:700">${(val||0).toLocaleString()}</span></div>`;
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">${label}</span><span style="color:${color||'var(--text-dim)'};font-weight:700">${(val||0).toLocaleString()}</span></div>`;
       rowsEl.innerHTML = [
         r('Scanned', f.scanned, 'var(--cyan)'),
         r('Tier Valid', f.tier_valid, 'var(--green)'),
@@ -5311,11 +5311,11 @@ async function renderPipelineObs() {
       }
       const rows = [
         `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;background:${!realEnabled?'rgba(255,59,92,.08)':'transparent'};border-radius:3px"><span style="color:var(--text-muted);font-weight:700">Real Trading</span><span style="display:flex;align-items:center"><span style="color:${modeColor};font-weight:800">${realMode}</span>${probBadge}</span></div>`,
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Circuit Breaker</span><span style="color:${cbColor};font-weight:700">${cbLabel}</span></div>`,
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Consec losses</span><span style="color:var(--text-dim);font-weight:700">${cb.consecutive_losses||0} / 3</span></div>`,
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Daily PnL</span><span style="color:${pnlColor};font-weight:700">$${(cb.daily_pnl||0).toFixed(2)}</span></div>`,
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total PnL</span><span style="color:${totalColor};font-weight:700">$${totalPnl.toFixed(2)}</span></div>`,
-        `<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Daily limit</span><span style="color:var(--text-dim);font-weight:700">$${(cb.daily_loss_limit||15).toFixed(0)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">Circuit Breaker</span><span style="color:${cbColor};font-weight:700">${cbLabel}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">Consec losses</span><span style="color:var(--text-dim);font-weight:700">${cb.consecutive_losses||0} / 3</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">Daily PnL</span><span style="color:${pnlColor};font-weight:700">$${(cb.daily_pnl||0).toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">Total PnL</span><span style="color:${totalColor};font-weight:700">$${totalPnl.toFixed(2)}</span></div>`,
+        `<div style="display:flex;justify-content:space-between"><span class="text-muted">Daily limit</span><span style="color:var(--text-dim);font-weight:700">$${(cb.daily_loss_limit||15).toFixed(0)}</span></div>`,
         '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
       ];
       const keys = Object.keys(agents);
@@ -5351,7 +5351,7 @@ async function renderPipelineObs() {
         const anomalies = sup.anomaly_count || 0;
         const supColor = sup.running ? (anomalies > 0 ? 'var(--yellow)' : 'var(--green)') : 'var(--red)';
         const supText = sup.running ? `✓ ${anomalies} alerts` : '✗ OFF';
-        rows.push(`<div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${supColor};margin-right:6px;box-shadow:0 0 5px ${supColor}"></span>supervisor</span><span style="color:${supColor};font-weight:700">${supText}</span></div>`);
+        rows.push(`<div style="display:flex;justify-content:space-between"><span class="text-muted"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${supColor};margin-right:6px;box-shadow:0 0 5px ${supColor}"></span>supervisor</span><span style="color:${supColor};font-weight:700">${supText}</span></div>`);
       }
       cbEl.innerHTML = rows.join('');
     }
@@ -5461,9 +5461,9 @@ function renderLossTaxonomy(data) {
             <span style="font-size:.72rem;font-weight:700;color:${meta.color}">${meta.label}</span>
           </div>
           <div style="display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:.7rem">
-            <span style="color:var(--text-muted)">count <span style="color:${meta.color};font-weight:700">${count}</span></span>
-            <span style="color:var(--text-muted)">loss <span style="color:var(--red);font-weight:700">−$${lossUsd.toFixed(2)}</span></span>
-            <span style="color:var(--text-muted)">${lossPct.toFixed(2)}%</span>
+            <span class="text-muted">count <span style="color:${meta.color};font-weight:700">${count}</span></span>
+            <span class="text-muted">loss <span style="color:var(--red);font-weight:700">−$${lossUsd.toFixed(2)}</span></span>
+            <span class="text-muted">${lossPct.toFixed(2)}%</span>
             <span style="color:var(--text-dim);font-size:.62rem;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${samples}">${samples}</span>
           </div>
         </div>
@@ -5618,10 +5618,10 @@ function renderStageLossMap(data) {
             ${dropBadge}
           </div>
           <div style="display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.68rem">
-            <span style="color:var(--text-muted)">reached <span style="color:var(--text-dim);font-weight:700">${reached}</span></span>
+            <span class="text-muted">reached <span style="color:var(--text-dim);font-weight:700">${reached}</span></span>
             <span style="color:var(--green)">✓ ${passed}</span>
             <span style="color:var(--red)">✗ ${failed}</span>
-            <span style="color:var(--text-muted)">${s.avg_latency_ms}ms</span>
+            <span class="text-muted">${s.avg_latency_ms}ms</span>
           </div>
         </div>
         <div style="height:6px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">

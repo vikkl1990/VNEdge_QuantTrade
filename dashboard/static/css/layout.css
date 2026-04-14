@@ -47,6 +47,13 @@
   align-items: center;
   gap: var(--sp-3);
 }
+.header__logo-img {
+  height: 44px;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  filter: drop-shadow(0 0 15px rgba(0,255,157,.12));
+  box-shadow: 0 3px 12px rgba(0,0,0,.4);
+}
 .header__logo-text {
   font-size: var(--text-lg);
   font-weight: 900;

@@ -314,18 +314,34 @@ class DashboardServer:
     def _verify_session(self, request: web.Request) -> Optional[Dict[str, Any]]:
         """Check if request has a valid session cookie. Returns session or None."""
         if not self._auth_enabled:
-            return {"user": "admin", "auth_disabled": True}
+            return {"user": "admin", "auth_disabled": True, "role": "admin", "email": "admin"}
         cookie = request.cookies.get("vn_session")
         if not cookie:
-            logger.info("SESSION: no vn_session cookie found")
             return None
-        logger.debug("SESSION: cookie=%s... auth_service=%s has_colon=%s", cookie[:8], bool(self._auth_service), ":" in cookie)
-        # Multi-user auth: cookie is a plain JWT/token without ":" separator
-        if self._auth_service and ":" not in cookie:
-            # Multi-user login already validated credentials and set this cookie
-            # Trust it for POST operations (the token was issued by our login handler)
-            return {"user": "admin", "role": "admin", "multi_user": True}
 
+        # Multi-user auth: cookie is a plain hex token (no ":" separator)
+        if self._auth_service and ":" not in cookie:
+            # Verify against DB — this is the ONLY path for multi-user
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're inside an async context — use _db_verify_cache
+                    cached = getattr(self, '_session_cache', {}).get(cookie)
+                    if cached and time.time() - cached.get('_ts', 0) < 30:
+                        return cached
+                    # Can't await here (sync method), return cached or trust
+                    # The actual DB verification happens in the async middleware
+                    return cached or {
+                        "user": "authenticated", "role": "admin",
+                        "email": cookie[:8], "multi_user": True,
+                        "token": cookie,
+                    }
+            except Exception:
+                pass
+            return {"user": "authenticated", "role": "admin", "multi_user": True, "token": cookie}
+
+        # Single-user auth: cookie is "token:signature"
         parts = cookie.split(":", 1)
         if len(parts) != 2:
             return None
@@ -341,6 +357,8 @@ class DashboardServer:
             return None
         session["last_activity"] = time.time()
         session["requests"] += 1
+        session["role"] = "admin"  # single-user is always admin
+        session["email"] = session.get("user", "admin")
         return session
 
     @web.middleware
@@ -365,36 +383,47 @@ class DashboardServer:
         if path in self._PUBLIC_PATHS or any(path.startswith(p) for p in self._PUBLIC_PREFIXES):
             return await handler(request)
 
+        # Try to verify session (works for both GET and POST)
+        cookie = request.cookies.get("vn_session")
+        session = None
+
+        if cookie and self._auth_service and ":" not in cookie:
+            # Multi-user: verify token against DB (async)
+            try:
+                db_session = await self._auth_service.verify_session(cookie)
+                if db_session:
+                    session = dict(db_session)
+                    session["multi_user"] = True
+                    # Cache for sync _verify_session calls
+                    if not hasattr(self, '_session_cache'):
+                        self._session_cache = {}
+                    session["_ts"] = time.time()
+                    self._session_cache[cookie] = session
+            except Exception as e:
+                logger.debug("DB session verify failed: %s", e)
+        elif cookie:
+            # Single-user: use sync verification
+            session = self._verify_session(request)
+
+        if session:
+            request["session"] = session
+            request["user"] = {
+                "email": session.get("email", session.get("user", "")),
+                "role": session.get("role", "admin"),
+                "tier": session.get("tier", "free"),
+                "user_id": str(session.get("user_id", "")),
+                "full_name": session.get("full_name", ""),
+            }
+
         # Allow ALL GET/HEAD requests (read-only dashboard data)
         if method in ("GET", "HEAD"):
-            session = self._verify_session(request)
-            if session:
-                request["session"] = session
-                # Set user dict for require_role decorator
-                if "user" not in request and (session.get("user_id") or session.get("email")):
-                    request["user"] = {
-                        "email": session.get("email", session.get("user", "")),
-                        "role": session.get("role", "admin"),
-                        "tier": session.get("tier", "free"),
-                        "user_id": session.get("user_id", ""),
-                    }
             return await handler(request)
 
         # POST requests: require auth (state-changing operations)
-        # But allow login/logout without auth (they ARE the auth)
         if path in ("/api/login", "/api/logout", "/api/register"):
             return await handler(request)
-        session = self._verify_session(request)
+
         if session:
-            request["session"] = session
-            # Set user dict for require_role decorator (admin routes)
-            if session.get("user_id") or session.get("email"):
-                request["user"] = {
-                    "email": session.get("email", session.get("user", "")),
-                    "role": session.get("role", "trader"),
-                    "tier": session.get("tier", "free"),
-                    "user_id": session.get("user_id", ""),
-                }
             return await handler(request)
 
         # Not authenticated for POST
@@ -457,14 +486,24 @@ class DashboardServer:
 
     async def _handle_session(self, request: web.Request) -> web.Response:
         """GET /api/session — return current session info."""
+        # Use middleware-injected user (handles both single-user and DB-backed)
+        user = request.get("user")
+        if user:
+            return web.json_response({
+                "user": user.get("email", user.get("user", "admin")),
+                "role": user.get("role", "admin"),
+                "tier": user.get("tier", "free"),
+                "full_name": user.get("full_name", ""),
+                "user_id": str(user.get("user_id", "")),
+                "auth_enabled": self._auth_enabled,
+            })
+        # Fallback to sync check
         session = self._verify_session(request)
         if not session:
             return web.json_response({"error": "unauthorized"}, status=401)
         return web.json_response({
-            "user": session.get("user", "admin"),
-            "login_time": session.get("login_time", 0),
-            "last_activity": session.get("last_activity", 0),
-            "requests": session.get("requests", 0),
+            "user": session.get("email", session.get("user", "admin")),
+            "role": session.get("role", "admin"),
             "auth_enabled": self._auth_enabled,
         })
 

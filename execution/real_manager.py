@@ -2819,10 +2819,302 @@ class RealTradingManager:
 
 
     # ══════════════════════════════════════════════════════════════
-    # PARALLEL EXIT SYSTEM — real trades manage their own exits
-    # Uses real fill prices, not paper signal prices
+    # INDEPENDENT REAL TRADE EXECUTION (Parallel Architecture)
+    # Real gets its own fill price, SL, trail, and exit logic.
+    # Paper and real share the signal but run separate risk mgmt.
     # ══════════════════════════════════════════════════════════════
 
+    async def execute_independent_real_trade(self, signal: dict, paper_trade_id: str = None):
+        """Execute a real trade independently from paper.
+
+        This is the NEW entry point called by orchestrator via fire-and-forget.
+        It handles qualification, sizing, execution, and starts independent
+        monitoring — all in one async call that doesn't block paper.
+
+        Returns the real trade dict or None if skipped/failed.
+        """
+        symbol = signal.get("symbol", "")
+
+        # 1. Qualify (fast — all checks are in-memory)
+        qualified, reason = self._smart_qualify(signal)
+        if not qualified:
+            return None
+
+        # 2. Size
+        try:
+            margin, leverage, lots = self._smart_size(signal)
+        except Exception as e:
+            logger.error("REAL INDEPENDENT: sizing failed for %s: %s", symbol, e)
+            return None
+        if lots <= 0 or margin <= 0:
+            return None
+
+        # 3. Execute (IOC limit or market)
+        meta = signal.get("metadata", {}) or {}
+        sl = signal.get("stop_loss", 0)
+        entry_price = signal.get("entry_price", 0)
+        side_str = _normalize_side(signal.get("side", "long"))
+        order_side = "buy" if side_str == "long" else "sell"
+
+        # Apply SL buffer for execution latency
+        if sl > 0 and entry_price > 0 and not self.dry_run:
+            buffer = entry_price * 0.0015
+            if side_str == "long":
+                sl = sl - buffer
+            else:
+                sl = sl + buffer
+
+        # TP override
+        _paper_initial_risk = abs(entry_price - signal.get("stop_loss", 0)) if entry_price > 0 else 0
+        tps = signal.get("take_profits", [])
+        tp = float(tps[0]) if tps and isinstance(tps[0], (int, float)) else 0
+        _real_tp1_r = float(getattr(self, "_real_tp1_r", 0.0) or 0.0)
+        if _real_tp1_r > 0 and entry_price > 0 and _paper_initial_risk > 0:
+            if side_str == "long":
+                tp = entry_price + _real_tp1_r * _paper_initial_risk
+            else:
+                tp = entry_price - _real_tp1_r * _paper_initial_risk
+
+        coid = paper_trade_id[:32] if paper_trade_id else None
+        order, fill_price = self._execute_real_entry(
+            symbol=symbol, side=order_side, lots=lots, entry_price=entry_price,
+            leverage=leverage, sl=sl, tp=tp, coid=coid,
+            grade=signal.get("grade", ""), confidence=int(signal.get("confidence", 0)),
+            signal=signal,
+        )
+
+        # Check limit_no_fill
+        if order.get("status") == "limit_no_fill":
+            logger.info("REAL INDEPENDENT: %s IOC not filled — skipped", symbol)
+            return None
+
+        if order.get("error"):
+            logger.error("REAL INDEPENDENT: %s entry failed: %s", symbol, order["error"])
+            return None
+
+        if fill_price <= 0:
+            return None
+
+        # 4. Recalculate SL from REAL fill price
+        if fill_price != entry_price and fill_price > 0:
+            _sl_shift = fill_price - entry_price
+            sl = sl + _sl_shift
+            logger.info("REAL INDEPENDENT SL RECALC: %s fill=%.4f signal=%.4f → SL shifted to %.4f",
+                       symbol, fill_price, entry_price, sl)
+
+        # 5. Start independent monitoring
+        trade_id = order.get("trade_id", f"real_{int(time.time())}")
+        real_trade = self.real_trades.get(trade_id)
+        if real_trade:
+            logger.info(
+                "REAL INDEPENDENT ACTIVE: %s %s | fill=%.4f sl=%.4f | margin=$%.2f lots=%d | monitoring started",
+                symbol, side_str, fill_price, sl, margin, lots,
+            )
+            # Start async monitoring loop
+            import asyncio
+            asyncio.create_task(
+                self._monitor_real_trade_independently(trade_id)
+            )
+
+        return order
+
+    async def _monitor_real_trade_independently(self, trade_id: str):
+        """Independent real trade exit monitoring.
+
+        Runs as a background async task. Checks real trade every 500ms for:
+        - SL hit (from real fill price, not paper)
+        - Trail tightening (MFE-based lock from real MFE)
+        - Time decay (SCALP 30m, INTRADAY 60m)
+        - Early kill (MFE < 0.05R after 60s)
+
+        Paper close events are a SAFETY NET only — if paper closes and
+        real is still open after 30s, force-close real to prevent orphan.
+        """
+        import asyncio
+
+        try:
+            while True:
+                trade = self.real_trades.get(trade_id)
+                if not trade:
+                    break  # trade was closed elsewhere
+
+                symbol = getattr(trade, "symbol", "")
+                side = _normalize_side(getattr(trade, "side", "long"))
+                entry = float(getattr(trade, "entry_price", 0) or 0)
+                sl = float(getattr(trade, "stop_loss", 0) or 0)
+                _risk = float(getattr(trade, "paper_initial_risk", 0) or getattr(trade, "initial_risk", 0) or 0)
+                if _risk <= 0:
+                    _risk = abs(entry - sl) if entry > 0 and sl > 0 else entry * 0.01
+
+                # Get current price from WS cache or REST
+                price = 0
+                try:
+                    orch = getattr(self, '_orchestrator_ref', None)
+                    if orch:
+                        prices = getattr(orch, '_ws_prices', {}) or {}
+                        price = prices.get(symbol, 0)
+                    if price <= 0:
+                        delta = self._delta_demo if self.dry_run else self._delta_live
+                        ticker = delta.get_ticker(symbol) if delta else {}
+                        price = float(ticker.get("last", 0) or 0)
+                except Exception:
+                    pass
+
+                if price <= 0:
+                    await asyncio.sleep(1)
+                    continue
+
+                # Calculate current R from real fill
+                if side == "long":
+                    current_r = (price - entry) / _risk if _risk > 0 else 0
+                else:
+                    current_r = (entry - price) / _risk if _risk > 0 else 0
+
+                # Update MFE
+                peak_mfe = float(getattr(trade, "peak_mfe_r", 0) or 0)
+                if current_r > peak_mfe:
+                    trade.peak_mfe_r = current_r
+                    peak_mfe = current_r
+
+                # Update highest/lowest
+                hp = float(getattr(trade, "highest_price", entry) or entry)
+                lp = float(getattr(trade, "lowest_price", entry) or entry)
+                if price > hp:
+                    trade.highest_price = price
+                if price < lp:
+                    trade.lowest_price = price
+
+                # Trade age
+                opened = float(getattr(trade, "opened_at", 0) or 0)
+                age_sec = time.time() - opened if opened > 0 else 0
+
+                # ── EXIT CHECKS (independent from paper) ──
+
+                # 1. SL hit
+                sl_hit = False
+                if side == "long" and price <= sl and sl > 0:
+                    sl_hit = True
+                elif side != "long" and price >= sl and sl > 0:
+                    sl_hit = True
+                if sl_hit:
+                    await self._close_real_independent(trade, price, "sl_hit_independent")
+                    break
+
+                # 2. Early kill (never went in favor after 60s)
+                if age_sec > 60 and peak_mfe < 0.05 and current_r < 0:
+                    await self._close_real_independent(trade, price, "early_kill_independent")
+                    break
+
+                # 3. Time decay (SCALP 30m, INTRADAY 60m)
+                trade_type = getattr(trade, "trade_type", "SCALP")
+                max_age = 1800 if trade_type == "SCALP" else 3600  # 30m / 60m
+                if age_sec > max_age:
+                    await self._close_real_independent(trade, price, f"time_decay_{trade_type}_{int(age_sec/60)}m")
+                    break
+
+                # 4. Trail tightening (MFE-based, from real fill)
+                if peak_mfe >= 0.20 and age_sec > 15:
+                    # Breakeven
+                    fee_buffer = entry * 0.004
+                    if side == "long":
+                        be_sl = entry + fee_buffer
+                        if be_sl > sl:
+                            trade.stop_loss = be_sl
+                            sl = be_sl
+                    else:
+                        be_sl = entry - fee_buffer
+                        if be_sl < sl:
+                            trade.stop_loss = be_sl
+                            sl = be_sl
+
+                    # Lock tiers (same as paper)
+                    lock_pct = 0
+                    if peak_mfe >= 1.0:
+                        lock_pct = 0.55
+                    elif peak_mfe >= 0.7:
+                        lock_pct = 0.50
+                    elif peak_mfe >= 0.5:
+                        lock_pct = 0.45
+                    elif peak_mfe >= 0.4:
+                        lock_pct = 0.40
+                    elif peak_mfe >= 0.3:
+                        lock_pct = 0.75
+                    elif peak_mfe >= 0.2:
+                        lock_pct = 0.60
+
+                    if lock_pct > 0:
+                        lock_r = peak_mfe * lock_pct
+                        lock_dist = _risk * lock_r
+                        if side == "long":
+                            new_sl = entry + lock_dist
+                            if new_sl > sl:
+                                trade.stop_loss = new_sl
+                                sl = new_sl
+                        else:
+                            new_sl = entry - lock_dist
+                            if new_sl < sl:
+                                trade.stop_loss = new_sl
+                                sl = new_sl
+
+                await asyncio.sleep(0.5)  # 500ms check interval
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("REAL INDEPENDENT MONITOR error for %s: %s", trade_id, e)
+
+    async def _close_real_independent(self, trade, exit_price: float, reason: str):
+        """Close a real trade from independent monitoring."""
+        try:
+            symbol = getattr(trade, "symbol", "")
+            side = _normalize_side(getattr(trade, "side", "long"))
+            lots = int(getattr(trade, "position_size", 0))
+            trade_id = getattr(trade, "trade_id", "")
+
+            delta = self._delta_demo if self.dry_run else self._delta_live
+            if _safe_connect(delta):
+                close_side = "sell" if side == "long" else "buy"
+                try:
+                    delta._client.create_order({
+                        "product_id": delta._get_product_id(symbol),
+                        "size": lots,
+                        "side": close_side,
+                        "order_type": "market_order",
+                        "reduce_only": "true",
+                    })
+                except Exception as e:
+                    logger.error("REAL INDEPENDENT CLOSE failed: %s %s — %s", symbol, reason, e)
+
+            # Record
+            entry = float(getattr(trade, "entry_price", 0) or 0)
+            margin = float(getattr(trade, "margin", 0) or 0)
+            leverage = float(getattr(trade, "leverage", 1) or 1)
+            if side == "long":
+                pnl_pct = (exit_price - entry) / entry if entry > 0 else 0
+            else:
+                pnl_pct = (entry - exit_price) / entry if entry > 0 else 0
+            pnl_usd = pnl_pct * margin * leverage
+
+            logger.warning(
+                "REAL INDEPENDENT EXIT: %s %s | entry=%.4f exit=%.4f | pnl=$%.2f | %s | peak_mfe=%.2fR",
+                symbol, side, entry, exit_price, pnl_usd, reason,
+                float(getattr(trade, "peak_mfe_r", 0) or 0),
+            )
+
+            self._record_closed_trade(trade, exit_price, pnl_usd, reason, dry_run=self.dry_run)
+            self.real_trades.pop(trade_id, None)
+            paper_id = getattr(trade, "paper_trade_id", "")
+            self.paper_to_real.pop(paper_id, None)
+            self.circuit_breaker.record_trade(pnl_usd)
+            self._save_state()
+            self._cancel_symbol_orders(symbol)
+
+        except Exception as e:
+            logger.error("REAL INDEPENDENT CLOSE error: %s", e)
+
+    # ══════════════════════════════════════════════════════════════
+    # LEGACY PARALLEL EXIT SYSTEM (kept for backward compatibility)
+    # ══════════════════════════════════════════════════════════════
 
     async def partial_close_real(self, paper_trade_id: str, tp_level: int, close_pct: float):
         """Partial close real position when paper hits TP1/TP2.

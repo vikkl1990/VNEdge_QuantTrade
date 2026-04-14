@@ -100,6 +100,8 @@ class BotOrchestrator:
             risk_manager.load_state()
         self._execution = execution_engine
         self._real_manager = real_manager
+        if real_manager:
+            real_manager._orchestrator_ref = self  # for live price access in independent monitor
         self._alerts = alert_manager
         self._journal = journal
         self._dashboard = dashboard
@@ -1285,18 +1287,22 @@ class BotOrchestrator:
             pass
 
     async def _safe_mirror_trade(self, symbol, sig_dict, paper_trade_id):
-        """Mirror trade to real exchange — runs as independent background task.
+        """Execute real trade INDEPENDENTLY — runs as background task.
 
         Real trade uses its OWN fill price and calculates its OWN risk from
-        the actual exchange fill, not paper's theoretical price. Paper is
+        the actual exchange fill, not paper's theoretical price. Real starts
+        its own async monitoring loop for SL/trail/exit. Paper is completely
         unaffected by real's success or failure.
         """
         try:
-            await self._real_manager.mirror_paper_trade(
-                symbol, sig_dict, paper_trade_id,
+            # NEW: independent architecture — real has its own fill, SL, trail, exits
+            result = await self._real_manager.execute_independent_real_trade(
+                signal=sig_dict, paper_trade_id=paper_trade_id,
             )
+            if result:
+                self._log.info("Real independent trade started: %s", symbol)
         except Exception as exc:
-            self._log.error("Real trade mirror failed (background): %s", exc)
+            self._log.error("Real trade independent failed (background): %s", exc)
 
     async def _on_candle_close(self, *, symbol: str, timeframe: str, candle: dict) -> None:
         """Callback invoked by the DataFeed when a candle closes.

@@ -508,6 +508,10 @@ class DashboardServer:
 
     async def stop(self) -> None:
         """Gracefully shut down the web server."""
+        # Close ML proxy session
+        if self._ml_proxy_session and not self._ml_proxy_session.closed:
+            await self._ml_proxy_session.close()
+            self._ml_proxy_session = None
         if self._site is not None:
             await self._site.stop()
         if self._runner is not None:

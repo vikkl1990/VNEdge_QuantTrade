@@ -513,6 +513,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
   <button class="tab-btn" data-tab="agents" onclick="switchTab('agents')">Agents</button>
   <button class="tab-btn" data-tab="profile" onclick="switchTab('profile')">Profile</button>
+  <button class="tab-btn" data-tab="brain" onclick="switchTab('brain')" style="border:1px solid #bf00ff">Brain</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
@@ -2422,6 +2423,92 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB: BRAIN                                            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" id="tab-brain">
+
+  <!-- Row 1: Brain Status + Session -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
+
+    <!-- Brain Status -->
+    <div class="card">
+      <div class="card-title">Brain Status</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+        <div class="stat-mini"><span class="stat-label">Mode</span><span class="stat-value" id="brain-mode" style="color:#bf00ff">--</span></div>
+        <div class="stat-mini"><span class="stat-label">Observations</span><span class="stat-value" id="brain-observations">0</span></div>
+        <div class="stat-mini"><span class="stat-label">Matrix Cells</span><span class="stat-value" id="brain-cells">0</span></div>
+        <div class="stat-mini"><span class="stat-label">Directives</span><span class="stat-value" id="brain-directives">0</span></div>
+      </div>
+      <div id="brain-active-directives" style="font-size:12px;color:#aaa;max-height:120px;overflow-y:auto"></div>
+    </div>
+
+    <!-- Today's Session -->
+    <div class="card">
+      <div class="card-title">Today's Session</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+        <div class="stat-mini"><span class="stat-label">Trades</span><span class="stat-value" id="brain-today-trades">0</span></div>
+        <div class="stat-mini"><span class="stat-label">Win Rate</span><span class="stat-value" id="brain-today-wr">--</span></div>
+        <div class="stat-mini"><span class="stat-label">PnL</span><span class="stat-value" id="brain-today-pnl">$0</span></div>
+        <div class="stat-mini"><span class="stat-label">Warm</span><span class="stat-value" id="brain-warm">--</span></div>
+      </div>
+      <div id="brain-weekly-summary" style="font-size:12px;color:#aaa"></div>
+    </div>
+
+  </div>
+
+  <!-- Row 2: Setup x Regime Matrix (heatmap) -->
+  <div class="card" style="margin-bottom:var(--gap)">
+    <div class="card-title">Setup x Regime Performance Matrix</div>
+    <div id="brain-matrix-container" style="overflow-x:auto">
+      <table id="brain-matrix-table" style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid #333">Setup</th></tr></thead>
+        <tbody id="brain-matrix-body"></tbody>
+      </table>
+      <div id="brain-matrix-empty" style="text-align:center;color:#666;padding:30px">Collecting data... Matrix will populate as trades close.</div>
+    </div>
+  </div>
+
+  <!-- Row 3: Hourly Heatmap + Optimizer -->
+  <div style="display:grid;grid-template-columns:2fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
+
+    <!-- Hourly Performance Heatmap -->
+    <div class="card">
+      <div class="card-title">Hourly Performance (UTC)</div>
+      <div id="brain-hourly-grid" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:10px;color:#666">
+        <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00</span>
+      </div>
+    </div>
+
+    <!-- Optimizer State -->
+    <div class="card">
+      <div class="card-title">Adaptive Optimizer</div>
+      <div id="brain-optimizer-state" style="font-size:12px;color:#aaa">
+        <div style="text-align:center;color:#666;padding:20px">Optimizer inactive — collecting baseline data</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Row 4: Regime History -->
+  <div class="card" style="margin-bottom:var(--gap)">
+    <div class="card-title">Regime History & Predictions</div>
+    <div id="brain-regime-container" style="max-height:300px;overflow-y:auto">
+      <div style="text-align:center;color:#666;padding:20px">Regime data will appear as the bot detects market regime changes.</div>
+    </div>
+  </div>
+
+  <!-- Row 5: Daily Sessions -->
+  <div class="card">
+    <div class="card-title">Daily Session History</div>
+    <div id="brain-sessions-container" style="max-height:300px;overflow-y:auto">
+      <div style="text-align:center;color:#666;padding:20px">Session summaries appear after daily rollover (00:00 UTC).</div>
+    </div>
+  </div>
+
+</div>
+
 <!-- ═══ STATUS FOOTER (compact, kept for JS) ═════════════ -->
 <footer class="dash-footer">
   <span id="last-restart">Last Restart: --</span>
@@ -2793,7 +2880,7 @@ function refreshProfile() {
 
 // ── GLOBALS ──────────────────────────────────────────────
 let activeTab = "live";
-let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null, agentsTimer = null;
+let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null, agentsTimer = null, brainTimer = null;
 let laSelectedSymbol = "BTC/USDT";
 let equityChart = null;
 let cachedPrices = {};
@@ -2948,12 +3035,13 @@ function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
-    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer);
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer);
     if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
     if (tab === "latency") { refreshLatencyArb(); latencyTimer = setInterval(refreshLatencyArb, 1000); }
     if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
     if (tab === "system") { refreshSystem(); systemTimer = setInterval(refreshSystem, 5000); }
     if (tab === "agents") { refreshAgents(); agentsTimer = setInterval(refreshAgents, 15000); }
+    if (tab === "brain") { refreshBrainTab(); brainTimer = setInterval(refreshBrainTab, 10000); }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -4866,6 +4954,7 @@ async function refreshSystem() {
     try { updateBotEngine(status); } catch(e) { console.error("updateBotEngine:", e); }
     try { updateConfigSnapshot(status); } catch(e) { console.error("updateConfigSnapshot:", e); }
     try { await refreshGridBot(); } catch(e) {}
+    try { await refreshBrainTab(); } catch(e) { console.error("brainTab:", e); }
     try { await refreshInfraHealth(); } catch(e) { console.error("infraHealth:", e); }
 }
 
@@ -6771,6 +6860,176 @@ async function refreshGridBot() {
             ladders.innerHTML = html || '<div class="empty">No grid symbols</div>';
         }
     } catch (e) {}
+}
+
+// ── BRAIN TAB ────────────────────────────────────────────
+async function refreshBrainTab() {
+    // Only fetch if Brain tab is active (avoid unnecessary API calls)
+    var brainTab = document.getElementById("tab-brain");
+    if (!brainTab || brainTab.style.display === "none") return;
+
+    try {
+        // Fetch all brain endpoints in parallel
+        var [stateRes, matrixRes, hourlyRes, regimeRes, sessionsRes] = await Promise.all([
+            fetch("/api/brain/state").then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/brain/matrix").then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/brain/hourly-heatmap").then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/brain/regime-history").then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+            fetch("/api/brain/sessions").then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
+        ]);
+
+        // 1. Brain Status
+        if (stateRes) {
+            var modeEl = document.getElementById("brain-mode");
+            if (modeEl) modeEl.textContent = stateRes.dry_run ? "DRY RUN" : "LIVE";
+            if (modeEl) modeEl.style.color = stateRes.dry_run ? "#bf00ff" : "#00ff88";
+            var obsEl = document.getElementById("brain-observations");
+            if (obsEl) obsEl.textContent = (stateRes.total_observations || 0).toLocaleString();
+            var cellsEl = document.getElementById("brain-cells");
+            if (cellsEl) cellsEl.textContent = (stateRes.matrix_cells || 0).toLocaleString();
+            var dirEl = document.getElementById("brain-directives");
+            if (dirEl) dirEl.textContent = stateRes.directives_issued || 0;
+
+            // Active directives
+            var adDiv = document.getElementById("brain-active-directives");
+            if (adDiv && stateRes.active_directives) {
+                var ad = stateRes.active_directives;
+                var lines = [];
+                if (ad.trading_paused) lines.push('<span style="color:#ff4444">PAUSED: ' + ad.pause_reason + '</span>');
+                if (ad.suppressed_scanners && ad.suppressed_scanners.length > 0) lines.push('Suppressed scanners: <span style="color:#ff8800">' + ad.suppressed_scanners.join(", ") + '</span>');
+                if (ad.suppressed_hours && ad.suppressed_hours.length > 0) lines.push('Suppressed hours: <span style="color:#ff8800">' + ad.suppressed_hours.join(", ") + 'h UTC</span>');
+                if (Object.keys(ad.side_penalties || {}).length > 0) lines.push('Side penalties: ' + JSON.stringify(ad.side_penalties));
+                if (stateRes.bad_hours && stateRes.bad_hours.length > 0) lines.push('Bad hours detected: <span style="color:#ff6666">' + stateRes.bad_hours.join(", ") + 'h</span>');
+                if (stateRes.best_hours && stateRes.best_hours.length > 0) lines.push('Best hours: <span style="color:#00ff88">' + stateRes.best_hours.join(", ") + 'h</span>');
+                adDiv.innerHTML = lines.length > 0 ? lines.join("<br>") : '<span style="color:#666">No active directives (dry_run mode)</span>';
+            }
+
+            // Today's session
+            if (stateRes.session) {
+                var s = stateRes.session;
+                var tEl = document.getElementById("brain-today-trades"); if(tEl) tEl.textContent = s.trades || 0;
+                var wrEl = document.getElementById("brain-today-wr"); if(wrEl) { wrEl.textContent = s.wr ? s.wr + "%" : "--"; wrEl.style.color = (s.wr||0)>=55?"#00ff88":"#ff4444"; }
+                var pnlEl = document.getElementById("brain-today-pnl"); if(pnlEl) { pnlEl.textContent = "$" + (s.pnl_usd||0).toFixed(2); pnlEl.style.color = (s.pnl_usd||0)>=0?"#00ff88":"#ff4444"; }
+                var warmEl = document.getElementById("brain-warm"); if(warmEl) { warmEl.textContent = s.is_warm ? "YES" : "COLD"; warmEl.style.color = s.is_warm?"#00ff88":"#ff8800"; }
+            }
+
+            // Weekly summary
+            if (stateRes.weekly) {
+                var w = stateRes.weekly;
+                var wDiv = document.getElementById("brain-weekly-summary");
+                if (wDiv && w.days > 0) {
+                    wDiv.innerHTML = 'Week: ' + w.days + 'd | ' + w.total_trades + ' trades | WR ' + (w.wr||0) + '% | PnL <span style="color:' + ((w.total_pnl||0)>=0?"#00ff88":"#ff4444") + '">$' + (w.total_pnl||0).toFixed(2) + '</span>';
+                }
+            }
+
+            // Optimizer
+            if (stateRes.optimizer) {
+                var opt = stateRes.optimizer;
+                var optDiv = document.getElementById("brain-optimizer-state");
+                if (optDiv) {
+                    if (!opt.enabled) {
+                        optDiv.innerHTML = '<div style="text-align:center;color:#666;padding:10px">Disabled (Phase 7)</div>';
+                    } else {
+                        var phtml = '';
+                        for (var pn in (opt.params||{})) {
+                            var p = opt.params[pn];
+                            phtml += '<div style="margin-bottom:6px"><strong>' + pn + '</strong>: ' + p.current + ' <span style="color:#666">(default: ' + p.default + ', range: ' + p.min + '-' + p.max + ')</span><br>Trades at current: ' + p.trades_at_current + ' | Adjustments: ' + p.total_adjustments + '</div>';
+                        }
+                        optDiv.innerHTML = phtml || 'No params active';
+                    }
+                }
+            }
+        }
+
+        // 2. Setup x Regime Matrix
+        if (matrixRes && Object.keys(matrixRes).length > 0) {
+            document.getElementById("brain-matrix-empty").style.display = "none";
+            var regimes = new Set(); var setups = new Set();
+            for (var k in matrixRes) { var parts = k.split(":"); setups.add(parts[0]); regimes.add(parts[1]); }
+            var regArr = Array.from(regimes).sort();
+            var setArr = Array.from(setups).sort();
+            var hdr = '<tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #333;color:#aaa">Setup</th>';
+            regArr.forEach(function(r){ hdr += '<th style="padding:4px 8px;border-bottom:1px solid #333;color:#aaa;font-size:11px">' + r.replace("_"," ") + '</th>'; });
+            hdr += '</tr>';
+            document.querySelector("#brain-matrix-table thead").innerHTML = hdr;
+            var bdy = '';
+            setArr.forEach(function(setup){
+                bdy += '<tr><td style="padding:4px 8px;border-bottom:1px solid #222;font-weight:bold;color:#00d4ff">' + setup.replace("_"," ") + '</td>';
+                regArr.forEach(function(regime){
+                    var cell = matrixRes[setup + ":" + regime];
+                    if (cell && cell.sample_count > 0) {
+                        var wr = cell.win_rate;
+                        var bg = wr >= 60 ? "rgba(0,255,136,0.15)" : wr >= 45 ? "rgba(255,200,0,0.12)" : "rgba(255,68,68,0.15)";
+                        var clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
+                        bdy += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;background:' + bg + ';color:' + clr + ';font-size:12px">' + wr.toFixed(0) + '% <span style="color:#666;font-size:10px">(' + cell.sample_count + ')</span></td>';
+                    } else {
+                        bdy += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;color:#333">-</td>';
+                    }
+                });
+                bdy += '</tr>';
+            });
+            document.getElementById("brain-matrix-body").innerHTML = bdy;
+        }
+
+        // 3. Hourly Heatmap
+        if (hourlyRes) {
+            var grid = document.getElementById("brain-hourly-grid");
+            if (grid) {
+                var hhtml = '';
+                for (var h = 0; h < 24; h++) {
+                    var hc = hourlyRes[h] || hourlyRes[String(h)];
+                    if (hc && hc.sample_count > 0) {
+                        var wr = hc.win_rate;
+                        var bg = wr >= 60 ? "rgba(0,255,136,0.25)" : wr >= 45 ? "rgba(255,200,0,0.2)" : "rgba(255,68,68,0.25)";
+                        var clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
+                        hhtml += '<div style="background:' + bg + ';border:1px solid #333;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#888">' + h + 'h</div><div style="color:' + clr + ';font-weight:bold">' + wr.toFixed(0) + '%</div><div style="color:#555">' + hc.sample_count + '</div></div>';
+                    } else {
+                        hhtml += '<div style="background:#111;border:1px solid #222;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#555">' + h + 'h</div><div style="color:#333">-</div></div>';
+                    }
+                }
+                grid.innerHTML = hhtml;
+            }
+        }
+
+        // 4. Regime History
+        if (regimeRes && regimeRes.symbols) {
+            var rDiv = document.getElementById("brain-regime-container");
+            if (rDiv) {
+                var rhtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Symbol</th><th style="padding:4px 8px;color:#aaa">Current</th><th style="padding:4px 8px;color:#aaa">Confidence</th><th style="padding:4px 8px;color:#aaa">Predicted Next</th><th style="padding:4px 8px;color:#aaa">Probability</th></tr></thead><tbody>';
+                for (var sym in regimeRes.symbols) {
+                    var si = regimeRes.symbols[sym];
+                    var pred = (regimeRes.predictions||{})[sym] || {};
+                    var regColor = {"trending_up":"#00ff88","trending_down":"#ff4444","breakout":"#00d4ff","ranging":"#ffcc00","sideways":"#ffcc00","volatile":"#ff8800","mean_reversion":"#bf00ff","quiet":"#666"}[si.current] || "#aaa";
+                    rhtml += '<tr><td style="padding:4px 8px;border-bottom:1px solid #222;font-weight:bold">' + sym + '</td>';
+                    rhtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;color:' + regColor + '">' + (si.current||"--").replace("_"," ") + '</td>';
+                    rhtml += '<td style="padding:4px 8px;border-bottom:1px solid #222">' + (si.current_confidence ? (si.current_confidence*100).toFixed(0)+"%" : "--") + '</td>';
+                    rhtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;color:#888">' + (pred.predicted||"--").replace("_"," ") + '</td>';
+                    rhtml += '<td style="padding:4px 8px;border-bottom:1px solid #222">' + (pred.probability ? (pred.probability*100).toFixed(0)+"%" : "--") + '</td></tr>';
+                }
+                rhtml += '</tbody></table>';
+                rDiv.innerHTML = rhtml;
+            }
+        }
+
+        // 5. Daily Sessions
+        if (sessionsRes && sessionsRes.daily_summaries && sessionsRes.daily_summaries.length > 0) {
+            var sDiv = document.getElementById("brain-sessions-container");
+            if (sDiv) {
+                var shtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Date</th><th style="padding:4px 8px;color:#aaa">Trades</th><th style="padding:4px 8px;color:#aaa">WR%</th><th style="padding:4px 8px;color:#aaa">PnL</th><th style="padding:4px 8px;color:#aaa">Best Scanner</th><th style="padding:4px 8px;color:#aaa">Regime</th></tr></thead><tbody>';
+                sessionsRes.daily_summaries.forEach(function(ds){
+                    var pclr = (ds.pnl||0) >= 0 ? "#00ff88" : "#ff4444";
+                    shtml += '<tr><td style="padding:4px 8px;border-bottom:1px solid #222">' + ds.date + '</td>';
+                    shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center">' + ds.trades + '</td>';
+                    shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;color:' + ((ds.wr||0)>=55?"#00ff88":"#ff4444") + '">' + (ds.wr||0) + '%</td>';
+                    shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;color:' + pclr + '">$' + (ds.pnl||0).toFixed(2) + '</td>';
+                    shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222">' + (ds.best_scanner||"-").replace("_"," ") + '</td>';
+                    shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222">' + (ds.dominant_regime||"-").replace("_"," ") + '</td></tr>';
+                });
+                shtml += '</tbody></table>';
+                sDiv.innerHTML = shtml;
+            }
+        }
+    } catch(e) { console.error("refreshBrainTab:", e); }
 }
 
 // ── INFRA HEALTH: Proxy CB + Cron Sync + OB Cache ────────

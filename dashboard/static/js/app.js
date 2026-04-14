@@ -6446,21 +6446,28 @@ async function checkAdminAccess() {
         const r = await fetch("/api/session", {credentials:"same-origin"});
         if (r.ok) {
             const d = await r.json();
-            if (d.role === "admin") {
+            console.log("SESSION DATA:", d);
+            // Check both flat and nested role field
+            var role = d.role || (d.user && d.user.role) || "";
+            if (role === "admin") {
                 var btn = document.getElementById("admin-tab-btn");
-                if (btn) btn.style.display = "";
+                if (btn) {
+                    btn.style.display = "inline-block";
+                    console.log("ADMIN TAB: visible");
+                }
             }
         }
-    } catch(e) {}
+    } catch(e) { console.error("checkAdminAccess:", e); }
 }
-// Check on session verify
-setTimeout(checkAdminAccess, 2000);
+// Check on session verify — run immediately + delayed
+checkAdminAccess();
+setTimeout(checkAdminAccess, 3000);
 
 var adminTimer = null;
 
 async function refreshAdmin() {
     var tab = document.getElementById("tab-admin");
-    if (!tab || tab.style.display === "none") return;
+    if (!tab || !tab.classList.contains("active")) return;
 
     try {
         var [users, sessions, audit] = await Promise.all([
@@ -6469,7 +6476,8 @@ async function refreshAdmin() {
             fetch("/api/admin/audit?limit=50", {credentials:"same-origin"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null}),
         ]);
 
-        // Users table
+        // Users table — API returns {users: [...]} or direct array
+        if (users && users.users) users = users.users;
         if (users && Array.isArray(users)) {
             var countEl = document.getElementById("admin-user-count");
             if (countEl) countEl.textContent = users.length + " users";
@@ -6497,7 +6505,8 @@ async function refreshAdmin() {
             }
         }
 
-        // Sessions table
+        // Sessions table — API returns {sessions: [...]}
+        if (sessions && sessions.sessions) sessions = sessions.sessions;
         if (sessions && Array.isArray(sessions)) {
             var sessStatEl = document.getElementById("admin-stat-sessions");
             if (sessStatEl) sessStatEl.textContent = sessions.length;
@@ -6520,7 +6529,8 @@ async function refreshAdmin() {
             }
         }
 
-        // Audit log
+        // Audit log — API returns {entries: [...]}
+        if (audit && audit.entries) audit = audit.entries;
         if (audit && Array.isArray(audit)) {
             var auditBody = document.getElementById("admin-audit-body");
             if (auditBody) {

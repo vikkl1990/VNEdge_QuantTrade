@@ -588,6 +588,8 @@ class MomentumTrendStrategy(BaseStrategy):
             reason=reason,
             regime=regime.regime,
             metadata={
+                "setup_type": "momentum_trend",
+                "scanner": "momentum_trend",
                 "breakdown": breakdown.to_dict(),
                 "confirmations": confirmations,
                 "regime_context": {
@@ -798,6 +800,8 @@ class MomentumTrendStrategy(BaseStrategy):
             reason=reason,
             regime=regime.regime,
             metadata={
+                "setup_type": "momentum_trend",
+                "scanner": "momentum_trend",
                 "breakdown": breakdown.to_dict(),
                 "confirmations": confirmations,
                 "regime_context": {

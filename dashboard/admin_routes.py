@@ -20,6 +20,8 @@ def register_admin_routes(app: web.Application, auth_service, db_pool):
     app.router.add_get("/api/admin/users/{user_id}/api-keys", handler.handle_list_api_keys)
     app.router.add_post("/api/admin/users/{user_id}/api-keys", require_role("admin")(handler.handle_add_api_key))
     app.router.add_delete("/api/admin/api-keys/{key_id}", require_role("admin")(handler.handle_delete_api_key))
+    app.router.add_get("/api/admin/real-overview", handler.handle_real_overview)
+    app.router.add_get("/api/admin/user-trades/{user_id}", handler.handle_user_trades)
 
 
 class AdminRouteHandler:
@@ -203,6 +205,56 @@ class AdminRouteHandler:
             await conn.execute("DELETE FROM user_api_keys WHERE id = $1", key_id)
         logger.warning("Admin deleted API key %s", key_id[:8])
         return web.json_response({"ok": True})
+
+    async def handle_real_overview(self, request: web.Request) -> web.Response:
+        """GET /api/admin/real-overview — all users' real trading at a glance."""
+        async with self.pool.acquire() as conn:
+            users = await conn.fetch("""
+                SELECT u.id, u.email, u.bot_mode, u.is_active,
+                  COUNT(t.id) FILTER (WHERE t.trade_type='real' AND t.status='open') AS open_count,
+                  COUNT(t.id) FILTER (WHERE t.trade_type='real' AND t.status='closed') AS closed_count,
+                  COALESCE(SUM(t.pnl_usd) FILTER (WHERE t.trade_type='real' AND t.status='closed'), 0) AS total_pnl,
+                  COUNT(t.id) FILTER (WHERE t.trade_type='real' AND t.status='closed' AND t.pnl_usd > 0) AS wins,
+                  COUNT(k.id) FILTER (WHERE k.is_active) AS active_keys
+                FROM users u
+                LEFT JOIN user_trades t ON u.id = t.user_id
+                LEFT JOIN user_api_keys k ON u.id = k.user_id
+                WHERE u.is_active = TRUE
+                GROUP BY u.id, u.email, u.bot_mode, u.is_active
+                ORDER BY total_pnl DESC
+            """)
+        out = []
+        for u in users:
+            d = dict(u)
+            d["id"] = str(d["id"])
+            total = d["closed_count"] or 0
+            d["wr_pct"] = round((d["wins"] / total * 100) if total > 0 else 0, 1)
+            d["total_pnl"] = float(d["total_pnl"] or 0)
+            out.append(d)
+        return web.json_response({"users": out, "total_users": len(out)})
+
+    async def handle_user_trades(self, request: web.Request) -> web.Response:
+        """GET /api/admin/user-trades/{user_id} — drill into specific user's trades."""
+        user_id = request.match_info.get("user_id", "")
+        limit = int(request.query.get("limit", "100"))
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, trade_type, symbol, side, entry_price, exit_price,
+                  pnl_usd, fees_usd, status, opened_at, closed_at, metadata
+                FROM user_trades
+                WHERE user_id = $1
+                ORDER BY opened_at DESC
+                LIMIT $2
+            """, user_id, limit)
+        trades = []
+        for r in rows:
+            t = dict(r)
+            t["id"] = str(t["id"])
+            for f in ("opened_at", "closed_at"):
+                if t.get(f):
+                    t[f] = t[f].isoformat()
+            trades.append(t)
+        return web.json_response({"trades": trades, "count": len(trades)})
 
     async def handle_list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/admin/sessions — all active sessions."""

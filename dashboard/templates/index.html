@@ -495,9 +495,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
     <span class="header-version">v2.1</span>
     <a href="http://158.101.112.94:8081" target="_blank" class="btn btn--purple btn--sm">ML Lab</a>
-    <button onclick="emergencyStop()" id="emergency-btn" class="btn btn--danger btn--sm font-bold tracking-wide">STOP</button>
+    <button onclick="emergencyStop()" id="emergency-btn" aria-label="Emergency Stop" type="button" class="btn btn--danger btn--sm font-bold tracking-wide">STOP</button>
     <span class="session-info" id="session-info"></span>
-    <button class="btn btn--ghost btn--sm" id="logout-btn" onclick="handleLogout()" style="display:none">LOGOUT</button>
+    <button class="btn btn--ghost btn--sm" id="logout-btn" onclick="handleLogout()" hidden>LOGOUT</button>
   </div>
 </header>
 
@@ -508,22 +508,22 @@ textarea.contact-input{min-height:100px;resize:vertical}
 </div>
 
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
-<nav class="tab-bar">
+<nav class="tab-bar" role="tablist" aria-label="Dashboard tabs">
   <button class="tab-btn active" data-tab="live" onclick="switchTab('live')">Live Trading</button>
-  <button class="tab-btn" data-tab="latency" style="display:none" onclick="switchTab('latency')" style="display:none">Latency Arb</button>
+  <button class="tab-btn" data-tab="latency" hidden onclick="switchTab('latency')" hidden>Latency Arb</button>
   <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">Analytics</button>
   <button class="tab-btn" data-tab="config" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" data-tab="system" onclick="switchTab('system')">System</button>
   <button class="tab-btn" data-tab="agents" onclick="switchTab('agents')">Agents</button>
   <button class="tab-btn" data-tab="profile" onclick="switchTab('profile')">Profile</button>
   <button class="tab-btn tab-btn--brain" data-tab="brain" onclick="switchTab('brain')">Brain</button>
-  <button class="tab-btn" data-tab="admin" onclick="switchTab('admin')" id="admin-tab-btn" style="display:none">Admin</button>
+  <button class="tab-btn" data-tab="admin" onclick="switchTab('admin')" id="admin-tab-btn" hidden>Admin</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
 <div class="ticker" id="price-ticker">
   <div id="ticker-symbols" class="flex gap-6 flex-wrap"></div>
-  <span id="price-bal" style="display:none">--</span>
+  <span id="price-bal" hidden>--</span>
   <div class="flex items-center gap-3">
     <span class="text-muted text-xs" id="price-update-time">--</span>
   </div>
@@ -687,11 +687,11 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <div id="trade-diagnostic" style="font-size:.68rem;color:var(--text-muted);text-align:center">Analyzing...</div>
         </div>
         <!-- hidden elements -->
-        <span id="cmd-regime" style="display:none">--</span>
-        <span id="cmd-regime-btc" style="display:none">--</span>
-        <span id="cmd-regime-eth" style="display:none">--</span>
-        <span id="cmd-regime-sol" style="display:none">--</span>
-        <span id="cmd-regime-xrp" style="display:none">--</span>
+        <span id="cmd-regime" hidden>--</span>
+        <span id="cmd-regime-btc" hidden>--</span>
+        <span id="cmd-regime-eth" hidden>--</span>
+        <span id="cmd-regime-sol" hidden>--</span>
+        <span id="cmd-regime-xrp" hidden>--</span>
       </div>
 
       <!-- Last Trade: Paper + Real -->
@@ -882,7 +882,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 
   <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
-  <div class="glass-card" id="symbol-scanner-status" style="margin-bottom:8px">
+  <div class="glass-card" id="symbol-scanner-status" class="mb-2">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
     <div id="scanner-status-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">
     </div>
@@ -1075,7 +1075,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <table style="font-size:.72rem;font-family:var(--font-mono)">
           <thead>
             <tr>
-              <th style="text-align:left">Scanner</th>
+              <th class="text-left">Scanner</th>
               <th class="text-center">liquid_majors</th>
               <th class="text-center">secondary</th>
               <th class="text-center">high_beta</th>
@@ -1107,12 +1107,12 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <table style="font-size:.72rem;font-family:var(--font-mono)">
           <thead>
             <tr>
-              <th style="text-align:left">Edge Verdict</th>
-              <th style="text-align:right">N</th>
-              <th style="text-align:right">Avg Pred</th>
-              <th style="text-align:right">Realized WR</th>
-              <th style="text-align:right">Cal Err</th>
-              <th style="text-align:right">Avg Exit R</th>
+              <th class="text-left">Edge Verdict</th>
+              <th class="text-right">N</th>
+              <th class="text-right">Avg Pred</th>
+              <th class="text-right">Realized WR</th>
+              <th class="text-right">Cal Err</th>
+              <th class="text-right">Avg Exit R</th>
               <th class="text-center">Status</th>
             </tr>
           </thead>
@@ -1461,7 +1461,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div class="scanner-pie-slot" data-idx="2"><canvas id="sp-pie-2" width="70" height="70" style="max-height:70px"></canvas><div id="sp-lbl-2" style="font-size:.55rem;text-align:center;margin-top:2px;color:var(--text-muted)">—</div></div>
       </div>
       <!-- Scanner Diversity -->
-      <div class="scanner-diversity-bar" id="scanner-diversity-bar" style="margin-top:8px"></div>
+      <div class="scanner-diversity-bar" id="scanner-diversity-bar" class="mt-2"></div>
       <div class="scanner-diversity-legend" id="scanner-diversity-legend"></div>
     </div>
     <div class="glass-card">
@@ -1553,8 +1553,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="glass-card" class="glass-card--accent-success">
       <div class="panel-title">Fee Savings <span class="text-xs text-muted">(Fix #1 IOC)</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        <div class="stat-card"><div class="stat-value green" id="fs-ioc-fills" style="font-size:1.1rem">0</div><div class="stat-label">IOC Fills</div></div>
-        <div class="stat-card"><div class="stat-value cyan" id="fs-ioc-skips" style="font-size:1.1rem">0</div><div class="stat-label">Slippage Avoided</div></div>
+        <div class="stat-card"><div class="stat-value green" id="fs-ioc-fills" class="text-lg">0</div><div class="stat-label">IOC Fills</div></div>
+        <div class="stat-card"><div class="stat-value cyan" id="fs-ioc-skips" class="text-lg">0</div><div class="stat-label">Slippage Avoided</div></div>
       </div>
       <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;font-size:.7rem">
@@ -1671,7 +1671,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <!-- Trade Type Config -->
     <div class="glass-card">
       <div class="panel-title">Trade Type Parameters</div>
-      <div style="overflow-x:auto">
+      <div class="overflow-x-auto">
         <table style="width:100%;font-size:.75rem;border-collapse:collapse">
           <thead><tr class="border-b">
             <th style="text-align:left;padding:6px;color:var(--text-muted)">Parameter</th>
@@ -1849,7 +1849,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 
   <!-- Veto Config (hidden, populated by JS) -->
-  <div id="veto-config" style="display:none"></div>
+  <div id="veto-config" hidden></div>
 
 </div>
 
@@ -1891,7 +1891,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 
   <!-- ═══ Grid Bot Visual Map (Item #11) ═══ -->
-  <div class="glass-card" style="margin-top:12px">
+  <div class="glass-card" class="mt-3">
     <div class="flex justify-between items-center">
       <div class="panel-title" class="m-0">Grid Bot</div>
       <span class="badge" id="grid-status-badge" style="background:var(--text-muted);font-size:.55rem">PAUSED</span>
@@ -1899,7 +1899,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div id="grid-disabled-msg" style="text-align:center;padding:16px;color:var(--text-muted);font-size:.75rem">
       Grid Bot is paused. Enable in settings.yaml &rarr; grid.enabled: true
     </div>
-    <div id="grid-active-content" style="display:none">
+    <div id="grid-active-content" hidden>
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px">
         <div class="stat-card" class="text-center"><div class="stat-value" id="grid-total-fills" class="text-base">0</div><div class="stat-label">Fills</div></div>
         <div class="stat-card" class="text-center"><div class="stat-value green" id="grid-profit" class="text-base">$0</div><div class="stat-label">Profit</div></div>
@@ -2117,7 +2117,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div id="mode-status-msg" style="font-size:11px;color:#5a7090;text-align:center;margin-bottom:12px">Paper mode — no real orders placed</div>
 
         <label class="profile-label">Bot Mode</label>
-        <select id="prof-bot-mode" class="login-input" style="display:none">
+        <select id="prof-bot-mode" class="login-input" hidden>
           <option value="paper">Paper Trading</option>
           <option value="demo">Demo (Testnet)</option>
           <option value="live">Live Trading</option>
@@ -2184,7 +2184,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <!-- Save Button -->
   <div style="text-align:center;margin-top:16px">
     <button class="login-btn" style="width:auto;padding:12px 48px;font-size:.9rem" onclick="saveProfile()">SAVE CHANGES</button>
-    <div class="login-error" id="profile-save-error" style="display:none"></div>
+    <div class="login-error" id="profile-save-error" hidden></div>
     <div id="profile-save-ok" style="display:none;color:var(--green);font-size:.8rem;margin-top:8px;font-weight:600">Profile saved successfully!</div>
   </div>
 
@@ -2280,7 +2280,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <input type="text" id="ak-passphrase" class="login-input" placeholder="Passphrase (optional)">
     <input type="hidden" id="ak-edit-id">
     <button class="login-btn" onclick="submitApiKey()">SAVE KEY</button>
-    <div class="login-error" id="ak-error" style="display:none"></div>
+    <div class="login-error" id="ak-error" hidden></div>
   </div>
 </div>
 
@@ -2320,7 +2320,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
       </div>
       <!-- Real rejection leaderboard -->
-      <div style="margin-top:8px">
+      <div class="mt-2">
         <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px">Top Reject Reasons (today)</div>
         <div id="pm-reject-list" style="display:flex;flex-direction:column;gap:3px">
           <div class="text-sm text-muted">--</div>
@@ -2498,7 +2498,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <!-- Row 2: Setup x Regime Matrix (heatmap) -->
   <div class="glass-card" style="margin-bottom:var(--gap)">
     <div class="card-title">Setup x Regime Performance Matrix</div>
-    <div id="brain-matrix-container" style="overflow-x:auto">
+    <div id="brain-matrix-container" class="overflow-x-auto">
       <table id="brain-matrix-table" style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr><th style="text-align:left;padding:6px;border-bottom:1px solid #333">Setup</th></tr></thead>
         <tbody id="brain-matrix-body"></tbody>
@@ -2744,58 +2744,58 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <!-- Toast notification -->
   <div id="vn-toast" style="display:none;position:fixed;bottom:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:.8rem;z-index:10000;font-weight:600"></div>
-<div id="cmd-action" style="display:none"></div>
-<div id="cmd-confidence" style="display:none"></div>
-<div id="cmd-grade" style="display:none"></div>
-<div id="cmd-reason" style="display:none"></div>
-<div id="cmd-ev" style="display:none"></div>
-<div id="cmd-risk" style="display:none"></div>
-<div id="cmd-blockers" style="display:none"></div>
+<div id="cmd-action" hidden></div>
+<div id="cmd-confidence" hidden></div>
+<div id="cmd-grade" hidden></div>
+<div id="cmd-reason" hidden></div>
+<div id="cmd-ev" hidden></div>
+<div id="cmd-risk" hidden></div>
+<div id="cmd-blockers" hidden></div>
 
 
 
 
 <!-- Hidden elements for JS compatibility -->
-<span id="fn-blocked" style="display:none">0</span>
-<span id="fn-scanned" style="display:none">0</span>
-<span id="fn-strong" style="display:none">0</span>
-<span id="fn-valid" style="display:none">0</span>
-<span id="fn-weak" style="display:none">0</span>
-<span id="rm-total-trades" style="display:none">--</span>
-<span id="rm-win-rate" style="display:none">--</span>
-<span id="rm-total-r" style="display:none">--</span>
-<span id="rm-r-std" style="display:none">--</span>
-<span id="rm-best-r" style="display:none">--</span>
-<span id="rm-worst-r" style="display:none">--</span>
-<span id="rk-calmar" style="display:none">--</span>
-<span id="rk-dd-dur" style="display:none">--</span>
-<span id="rk-pf" style="display:none">--</span>
-<span id="eq-avg-bps" style="display:none">--</span>
-<span id="eq-drag-r" style="display:none">--</span>
-<span id="paper-balance-hero" style="display:none">--</span>
-<span id="paper-net-pnl" style="display:none">--</span>
-<span id="paper-return-pct" style="display:none">--</span>
-<span id="paper-dd" style="display:none">--</span>
-<span id="paper-peak" style="display:none">--</span>
-<span id="paper-fees" style="display:none">--</span>
-<span id="paper-tpd" style="display:none">--</span>
-<span id="analytics-trades-count" style="display:none">--</span>
-<div id="session-heatmap" style="display:none"></div>
-<span id="analytics-paper-btn" style="display:none"></span>
-<span id="analytics-real-btn" style="display:none"></span>
-<span id="analytics-paper-note" style="display:none"></span>
-<span id="analytics-real-note" style="display:none"></span>
-<div id="alerts-list" style="display:none"></div>
-<div id="real-balance" style="display:none"></div>
-<div id="real-cb-status" style="display:none"></div>
-<div id="real-closed-today" style="display:none"></div>
-<div id="real-daily-pnl" style="display:none"></div>
-<div id="real-mode-badge" style="display:none"></div>
-<div id="real-open-count" style="display:none"></div>
-<div id="real-positions-body" style="display:none"></div>
-<div id="real-positions-table" style="display:none"></div>
-<div id="real-total-pnl" style="display:none"></div>
-<div id="real-trading-panel" style="display:none"></div>
+<span id="fn-blocked" hidden>0</span>
+<span id="fn-scanned" hidden>0</span>
+<span id="fn-strong" hidden>0</span>
+<span id="fn-valid" hidden>0</span>
+<span id="fn-weak" hidden>0</span>
+<span id="rm-total-trades" hidden>--</span>
+<span id="rm-win-rate" hidden>--</span>
+<span id="rm-total-r" hidden>--</span>
+<span id="rm-r-std" hidden>--</span>
+<span id="rm-best-r" hidden>--</span>
+<span id="rm-worst-r" hidden>--</span>
+<span id="rk-calmar" hidden>--</span>
+<span id="rk-dd-dur" hidden>--</span>
+<span id="rk-pf" hidden>--</span>
+<span id="eq-avg-bps" hidden>--</span>
+<span id="eq-drag-r" hidden>--</span>
+<span id="paper-balance-hero" hidden>--</span>
+<span id="paper-net-pnl" hidden>--</span>
+<span id="paper-return-pct" hidden>--</span>
+<span id="paper-dd" hidden>--</span>
+<span id="paper-peak" hidden>--</span>
+<span id="paper-fees" hidden>--</span>
+<span id="paper-tpd" hidden>--</span>
+<span id="analytics-trades-count" hidden>--</span>
+<div id="session-heatmap" hidden></div>
+<span id="analytics-paper-btn" hidden></span>
+<span id="analytics-real-btn" hidden></span>
+<span id="analytics-paper-note" hidden></span>
+<span id="analytics-real-note" hidden></span>
+<div id="alerts-list" hidden></div>
+<div id="real-balance" hidden></div>
+<div id="real-cb-status" hidden></div>
+<div id="real-closed-today" hidden></div>
+<div id="real-daily-pnl" hidden></div>
+<div id="real-mode-badge" hidden></div>
+<div id="real-open-count" hidden></div>
+<div id="real-positions-body" hidden></div>
+<div id="real-positions-table" hidden></div>
+<div id="real-total-pnl" hidden></div>
+<div id="real-trading-panel" hidden></div>
 
 <!-- ── SIGNAL JOURNEY MODAL ─────────────────────────────────── -->
 <div id="journey-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;justify-content:center;align-items:center">

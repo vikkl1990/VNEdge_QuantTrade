@@ -50,6 +50,20 @@ class TelegramAlerter:
     # Low-level send with rate limiting and retries
     # ------------------------------------------------------------------
 
+    async def send_to_user(self, user_chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
+        """Send a message to a SPECIFIC user's chat (overrides default chat_id)."""
+        if not user_chat_id or not self.bot_token:
+            return False
+        try:
+            session = await self._get_session()
+            url = f"{self._base_url}/sendMessage"
+            payload = {"chat_id": user_chat_id, "text": text, "parse_mode": parse_mode, "disable_web_page_preview": True}
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                return r.status == 200
+        except Exception as e:
+            logger.debug("Telegram per-user send failed: %s", e)
+            return False
+
     async def send_message(
         self,
         text: str,

@@ -560,6 +560,27 @@ class DashboardServer:
                 register_user_trading_routes(self._app, user_registry, self._db_pool)
                 logger.info("Per-user trading routes registered (8 endpoints)")
 
+            # Replay + attribution routes
+            try:
+                from dashboard.replay_routes import register_replay_routes
+                register_replay_routes(self._app, self._db_pool)
+            except Exception as e:
+                logger.warning("Replay routes init failed: %s", e)
+
+            # 2FA routes
+            try:
+                from dashboard.twofa_routes import register_2fa_routes
+                register_2fa_routes(self._app, self._db_pool)
+            except Exception as e:
+                logger.warning("2FA routes init failed: %s", e)
+
+            # Backtest routes (stub)
+            try:
+                from dashboard.backtest_routes import register_backtest_routes
+                register_backtest_routes(self._app, self._db_pool)
+            except Exception as e:
+                logger.warning("Backtest routes init failed: %s", e)
+
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)

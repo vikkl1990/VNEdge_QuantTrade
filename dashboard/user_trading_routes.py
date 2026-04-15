@@ -260,7 +260,51 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
             return web.json_response({"success": True, "message": "Circuit breaker reset"})
         return web.json_response({"error": "No real trading manager active"}, status=404)
 
+    async def handle_user_dashboard(request: web.Request) -> web.Response:
+        """GET /api/user/dashboard — combined paper (shared) + this user's real trades."""
+        user_id = await _get_user_id(request)
+        if not user_id:
+            return web.json_response({"error": "unauthorized"}, status=401)
+
+        # Get user's real status
+        mgr = await user_registry.get_manager_for_user(user_id)
+        real_status = mgr.get_status() if mgr else {"open_count": 0, "open_positions": [], "closed_trades": []}
+
+        # Get user's recent trades from DB
+        try:
+            async with db_pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT email, bot_mode, max_leverage, max_daily_loss_pct
+                    FROM users WHERE id = $1
+                """, user_id)
+                user_info = dict(row) if row else {}
+
+                trades = await conn.fetch("""
+                    SELECT id, symbol, side, entry_price, exit_price, pnl_usd,
+                           status, opened_at, closed_at, metadata
+                    FROM user_trades
+                    WHERE user_id = $1 AND trade_type = 'real'
+                    ORDER BY opened_at DESC LIMIT 50
+                """, user_id)
+
+                user_trades = []
+                for t in trades:
+                    d = dict(t)
+                    d["id"] = str(d["id"])
+                    for f in ("opened_at", "closed_at"):
+                        if d.get(f): d[f] = d[f].isoformat()
+                    user_trades.append(d)
+
+            return web.json_response({
+                "user": user_info,
+                "real_status": real_status,
+                "recent_trades": user_trades,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     # ── Register all routes ──
+    app.router.add_get("/api/user/dashboard", handle_user_dashboard)
     app.router.add_get("/api/user/real/status", handle_user_real_status)
     app.router.add_post("/api/user/real/toggle", handle_user_real_toggle)
     app.router.add_get("/api/user/real/trades", handle_user_real_trades)

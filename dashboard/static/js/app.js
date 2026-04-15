@@ -159,11 +159,11 @@ async function loadProfile() {
 }
 
 function updateModeBtns(mode) {
-    var modes = ["paper", "demo", "live"];
-    var colors = {paper:"#00d4ff", demo:"#ffd700", live:"#ff3b5c"};
-    var msgs = {paper:"Paper mode — no real orders placed", demo:"Demo mode — trades on Delta testnet (fake money)", live:"LIVE mode — real money on Delta exchange"};
+    let modes = ["paper", "demo", "live"];
+    let colors = {paper:"#00d4ff", demo:"#ffd700", live:"#ff3b5c"};
+    let msgs = {paper:"Paper mode — no real orders placed", demo:"Demo mode — trades on Delta testnet (fake money)", live:"LIVE mode — real money on Delta exchange"};
     for (var i = 0; i < modes.length; i++) {
-        var btn = document.getElementById("mode-btn-" + modes[i]);
+        let btn = document.getElementById("mode-btn-" + modes[i]);
         if (!btn) continue;
         if (modes[i] === mode) {
             btn.style.borderColor = colors[modes[i]] + "80";
@@ -175,7 +175,7 @@ function updateModeBtns(mode) {
             btn.style.color = "#555";
         }
     }
-    var msgEl = document.getElementById("mode-status-msg");
+    let msgEl = document.getElementById("mode-status-msg");
     if (msgEl) { msgEl.textContent = msgs[mode] || ""; msgEl.style.color = colors[mode] || "#5a7090"; }
 }
 
@@ -186,7 +186,7 @@ function switchUserMode(mode) {
     if (mode === "demo") {
         if (!confirm("Switch to DEMO trading?\n\nTrades will execute on Delta testnet.\nMake sure your demo API key is configured.")) return;
     }
-    var sel = document.getElementById("prof-bot-mode");
+    let sel = document.getElementById("prof-bot-mode");
     if (sel) sel.value = mode;
     updateModeBtns(mode);
     // Auto-save the mode change immediately
@@ -197,7 +197,7 @@ function switchUserMode(mode) {
         body: JSON.stringify({bot_mode: mode})
     }).then(function(r) { return r.json(); }).then(function(d) {
         if (d.success) {
-            var msgEl = document.getElementById("mode-status-msg");
+            let msgEl = document.getElementById("mode-status-msg");
             if (msgEl) msgEl.textContent += " (saved)";
         }
     }).catch(function(e) { console.error("Mode switch failed:", e); });
@@ -684,7 +684,7 @@ async function refreshAgents() {
         return `<tr>
           <td>${df.id}</td>
           <td style="${sevCls};font-weight:700">${df.severity}</td>
-          <td style="font-size:.75rem">${df.description}</td>
+          <td class="text-sm">${df.description}</td>
           <td><span class="badge ${df.status === 'FIXED' ? 'badge-green' : 'badge-red'}">${df.status}</span></td>
         </tr>`;
       }).join("");
@@ -1198,7 +1198,7 @@ function updateActiveTrades(trades) {
                 <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                     <span style="font-weight:800;font-size:1rem">${esc(sym)}</span>
                     <span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(0,212,255,.12);color:var(--cyan);font-weight:700;letter-spacing:.5px;border:1px solid rgba(0,212,255,.25)">PAPER</span>
-                    <span class="sig-side ${side}" style="font-size:.78rem">${side}</span>
+                    <span class="sig-side ${side}" class="text-base">${side}</span>
                     <span style="color:var(--yellow);font-weight:700;font-size:.85rem">${lev}x</span>
                     <span style="color:var(--text-muted);font-size:.73rem">${esc(t.setup_type || '')}</span>
                     ${(function(){
@@ -1295,10 +1295,10 @@ function updateSignals(signals) {
         return;
     }
     // Filter: hide REJECT/C grades and non-active pairs
-    var activePairs = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT"];
-    var filtered = signals.filter(function(s) {
-        var g = s.grade || "";
-        var sym = s.symbol || "";
+    let activePairs = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT"];
+    let filtered = signals.filter(function(s) {
+        let g = s.grade || "";
+        let sym = s.symbol || "";
         if (g === "REJECT" || g === "C") return false;
         if (sym && !activePairs.includes(sym)) return false;
         return true;
@@ -1419,24 +1419,24 @@ function updateSetupLifecycle(status, closed) {
         const symColor = ({"BTC":"#f7931a","ETH":"#627eea","SOL":"#9945ff","DOGE":"#c3a634","LINK":"#2a5ada","XRP":"#00aae4","ADA":"#0033ad","LTC":"#bfbbbb","DOT":"#e6007a","TAO":"#00d4aa","BNB":"#f3ba2f","AVAX":"#e84142"})[base] || "#9ca3af";
 
         // Per-symbol stats from closed trades
-        var symWins = 0, symTotal = 0;
+        let symWins = 0, symTotal = 0;
         if (closed && closed.length > 0) {
-            var today = new Date().toISOString().slice(0, 10);
+            let today = new Date().toISOString().slice(0, 10);
             for (var ci = 0; ci < closed.length; ci++) {
-                var ct = closed[ci];
+                let ct = closed[ci];
                 if (ct.symbol === sym && (ct.exit_time || "").startsWith(today)) {
                     symTotal++;
                     if ((ct.pnl_usd || 0) > 0) symWins++;
                 }
             }
         }
-        var symWR = symTotal > 0 ? Math.round(symWins / symTotal * 100) : 0;
-        var wrColor = symWR >= 60 ? "var(--green)" : symWR >= 40 ? "var(--yellow)" : symTotal > 0 ? "var(--red)" : "var(--text-muted)";
-        var regimeDisplay = regime || (window._symRegimes && window._symRegimes[sym]) || label || "scanning";
+        let symWR = symTotal > 0 ? Math.round(symWins / symTotal * 100) : 0;
+        let wrColor = symWR >= 60 ? "var(--green)" : symWR >= 40 ? "var(--yellow)" : symTotal > 0 ? "var(--red)" : "var(--text-muted)";
+        let regimeDisplay = regime || (window._symRegimes && window._symRegimes[sym]) || label || "scanning";
         if (regimeDisplay === "scanning" && window._symRegimes && window._symRegimes[sym]) {
             regimeDisplay = window._symRegimes[sym];
             // Update colors based on actual regime
-            var regC = {"trending_up":"var(--green)","trending_down":"var(--red)","sideways":"var(--yellow)",
+            let regC = {"trending_up":"var(--green)","trending_down":"var(--red)","sideways":"var(--yellow)",
                 "ranging":"var(--yellow)","breakout":"var(--cyan)","high_volatility":"var(--orange)",
                 "volatile":"var(--orange)","quiet":"var(--text-muted)","mean_reversion":"var(--purple)",
                 "low_liquidity":"var(--red)"};
@@ -1463,14 +1463,14 @@ function updateFunnel(raw) {
     if (!raw) return;
     const f = raw.funnel || raw;
     document.getElementById("fn-scanned").textContent = f.scanned || 0;
-    var fs2=document.getElementById("fn-scanned2");if(fs2)fs2.textContent=f.scanned||0;
+    let fs2 =document.getElementById("fn-scanned2");if(fs2)fs2.textContent=f.scanned||0;
     document.getElementById("fn-strong").textContent = f.strong || 0;
-    var fp2=document.getElementById("fn-strong2");if(fp2)fp2.textContent=f.strong||0;
+    let fp2 =document.getElementById("fn-strong2");if(fp2)fp2.textContent=f.strong||0;
     document.getElementById("fn-valid").textContent = f.valid || 0;
     document.getElementById("fn-weak").textContent = f.weak || 0;
     const blocked = (f.blocked_regime || 0) + (f.blocked_cost || 0) + (f.blocked_ev || 0) + (f.blocked_htf || 0);
     document.getElementById("fn-blocked").textContent = blocked;
-    var fb2=document.getElementById("fn-blocked2");if(fb2)fb2.textContent=blocked;
+    let fb2 =document.getElementById("fn-blocked2");if(fb2)fb2.textContent=blocked;
 }
 
 function updateRecentClosed(closed) {
@@ -1536,31 +1536,31 @@ function updateAlerts(alerts) {
 async function refreshAnalytics() {
     // Update portfolio overview cards
     try {
-        var as = await api("/api/tracker/stats");
+        let as = await api("/api/tracker/stats");
         if (as) {
-            var ab = document.getElementById("an-balance");
+            let ab = document.getElementById("an-balance");
             if(ab) ab.textContent = "$" + (as.paper_balance||0).toFixed(2);
-            var ar = document.getElementById("an-return");
+            let ar = document.getElementById("an-return");
             if(ar){var ret=((as.paper_balance||1000)-1000)/1000*100;ar.textContent=(ret>=0?"+":"")+ret.toFixed(1)+"%";ar.style.color=ret>=0?"var(--green)":"var(--red)";}
-            var aw = document.getElementById("an-wr");
+            let aw = document.getElementById("an-wr");
             if(aw) aw.textContent = (as.win_rate||0).toFixed(1)+"%";
-            var ap = document.getElementById("an-pf");
+            let ap = document.getElementById("an-pf");
             if(ap) ap.textContent = (as.profit_factor||0).toFixed(2);
-            var at2 = document.getElementById("an-trades");
+            let at2 = document.getElementById("an-trades");
             if(at2) at2.textContent = as.total_signals||0;
         }
         // Real account data
-        var rs = await api("/api/real/status");
+        let rs = await api("/api/real/status");
         if (rs) {
-            var arb = document.getElementById("an-real-bal");
+            let arb = document.getElementById("an-real-bal");
             if(arb) arb.textContent = "$" + (rs.balance||0).toFixed(2);
-            var arp = document.getElementById("an-real-pnl");
+            let arp = document.getElementById("an-real-pnl");
             if(arp) {
-                var tp2 = (rs.circuit_breaker||{}).total_pnl||0;
+                let tp2 = (rs.circuit_breaker||{}).total_pnl||0;
                 arp.textContent = (tp2>=0?"+":"") + "$" + Math.abs(tp2).toFixed(2);
                 arp.style.color = tp2 >= 0 ? "var(--green)" : "var(--red)";
             }
-            var art = document.getElementById("an-real-trades");
+            let art = document.getElementById("an-real-trades");
             if(art) art.textContent = rs.total_closed||0;
         }
     } catch(e){}
@@ -1708,12 +1708,12 @@ function updateAIInsights(data) {
     const penalized = data.penalized_setups || data.penalized || [];
     const blocked = data.blocked_combos || data.blocked || [];
     if (boosted.length) {
-        html += '<div style="margin-bottom:8px"><span class="metric-label">Boosted</span><br>';
+        html += '<div class="mb-2"><span class="metric-label">Boosted</span><br>';
         html += boosted.map(s => `<span class="ai-tag ai-boost">${esc(typeof s === "string" ? s : s.name || s.setup || JSON.stringify(s))}</span>`).join("");
         html += "</div>";
     }
     if (penalized.length) {
-        html += '<div style="margin-bottom:8px"><span class="metric-label">Penalized</span><br>';
+        html += '<div class="mb-2"><span class="metric-label">Penalized</span><br>';
         html += penalized.map(s => `<span class="ai-tag ai-penalize">${esc(typeof s === "string" ? s : s.name || s.setup || JSON.stringify(s))}</span>`).join("");
         html += "</div>";
     }
@@ -2102,7 +2102,7 @@ async function refreshLatencyArb() {
                         <span style="font-size:1.1rem;font-weight:900;color:var(--text)">${esc(shortSym)}</span>
                         <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${dirColor};background:${dir==='LONG'?'rgba(0,255,157,.08)':dir==='SHORT'?'rgba(255,59,92,.08)':'rgba(90,112,144,.06)'}">${dir}</span>
                     </div>
-                    <div style="text-align:right">
+                    <div class="text-right">
                         <div style="font-size:1.3rem;font-weight:900;font-family:var(--font-mono);color:${absDisl>=0.20?'var(--green)':absDisl>=0.10?'var(--yellow)':'var(--text-muted)'}">${disl>=0?'+':''}${disl.toFixed(4)}%</div>
                         <div style="font-size:.62rem;color:var(--text-muted);letter-spacing:.5px">DISLOCATION</div>
                     </div>
@@ -2217,7 +2217,7 @@ async function refreshLatencyArb() {
     if (symbols.length > 0 && disls.length > 10) {
         const allDisls = disls.map(d => Math.abs(d.disl_pct));
         const buckets = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.00];
-        let distHtml = '<div style="font-size:.72rem">';
+        let distHtml = '<div class="text-sm">';
         buckets.forEach(b => {
             const count = allDisls.filter(d => d >= b).length;
             const pct = (count / allDisls.length * 100);
@@ -2339,7 +2339,7 @@ async function refreshLatencyArb() {
         if (sessSymbols.length > 0) {
             // Build heatmap: rows = pairs, cols = UTC hours 0-23
             const hours = Array.from({length:24}, (_,i)=>i);
-            let hh = '<div style="overflow-x:auto"><table style="font-size:.65rem;min-width:700px"><thead><tr><th style="position:sticky;left:0;background:var(--bg);z-index:1">Pair</th>';
+            let hh = '<div class="overflow-x-auto"><table style="font-size:.65rem;min-width:700px"><thead><tr><th style="position:sticky;left:0;background:var(--bg);z-index:1">Pair</th>';
             hours.forEach(h => {
                 hh += `<th style="text-align:center;min-width:28px;padding:2px 3px">${h}</th>`;
             });
@@ -2411,7 +2411,7 @@ function laSelectSymbol(sym) {
 // ══════════════════════════════════════════════════════════
 async function refreshSystem() {
     // Each fetch independent — one failure can't block others
-    var infra = null, status = null, ml4 = null;
+    let infra = null, status = null, ml4 = null;
     try { infra = await fetch("/api/infra").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
     try { status = await fetch("/api/status").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
     try { ml4 = await fetch("/api/ml/health").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
@@ -2527,16 +2527,16 @@ function updateConfigSnapshot(status) {
 
 // ── VETO STATS ──────────────────────────────────────────
 function updateVetoStats(data) {
-    var el = document.getElementById("veto-stats-body");
-    var el2 = document.getElementById("veto-stats-body2");
+    let el = document.getElementById("veto-stats-body");
+    let el2 = document.getElementById("veto-stats-body2");
     if (!el) return;
     if (!data || !data.veto_stats) { el.textContent = "None"; return; }
-    var vs = data.veto_stats;
-    var parts = [];
+    let vs = data.veto_stats;
+    let parts = [];
     for (var k in vs) {
         if (vs[k] > 0) parts.push('<span class="text-danger">' + k + '</span>: ' + vs[k]);
     }
-    var vetoHtml = parts.length > 0 ? parts.join(' <span class="text-muted">|</span> ') : '<span class="text-success">None active</span>';
+    let vetoHtml = parts.length > 0 ? parts.join(' <span class="text-muted">|</span> ') : '<span class="text-success">None active</span>';
 }
 
 function renderVetoRows(wrap, vetoData) {
@@ -2908,7 +2908,7 @@ function updateRealActiveTrades(realStatus) {
         return '<div style="padding:10px;background:rgba(255,59,92,.04);border:1px solid rgba(255,59,92,.15);border-left:3px solid ' + sideColor + ';border-radius:8px;margin-bottom:6px">' +
             '<div class="flex justify-between items-center">' +
             '<div class="flex items-center gap-2">' +
-            '<span style="font-weight:800">' + (p.symbol||"?") + '</span>' +
+            '<span class="font-extrabold">' + (p.symbol||"?") + '</span>' +
             '<span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(255,59,92,.12);color:var(--red);font-weight:700;border:1px solid rgba(255,59,92,.25)">REAL</span>' +
             '<span style="color:' + sideColor + ';font-weight:700;text-transform:uppercase">' + (p.side||"?") + '</span>' +
             '<span class="text-warning font-bold">' + (p.leverage||0) + 'x</span>' +
@@ -3307,7 +3307,7 @@ async function loadVerdictSparklines() {
         }
         wrap.innerHTML = html || '<div class="empty">Unexpected data format</div>';
     } catch (e) {
-        var w = document.getElementById("verdict-sparklines");
+        let w = document.getElementById("verdict-sparklines");
         if (w) w.innerHTML = '<div class="empty">Fetch failed</div>';
     }
 }
@@ -3420,7 +3420,7 @@ function updateKanbanFunnel(funnelData) {
         const count = f[s.key] || f[s.key + "_count"] || f[s.key + "s"] || 0;
         const nStr = typeof count === "number" ? count : (count.total || count.count || 0);
         return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center">' +
-            '<div style="font-size:1.2rem">' + s.icon + '</div>' +
+            '<div class="text-lg">' + s.icon + '</div>' +
             '<div style="font-size:1.3rem;font-weight:800;font-family:var(--font-mono);color:' + s.color + ';margin:4px 0">' + nStr + '</div>' +
             '<div style="font-size:.55rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">' + s.label + '</div>' +
             '</div>';
@@ -3459,20 +3459,20 @@ function updateKanbanFunnel(funnelData) {
 // Sources: active trades approaching SL, regime changes, scanner triggers,
 // ML drift alerts, unusual volume, real trade events.
 function updateAttentionRail(status, decision, active, realStatus, funnel) {
-    var rail = document.getElementById("attention-rail");
-    var countEl = document.getElementById("attn-count");
+    let rail = document.getElementById("attention-rail");
+    let countEl = document.getElementById("attn-count");
     if (!rail) return;
 
-    var items = [];
-    var now = Date.now() / 1000;
+    let items = [];
+    let now = Date.now() / 1000;
 
     // 1. Active trades approaching SL (highest priority)
     try {
-        var tracker = (active && active.active) || active || [];
+        let tracker = (active && active.active) || active || [];
         if (Array.isArray(tracker)) {
             tracker.forEach(function(t) {
-                var mfe = parseFloat(t.peak_mfe_r || t.mfe_r || 0);
-                var currentR = parseFloat(t.current_r || 0);
+                let mfe = parseFloat(t.peak_mfe_r || t.mfe_r || 0);
+                let currentR = parseFloat(t.current_r || 0);
                 if (currentR < 0.05 && mfe > 0.3) {
                     items.push({pri: 1, color: "#ff3b5c", icon: "&#x26A0;",
                         text: (t.symbol || "?") + " retracing from " + mfe.toFixed(2) + "R peak — near SL"});
@@ -3484,12 +3484,12 @@ function updateAttentionRail(status, decision, active, realStatus, funnel) {
     // 2. Real trade events
     try {
         if (realStatus) {
-            var openR = realStatus.open_count || 0;
+            let openR = realStatus.open_count || 0;
             if (openR > 0) {
                 items.push({pri: 2, color: "#ff3b5c", icon: "&#x1F534;",
                     text: openR + " real position(s) open — monitoring"});
             }
-            var cb = realStatus.circuit_breaker || {};
+            let cb = realStatus.circuit_breaker || {};
             if (cb.is_tripped) {
                 items.push({pri: 0, color: "#ff3b5c", icon: "&#x1F6A8;",
                     text: "CIRCUIT BREAKER TRIPPED: " + (cb.trip_reason || "unknown")});
@@ -3504,9 +3504,9 @@ function updateAttentionRail(status, decision, active, realStatus, funnel) {
     // 3. Regime info from decision
     try {
         if (decision) {
-            var regime = (decision.regime || decision.market_regime || "").toLowerCase();
+            let regime = (decision.regime || decision.market_regime || "").toLowerCase();
             if (regime && regime !== "unknown") {
-                var regimeColor = regime.includes("trend") ? "var(--green)" :
+                let regimeColor = regime.includes("trend") ? "var(--green)" :
                                   regime.includes("break") ? "var(--cyan)" :
                                   regime.includes("sideways") || regime.includes("rang") ? "var(--yellow)" : "var(--text-muted)";
                 items.push({pri: 3, color: regimeColor, icon: "&#x1F30A;",
@@ -3520,9 +3520,9 @@ function updateAttentionRail(status, decision, active, realStatus, funnel) {
 
     // 4. Scanner triggers from funnel
     try {
-        var f = (funnel && funnel.funnel) || funnel || {};
-        var nearMisses = funnel ? (funnel.near_misses || {}) : {};
-        var nmCount = 0;
+        let f = (funnel && funnel.funnel) || funnel || {};
+        let nearMisses = funnel ? (funnel.near_misses || {}) : {};
+        let nmCount = 0;
         for (var sym in nearMisses) {
             nmCount += (nearMisses[sym] || []).length;
         }
@@ -3535,7 +3535,7 @@ function updateAttentionRail(status, decision, active, realStatus, funnel) {
     // 5. Bot status
     try {
         if (status) {
-            var uptime = status.uptime || "--";
+            let uptime = status.uptime || "--";
             items.push({pri: 5, color: "var(--text-muted)", icon: "&#x2705;",
                 text: "Bot running: " + uptime + " | " + (status.symbols || []).length + " symbols scanning"});
         }
@@ -3562,16 +3562,16 @@ var _deploySparkChart = null;
 
 function updateDeployableCapital(realStatus) {
     if (!realStatus) return;
-    var balance = realStatus.balance || 0;
-    var openCount = realStatus.open_count || 0;
-    var margin = 20; // per-trade margin
-    var reserved = openCount * margin;
-    var dd = realStatus.rolling_drawdown || {};
-    var dd1h = (dd["1h"] || {}).pnl || 0;
-    var ddBuffer = Math.max(0, Math.abs(dd1h) * 2); // 2x recent drawdown as buffer
-    var deployable = Math.max(0, balance - reserved - ddBuffer);
+    let balance = realStatus.balance || 0;
+    let openCount = realStatus.open_count || 0;
+    let margin = 20; // per-trade margin
+    let reserved = openCount * margin;
+    let dd = realStatus.rolling_drawdown || {};
+    let dd1h = (dd["1h"] || {}).pnl || 0;
+    let ddBuffer = Math.max(0, Math.abs(dd1h) * 2); // 2x recent drawdown as buffer
+    let deployable = Math.max(0, balance - reserved - ddBuffer);
 
-    var el = function(id) { return document.getElementById(id); };
+    let el = function(id) { return document.getElementById(id); };
     if (el("kpi-deployable")) el("kpi-deployable").textContent = "$" + deployable.toFixed(0);
     if (el("kpi-deploy-pct")) el("kpi-deploy-pct").textContent = "of $" + balance.toFixed(0);
     if (el("kpi-reserved")) el("kpi-reserved").textContent = "$" + reserved.toFixed(0);
@@ -3581,7 +3581,7 @@ function updateDeployableCapital(realStatus) {
     _deploySparkData.push(deployable);
     if (_deploySparkData.length > 30) _deploySparkData.shift();
     try {
-        var canvas = document.getElementById("kpi-deploy-spark");
+        let canvas = document.getElementById("kpi-deploy-spark");
         if (canvas && _deploySparkData.length > 2) {
             if (_deploySparkChart) _deploySparkChart.destroy();
             _deploySparkChart = new Chart(canvas.getContext("2d"), {
@@ -3608,24 +3608,24 @@ function updateDeployableCapital(realStatus) {
 // ── LIVE EDGE ESTIMATE KPI ──
 function updateLiveEdge(closed) {
     if (!closed || !Array.isArray(closed) || closed.length < 5) return;
-    var recent = closed.slice(-20);
-    var wins = 0, totalPnl = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
+    let recent = closed.slice(-20);
+    let wins = 0, totalPnl = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
     recent.forEach(function(t) {
-        var pnl = parseFloat(t.pnl_usd || 0);
-        var r = parseFloat(t.exit_r || t.r_multiple || 0);
+        let pnl = parseFloat(t.pnl_usd || 0);
+        let r = parseFloat(t.exit_r || t.r_multiple || 0);
         totalPnl += pnl;
         if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
         else { lossPnl += Math.abs(pnl); lossCount++; }
     });
-    var wr = recent.length > 0 ? (wins / recent.length * 100) : 0;
-    var avgR = recent.length > 0 ? (totalPnl / recent.length) : 0;
-    var avgWin = winCount > 0 ? (winPnl / winCount) : 0;
-    var avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
-    var ev = recent.length > 0 ? (totalPnl / recent.length) : 0;
+    let wr = recent.length > 0 ? (wins / recent.length * 100) : 0;
+    let avgR = recent.length > 0 ? (totalPnl / recent.length) : 0;
+    let avgWin = winCount > 0 ? (winPnl / winCount) : 0;
+    let avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
+    let ev = recent.length > 0 ? (totalPnl / recent.length) : 0;
 
-    var el = function(id) { return document.getElementById(id); };
+    let el = function(id) { return document.getElementById(id); };
     if (el("kpi-edge")) {
-        var edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
+        let edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
         el("kpi-edge").textContent = edgeR.toFixed(2) + "R";
         el("kpi-edge").style.color = edgeR >= 1.0 ? "var(--green)" : edgeR >= 0.5 ? "var(--yellow)" : "var(--red)";
     }
@@ -3645,9 +3645,9 @@ function updateLiveEdge(closed) {
 // ── REAL EDGE (split panel) ──
 function updateRealEdge(realStatus) {
     if (!realStatus) return;
-    var el = function(id) { return document.getElementById(id); };
-    var closed = realStatus.closed_trades || [];
-    var totalPnl = parseFloat(realStatus.total_pnl || 0);
+    let el = function(id) { return document.getElementById(id); };
+    let closed = realStatus.closed_trades || [];
+    let totalPnl = parseFloat(realStatus.total_pnl || 0);
 
     if (closed.length === 0) {
         if (el("kpi-real-edge")) el("kpi-real-edge").textContent = "--R";
@@ -3655,24 +3655,24 @@ function updateRealEdge(realStatus) {
         if (el("kpi-real-pnl")) { el("kpi-real-pnl").textContent = "$0"; el("kpi-real-pnl").style.color = "var(--text-muted)"; }
         if (el("kpi-real-count")) el("kpi-real-count").textContent = "0";
         if (el("kpi-real-cb")) {
-            var cb = realStatus.circuit_breaker || {};
-            var tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
+            let cb = realStatus.circuit_breaker || {};
+            let tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
             el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
             el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
         }
         return;
     }
 
-    var wins = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
+    let wins = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
     closed.forEach(function(t) {
-        var pnl = parseFloat(t.pnl_usd || 0);
+        let pnl = parseFloat(t.pnl_usd || 0);
         if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
         else { lossPnl += Math.abs(pnl); lossCount++; }
     });
-    var wr = closed.length > 0 ? (wins / closed.length * 100) : 0;
-    var avgWin = winCount > 0 ? (winPnl / winCount) : 0;
-    var avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
-    var edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
+    let wr = closed.length > 0 ? (wins / closed.length * 100) : 0;
+    let avgWin = winCount > 0 ? (winPnl / winCount) : 0;
+    let avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
+    let edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
 
     if (el("kpi-real-edge")) {
         el("kpi-real-edge").textContent = edgeR.toFixed(2) + "R";
@@ -3690,8 +3690,8 @@ function updateRealEdge(realStatus) {
     if (el("kpi-real-avg-loss")) el("kpi-real-avg-loss").textContent = "$" + avgLoss.toFixed(2);
     if (el("kpi-real-count")) el("kpi-real-count").textContent = closed.length;
     if (el("kpi-real-cb")) {
-        var cb = realStatus.circuit_breaker || {};
-        var tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
+        let cb = realStatus.circuit_breaker || {};
+        let tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
         el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
         el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
     }
@@ -3701,44 +3701,44 @@ function updateRealEdge(realStatus) {
 var _radarChart = null;
 
 function updateSignalRadar(signals, status) {
-    var canvas = document.getElementById("signal-radar-chart");
-    var legend = document.getElementById("radar-legend");
-    var lockLabel = document.getElementById("radar-lock-label");
+    let canvas = document.getElementById("signal-radar-chart");
+    let legend = document.getElementById("radar-legend");
+    let lockLabel = document.getElementById("radar-lock-label");
     if (!canvas) return;
 
     // Collect recent scanner triggers from signals
-    var scannerData = {};
-    var symbols = (status && status.symbols) || [];
-    var prices = (status && status.prices) || {};
+    let scannerData = {};
+    let symbols = (status && status.symbols) || [];
+    let prices = (status && status.prices) || {};
 
     // Build per-symbol scanner data from signals
     try {
-        var sigs = (signals && Array.isArray(signals)) ? signals.slice(-20) : [];
+        let sigs = (signals && Array.isArray(signals)) ? signals.slice(-20) : [];
         sigs.forEach(function(s) {
-            var sym = (s.symbol || "").replace("/USDT", "");
-            var scanner = (s.metadata || {}).setup_type || (s.metadata || {}).scanner || "unknown";
-            var conf = parseFloat(s.confidence || 0);
-            var mlProb = parseFloat((s.metadata || {}).ml_probability || 0.5);
-            var side = s.side || "?";
+            let sym = (s.symbol || "").replace("/USDT", "");
+            let scanner = (s.metadata || {}).setup_type || (s.metadata || {}).scanner || "unknown";
+            let conf = parseFloat(s.confidence || 0);
+            let mlProb = parseFloat((s.metadata || {}).ml_probability || 0.5);
+            let side = s.side || "?";
             if (conf > 0) {
-                var key = sym + "_" + scanner;
+                let key = sym + "_" + scanner;
                 scannerData[key] = {sym: sym, scanner: scanner, conf: conf, mlProb: mlProb, side: side};
             }
         });
     } catch(e) {}
 
-    var entries = Object.values(scannerData);
+    let entries = Object.values(scannerData);
 
     // Radar labels = symbols being scanned
-    var radarSymbols = symbols.map(function(s) { return s.replace("/USDT", ""); }).slice(0, 10);
+    let radarSymbols = symbols.map(function(s) { return s.replace("/USDT", ""); }).slice(0, 10);
     if (radarSymbols.length === 0) radarSymbols = ["BTC", "ETH", "SOL", "XRP"];
 
     // Build data: conviction per symbol (max conf × ml_prob from recent signals)
-    var convictions = radarSymbols.map(function(sym) {
-        var best = 0;
+    let convictions = radarSymbols.map(function(sym) {
+        let best = 0;
         entries.forEach(function(e) {
             if (e.sym === sym) {
-                var conviction = (e.conf / 100) * e.mlProb;
+                let conviction = (e.conf / 100) * e.mlProb;
                 if (conviction > best) best = conviction;
             }
         });
@@ -3784,10 +3784,10 @@ function updateSignalRadar(signals, status) {
         if (entries.length === 0) {
             legend.innerHTML = '<div class="empty" style="font-size:.6rem">No recent signals — scanners running</div>';
         } else {
-            var sorted = entries.sort(function(a, b) { return (b.conf * b.mlProb) - (a.conf * a.mlProb); }).slice(0, 6);
+            let sorted = entries.sort(function(a, b) { return (b.conf * b.mlProb) - (a.conf * a.mlProb); }).slice(0, 6);
             legend.innerHTML = sorted.map(function(e) {
-                var conviction = (e.conf / 100 * e.mlProb * 100).toFixed(0);
-                var sideColor = e.side === "long" || e.side === "buy" ? "var(--green)" : "var(--red)";
+                let conviction = (e.conf / 100 * e.mlProb * 100).toFixed(0);
+                let sideColor = e.side === "long" || e.side === "buy" ? "var(--green)" : "var(--red)";
                 return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">' +
                     '<span style="color:' + sideColor + ';font-weight:700">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
                     '<span class="text-muted">' + e.scanner.substring(0, 8) + '</span>' +
@@ -3799,7 +3799,7 @@ function updateSignalRadar(signals, status) {
     // Lock label: strongest signal
     if (lockLabel) {
         if (entries.length > 0) {
-            var best = entries[0];
+            let best = entries[0];
             lockLabel.textContent = "LOCK: " + best.sym + " " + best.side.toUpperCase().charAt(0) + " " +
                 (best.conf * best.mlProb / 100 * 100).toFixed(0) + "%";
             lockLabel.style.color = "var(--cyan)";
@@ -3825,18 +3825,18 @@ function updateSignalRadar(signals, status) {
 // ── THESIS TRACKER ──
 async function loadThesis() {
     try {
-        var d = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("thesis-content");
-        var badge = document.getElementById("thesis-regime-badge");
+        let d = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("thesis-content");
+        let badge = document.getElementById("thesis-regime-badge");
         if (!wrap || !d) return;
 
-        var regime = d.regime || "unknown";
-        var regimeColors = {
+        let regime = d.regime || "unknown";
+        let regimeColors = {
             trending_up: "var(--green)", trending_down: "var(--red)", breakout: "var(--cyan)",
             mean_reversion: "var(--yellow)", ranging: "var(--yellow)",
             sideways: "var(--text-muted)", quiet: "var(--text-muted)", high_volatility: "#f97316",
         };
-        var rc = regimeColors[regime] || "var(--text-muted)";
+        let rc = regimeColors[regime] || "var(--text-muted)";
 
         if (badge) {
             badge.textContent = regime.toUpperCase().replace("_", " ");
@@ -3844,7 +3844,7 @@ async function loadThesis() {
             badge.style.color = "#000";
         }
 
-        var confBar = '<div style="height:4px;background:rgba(255,255,255,.06);border-radius:2px;margin:4px 0">' +
+        let confBar = '<div style="height:4px;background:rgba(255,255,255,.06);border-radius:2px;margin:4px 0">' +
             '<div style="height:100%;width:' + (d.regime_confidence * 100).toFixed(0) + '%;background:' + rc + ';border-radius:2px"></div></div>';
 
         wrap.innerHTML =
@@ -3863,20 +3863,20 @@ async function loadThesis() {
 // ── MULTI-AGENT PIPELINE ──
 async function loadAgentPipeline() {
     try {
-        var d = await fetch("/api/agents/pipeline").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("agent-pipeline");
+        let d = await fetch("/api/agents/pipeline").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("agent-pipeline");
         if (!wrap || !d || !d.agents) return;
 
-        var statusIcons = {
+        let statusIcons = {
             scanning: "◉", active: "◉", tracking: "◉", monitoring: "◉", watching: "◉",
             LIVE: "●", ready: "○", idle: "○", disabled: "◌", off: "◌",
             TRIPPED: "⊘", dry_run: "◎",
         };
 
         wrap.innerHTML = d.agents.map(function(a, idx) {
-            var statusIcon = statusIcons[a.status] || "○";
-            var isActive = ["scanning", "active", "tracking", "monitoring", "watching", "LIVE"].indexOf(a.status) >= 0;
-            var arrow = idx < d.agents.length - 1 ? '<div style="display:flex;align-items:center;color:rgba(255,255,255,.15);font-size:1.2rem;padding:0 2px">→</div>' : '';
+            let statusIcon = statusIcons[a.status] || "○";
+            let isActive = ["scanning", "active", "tracking", "monitoring", "watching", "LIVE"].indexOf(a.status) >= 0;
+            let arrow = idx < d.agents.length - 1 ? '<div style="display:flex;align-items:center;color:rgba(255,255,255,.15);font-size:1.2rem;padding:0 2px">→</div>' : '';
 
             return '<div style="flex:1;min-width:90px;padding:8px 6px;background:rgba(255,255,255,.02);border:1px solid ' +
                 (isActive ? a.color + '40' : 'var(--border)') + ';border-top:2px solid ' + (isActive ? a.color : 'var(--border)') +
@@ -3895,8 +3895,8 @@ async function loadAgentPipeline() {
 // ── PIPELINE TRACE (per-batch drilldown) ──
 async function loadPipelineTrace() {
     try {
-        var d = await fetch("/api/pipeline/trace?limit=50").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("pipeline-trace");
+        let d = await fetch("/api/pipeline/trace?limit=50").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("pipeline-trace");
         if (!wrap || !d || !d.batches) return;
 
         if (d.batches.length === 0) {
@@ -3905,16 +3905,16 @@ async function loadPipelineTrace() {
         }
 
         wrap.innerHTML = d.batches.slice(0, 12).map(function(batch) {
-            var total = batch.passed + batch.failed;
-            var passRate = total > 0 ? (batch.passed / total * 100) : 0;
-            var barColor = passRate >= 60 ? "var(--green)" : passRate >= 30 ? "var(--yellow)" : "var(--red)";
-            var ts = new Date(batch.ts * 1000);
-            var timeStr = ts.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+            let total = batch.passed + batch.failed;
+            let passRate = total > 0 ? (batch.passed / total * 100) : 0;
+            let barColor = passRate >= 60 ? "var(--green)" : passRate >= 30 ? "var(--yellow)" : "var(--red)";
+            let ts = new Date(batch.ts * 1000);
+            let timeStr = ts.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
 
             // Compact signal icons
-            var sigIcons = (batch.signals || []).slice(0, 8).map(function(s) {
-                var col = s.final_passed ? "var(--green)" : "var(--red)";
-                var sym = (s.symbol || "?").replace("/USDT", "").substring(0, 3);
+            let sigIcons = (batch.signals || []).slice(0, 8).map(function(s) {
+                let col = s.final_passed ? "var(--green)" : "var(--red)";
+                let sym = (s.symbol || "?").replace("/USDT", "").substring(0, 3);
                 return '<span style="font-size:.5rem;padding:1px 3px;border-radius:2px;background:' +
                     (s.final_passed ? 'rgba(0,255,157,.1)' : 'rgba(255,59,92,.1)') +
                     ';color:' + col + ';border:1px solid ' + col + '30" title="' +
@@ -3936,18 +3936,18 @@ async function loadPipelineTrace() {
 // ── RESEARCH ENGINE (correlations + regime transitions) ──
 async function loadResearchEngine() {
     try {
-        var d = await fetch("/api/research/correlations").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("research-content");
+        let d = await fetch("/api/research/correlations").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("research-content");
         if (!wrap || !d) return;
 
-        var html = "";
+        let html = "";
 
         // 1. Regime transitions
-        var transitions = d.regime_transitions || [];
+        let transitions = d.regime_transitions || [];
         if (transitions.length > 0) {
             html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">Regime Status</div>';
             transitions.forEach(function(t) {
-                var col = t.signal === "stable" ? "var(--green)" : "var(--yellow)";
+                let col = t.signal === "stable" ? "var(--green)" : "var(--yellow)";
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;background:rgba(255,255,255,.02);border-radius:3px;border-left:2px solid ' + col + '">' +
                     '<span style="font-size:.65rem;color:' + col + ';font-weight:700">' + (t.current || "?").toUpperCase() + '</span>' +
                     '<span class="metric-label">' + t.signal + ' · conf ' + ((t.confidence || 0) * 100).toFixed(0) + '%</span></div>';
@@ -3955,19 +3955,19 @@ async function loadResearchEngine() {
         }
 
         // 2. Symbol performance heatmap
-        var perf = d.symbol_performance || {};
-        var symbols = Object.keys(perf);
+        let perf = d.symbol_performance || {};
+        let symbols = Object.keys(perf);
         if (symbols.length > 0) {
             html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:8px;margin-bottom:4px">Symbol Performance</div>';
             html += '<div style="display:flex;flex-wrap:wrap;gap:4px">';
             symbols.sort(function(a, b) { return (perf[b].avg_r || 0) - (perf[a].avg_r || 0); });
             symbols.forEach(function(sym) {
-                var p = perf[sym];
-                var avgR = p.avg_r || 0;
-                var wr = p.wr || 0;
-                var trades = p.trades || 0;
-                var col = avgR > 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
-                var textCol = avgR > 0 ? "var(--green)" : "var(--red)";
+                let p = perf[sym];
+                let avgR = p.avg_r || 0;
+                let wr = p.wr || 0;
+                let trades = p.trades || 0;
+                let col = avgR > 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
+                let textCol = avgR > 0 ? "var(--green)" : "var(--red)";
                 html += '<div style="padding:3px 6px;border-radius:3px;background:' + col + ';border:1px solid ' + textCol + '30;text-align:center;min-width:55px">' +
                     '<div style="font-size:.6rem;font-weight:700;color:' + textCol + '">' + sym.replace("/USDT", "") + '</div>' +
                     '<div style="font-size:.55rem;font-family:var(--font-mono);color:' + textCol + '">' + avgR.toFixed(2) + 'R</div>' +
@@ -3977,13 +3977,13 @@ async function loadResearchEngine() {
         }
 
         // 3. Scanner co-firing
-        var coFiring = d.scanner_co_firing || {};
-        var coKeys = Object.keys(coFiring).filter(function(k) { return coFiring[k] > 0.1; });
+        let coFiring = d.scanner_co_firing || {};
+        let coKeys = Object.keys(coFiring).filter(function(k) { return coFiring[k] > 0.1; });
         if (coKeys.length > 0) {
             html += '<div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:8px;margin-bottom:4px">Scanner Co-Firing</div>';
             coKeys.sort(function(a, b) { return coFiring[b] - coFiring[a]; });
             html += coKeys.slice(0, 5).map(function(k) {
-                var v = coFiring[k];
+                let v = coFiring[k];
                 return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0">' +
                     '<span class="text-muted">' + k + '</span>' +
                     '<span style="font-family:var(--font-mono);color:var(--cyan)">' + (v * 100).toFixed(0) + '%</span></div>';
@@ -4002,22 +4002,22 @@ async function loadResearchEngine() {
 // ── RESOLUTION CLOCK ──
 // Forward-looking thesis timeline showing key price levels and regime questions
 function updateResolutionClock(thesis, prices) {
-    var wrap = document.getElementById("resolution-clock");
+    let wrap = document.getElementById("resolution-clock");
     if (!wrap) return;
 
-    var btc = (prices && prices["BTC/USDT"]) || 0;
-    var eth = (prices && prices["ETH/USDT"]) || 0;
-    var regime = (thesis && thesis.regime) || "unknown";
-    var conf = (thesis && thesis.regime_confidence) || 0;
+    let btc = (prices && prices["BTC/USDT"]) || 0;
+    let eth = (prices && prices["ETH/USDT"]) || 0;
+    let regime = (thesis && thesis.regime) || "unknown";
+    let conf = (thesis && thesis.regime_confidence) || 0;
 
     // Build resolution questions based on current state
-    var questions = [];
+    let questions = [];
 
     // BTC key levels
     if (btc > 0) {
-        var btcRound = Math.round(btc / 1000) * 1000;
-        var btcDist = ((btc - btcRound) / btc * 100).toFixed(2);
-        var direction = btc > btcRound ? "above" : "below";
+        let btcRound = Math.round(btc / 1000) * 1000;
+        let btcDist = ((btc - btcRound) / btc * 100).toFixed(2);
+        let direction = btc > btcRound ? "above" : "below";
         questions.push({
             question: "BTC hold $" + btcRound.toLocaleString() + "?",
             pressure: Math.max(0, 100 - Math.abs(btcDist) * 20),
@@ -4035,8 +4035,8 @@ function updateResolutionClock(thesis, prices) {
     });
 
     // Trend continuation
-    var side = (thesis && thesis.dominant_side) || "NEUTRAL";
-    var wr = (thesis && thesis.recent_wr) || 0;
+    let side = (thesis && thesis.dominant_side) || "NEUTRAL";
+    let wr = (thesis && thesis.recent_wr) || 0;
     questions.push({
         question: side + " thesis holds?",
         pressure: wr,
@@ -4045,8 +4045,8 @@ function updateResolutionClock(thesis, prices) {
     });
 
     // Session timing
-    var hour = new Date().getUTCHours();
-    var isActiveSession = (hour >= 3 && hour < 21);
+    let hour = new Date().getUTCHours();
+    let isActiveSession = (hour >= 3 && hour < 21);
     questions.push({
         question: "Active session?",
         pressure: isActiveSession ? 80 : 20,
@@ -4069,35 +4069,35 @@ function updateResolutionClock(thesis, prices) {
 // Capital deployed by symbol/family with visual nodes
 async function loadMarketMap() {
     try {
-        var d = await fetch("/api/market-map").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("market-map");
+        let d = await fetch("/api/market-map").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("market-map");
         if (!wrap || !d || !d.symbols) return;
 
-        var families = d.families || {};
-        var familyColors = {
+        let families = d.families || {};
+        let familyColors = {
             liquid_majors: "#06b6d4", secondary: "#8b5cf6", high_beta: "#f59e0b",
         };
 
-        var html = '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+        let html = '<div style="display:flex;gap:12px;flex-wrap:wrap">';
 
         for (var famName in families) {
-            var syms = families[famName] || [];
-            var fColor = familyColors[famName] || "var(--text-muted)";
-            var famExposure = 0;
-            var famPnl = 0;
-            var famTrades = 0;
+            let syms = families[famName] || [];
+            let fColor = familyColors[famName] || "var(--text-muted)";
+            let famExposure = 0;
+            let famPnl = 0;
+            let famTrades = 0;
 
-            var nodes = syms.map(function(sym) {
-                var s = d.symbols[sym] || {};
-                var exposure = (s.paper_exposure || 0) + (s.real_exposure || 0);
+            let nodes = syms.map(function(sym) {
+                let s = d.symbols[sym] || {};
+                let exposure = (s.paper_exposure || 0) + (s.real_exposure || 0);
                 famExposure += exposure;
                 famPnl += (s.pnl || 0);
                 famTrades += (s.trades || 0);
 
-                var size = Math.max(36, Math.min(70, 36 + exposure / 50));
-                var pnlColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
-                var borderColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.3)" : "rgba(255,59,92,.3)";
-                var coin = sym.replace("/USDT", "");
+                let size = Math.max(36, Math.min(70, 36 + exposure / 50));
+                let pnlColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
+                let borderColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.3)" : "rgba(255,59,92,.3)";
+                let coin = sym.replace("/USDT", "");
 
                 return '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + pnlColor +
                     ';border:1px solid ' + borderColor + ';display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:default" ' +
@@ -4128,11 +4128,11 @@ async function loadMarketMap() {
 // ── CATALYST CALENDAR ──
 async function loadCatalystCalendar() {
     try {
-        var d = await fetch("/api/catalyst-calendar").then(function(r) { return r.json(); }).catch(function() { return null; });
-        var wrap = document.getElementById("catalyst-calendar");
+        let d = await fetch("/api/catalyst-calendar").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let wrap = document.getElementById("catalyst-calendar");
         if (!wrap || !d) return;
 
-        var html = "";
+        let html = "";
 
         // 1. Current session indicator
         html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:rgba(255,255,255,.02);border-radius:3px;margin-bottom:4px">' +
@@ -4140,12 +4140,12 @@ async function loadCatalystCalendar() {
             '<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--text-muted)">' + (d.utc_time || "") + '</span></div>';
 
         // 2. Session timeline (compact horizontal bar)
-        var sessions = d.sessions || [];
+        let sessions = d.sessions || [];
         html += '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;margin-bottom:6px">';
         sessions.forEach(function(s) {
-            var width = ((s.utc_end - s.utc_start) / 24 * 100);
-            var bg = s.active ? "rgba(6,182,212,.3)" : "rgba(255,255,255,.03)";
-            var border = s.active ? "rgba(6,182,212,.5)" : "rgba(255,255,255,.05)";
+            let width = ((s.utc_end - s.utc_start) / 24 * 100);
+            let bg = s.active ? "rgba(6,182,212,.3)" : "rgba(255,255,255,.03)";
+            let border = s.active ? "rgba(6,182,212,.5)" : "rgba(255,255,255,.05)";
             html += '<div style="width:' + width + '%;background:' + bg + ';border-right:1px solid ' + border +
                 ';display:flex;align-items:center;justify-content:center" title="' + s.name + ' (UTC ' + s.utc_start + '-' + s.utc_end + ')">' +
                 '<span style="font-size:.4rem;color:' + (s.active ? 'var(--cyan)' : 'rgba(255,255,255,.15)') + '">' +
@@ -4154,15 +4154,15 @@ async function loadCatalystCalendar() {
         html += '</div>';
 
         // 3. Funding rates
-        var funding = d.funding || {};
-        var fundingKeys = Object.keys(funding);
+        let funding = d.funding || {};
+        let fundingKeys = Object.keys(funding);
         if (fundingKeys.length > 0) {
             html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:3px">Funding Rates</div>';
             fundingKeys.forEach(function(sym) {
-                var f = funding[sym];
-                var rate = f.rate_8h || 0;
-                var col = rate > 0 ? "var(--green)" : rate < 0 ? "var(--red)" : "var(--text-muted)";
-                var bias = f.bias === "longs_pay" ? "L pay" : f.bias === "shorts_pay" ? "S pay" : "neutral";
+                let f = funding[sym];
+                let rate = f.rate_8h || 0;
+                let col = rate > 0 ? "var(--green)" : rate < 0 ? "var(--red)" : "var(--text-muted)";
+                let bias = f.bias === "longs_pay" ? "L pay" : f.bias === "shorts_pay" ? "S pay" : "neutral";
                 html += '<div style="display:flex;justify-content:space-between;font-size:.58rem;padding:1px 0">' +
                     '<span class="text-muted">' + sym.replace("/USDT", "") + '</span>' +
                     '<span style="font-family:var(--font-mono);color:' + col + '">' + rate.toFixed(4) + '% <span style="font-size:.5rem">(' + bias + ')</span></span></div>';
@@ -4170,11 +4170,11 @@ async function loadCatalystCalendar() {
         }
 
         // 4. Upcoming events
-        var events = d.upcoming_events || [];
+        let events = d.upcoming_events || [];
         if (events.length > 0) {
             html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-top:6px;margin-bottom:3px">Upcoming Events</div>';
             events.forEach(function(e) {
-                var impactCol = e.impact === "high" ? "var(--red)" : e.impact === "medium" ? "var(--yellow)" : "var(--text-muted)";
+                let impactCol = e.impact === "high" ? "var(--red)" : e.impact === "medium" ? "var(--yellow)" : "var(--text-muted)";
                 html += '<div style="display:flex;gap:6px;align-items:flex-start;font-size:.55rem;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.02)">' +
                     '<span style="color:var(--text-muted);min-width:42px;font-family:var(--font-mono)">' + e.date.substring(5) + '</span>' +
                     '<span style="width:4px;height:4px;border-radius:50%;background:' + impactCol + ';margin-top:4px;flex-shrink:0"></span>' +
@@ -4190,11 +4190,11 @@ async function loadCatalystCalendar() {
 (function wireVisionTier3() {
     async function loadTier3() {
         try {
-            var thesis = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
-            var prices = (thesis && thesis.btc_price) ? {"BTC/USDT": thesis.btc_price} : {};
+            let thesis = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
+            let prices = (thesis && thesis.btc_price) ? {"BTC/USDT": thesis.btc_price} : {};
             // Also get full prices from status
             try {
-                var st = await fetch("/api/status").then(function(r) { return r.json(); }).catch(function() { return {}; });
+                let st = await fetch("/api/status").then(function(r) { return r.json(); }).catch(function() { return {}; });
                 prices = st.prices || prices;
             } catch(e) {}
             updateResolutionClock(thesis, prices);
@@ -4222,9 +4222,9 @@ async function loadCatalystCalendar() {
 // ══════════════════════════════════════════════════════════
 
 async function ccTogglePause() {
-    var btn = document.getElementById("cc-pause-btn");
-    var isPaused = btn.dataset.paused === "true";
-    var endpoint = isPaused ? "/api/control/resume" : "/api/control/pause";
+    let btn = document.getElementById("cc-pause-btn");
+    let isPaused = btn.dataset.paused === "true";
+    let endpoint = isPaused ? "/api/control/resume" : "/api/control/pause";
     try {
         await fetch(endpoint, { method: "POST" });
         btn.dataset.paused = isPaused ? "false" : "true";
@@ -4233,8 +4233,8 @@ async function ccTogglePause() {
 }
 
 async function ccToggleReal() {
-    var label = document.getElementById("cc-real-label");
-    var isOn = label.textContent !== "OFF";
+    let label = document.getElementById("cc-real-label");
+    let isOn = label.textContent !== "OFF";
     try {
         await fetch("/api/real/toggle", {
             method: "POST",
@@ -4251,7 +4251,7 @@ async function ccEmergencyStop() {
     if (!confirm("EMERGENCY STOP: disable ALL trading. Continue?")) return;
     try {
         await fetch("/api/emergency-stop", { method: "POST" });
-        var btn = document.getElementById("cc-estop-btn");
+        let btn = document.getElementById("cc-estop-btn");
         btn.style.opacity = "0.4";
         btn.textContent = "STOPPED";
     } catch (e) { alert("Emergency stop failed: " + e.message); }
@@ -4260,13 +4260,13 @@ async function ccEmergencyStop() {
 // Update CC 2.0 real label + live PnL on every refresh
 function updateCC20(status, realStatus) {
     try {
-        var lbl = document.getElementById("cc-real-label");
+        let lbl = document.getElementById("cc-real-label");
         if (lbl && realStatus) {
             lbl.textContent = realStatus.enabled ? "ON" : "OFF";
         }
-        var pnlEl = document.getElementById("cc-live-pnl");
+        let pnlEl = document.getElementById("cc-live-pnl");
         if (pnlEl && status) {
-            var pnl = parseFloat(status.paper_pnl_usd || status.daily_pnl || 0);
+            let pnl = parseFloat(status.paper_pnl_usd || status.daily_pnl || 0);
             pnlEl.textContent = "$" + pnl.toFixed(2);
             pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
         }
@@ -4278,13 +4278,13 @@ function updateCC20(status, realStatus) {
 // ══════════════════════════════════════════════════════════
 
 async function toggleConfigEditor() {
-    var editor = document.getElementById("config-editor");
-    var snapshot = document.getElementById("config-snapshot");
-    var btn = document.getElementById("config-edit-btn");
+    let editor = document.getElementById("config-editor");
+    let snapshot = document.getElementById("config-snapshot");
+    let btn = document.getElementById("config-edit-btn");
     if (editor.style.display === "none") {
         try {
-            var r = await fetch("/api/config");
-            var d = await r.json();
+            let r = await fetch("/api/config");
+            let d = await r.json();
             document.getElementById("config-json").value = JSON.stringify(d, null, 2);
             editor.style.display = "block";
             snapshot.style.display = "none";
@@ -4305,16 +4305,16 @@ function cancelConfigEdit() {
 }
 
 async function saveConfig() {
-    var msg = document.getElementById("config-save-msg");
+    let msg = document.getElementById("config-save-msg");
     try {
-        var text = document.getElementById("config-json").value;
-        var parsed = JSON.parse(text);
-        var r = await fetch("/api/config", {
+        let text = document.getElementById("config-json").value;
+        let parsed = JSON.parse(text);
+        let r = await fetch("/api/config", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(parsed),
         });
-        var d = await r.json();
+        let d = await r.json();
         if (d.ok) {
             msg.textContent = "Saved & reloaded: " + (d.keys_updated || []).join(", ");
             msg.style.color = "var(--green)";
@@ -4338,10 +4338,10 @@ async function saveConfig() {
 
 async function refreshGridBot() {
     try {
-        var status = await fetch("/api/grid/status").then(function(r) { return r.json(); }).catch(function() { return { enabled: false }; });
-        var badge = document.getElementById("grid-status-badge");
-        var disabledMsg = document.getElementById("grid-disabled-msg");
-        var activeContent = document.getElementById("grid-active-content");
+        let status = await fetch("/api/grid/status").then(function(r) { return r.json(); }).catch(function() { return { enabled: false }; });
+        let badge = document.getElementById("grid-status-badge");
+        let disabledMsg = document.getElementById("grid-disabled-msg");
+        let activeContent = document.getElementById("grid-active-content");
         if (!badge) return;
 
         if (!status.enabled) {
@@ -4357,8 +4357,8 @@ async function refreshGridBot() {
         if (disabledMsg) disabledMsg.style.display = "none";
         if (activeContent) activeContent.style.display = "block";
 
-        var s = status;
-        var el = function(id) { return document.getElementById(id); };
+        let s = status;
+        let el = function(id) { return document.getElementById(id); };
         if (el("grid-total-fills")) el("grid-total-fills").textContent = s.total_fills || 0;
         if (el("grid-profit")) el("grid-profit").textContent = "$" + (s.total_profit || 0).toFixed(2);
         if (el("grid-fees")) el("grid-fees").textContent = "$" + (s.total_fees || 0).toFixed(2);
@@ -4366,14 +4366,14 @@ async function refreshGridBot() {
         if (el("grid-profit-hr")) el("grid-profit-hr").textContent = "$" + (s.profit_per_hour || 0).toFixed(2);
 
         // Grid ladders visualization
-        var ladders = document.getElementById("grid-ladders");
+        let ladders = document.getElementById("grid-ladders");
         if (ladders && s.symbols) {
-            var html = "";
+            let html = "";
             for (var sym in s.symbols) {
-                var info = s.symbols[sym] || {};
-                var center = info.center || info.last_price || 0;
-                var openCount = info.open || 0;
-                var dec = sym.includes("BTC") ? 2 : 4;
+                let info = s.symbols[sym] || {};
+                let center = info.center || info.last_price || 0;
+                let openCount = info.open || 0;
+                let dec = sym.includes("BTC") ? 2 : 4;
                 html += '<div style="padding:8px;border:1px solid var(--border);border-radius:6px">' +
                     '<div style="font-weight:700;font-size:.72rem">' + esc(sym.replace("/USDT","")) + '</div>' +
                     '<div style="font-size:.62rem;color:var(--cyan)">Center: $' + center.toFixed(dec) + '</div>' +
@@ -4388,7 +4388,7 @@ async function refreshGridBot() {
 // ── BRAIN TAB ────────────────────────────────────────────
 async function refreshBrainTab() {
     // Only fetch if Brain tab is active (avoid unnecessary API calls)
-    var brainTab = document.getElementById("tab-brain");
+    let brainTab = document.getElementById("tab-brain");
     if (!brainTab || brainTab.style.display === "none") return;
 
     try {
@@ -4403,21 +4403,21 @@ async function refreshBrainTab() {
 
         // 1. Brain Status
         if (stateRes) {
-            var modeEl = document.getElementById("brain-mode");
+            let modeEl = document.getElementById("brain-mode");
             if (modeEl) modeEl.textContent = stateRes.dry_run ? "DRY RUN" : "LIVE";
             if (modeEl) modeEl.style.color = stateRes.dry_run ? "#bf00ff" : "#00ff88";
-            var obsEl = document.getElementById("brain-observations");
+            let obsEl = document.getElementById("brain-observations");
             if (obsEl) obsEl.textContent = (stateRes.total_observations || 0).toLocaleString();
-            var cellsEl = document.getElementById("brain-cells");
+            let cellsEl = document.getElementById("brain-cells");
             if (cellsEl) cellsEl.textContent = (stateRes.matrix_cells || 0).toLocaleString();
-            var dirEl = document.getElementById("brain-directives");
+            let dirEl = document.getElementById("brain-directives");
             if (dirEl) dirEl.textContent = stateRes.directives_issued || 0;
 
             // Active directives
-            var adDiv = document.getElementById("brain-active-directives");
+            let adDiv = document.getElementById("brain-active-directives");
             if (adDiv && stateRes.active_directives) {
-                var ad = stateRes.active_directives;
-                var lines = [];
+                let ad = stateRes.active_directives;
+                let lines = [];
                 if (ad.trading_paused) lines.push('<span style="color:#ff4444">PAUSED: ' + ad.pause_reason + '</span>');
                 if (ad.suppressed_scanners && ad.suppressed_scanners.length > 0) lines.push('Suppressed scanners: <span style="color:#ff8800">' + ad.suppressed_scanners.join(", ") + '</span>');
                 if (ad.suppressed_hours && ad.suppressed_hours.length > 0) lines.push('Suppressed hours: <span style="color:#ff8800">' + ad.suppressed_hours.join(", ") + 'h UTC</span>');
@@ -4429,17 +4429,17 @@ async function refreshBrainTab() {
 
             // Today's session
             if (stateRes.session) {
-                var s = stateRes.session;
-                var tEl = document.getElementById("brain-today-trades"); if(tEl) tEl.textContent = s.trades || 0;
-                var wrEl = document.getElementById("brain-today-wr"); if(wrEl) { wrEl.textContent = s.wr ? s.wr + "%" : "--"; wrEl.style.color = (s.wr||0)>=55?"#00ff88":"#ff4444"; }
-                var pnlEl = document.getElementById("brain-today-pnl"); if(pnlEl) { pnlEl.textContent = "$" + (s.pnl_usd||0).toFixed(2); pnlEl.style.color = (s.pnl_usd||0)>=0?"#00ff88":"#ff4444"; }
-                var warmEl = document.getElementById("brain-warm"); if(warmEl) { warmEl.textContent = s.is_warm ? "YES" : "COLD"; warmEl.style.color = s.is_warm?"#00ff88":"#ff8800"; }
+                let s = stateRes.session;
+                let tEl = document.getElementById("brain-today-trades"); if(tEl) tEl.textContent = s.trades || 0;
+                let wrEl = document.getElementById("brain-today-wr"); if(wrEl) { wrEl.textContent = s.wr ? s.wr + "%" : "--"; wrEl.style.color = (s.wr||0)>=55?"#00ff88":"#ff4444"; }
+                let pnlEl = document.getElementById("brain-today-pnl"); if(pnlEl) { pnlEl.textContent = "$" + (s.pnl_usd||0).toFixed(2); pnlEl.style.color = (s.pnl_usd||0)>=0?"#00ff88":"#ff4444"; }
+                let warmEl = document.getElementById("brain-warm"); if(warmEl) { warmEl.textContent = s.is_warm ? "YES" : "COLD"; warmEl.style.color = s.is_warm?"#00ff88":"#ff8800"; }
             }
 
             // Weekly summary
             if (stateRes.weekly) {
-                var w = stateRes.weekly;
-                var wDiv = document.getElementById("brain-weekly-summary");
+                let w = stateRes.weekly;
+                let wDiv = document.getElementById("brain-weekly-summary");
                 if (wDiv && w.days > 0) {
                     wDiv.innerHTML = 'Week: ' + w.days + 'd | ' + w.total_trades + ' trades | WR ' + (w.wr||0) + '% | PnL <span style="color:' + ((w.total_pnl||0)>=0?"#00ff88":"#ff4444") + '">$' + (w.total_pnl||0).toFixed(2) + '</span>';
                 }
@@ -4447,15 +4447,15 @@ async function refreshBrainTab() {
 
             // Optimizer
             if (stateRes.optimizer) {
-                var opt = stateRes.optimizer;
-                var optDiv = document.getElementById("brain-optimizer-state");
+                let opt = stateRes.optimizer;
+                let optDiv = document.getElementById("brain-optimizer-state");
                 if (optDiv) {
                     if (!opt.enabled) {
                         optDiv.innerHTML = '<div style="text-align:center;color:#666;padding:10px">Disabled (Phase 7)</div>';
                     } else {
-                        var phtml = '';
+                        let phtml = '';
                         for (var pn in (opt.params||{})) {
-                            var p = opt.params[pn];
+                            let p = opt.params[pn];
                             phtml += '<div style="margin-bottom:6px"><strong>' + pn + '</strong>: ' + p.current + ' <span style="color:#666">(default: ' + p.default + ', range: ' + p.min + '-' + p.max + ')</span><br>Trades at current: ' + p.trades_at_current + ' | Adjustments: ' + p.total_adjustments + '</div>';
                         }
                         optDiv.innerHTML = phtml || 'No params active';
@@ -4467,23 +4467,23 @@ async function refreshBrainTab() {
         // 2. Setup x Regime Matrix
         if (matrixRes && Object.keys(matrixRes).length > 0) {
             document.getElementById("brain-matrix-empty").style.display = "none";
-            var regimes = new Set(); var setups = new Set();
+            let regimes = new Set(); var setups = new Set();
             for (var k in matrixRes) { var parts = k.split(":"); setups.add(parts[0]); regimes.add(parts[1]); }
-            var regArr = Array.from(regimes).sort();
-            var setArr = Array.from(setups).sort();
-            var hdr = '<tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #333;color:#aaa">Setup</th>';
+            let regArr = Array.from(regimes).sort();
+            let setArr = Array.from(setups).sort();
+            let hdr = '<tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #333;color:#aaa">Setup</th>';
             regArr.forEach(function(r){ hdr += '<th style="padding:4px 8px;border-bottom:1px solid #333;color:#aaa;font-size:11px">' + r.replace("_"," ") + '</th>'; });
             hdr += '</tr>';
             document.querySelector("#brain-matrix-table thead").innerHTML = hdr;
-            var bdy = '';
+            let bdy = '';
             setArr.forEach(function(setup){
                 bdy += '<tr><td style="padding:4px 8px;border-bottom:1px solid #222;font-weight:bold;color:#00d4ff">' + setup.replace("_"," ") + '</td>';
                 regArr.forEach(function(regime){
-                    var cell = matrixRes[setup + ":" + regime];
+                    let cell = matrixRes[setup + ":" + regime];
                     if (cell && cell.sample_count > 0) {
-                        var wr = cell.win_rate;
-                        var bg = wr >= 60 ? "rgba(0,255,136,0.15)" : wr >= 45 ? "rgba(255,200,0,0.12)" : "rgba(255,68,68,0.15)";
-                        var clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
+                        let wr = cell.win_rate;
+                        let bg = wr >= 60 ? "rgba(0,255,136,0.15)" : wr >= 45 ? "rgba(255,200,0,0.12)" : "rgba(255,68,68,0.15)";
+                        let clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
                         bdy += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;background:' + bg + ';color:' + clr + ';font-size:12px">' + wr.toFixed(0) + '% <span style="color:#666;font-size:10px">(' + cell.sample_count + ')</span></td>';
                     } else {
                         bdy += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;color:#333">-</td>';
@@ -4496,15 +4496,15 @@ async function refreshBrainTab() {
 
         // 3. Hourly Heatmap
         if (hourlyRes) {
-            var grid = document.getElementById("brain-hourly-grid");
+            let grid = document.getElementById("brain-hourly-grid");
             if (grid) {
-                var hhtml = '';
+                let hhtml = '';
                 for (var h = 0; h < 24; h++) {
-                    var hc = hourlyRes[h] || hourlyRes[String(h)];
+                    let hc = hourlyRes[h] || hourlyRes[String(h)];
                     if (hc && hc.sample_count > 0) {
-                        var wr = hc.win_rate;
-                        var bg = wr >= 60 ? "rgba(0,255,136,0.25)" : wr >= 45 ? "rgba(255,200,0,0.2)" : "rgba(255,68,68,0.25)";
-                        var clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
+                        let wr = hc.win_rate;
+                        let bg = wr >= 60 ? "rgba(0,255,136,0.25)" : wr >= 45 ? "rgba(255,200,0,0.2)" : "rgba(255,68,68,0.25)";
+                        let clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
                         hhtml += '<div style="background:' + bg + ';border:1px solid #333;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#888">' + h + 'h</div><div style="color:' + clr + ';font-weight:bold">' + wr.toFixed(0) + '%</div><div style="color:#555">' + hc.sample_count + '</div></div>';
                     } else {
                         hhtml += '<div style="background:#111;border:1px solid #222;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#555">' + h + 'h</div><div style="color:#333">-</div></div>';
@@ -4516,13 +4516,13 @@ async function refreshBrainTab() {
 
         // 4. Regime History
         if (regimeRes && regimeRes.symbols) {
-            var rDiv = document.getElementById("brain-regime-container");
+            let rDiv = document.getElementById("brain-regime-container");
             if (rDiv) {
-                var rhtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Symbol</th><th class="px-2 py-1 text-muted">Current</th><th class="px-2 py-1 text-muted">Confidence</th><th class="px-2 py-1 text-muted">Predicted Next</th><th class="px-2 py-1 text-muted">Probability</th></tr></thead><tbody>';
+                let rhtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Symbol</th><th class="px-2 py-1 text-muted">Current</th><th class="px-2 py-1 text-muted">Confidence</th><th class="px-2 py-1 text-muted">Predicted Next</th><th class="px-2 py-1 text-muted">Probability</th></tr></thead><tbody>';
                 for (var sym in regimeRes.symbols) {
-                    var si = regimeRes.symbols[sym];
-                    var pred = (regimeRes.predictions||{})[sym] || {};
-                    var regColor = {"trending_up":"#00ff88","trending_down":"#ff4444","breakout":"#00d4ff","ranging":"#ffcc00","sideways":"#ffcc00","volatile":"#ff8800","mean_reversion":"#bf00ff","quiet":"#666"}[si.current] || "#aaa";
+                    let si = regimeRes.symbols[sym];
+                    let pred = (regimeRes.predictions||{})[sym] || {};
+                    let regColor = {"trending_up":"#00ff88","trending_down":"#ff4444","breakout":"#00d4ff","ranging":"#ffcc00","sideways":"#ffcc00","volatile":"#ff8800","mean_reversion":"#bf00ff","quiet":"#666"}[si.current] || "#aaa";
                     rhtml += '<tr><td style="padding:4px 8px;border-bottom:1px solid #222;font-weight:bold">' + sym + '</td>';
                     rhtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;color:' + regColor + '">' + (si.current||"--").replace("_"," ") + '</td>';
                     rhtml += '<td class="px-2 py-1 border-b">' + (si.current_confidence ? (si.current_confidence*100).toFixed(0)+"%" : "--") + '</td>';
@@ -4536,11 +4536,11 @@ async function refreshBrainTab() {
 
         // 5. Daily Sessions
         if (sessionsRes && sessionsRes.daily_summaries && sessionsRes.daily_summaries.length > 0) {
-            var sDiv = document.getElementById("brain-sessions-container");
+            let sDiv = document.getElementById("brain-sessions-container");
             if (sDiv) {
-                var shtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Date</th><th class="px-2 py-1 text-muted">Trades</th><th class="px-2 py-1 text-muted">WR%</th><th class="px-2 py-1 text-muted">PnL</th><th class="px-2 py-1 text-muted">Best Scanner</th><th class="px-2 py-1 text-muted">Regime</th></tr></thead><tbody>';
+                let shtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Date</th><th class="px-2 py-1 text-muted">Trades</th><th class="px-2 py-1 text-muted">WR%</th><th class="px-2 py-1 text-muted">PnL</th><th class="px-2 py-1 text-muted">Best Scanner</th><th class="px-2 py-1 text-muted">Regime</th></tr></thead><tbody>';
                 sessionsRes.daily_summaries.forEach(function(ds){
-                    var pclr = (ds.pnl||0) >= 0 ? "#00ff88" : "#ff4444";
+                    let pclr = (ds.pnl||0) >= 0 ? "#00ff88" : "#ff4444";
                     shtml += '<tr><td class="px-2 py-1 border-b">' + ds.date + '</td>';
                     shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center">' + ds.trades + '</td>';
                     shtml += '<td style="padding:4px 8px;border-bottom:1px solid #222;text-align:center;color:' + ((ds.wr||0)>=55?"#00ff88":"#ff4444") + '">' + (ds.wr||0) + '%</td>';
@@ -4558,30 +4558,30 @@ async function refreshBrainTab() {
 // ── INFRA HEALTH: Proxy CB + Cron Sync + OB Cache ────────
 async function refreshInfraHealth() {
     try {
-        var d = await fetch("/api/infra/health").then(function(r) { return r.json(); }).catch(function() { return null; });
+        let d = await fetch("/api/infra/health").then(function(r) { return r.json(); }).catch(function() { return null; });
         if (!d) return;
 
         // Helper: inline KV rendering (avoids scope issues with makeKV in different tab context)
         function kv(label, value, color) {
-            var c = color || "var(--text)";
+            let c = color || "var(--text)";
             return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
                 '<span class="text-sm text-muted">' + label + '</span>' +
                 '<span style="font-size:.75rem;font-weight:600;color:' + c + ';font-family:var(--font-mono)">' + (value || "--") + '</span></div>';
         }
 
         // 1. ML Proxy Health
-        var proxyWrap = document.getElementById("proxy-health");
+        let proxyWrap = document.getElementById("proxy-health");
         if (proxyWrap && d.ml_proxy) {
-            var p = d.ml_proxy;
-            var cbColor = p.cb_open ? "var(--red)" : "var(--green)";
-            var cbText = p.cb_open ? "OPEN (" + (p.cb_remaining_sec || 0) + "s)" : "CLOSED";
-            var cacheHtml = "";
+            let p = d.ml_proxy;
+            let cbColor = p.cb_open ? "var(--red)" : "var(--green)";
+            let cbText = p.cb_open ? "OPEN (" + (p.cb_remaining_sec || 0) + "s)" : "CLOSED";
+            let cacheHtml = "";
             try {
-                var entries = p.cache_entries || {};
+                let entries = p.cache_entries || {};
                 Object.keys(entries).forEach(function(path) {
-                    var e = entries[path] || {};
-                    var age = parseFloat(e.age_sec || 0);
-                    var shortPath = path.split("/").pop() || path;
+                    let e = entries[path] || {};
+                    let age = parseFloat(e.age_sec || 0);
+                    let shortPath = path.split("/").pop() || path;
                     cacheHtml += '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span class="text-muted">' +
                         shortPath + '</span><span style="font-family:var(--font-mono);color:' +
                         (age < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + age.toFixed(0) + 's ago</span></div>';
@@ -4594,12 +4594,12 @@ async function refreshInfraHealth() {
         }
 
         // 2. Cron Sync Monitor
-        var syncWrap = document.getElementById("sync-monitor");
+        let syncWrap = document.getElementById("sync-monitor");
         if (syncWrap && d.cron_sync) {
-            var s = d.cron_sync;
-            var syncAge = parseFloat(s.age_sec || 999999);
-            var syncColor = syncAge < 900 ? "var(--green)" : syncAge < 1800 ? "var(--yellow)" : "var(--red)";
-            var syncText = s.last_sync ? (Math.floor(syncAge / 60) + "m ago") : "never";
+            let s = d.cron_sync;
+            let syncAge = parseFloat(s.age_sec || 999999);
+            let syncColor = syncAge < 900 ? "var(--green)" : syncAge < 1800 ? "var(--yellow)" : "var(--red)";
+            let syncText = s.last_sync ? (Math.floor(syncAge / 60) + "m ago") : "never";
             syncWrap.innerHTML =
                 kv("Last Sync", syncText, syncColor) +
                 kv("Sync Time", s.last_sync || "--") +
@@ -4609,10 +4609,10 @@ async function refreshInfraHealth() {
         }
 
         // 3. Orderbook Cache
-        var obWrap = document.getElementById("ob-cache-health");
+        let obWrap = document.getElementById("ob-cache-health");
         if (obWrap && d.orderbook_cache) {
-            var ob = d.orderbook_cache;
-            var running = ob.running;
+            let ob = d.orderbook_cache;
+            let running = ob.running;
             obWrap.innerHTML =
                 kv("Status", running ? "RUNNING" : "OFF", running ? "var(--green)" : "var(--red)") +
                 kv("Symbols", String(ob.symbols || 0)) +
@@ -4823,39 +4823,39 @@ function openTradeDetail(trade) {
 // --- Dashboard Header Update ---
 function updateDashboardHeader(trkStats, closed, decision) {
     if (trkStats) {
-        var daily = trkStats.daily_pnl || {};
-        var today = new Date().toISOString().slice(0, 10);
-        var td = daily[today] || {};
-        var pnl = td.net_pnl || 0;
-        var pnlEl = document.getElementById("cmd-today-pnl");
+        let daily = trkStats.daily_pnl || {};
+        let today = new Date().toISOString().slice(0, 10);
+        let td = daily[today] || {};
+        let pnl = td.net_pnl || 0;
+        let pnlEl = document.getElementById("cmd-today-pnl");
         if (pnlEl) {
             pnlEl.textContent = (pnl < 0 ? "-" : "") + "$" + Math.abs(pnl).toFixed(2);
             pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
         }
-        var wrEl = document.getElementById("cmd-today-wr");
+        let wrEl = document.getElementById("cmd-today-wr");
         if (wrEl) wrEl.textContent = (td.wr || 0).toFixed(0) + "%";
-        var trEl = document.getElementById("cmd-today-trades");
+        let trEl = document.getElementById("cmd-today-trades");
         if (trEl) trEl.textContent = td.trades || 0;
-        var feEl = document.getElementById("cmd-today-fees");
+        let feEl = document.getElementById("cmd-today-fees");
         if (feEl) feEl.textContent = "$" + (td.fees || 0).toFixed(0);
     }
     if (decision) {
-        var macroEl = document.getElementById("cmd-macro-bias");
+        let macroEl = document.getElementById("cmd-macro-bias");
         if (macroEl) {
-            var bias = decision.macro_bias_str || "NEUTRAL";
+            let bias = decision.macro_bias_str || "NEUTRAL";
             macroEl.textContent = String(bias).toUpperCase();
             macroEl.style.color = bias === "bullish" ? "var(--green)" : bias === "bearish" ? "var(--red)" : "var(--text-muted)";
         }
     }
     if (closed && closed.length > 0) {
-        var t = closed[closed.length - 1];
-        var lpnl = t.pnl_usd || 0;
-        var sym = (t.symbol || "?").split("/")[0];
-        var side = t.side || "?";
-        var reason = t.exit_reason || "?";
-        var el = document.getElementById("cmd-last-trade");
+        let t = closed[closed.length - 1];
+        let lpnl = t.pnl_usd || 0;
+        let sym = (t.symbol || "?").split("/")[0];
+        let side = t.side || "?";
+        let reason = t.exit_reason || "?";
+        let el = document.getElementById("cmd-last-trade");
         if (el) {
-            var color = lpnl >= 0 ? "var(--green)" : "var(--red)";
+            let color = lpnl >= 0 ? "var(--green)" : "var(--red)";
             el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span class="text-muted">' + sym + ' ' + side + '</span> <span style="font-size:.65rem;color:var(--text-muted)">' + reason + '</span>';
         }
     }
@@ -4878,44 +4878,44 @@ function switchRecentClosed(tab) {
 
 
 function updatePnlCalendar(trkStats) {
-    var cal = document.getElementById("pnl-calendar");
+    let cal = document.getElementById("pnl-calendar");
     if (!cal || !trkStats) return;
-    var daily = trkStats.daily_pnl || {};
-    var days = Object.keys(daily).sort();
+    let daily = trkStats.daily_pnl || {};
+    let days = Object.keys(daily).sort();
     if (days.length === 0) { cal.innerHTML = '<div class="empty" style="grid-column:1/-1;font-size:.65rem">No data</div>'; return; }
 
     // Get last 35 days (5 weeks)
-    var today = new Date();
-    var cells = [];
+    let today = new Date();
+    let cells = [];
     for (var i = 34; i >= 0; i--) {
-        var d = new Date(today);
+        let d = new Date(today);
         d.setDate(d.getDate() - i);
-        var key = d.toISOString().slice(0, 10);
-        var dow = d.getDay(); // 0=Sun
-        var td = daily[key] || null;
+        let key = d.toISOString().slice(0, 10);
+        let dow = d.getDay(); // 0=Sun
+        let td = daily[key] || null;
         cells.push({date: key, dow: dow, data: td, day: d.getDate()});
     }
 
     // Pad start to align with Monday (dow=1)
-    var firstDow = cells[0].dow;
-    var padStart = firstDow === 0 ? 6 : firstDow - 1; // Monday-based
+    let firstDow = cells[0].dow;
+    let padStart = firstDow === 0 ? 6 : firstDow - 1; // Monday-based
 
-    var html = "";
+    let html = "";
     for (var p = 0; p < padStart; p++) {
         html += '<div style="aspect-ratio:1;border-radius:3px"></div>';
     }
 
     for (var ci = 0; ci < cells.length; ci++) {
-        var c = cells[ci];
+        let c = cells[ci];
         var bg, color, title;
         if (!c.data) {
             bg = "rgba(255,255,255,.03)";
             color = "var(--text-muted)";
             title = c.date + ": No trades";
         } else {
-            var pnl = c.data.net_pnl || 0;
-            var wr = c.data.wr || 0;
-            var trades = c.data.trades || 0;
+            let pnl = c.data.net_pnl || 0;
+            let wr = c.data.wr || 0;
+            let trades = c.data.trades || 0;
             if (pnl < -10) {
                 bg = "rgba(255,59,92,.7)"; color = "#fff";
             } else if (pnl < 0) {
@@ -4940,18 +4940,18 @@ function updatePnlCalendar(trkStats) {
 function updateSessionSummary(closed) {
     if (!closed || closed.length === 0) return;
     // IST = UTC + 5:30
-    var sessions = {
+    let sessions = {
         "asia_early": {h:[0,1,2,3], w:0, n:0},     // 5:30-9:30 IST = 0-4 UTC
         "india":      {h:[4,5,6,7,8], w:0, n:0},    // 9:30-14:00 IST = 4-8:30 UTC
         "europe":     {h:[9,10,11,12,13], w:0, n:0}, // 14:00-19:30 IST = 8:30-14 UTC
         "us":         {h:[14,15,16,17,18,19,20,21,22,23], w:0, n:0}  // 19:30-5:30 IST
     };
     for (var i = 0; i < closed.length; i++) {
-        var t = closed[i];
-        var ts = t.exit_time || t.timestamp || "";
+        let t = closed[i];
+        let ts = t.exit_time || t.timestamp || "";
         if (!ts || ts.length < 13) continue;
-        var h = parseInt(ts.substring(11, 13));
-        var pnl = t.pnl_usd || 0;
+        let h = parseInt(ts.substring(11, 13));
+        let pnl = t.pnl_usd || 0;
         for (var sk in sessions) {
             if (sessions[sk].h.indexOf(h) >= 0) {
                 sessions[sk].n++;
@@ -4960,16 +4960,16 @@ function updateSessionSummary(closed) {
             }
         }
     }
-    var ids = {"asia_early":"sess-asia-early","india":"sess-india","europe":"sess-europe","us":"sess-us"};
+    let ids = {"asia_early":"sess-asia-early","india":"sess-india","europe":"sess-europe","us":"sess-us"};
     for (var sk2 in ids) {
-        var s = sessions[sk2];
-        var wr = s.n > 0 ? Math.round(s.w / s.n * 100) : 0;
-        var el = document.getElementById(ids[sk2]);
+        let s = sessions[sk2];
+        let wr = s.n > 0 ? Math.round(s.w / s.n * 100) : 0;
+        let el = document.getElementById(ids[sk2]);
         if (el) {
             el.textContent = s.n > 0 ? wr + "%" : "--";
             el.style.color = wr >= 70 ? "var(--green)" : wr >= 50 ? "var(--yellow)" : s.n > 0 ? "var(--red)" : "var(--text-muted)";
         }
-        var nel = document.getElementById(ids[sk2] + "-n");
+        let nel = document.getElementById(ids[sk2] + "-n");
         if (nel) nel.textContent = s.n + " trades";
     }
 }
@@ -4982,59 +4982,59 @@ window._analyticsMode = "paper";
 async function dashUpdate() {
   try {
     // Fetch all data in parallel
-    var results = await Promise.all([
+    let results = await Promise.all([
       fetch("/api/tracker/stats").then(function(r){return r.json()}).catch(function(){return {}}),
       fetch("/api/tracker/closed").then(function(r){return r.json()}).catch(function(){return []}),
       fetch("/api/real/status").then(function(r){return r.json()}).catch(function(){return {}}),
       fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}})
     ]);
-    var stats = results[0];
-    var closed = results[1];
-    var real = results[2];
-    var decision = results[3];
+    let stats = results[0];
+    let closed = results[1];
+    let real = results[2];
+    let decision = results[3];
 
     // 1. Today paper performance
-    var daily = stats.daily_pnl || {};
-    var today = new Date().toISOString().slice(0,10);
-    var td = daily[today] || {};
-    var pnl = td.net_pnl || 0;
-    var e1 = document.getElementById("cmd-today-pnl");
+    let daily = stats.daily_pnl || {};
+    let today = new Date().toISOString().slice(0,10);
+    let td = daily[today] || {};
+    let pnl = td.net_pnl || 0;
+    let e1 = document.getElementById("cmd-today-pnl");
     if(e1){e1.textContent=(pnl<0?"-":"")+"$"+Math.abs(pnl).toFixed(2);e1.style.color=pnl>=0?"var(--green)":"var(--red)";}
-    var e2=document.getElementById("cmd-today-wr");if(e2)e2.textContent=(td.wr||0).toFixed(0)+"%";
-    var e3=document.getElementById("cmd-today-trades");if(e3)e3.textContent=td.trades||0;
-    var e4=document.getElementById("cmd-today-fees");if(e4)e4.textContent="$"+(td.fees||0).toFixed(0);
+    let e2 =document.getElementById("cmd-today-wr");if(e2)e2.textContent=(td.wr||0).toFixed(0)+"%";
+    let e3 =document.getElementById("cmd-today-trades");if(e3)e3.textContent=td.trades||0;
+    let e4 =document.getElementById("cmd-today-fees");if(e4)e4.textContent="$"+(td.fees||0).toFixed(0);
 
     // 2. Real trading performance
-    var cb = real.circuit_breaker || {};
-    var rpnl = cb.daily_pnl || 0;
-    var rpe = document.getElementById("cmd-real-pnl");
+    let cb = real.circuit_breaker || {};
+    let rpnl = cb.daily_pnl || 0;
+    let rpe = document.getElementById("cmd-real-pnl");
     if(rpe){rpe.textContent=(rpnl<0?"-":rpnl>0?"+":"")+"$"+Math.abs(rpnl).toFixed(2);rpe.style.color=rpnl>=0?"var(--green)":"var(--red)";}
-    var rbe=document.getElementById("cmd-real-bal");if(rbe)rbe.textContent="$"+(real.balance||0).toFixed(2);
-    var rte=document.getElementById("cmd-real-trades");if(rte)rte.textContent=cb.trade_count_today||0;
-    var rle=document.getElementById("cmd-real-total");
+    let rbe =document.getElementById("cmd-real-bal");if(rbe)rbe.textContent="$"+(real.balance||0).toFixed(2);
+    let rte =document.getElementById("cmd-real-trades");if(rte)rte.textContent=cb.trade_count_today||0;
+    let rle =document.getElementById("cmd-real-total");
     if(rle){var tp=cb.total_pnl||0;rle.textContent=(tp<0?"-":"+")+"$"+Math.abs(tp).toFixed(2);rle.style.color=tp>=0?"var(--green)":"var(--red)";}
 
     // 3. Header bar updates
-    var ppMini = document.getElementById("paper-bal-mini");
+    let ppMini = document.getElementById("paper-bal-mini");
     if(ppMini && stats.paper_balance) ppMini.textContent = "$" + stats.paper_balance.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
-    var sigMini = document.getElementById("signals-mini-count");
+    let sigMini = document.getElementById("signals-mini-count");
     if(sigMini) sigMini.textContent = stats.total_signals || 0;
     // 3. Exchange balance
-    var eb=document.getElementById("exchange-bal");if(eb&&stats.exchange_balance)eb.textContent="$"+stats.exchange_balance.toFixed(2);
+    let eb =document.getElementById("exchange-bal");if(eb&&stats.exchange_balance)eb.textContent="$"+stats.exchange_balance.toFixed(2);
 
     // 4. Per-symbol regime from closed trades metadata
-    var rc={"trending_up":"#00ff9d","trending_down":"#ff3b5c","sideways":"#ffd700","ranging":"#ffd700",
+    let rc ={"trending_up":"#00ff9d","trending_down":"#ff3b5c","sideways":"#ffd700","ranging":"#ffd700",
       "breakout":"#00d4ff","volatile":"#f97316","high_volatility":"#f97316","quiet":"#5a7090",
       "mean_reversion":"#a78bfa","low_liquidity":"#ff3b5c"};
     if(closed&&closed.length>0){
-      var sr={};
+      let sr ={};
       for(var i=closed.length-1;i>=0;i--){
-        var ct=closed[i];var s=ct.symbol||"";var m=ct.metadata||{};var rg=m.regime||"";
+        let ct =closed[i];var s=ct.symbol||"";var m=ct.metadata||{};var rg=m.regime||"";
         if(s&&rg&&!sr[s])sr[s]=rg;
       }
       ["btc","eth","sol","xrp"].forEach(function(sym){
-        var reg=sr[sym.toUpperCase()+"/USDT"]||"--";
-        var el=document.getElementById("cmd-regime-"+sym);
+        let reg =sr[sym.toUpperCase()+"/USDT"]||"--";
+        let el =document.getElementById("cmd-regime-"+sym);
         if(el){el.textContent=reg;el.style.color=rc[reg]||"#9ba3b5";}
       });
       // Also update scanner status cards with regime
@@ -5042,87 +5042,87 @@ async function dashUpdate() {
     }
 
     // 5. Session + macro bias from decision
-    var se=document.getElementById("cmd-session");if(se&&decision.session)se.textContent=decision.session;
-    var me=document.getElementById("cmd-macro-bias");
+    let se =document.getElementById("cmd-session");if(se&&decision.session)se.textContent=decision.session;
+    let me =document.getElementById("cmd-macro-bias");
     if(me){var b=decision.macro_bias_str||"NEUTRAL";me.textContent=String(b).toUpperCase();
       me.style.color=b==="bullish"?"var(--green)":b==="bearish"?"var(--red)":"var(--text-muted)";}
 
     // 6. Last trade with duration + time ago
     if(closed&&closed.length>0){
-      var lt=closed[closed.length-1];var lp=lt.pnl_usd||0;
-      var le=document.getElementById("cmd-last-trade");
+      let lt =closed[closed.length-1];var lp=lt.pnl_usd||0;
+      let le =document.getElementById("cmd-last-trade");
       if(le){
-        var c=lp>=0?"var(--green)":"var(--red)";
-        var sym=(lt.symbol||"?").split("/")[0];
-        var ago="";
+        let c =lp>=0?"var(--green)":"var(--red)";
+        let sym =(lt.symbol||"?").split("/")[0];
+        let ago ="";
         if(lt.exit_time){var diff=Math.round((Date.now()-new Date(lt.exit_time).getTime())/1000);
           if(diff<60)ago=diff+"s ago";else if(diff<3600)ago=Math.floor(diff/60)+"m ago";
           else if(diff<86400)ago=Math.floor(diff/3600)+"h ago";else ago=Math.floor(diff/86400)+"d ago";}
-        var dur=Math.round(lt.trade_duration_sec||lt.duration_sec||0);
-        var ds=dur>0?(dur<60?dur+"s":Math.floor(dur/60)+"m"):"";
+        let dur =Math.round(lt.trade_duration_sec||lt.duration_sec||0);
+        let ds =dur>0?(dur<60?dur+"s":Math.floor(dur/60)+"m"):"";
         le.innerHTML='<span style="font-weight:700;color:'+c+'">$'+(lp>=0?"+":"")+lp.toFixed(2)+'</span> '+sym+' '+(lt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(lt.exit_reason||"?")+(ds?' \u00B7 held '+ds:'')+(ago?' \u00B7 '+ago:'')+'</span>';
       }
     }
     // 7. Last real trade
     if(real&&real.recent_trades&&real.recent_trades.length>0){
-      var rt=real.recent_trades[real.recent_trades.length-1];
-      var rp=rt.pnl_usd||0;
-      var rle2=document.getElementById("cmd-last-real-trade");
+      let rt =real.recent_trades[real.recent_trades.length-1];
+      let rp =rt.pnl_usd||0;
+      let rle2 =document.getElementById("cmd-last-real-trade");
       if(rle2){
-        var rc2=rp>=0?"var(--green)":"var(--red)";
-        var rsym=(rt.symbol||"?").split("/")[0];
-        var rago2="";
+        let rc2 =rp>=0?"var(--green)":"var(--red)";
+        let rsym =(rt.symbol||"?").split("/")[0];
+        let rago2 ="";
                 if(rt.timestamp){var rd2=Math.round((Date.now()-new Date(rt.timestamp).getTime())/1000);
                 if(rd2<60)rago2=rd2+"s ago";else if(rd2<3600)rago2=Math.floor(rd2/60)+"m ago";
                 else if(rd2<86400)rago2=Math.floor(rd2/3600)+"h ago";else rago2=Math.floor(rd2/86400)+"d ago";}
                 rle2.innerHTML='<span style="font-weight:700;color:'+rc2+'">$'+(rp>=0?"+":"")+rp.toFixed(2)+'</span> '+rsym+' '+(rt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(rt.exit_reason||rt.reason||"--")+(rago2?' \u00B7 '+rago2:'')+'</span>';
       }
     } else {
-      var rle3=document.getElementById("cmd-last-real-trade");
+      let rle3 =document.getElementById("cmd-last-real-trade");
       if(rle3&&real&&real.total_closed>0)rle3.innerHTML='<span class="text-muted">No trades today</span>';
     }
 
     // 8. Market highlight bar
-    var mhBal=document.getElementById("mh-paper-bal");
+    let mhBal =document.getElementById("mh-paper-bal");
     if(mhBal&&stats.paper_balance)mhBal.textContent="$"+stats.paper_balance.toFixed(2);
     // Peak: calculate from paper balance + gross pnl history
-    var mhPeak=document.getElementById("mh-peak");
+    let mhPeak =document.getElementById("mh-peak");
     if(mhPeak){
-        var peakVal=stats.paper_balance||1000;
-        var daily=stats.daily_pnl||{};
-        var runBal=stats.paper_start_balance||1000;
-        var maxBal=runBal;
-        var days=Object.keys(daily).sort();
+        let peakVal =stats.paper_balance||1000;
+        let daily =stats.daily_pnl||{};
+        let runBal =stats.paper_start_balance||1000;
+        let maxBal =runBal;
+        let days =Object.keys(daily).sort();
         for(var di=0;di<days.length;di++){runBal+=(daily[days[di]].net_pnl||0);if(runBal>maxBal)maxBal=runBal;}
         mhPeak.textContent="$"+maxBal.toFixed(2);
         // Drawdown
-        var mhDD=document.getElementById("mh-dd");
+        let mhDD =document.getElementById("mh-dd");
         if(mhDD){var ddp=maxBal>0?((maxBal-(stats.paper_balance||0))/maxBal*100):0;mhDD.textContent=ddp.toFixed(1)+"%";mhDD.style.color=ddp>2?"var(--red)":"var(--green)";}
     }
-    var mhPF=document.getElementById("mh-pf");
+    let mhPF =document.getElementById("mh-pf");
     if(mhPF&&stats.profit_factor)mhPF.textContent=stats.profit_factor.toFixed(2);
     // Avg R from r_metrics
-    var mhAR=document.getElementById("mh-avgr");
-    var rm=stats.r_metrics||{};
+    let mhAR =document.getElementById("mh-avgr");
+    let rm =stats.r_metrics||{};
     if(mhAR&&rm.avg_r!=null){var ar=rm.avg_r;mhAR.textContent=(ar>=0?"+":"")+ar.toFixed(3)+"R";mhAR.style.color=ar>=0?"var(--green)":"var(--red)";}
 
 
     // 9. Recent real closed trades
     try {
-      var rrb = document.getElementById("recent-real-closed-body");
+      let rrb = document.getElementById("recent-real-closed-body");
       if (rrb && real && real.recent_trades) {
-        var rt = real.recent_trades || [];
+        let rt = real.recent_trades || [];
         if (rt.length === 0) {
           rrb.innerHTML = '<tr><td colspan="9" class="empty">No real trades</td></tr>';
         } else {
           rrb.innerHTML = rt.slice(-10).reverse().map(function(t) {
-            var p = t.pnl_usd || 0;
-            var pc = p >= 0 ? "var(--green)" : "var(--red)";
-            var dt = (t.timestamp || t.closed_at || t.opened_at || "").replace("T"," ").slice(5,16);
-            var reason = t.reason || t.exit_reason || "--";
-            var margin = t.margin || 0;
-            var slip = t.slippage_bps || 0;
-            var scanner = t.scanner || t.trade_type || "--";
+            let p = t.pnl_usd || 0;
+            let pc = p >= 0 ? "var(--green)" : "var(--red)";
+            let dt = (t.timestamp || t.closed_at || t.opened_at || "").replace("T"," ").slice(5,16);
+            let reason = t.reason || t.exit_reason || "--";
+            let margin = t.margin || 0;
+            let slip = t.slippage_bps || 0;
+            let scanner = t.scanner || t.trade_type || "--";
             return '<tr>' +
               '<td class="text-sm">' + dt + '</td>' +
               '<td class="font-semibold">' + (t.symbol||"?") + '</td>' +
@@ -5141,16 +5141,16 @@ async function dashUpdate() {
   
     // 10. Trade Diagnostic — why no trades?
     try {
-      var diag = document.getElementById("trade-diagnostic");
+      let diag = document.getElementById("trade-diagnostic");
       if (diag) {
-        var fr = await fetch("/api/opportunity-funnel").then(function(r){return r.json()}).catch(function(){return {}});
-        var dec = await fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}});
-        var f = fr.funnel || {};
-        var vs = fr.veto_stats || {};
-        var reasons = [];
+        let fr = await fetch("/api/opportunity-funnel").then(function(r){return r.json()}).catch(function(){return {}});
+        let dec = await fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}});
+        let f = fr.funnel || {};
+        let vs = fr.veto_stats || {};
+        let reasons = [];
 
         // Check paper trading status
-        var hasActive = document.querySelectorAll("#active-trades-cards .trade-card").length > 0;
+        let hasActive = document.querySelectorAll("#active-trades-cards .trade-card").length > 0;
         if (hasActive) {
             diag.innerHTML = '<span class="text-success">\u2705 Paper trade active</span>';
         } else {
@@ -5167,7 +5167,7 @@ async function dashUpdate() {
                 if (vs[vk] > 0) reasons.push('<span class="text-muted">' + vk + ': ' + vs[vk] + '</span>');
             }
             // Real trade specific
-            var cb2 = (real && real.circuit_breaker) || {};
+            let cb2 = (real && real.circuit_breaker) || {};
             if (cb2.is_tripped) reasons.push('<span class="text-danger">\u26A0 Circuit breaker TRIPPED</span>');
 
             if (reasons.length === 0 && f.scanned > 0) {
@@ -5225,7 +5225,7 @@ async function showJourney(tradeId) {
   }
 }
 document.addEventListener('DOMContentLoaded', function() {
-  var jm = document.getElementById('journey-modal');
+  let jm = document.getElementById('journey-modal');
   if (jm) jm.addEventListener('click', function(e) { if (e.target === this) this.style.display = 'none'; });
 });
 
@@ -5504,7 +5504,7 @@ function renderLossTaxonomy(data) {
       <div style="display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.01);border:1px solid var(--border)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
           <div style="display:flex;align-items:center;gap:8px;min-width:200px">
-            <span style="font-size:.85rem">${meta.icon}</span>
+            <span class="text-base">${meta.icon}</span>
             <span style="font-size:.72rem;font-weight:700;color:${meta.color}">${meta.label}</span>
           </div>
           <div style="display:flex;align-items:center;gap:12px;font-family:var(--font-mono);font-size:.7rem">
@@ -5660,7 +5660,7 @@ function renderStageLossMap(data) {
       <div style="display:flex;flex-direction:column;gap:3px;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.01);border:1px solid var(--border)">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
           <div style="display:flex;align-items:center;gap:8px;min-width:200px">
-            <span style="font-size:.85rem">${icon}</span>
+            <span class="text-base">${icon}</span>
             <span style="font-size:.72rem;font-weight:700;color:${col}">${s.stage}</span>
             ${dropBadge}
           </div>
@@ -6494,9 +6494,9 @@ async function checkAdminAccess() {
             const d = await r.json();
             console.log("SESSION DATA:", d);
             // Check both flat and nested role field
-            var role = d.role || (d.user && d.user.role) || "";
+            let role = d.role || (d.user && d.user.role) || "";
             if (role === "admin") {
-                var btn = document.getElementById("admin-tab-btn");
+                let btn = document.getElementById("admin-tab-btn");
                 if (btn) {
                     btn.style.display = "inline-block";
                     console.log("ADMIN TAB: visible");
@@ -6509,10 +6509,10 @@ async function checkAdminAccess() {
 checkAdminAccess();
 setTimeout(checkAdminAccess, 3000);
 
-var adminTimer = null;
+let adminTimer = null;
 
 async function refreshAdmin() {
-    var tab = document.getElementById("tab-admin");
+    let tab = document.getElementById("tab-admin");
     if (!tab || !tab.classList.contains("active")) return;
 
     try {
@@ -6527,22 +6527,22 @@ async function refreshAdmin() {
         if (users && users.users) users = users.users;
         console.log("ADMIN unwrapped users:", Array.isArray(users), users ? users.length : 0);
         if (users && Array.isArray(users)) {
-            var countEl = document.getElementById("admin-user-count");
+            let countEl = document.getElementById("admin-user-count");
             if (countEl) countEl.textContent = users.length + " users";
-            var statEl = document.getElementById("admin-stat-users");
+            let statEl = document.getElementById("admin-stat-users");
             if (statEl) statEl.textContent = users.length;
 
             // Build user cards (not table — cards show full config)
-            var container = document.getElementById("admin-users-table").parentElement;
+            let container = document.getElementById("admin-users-table").parentElement;
             if (container) {
-                var cardsHtml = "";
+                let cardsHtml = "";
                 for (var i = 0; i < users.length; i++) {
-                    var u = users[i];
-                    var roleColor = u.role === "admin" ? "#ff3b5c" : u.role === "trader" ? "#00ff9d" : "#5a7090";
-                    var modeColor = u.bot_mode === "live" ? "#ff3b5c" : u.bot_mode === "demo" ? "#00d4ff" : "#5a7090";
-                    var activeColor = u.is_active ? "#00ff9d" : "#ff3b5c";
-                    var lastLogin = u.last_login ? formatTime(u.last_login) : "Never";
-                    var pairs = u.trading_pairs;
+                    let u = users[i];
+                    let roleColor = u.role === "admin" ? "#ff3b5c" : u.role === "trader" ? "#00ff9d" : "#5a7090";
+                    let modeColor = u.bot_mode === "live" ? "#ff3b5c" : u.bot_mode === "demo" ? "#00d4ff" : "#5a7090";
+                    let activeColor = u.is_active ? "#00ff9d" : "#ff3b5c";
+                    let lastLogin = u.last_login ? formatTime(u.last_login) : "Never";
+                    let pairs = u.trading_pairs;
                     if (typeof pairs === "string") try { pairs = JSON.parse(pairs); } catch(e) { pairs = []; }
                     if (!Array.isArray(pairs)) pairs = [];
 
@@ -6594,14 +6594,14 @@ async function refreshAdmin() {
                         fetch("/api/admin/users/" + uid + "/api-keys", {credentials:"same-origin"})
                             .then(function(r){return r.ok?r.json():null})
                             .then(function(d) {
-                                var el = document.getElementById("admin-keys-" + uid);
+                                let el = document.getElementById("admin-keys-" + uid);
                                 if (!el || !d) return;
-                                var keys = d.keys || [];
+                                let keys = d.keys || [];
                                 if (keys.length === 0) {
                                     el.innerHTML = '<span style="color:#ff8800">No keys configured</span>';
                                 } else {
                                     el.innerHTML = keys.map(function(k) {
-                                        var lc = k.label === "live" ? "#ff3b5c" : "#00d4ff";
+                                        let lc = k.label === "live" ? "#ff3b5c" : "#00d4ff";
                                         return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid ' + lc + '30;margin-right:4px">' +
                                             '<span style="color:' + lc + ';font-weight:700;font-size:10px">' + k.label.toUpperCase() + '</span>' +
                                             '<span style="color:#888;font-family:monospace;font-size:10px">' + (k.api_key_masked||"****") + '</span>' +
@@ -6619,17 +6619,17 @@ async function refreshAdmin() {
         // Sessions table — API returns {sessions: [...]}
         if (sessions && sessions.sessions) sessions = sessions.sessions;
         if (sessions && Array.isArray(sessions)) {
-            var sessStatEl = document.getElementById("admin-stat-sessions");
+            let sessStatEl = document.getElementById("admin-stat-sessions");
             if (sessStatEl) sessStatEl.textContent = sessions.length;
 
-            var sessBody = document.getElementById("admin-sessions-body");
+            let sessBody = document.getElementById("admin-sessions-body");
             if (sessBody) {
                 if (sessions.length === 0) {
                     sessBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No active sessions</td></tr>';
                 } else {
-                    var shtml = "";
+                    let shtml = "";
                     for (var si = 0; si < sessions.length; si++) {
-                        var s = sessions[si];
+                        let s = sessions[si];
                         shtml += "<tr>" +
                             "<td style='padding:8px;font-weight:600'>" + (s.email||s.user_id||"--") + "</td>" +
                             "<td style='padding:8px;color:#5a7090;font-family:monospace;font-size:11px'>" + (s.ip_address||"--") + "</td>" +
@@ -6646,15 +6646,15 @@ async function refreshAdmin() {
         // Audit log — API returns {entries: [...]}
         if (audit && audit.entries) audit = audit.entries;
         if (audit && Array.isArray(audit)) {
-            var auditBody = document.getElementById("admin-audit-body");
+            let auditBody = document.getElementById("admin-audit-body");
             if (auditBody) {
                 if (audit.length === 0) {
                     auditBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No login history</td></tr>';
                 } else {
-                    var ahtml = "";
+                    let ahtml = "";
                     for (var ai = 0; ai < audit.length; ai++) {
-                        var a = audit[ai];
-                        var resultColor = a.success ? "#00ff9d" : "#ff3b5c";
+                        let a = audit[ai];
+                        let resultColor = a.success ? "#00ff9d" : "#ff3b5c";
                         ahtml += "<tr>" +
                             "<td style='padding:8px;font-size:12px;color:#5a7090'>" + formatTime(a.created_at) + "</td>" +
                             "<td style='padding:8px;font-weight:600'>" + (a.email||"--") + "</td>" +
@@ -6698,7 +6698,7 @@ async function adminKillSession(tokenPrefix) {
 }
 
 async function adminAddApiKey(userId, email) {
-    var html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,255,157,.2);border-radius:12px;padding:24px;max-width:450px;margin:20px auto">' +
+    let html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,255,157,.2);border-radius:12px;padding:24px;max-width:450px;margin:20px auto">' +
         '<h3 style="color:#00ff9d;margin:0 0 16px">Add API Key: ' + email + '</h3>' +
         '<div style="display:grid;gap:10px;font-size:13px">' +
             '<label style="color:#9ba3b5">Label<select id="admin-ak-label" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
@@ -6715,7 +6715,7 @@ async function adminAddApiKey(userId, email) {
         '</div>' +
     '</div>';
 
-    var modal = document.getElementById("admin-edit-modal");
+    let modal = document.getElementById("admin-edit-modal");
     if (!modal) {
         modal = document.createElement("div");
         modal.id = "admin-edit-modal";
@@ -6728,23 +6728,23 @@ async function adminAddApiKey(userId, email) {
 }
 
 async function adminSaveApiKey(userId) {
-    var label = document.getElementById("admin-ak-label").value;
-    var apiKey = document.getElementById("admin-ak-key").value.trim();
-    var apiSecret = document.getElementById("admin-ak-secret").value.trim();
-    var baseUrl = document.getElementById("admin-ak-url").value.trim();
+    let label = document.getElementById("admin-ak-label").value;
+    let apiKey = document.getElementById("admin-ak-key").value.trim();
+    let apiSecret = document.getElementById("admin-ak-secret").value.trim();
+    let baseUrl = document.getElementById("admin-ak-url").value.trim();
 
     if (!apiKey || !apiSecret) { alert("API Key and Secret are required"); return; }
 
     if (label === "live" && !confirm("You are adding a LIVE (real money) API key. Are you sure?")) return;
 
     try {
-        var r = await fetch("/api/admin/users/" + userId + "/api-keys", {
+        let r = await fetch("/api/admin/users/" + userId + "/api-keys", {
             method: "POST",
             headers: {"Content-Type":"application/json"},
             credentials: "same-origin",
             body: JSON.stringify({api_key: apiKey, api_secret: apiSecret, label: label, base_url: baseUrl})
         });
-        var d = await r.json();
+        let d = await r.json();
         if (d.ok) {
             document.getElementById("admin-edit-modal").style.display = "none";
             alert(d.message || "API key saved");
@@ -6758,11 +6758,11 @@ async function adminSaveApiKey(userId) {
 async function adminDeleteApiKey(keyId) {
     if (!confirm("Delete this API key? The user will lose exchange access.")) return;
     try {
-        var r = await fetch("/api/admin/api-keys/" + keyId, {
+        let r = await fetch("/api/admin/api-keys/" + keyId, {
             method: "DELETE",
             credentials: "same-origin"
         });
-        var d = await r.json();
+        let d = await r.json();
         if (d.ok) {
             alert("API key deleted");
             refreshAdmin();
@@ -6775,17 +6775,17 @@ async function adminDeleteApiKey(keyId) {
 async function adminEditUser(userId) {
     // Find user in cached data
     try {
-        var r = await fetch("/api/admin/users", {credentials:"same-origin"});
-        var d = await r.json();
-        var users = d.users || d;
-        var u = null;
+        let r = await fetch("/api/admin/users", {credentials:"same-origin"});
+        let d = await r.json();
+        let users = d.users || d;
+        let u = null;
         for (var i = 0; i < users.length; i++) { if (users[i].id === userId) { u = users[i]; break; } }
         if (!u) { alert("User not found"); return; }
 
-        var pairs = u.trading_pairs;
+        let pairs = u.trading_pairs;
         if (typeof pairs === "string") try { pairs = JSON.parse(pairs); } catch(e) { pairs = []; }
 
-        var html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:24px;max-width:500px;margin:20px auto">' +
+        let html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:24px;max-width:500px;margin:20px auto">' +
             '<h3 style="color:#00d4ff;margin:0 0 16px">Edit User: ' + u.email + '</h3>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">' +
                 '<label style="color:#9ba3b5">Role<select id="eu-role" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="admin"'+(u.role==="admin"?" selected":"")+'>Admin</option><option value="trader"'+(u.role==="trader"?" selected":"")+'>Trader</option><option value="viewer"'+(u.role==="viewer"?" selected":"")+'>Viewer</option></select></label>' +
@@ -6805,7 +6805,7 @@ async function adminEditUser(userId) {
             '</div>' +
         '</div>';
 
-        var modal = document.getElementById("admin-edit-modal");
+        let modal = document.getElementById("admin-edit-modal");
         if (!modal) {
             modal = document.createElement("div");
             modal.id = "admin-edit-modal";
@@ -6819,7 +6819,7 @@ async function adminEditUser(userId) {
 }
 
 async function adminSaveUser(userId) {
-    var body = {
+    let body = {
         role: document.getElementById("eu-role").value,
         tier: document.getElementById("eu-tier").value,
         bot_mode: document.getElementById("eu-mode").value,
@@ -6830,17 +6830,17 @@ async function adminSaveUser(userId) {
         preferred_leverage: parseInt(document.getElementById("eu-plev").value),
         telegram_chat_id: document.getElementById("eu-tg").value,
     };
-    var pairsStr = document.getElementById("eu-pairs").value;
+    let pairsStr = document.getElementById("eu-pairs").value;
     if (pairsStr) body.trading_pairs = pairsStr.split(",").map(function(s){return s.trim();}).filter(Boolean);
 
     try {
-        var r = await fetch("/api/admin/users/" + userId, {
+        let r = await fetch("/api/admin/users/" + userId, {
             method: "PUT",
             headers: {"Content-Type":"application/json"},
             credentials: "same-origin",
             body: JSON.stringify(body)
         });
-        var d = await r.json();
+        let d = await r.json();
         if (d.ok) {
             document.getElementById("admin-edit-modal").style.display = "none";
             alert("User updated");
@@ -6852,18 +6852,18 @@ async function adminSaveUser(userId) {
 }
 
 async function adminResetPassword(userId, email) {
-    var newPass = prompt("Enter new password for " + email + "\n(minimum 8 characters):");
+    let newPass = prompt("Enter new password for " + email + "\n(minimum 8 characters):");
     if (!newPass) return;
     if (newPass.length < 8) { alert("Password must be at least 8 characters"); return; }
     if (!confirm("Reset password for " + email + "?\nThey will be logged out of all sessions.")) return;
     try {
-        var r = await fetch("/api/admin/users/" + userId + "/reset-password", {
+        let r = await fetch("/api/admin/users/" + userId + "/reset-password", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             credentials: "same-origin",
             body: JSON.stringify({new_password: newPass})
         });
-        var d = await r.json();
+        let d = await r.json();
         if (d.ok) {
             alert("Password reset for " + email + ". They need to login again.");
             refreshAdmin();

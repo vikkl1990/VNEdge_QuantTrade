@@ -91,6 +91,11 @@ class BotBrain:
 
         # Dry-run mode: log decisions but return neutral directives
         self._dry_run = brain_cfg.get("dry_run", True)  # Default: dry_run ON for safety
+        # Phase-specific activation flags (override dry_run per phase)
+        self._enable_scanner_gating = brain_cfg.get("enable_scanner_gating", True)  # Phase 3 ON
+        self._enable_dynamic_thresholds = brain_cfg.get("enable_dynamic_thresholds", True)  # Phase 4 ON
+        self._enable_auto_act = brain_cfg.get("enable_auto_act", False)  # Phase 5 OFF (risky)
+        self._enable_optimizer = brain_cfg.get("enable_optimizer", False)  # Phase 7 OFF
 
         # Agent references (set by orchestrator after init)
         self._signal_learner = None
@@ -171,13 +176,15 @@ class BotBrain:
 
             self._trades_processed += 1
 
-            # Phase 5: auto-act TradeMonitor recommendations (if not dry_run)
-            if not self._dry_run and self._trade_monitor:
+            # Phase 5: auto-act TradeMonitor recommendations
+            if self._enable_auto_act and self._trade_monitor:
                 self._process_recommendations()
 
+            # Phase 7: optimizer auto-enables after 50+ trades observed
+            if self._enable_optimizer and self._optimizer._total_trades_observed >= 50 and not self._optimizer._enabled:
+                self._optimizer.enable()
             # Periodic optimizer step (every 10 trades)
             if self._trades_processed % 10 == 0 and self._optimizer._enabled:
-                # Compute rolling expectancy from memory
                 global_cell = self._memory._matrix.get(f"{setup}:*:*:*")
                 metric = global_cell.avg_r if global_cell else 0.0
                 self._optimizer.step(metric)
@@ -308,8 +315,9 @@ class BotBrain:
 
             self._directives_issued += 1
 
-            # Dry-run: log but return neutral
-            if self._dry_run:
+            # Phase 3 enabled: actually apply scanner gating
+            if not self._enable_scanner_gating:
+                # If gating disabled, log decisions but return neutral
                 overrides = directive.scanner_overrides
                 if overrides or directive.confidence_floor > 55:
                     logger.info(
@@ -317,11 +325,17 @@ class BotBrain:
                         symbol, regime, overrides, directive.confidence_floor,
                         directive.regime_note.strip(),
                     )
-                # Reset overrides in dry_run — don't actually block anything
                 directive.scanner_overrides = {}
                 directive.confidence_floor = 55
                 directive.size_multiplier = 1.0
                 directive.sl_multiplier = 1.0
+            elif directive.scanner_overrides or directive.confidence_floor > 55:
+                # Log when actively gating
+                logger.warning(
+                    "BRAIN GATE [%s/%s]: overrides=%s, floor=%d | %s",
+                    symbol, regime, directive.scanner_overrides,
+                    directive.confidence_floor, directive.regime_note.strip(),
+                )
 
         except Exception as e:
             logger.error("BotBrain consult_pre_scan error: %s", e)
@@ -347,8 +361,8 @@ class BotBrain:
         overrides = QualifyOverrides()
 
         try:
-            if self._dry_run:
-                return overrides  # Phase 4 inactive in dry_run
+            if not self._enable_dynamic_thresholds:
+                return overrides  # Phase 4 disabled
 
             meta = signal.get("metadata", {}) or {}
             setup = (

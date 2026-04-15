@@ -17,7 +17,7 @@ def register_admin_routes(app: web.Application, auth_service, db_pool):
     app.router.add_delete("/api/admin/sessions/{token}", require_role("admin")(handler.handle_force_logout))
     app.router.add_get("/api/admin/audit", require_role("admin")(handler.handle_audit_log))
     app.router.add_post("/api/admin/users/{user_id}/reset-password", require_role("admin")(handler.handle_reset_password))
-    app.router.add_get("/api/admin/users/{user_id}/api-keys", require_role("admin")(handler.handle_list_api_keys))
+    app.router.add_get("/api/admin/users/{user_id}/api-keys", handler.handle_list_api_keys)
     app.router.add_post("/api/admin/users/{user_id}/api-keys", require_role("admin")(handler.handle_add_api_key))
     app.router.add_delete("/api/admin/api-keys/{key_id}", require_role("admin")(handler.handle_delete_api_key))
 

@@ -132,7 +132,7 @@ async function loadProfile() {
             if (p.address.country) el("prof-country").value = p.address.country;
             if (p.address.postal) el("prof-postal").value = p.address.postal;
         }
-        if (p.bot_mode) el("prof-bot-mode").value = p.bot_mode;
+        if (p.bot_mode) { el("prof-bot-mode").value = p.bot_mode; updateModeBtns(p.bot_mode); }
         if (p.leverage) { el("prof-leverage").value = p.leverage; el("prof-leverage-val").textContent = p.leverage; }
         if (p.risk_per_trade) el("prof-risk").value = p.risk_per_trade;
         if (p.max_daily_loss) el("prof-max-loss").value = p.max_daily_loss;
@@ -156,6 +156,51 @@ async function loadProfile() {
         if (p.member_since) el("prof-member-since").textContent = p.member_since;
         if (p.last_login) el("prof-last-login").textContent = p.last_login;
     } catch (e) { console.warn("loadProfile error:", e); }
+}
+
+function updateModeBtns(mode) {
+    var modes = ["paper", "demo", "live"];
+    var colors = {paper:"#00d4ff", demo:"#ffd700", live:"#ff3b5c"};
+    var msgs = {paper:"Paper mode — no real orders placed", demo:"Demo mode — trades on Delta testnet (fake money)", live:"LIVE mode — real money on Delta exchange"};
+    for (var i = 0; i < modes.length; i++) {
+        var btn = document.getElementById("mode-btn-" + modes[i]);
+        if (!btn) continue;
+        if (modes[i] === mode) {
+            btn.style.borderColor = colors[modes[i]] + "80";
+            btn.style.background = colors[modes[i]] + "15";
+            btn.style.color = colors[modes[i]];
+        } else {
+            btn.style.borderColor = "rgba(255,255,255,.1)";
+            btn.style.background = "transparent";
+            btn.style.color = "#555";
+        }
+    }
+    var msgEl = document.getElementById("mode-status-msg");
+    if (msgEl) { msgEl.textContent = msgs[mode] || ""; msgEl.style.color = colors[mode] || "#5a7090"; }
+}
+
+function switchUserMode(mode) {
+    if (mode === "live") {
+        if (!confirm("Switch to LIVE trading?\n\nReal money will be at risk.\nMake sure your live API key is configured.")) return;
+    }
+    if (mode === "demo") {
+        if (!confirm("Switch to DEMO trading?\n\nTrades will execute on Delta testnet.\nMake sure your demo API key is configured.")) return;
+    }
+    var sel = document.getElementById("prof-bot-mode");
+    if (sel) sel.value = mode;
+    updateModeBtns(mode);
+    // Auto-save the mode change immediately
+    fetch("/api/user/real/toggle", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        credentials: "same-origin",
+        body: JSON.stringify({bot_mode: mode})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.success) {
+            var msgEl = document.getElementById("mode-status-msg");
+            if (msgEl) msgEl.textContent += " (saved)";
+        }
+    }).catch(function(e) { console.error("Mode switch failed:", e); });
 }
 
 async function saveProfile() {

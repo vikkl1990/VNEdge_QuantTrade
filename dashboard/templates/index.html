@@ -2095,14 +2095,32 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <button class="login-btn" style="margin-top:12px;width:auto;padding:8px 20px;font-size:.75rem" onclick="openApiKeyModal('new')">+ Add Key</button>
       </div>
 
-      <!-- Trading Settings -->
+      <!-- Trading Mode + Settings -->
       <div class="glass-card">
-        <div class="panel-title">&#9881; Trading Settings</div>
+        <div class="panel-title">&#9881; Trading Mode &amp; Settings</div>
+
+        <!-- Mode Switcher — prominent -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+          <button id="mode-btn-paper" onclick="switchUserMode('paper')" style="padding:12px;border-radius:8px;border:2px solid rgba(0,212,255,.3);background:rgba(0,212,255,.08);color:#00d4ff;cursor:pointer;font-weight:700;font-size:13px;text-align:center;transition:all .2s">
+            <div style="font-size:18px;margin-bottom:4px">&#128196;</div>
+            PAPER<br><span style="font-size:10px;font-weight:400;opacity:.7">Simulated</span>
+          </button>
+          <button id="mode-btn-demo" onclick="switchUserMode('demo')" style="padding:12px;border-radius:8px;border:2px solid rgba(255,215,0,.2);background:transparent;color:#888;cursor:pointer;font-weight:700;font-size:13px;text-align:center;transition:all .2s">
+            <div style="font-size:18px;margin-bottom:4px">&#127919;</div>
+            DEMO<br><span style="font-size:10px;font-weight:400;opacity:.7">Testnet</span>
+          </button>
+          <button id="mode-btn-live" onclick="switchUserMode('live')" style="padding:12px;border-radius:8px;border:2px solid rgba(255,59,92,.2);background:transparent;color:#888;cursor:pointer;font-weight:700;font-size:13px;text-align:center;transition:all .2s">
+            <div style="font-size:18px;margin-bottom:4px">&#128308;</div>
+            LIVE<br><span style="font-size:10px;font-weight:400;opacity:.7">Real Money</span>
+          </button>
+        </div>
+        <div id="mode-status-msg" style="font-size:11px;color:#5a7090;text-align:center;margin-bottom:12px">Paper mode — no real orders placed</div>
+
         <label class="profile-label">Bot Mode</label>
-        <select id="prof-bot-mode" class="login-input">
+        <select id="prof-bot-mode" class="login-input" style="display:none">
           <option value="paper">Paper Trading</option>
+          <option value="demo">Demo (Testnet)</option>
           <option value="live">Live Trading</option>
-          <option value="signal">Signal Only</option>
         </select>
         <label class="profile-label">Trading Pairs</label>
         <div class="pairs-checkboxes" id="prof-pairs">

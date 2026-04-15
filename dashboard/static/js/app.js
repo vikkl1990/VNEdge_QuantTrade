@@ -6656,10 +6656,10 @@ async function adminAddApiKey(userId, email) {
     var html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,255,157,.2);border-radius:12px;padding:24px;max-width:450px;margin:20px auto">' +
         '<h3 style="color:#00ff9d;margin:0 0 16px">Add API Key: ' + email + '</h3>' +
         '<div style="display:grid;gap:10px;font-size:13px">' +
-            '<label style="color:#9ba3b5">Label<select id="ak-label" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
-            '<label style="color:#9ba3b5">API Key<input id="ak-key" type="text" placeholder="Enter Delta API Key" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
-            '<label style="color:#9ba3b5">API Secret<input id="ak-secret" type="password" placeholder="Enter Delta API Secret" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
-            '<label style="color:#9ba3b5">Base URL (optional)<input id="ak-url" type="text" placeholder="https://cdn-ind.testnet.deltaex.org (leave empty for default)" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-size:11px"></label>' +
+            '<label style="color:#9ba3b5">Label<select id="admin-ak-label" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
+            '<label style="color:#9ba3b5">API Key<input id="admin-ak-key" type="text" placeholder="Enter Delta API Key" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label style="color:#9ba3b5">API Secret<input id="admin-ak-secret" type="password" placeholder="Enter Delta API Secret" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label style="color:#9ba3b5">Base URL (optional)<input id="admin-ak-url" type="text" placeholder="https://cdn-ind.testnet.deltaex.org (leave empty for default)" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-size:11px"></label>' +
         '</div>' +
         '<div style="background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.2);border-radius:6px;padding:8px;margin-top:12px;font-size:11px;color:#ffd700">' +
             'Keys are encrypted with Fernet (AES-128-CBC) before storage. Only the last 4 characters are visible after saving.' +
@@ -6683,10 +6683,10 @@ async function adminAddApiKey(userId, email) {
 }
 
 async function adminSaveApiKey(userId) {
-    var label = document.getElementById("ak-label").value;
-    var apiKey = document.getElementById("ak-key").value.trim();
-    var apiSecret = document.getElementById("ak-secret").value.trim();
-    var baseUrl = document.getElementById("ak-url").value.trim();
+    var label = document.getElementById("admin-ak-label").value;
+    var apiKey = document.getElementById("admin-ak-key").value.trim();
+    var apiSecret = document.getElementById("admin-ak-secret").value.trim();
+    var baseUrl = document.getElementById("admin-ak-url").value.trim();
 
     if (!apiKey || !apiSecret) { alert("API Key and Secret are required"); return; }
 

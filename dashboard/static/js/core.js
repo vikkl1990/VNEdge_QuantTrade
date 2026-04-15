@@ -130,6 +130,34 @@ function showToast(msg, type) {
   setTimeout(() => t.remove(), 4000);
 }
 
+// ── Modal close helper (for data-action="closeModal" data-arg="modal-id") ──
+function closeModal(modalId) {
+  const m = document.getElementById(modalId);
+  if (m) m.style.display = 'none';
+}
+window.closeModal = closeModal;
+
+// ── Event Delegation (replaces inline onclick handlers) ──
+document.addEventListener('click', function(e) {
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  const arg = target.dataset.arg;
+  const fn = window[action];
+  if (typeof fn !== 'function') return;
+  try {
+    if (arg !== undefined) {
+      // Try numeric coercion if it looks like a number
+      const numArg = !isNaN(arg) && arg !== '' ? Number(arg) : arg;
+      fn(numArg);
+    } else {
+      fn(e);
+    }
+  } catch (err) {
+    console.error('data-action ' + action + ' failed:', err);
+  }
+});
+
 // ── Legacy api() wrapper (kept for backward compat with inline JS) ──
 async function api(path) {
   try {

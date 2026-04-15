@@ -423,7 +423,7 @@ function healthColor(pct) {
 
 function makeHealthRow(label, value, unit, max) {
     const p = max ? (value / max * 100) : value;
-    return `<div style="margin-bottom:12px">
+    return `<div class="mb-3">
         <div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:3px">
             <span class="text-secondary">${label}</span><span class="font-bold font-mono">${num(value,1)}${unit}</span>
         </div>
@@ -1200,7 +1200,7 @@ function updateActiveTrades(trades) {
                     <span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(0,212,255,.12);color:var(--cyan);font-weight:700;letter-spacing:.5px;border:1px solid rgba(0,212,255,.25)">PAPER</span>
                     <span class="sig-side ${side}" class="text-base">${side}</span>
                     <span style="color:var(--yellow);font-weight:700;font-size:.85rem">${lev}x</span>
-                    <span style="color:var(--text-muted);font-size:.73rem">${esc(t.setup_type || '')}</span>
+                    <span class="text-muted text-sm">${esc(t.setup_type || '')}</span>
                     ${(function(){
                         const tt = t.trade_type || (t.metadata && t.metadata.trade_type) || '';
                         if (!tt) return '';
@@ -1214,11 +1214,11 @@ function updateActiveTrades(trades) {
                     ${t.metadata && t.metadata.ml_probability != null ? `<span style="font-size:.62rem;padding:2px 6px;border-radius:3px;background:${t.metadata.ml_probability >= 0.6 ? 'var(--green-dim)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow-dim)' : 'var(--red-dim)'};color:${t.metadata.ml_probability >= 0.6 ? 'var(--green)' : t.metadata.ml_probability >= 0.45 ? 'var(--yellow)' : 'var(--red)'};font-weight:600">ML ${(t.metadata.ml_probability * 100).toFixed(0)}% ${t.metadata.ml_verdict || ''}</span>` : ''}
                     ${regime ? `<span style="font-size:.58rem;padding:2px 5px;border-radius:3px;background:rgba(0,212,255,.08);color:var(--cyan);font-weight:600">${regime}</span>` : ''}
                 </div>
-                <div style="display:flex;align-items:center;gap:12px">
+                <div class="flex-items-3">
                     <span style="font-size:1.35rem;font-weight:800" class="${pnlClass(upnlUsd)}">${upnlUsd >= 0 ? '+' : ''}$${upnlUsd.toFixed(2)}</span>
                     <span style="font-size:.82rem;font-weight:600" class="${pnlClass(roe)}">${roe >= 0 ? '+' : ''}${roe.toFixed(1)}% ROE</span>
                     <span style="font-size:.82rem" class="${pnlClass(rMult)}">${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R</span>
-                    <span style="color:var(--text-muted);font-size:.73rem">${dur}</span>
+                    <span class="text-muted text-sm">${dur}</span>
                     ${(function(){
                         const entryTs = t.entry_time || (t.metadata && t.metadata.entry_time) || t.timestamp;
                         if (!entryTs) return '';
@@ -1261,21 +1261,21 @@ function updateActiveTrades(trades) {
             <div><div class="tc-label">uPnL</div><div class="tc-val ${pnlClass(upnlPct)}">${pnlSign(upnlPct)}% | MFE: ${mfeR.toFixed(2)}R</div></div>
 
             <div class="border-t pt-2">
-                <div class="tc-label" style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${slPnl >= 0 ? 'STOP (BE)' : 'STOP LOSS'} <span style="color:var(--text-muted);font-size:.6rem">(${entry > 0 ? (Math.abs(entry - sl) / entry * 100).toFixed(2) : '?'}%)</span></div>
+                <div class="tc-label" style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${slPnl >= 0 ? 'STOP (BE)' : 'STOP LOSS'} <span class="text-muted text-xs">(${entry > 0 ? (Math.abs(entry - sl) / entry * 100).toFixed(2) : '?'}%)</span></div>
                 <div><span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${num(sl, sl > 100 ? 2 : 4)}</span>
                 <span style="color:${slPnl >= 0 ? 'var(--green)' : 'var(--red)'};font-size:.73rem"> ${slPnl >= 0 ? '+' : '-'}$${Math.abs(slPnl).toFixed(2)}</span></div>
             </div>
             <div class="border-t pt-2">
-                <div class="tc-label" class="text-success">TP1 (35%) <span style="color:var(--cyan);font-size:.62rem">R:R 1:${rr1}</span></div>
+                <div class="tc-label" class="text-success">TP1 (35%) <span class="text-cyan-xs">R:R 1:${rr1}</span></div>
                 <div><span class="text-success font-semibold">${num(tp1, tp1 > 100 ? 2 : 4)}</span>
-                <span style="color:var(--green);font-size:.73rem"> +$${tp1Pnl.toFixed(2)}</span>
-                <span style="color:var(--text-muted);font-size:.62rem"> (+${tp1 > 0 && entry > 0 ? (Math.abs(tp1 - entry) / entry * 100).toFixed(2) : '?'}%)</span></div>
+                <span class="text-success text-sm"> +$${tp1Pnl.toFixed(2)}</span>
+                <span class="text-muted text-xs"> (+${tp1 > 0 && entry > 0 ? (Math.abs(tp1 - entry) / entry * 100).toFixed(2) : '?'}%)</span></div>
             </div>
             <div class="border-t pt-2">
-                <div class="tc-label" class="text-success">TP2 (35%) <span style="color:var(--cyan);font-size:.62rem">R:R 1:${rr2}</span> / TP3 (30%) <span style="color:var(--cyan);font-size:.62rem">1:${rr3}</span></div>
+                <div class="tc-label" class="text-success">TP2 (35%) <span class="text-cyan-xs">R:R 1:${rr2}</span> / TP3 (30%) <span class="text-cyan-xs">1:${rr3}</span></div>
                 <div><span class="text-success font-semibold">${num(tp2, tp2 > 100 ? 2 : 4)}</span>
-                <span style="color:var(--green);font-size:.73rem"> +$${tp2Pnl.toFixed(2)}</span>
-                <span style="color:var(--text-muted);font-size:.68rem"> | ${num(tp3, tp3 > 100 ? 2 : 4)} +$${tp3Pnl.toFixed(2)}</span></div>
+                <span class="text-success text-sm"> +$${tp2Pnl.toFixed(2)}</span>
+                <span class="text-muted text-sm"> | ${num(tp3, tp3 > 100 ? 2 : 4)} +$${tp3Pnl.toFixed(2)}</span></div>
             </div>
 
             <div class="tc-footer">
@@ -2108,41 +2108,41 @@ async function refreshLatencyArb() {
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.73rem;font-family:var(--font-mono)">
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Binance</span>
                         <span style="color:var(--cyan);font-weight:600">$${num(s.binance_mid)}</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Delta</span>
                         <span style="color:var(--purple);font-weight:600">$${num(s.delta_mid)}</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Δ USD</span>
                         <span style="font-weight:600;color:${dirColor}">$${num(s.dislocation_usd)}</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Net Edge</span>
                         <span style="font-weight:700;color:${netColor}">${netEdge>=0?'+':''}${netEdge.toFixed(3)}%</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Spread</span>
                         <span>${num(s.spread_delta_pct,3)}%</span>
                     </div>
-                    <div style="display:flex;justify-content:space-between;padding:4px 8px;background:rgba(255,255,255,.02);border-radius:4px">
+                    <div class="data-row-soft">
                         <span class="text-muted">Latency</span>
                         <span>${num(s.avg_latency_ms,0)}ms</span>
                     </div>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;font-size:.65rem;text-align:center">
-                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                    <div class="bg-faint">
                         <div style="font-weight:700;font-family:var(--font-mono);color:var(--yellow)">${num(s.avg_disl,3)}%</div>
                         <div class="text-muted">AVG</div>
                     </div>
-                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                    <div class="bg-faint">
                         <div style="font-weight:700;font-family:var(--font-mono);color:var(--orange)">${num(s.p95_disl,3)}%</div>
                         <div class="text-muted">P95</div>
                     </div>
-                    <div style="padding:4px;background:rgba(255,255,255,.015);border-radius:4px">
+                    <div class="bg-faint">
                         <div style="font-weight:700;font-family:var(--font-mono);color:${(s.tradeable_pct||0)>=5?'var(--green)':'var(--red)'}">${num(s.tradeable_pct,1)}%</div>
                         <div class="text-muted">TRADEABLE</div>
                     </div>
@@ -2195,8 +2195,8 @@ async function refreshLatencyArb() {
             const netEdge = ne.net_edge_pct || 0;
             const dailySigs = ((s.tradeable_pct || 0) / 100) * (data.binance_msgs || 0) / Math.max(1, (data.uptime_s || 1) / 86400);
             edgeHtml += `<div style="margin-top:8px;padding:10px;background:${clsBg};border-radius:6px;border:1px solid var(--border);border-left:3px solid ${clsColor}">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                    <span style="font-weight:700;font-size:.85rem">${short}</span>
+                <div class="flex-between-mb">
+                    <span class="font-bold text-base">${short}</span>
                     <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${clsColor};background:${cls==='EXECUTABLE'?'rgba(0,255,157,.1)':cls==='WATCH'?'rgba(255,215,0,.08)':'rgba(90,112,144,.08)'};border:1px solid ${clsColor}">${cls}</span>
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;font-family:var(--font-mono)">
@@ -2286,14 +2286,14 @@ async function refreshLatencyArb() {
                     <div style="font-weight:700;font-size:.82rem;margin-bottom:6px">${short} <span style="color:var(--text-muted);font-weight:400">(${c.total_resolved} resolved)</span></div>
                     <div style="margin-bottom:4px;display:flex;align-items:center;gap:8px;font-size:.72rem">
                         <span style="width:90px;color:var(--green)">Delta→Binance</span>
-                        <div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+                        <div class="progress-track-lg">
                             <div style="height:100%;width:${dcW}%;background:var(--green);border-radius:3px"></div>
                         </div>
                         <span style="width:40px;font-family:var(--font-mono);color:var(--green);font-weight:600">${dcPct.toFixed(0)}%</span>
                     </div>
                     <div style="display:flex;align-items:center;gap:8px;font-size:.72rem">
                         <span style="width:90px;color:var(--red)">Binance←revert</span>
-                        <div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
+                        <div class="progress-track-lg">
                             <div style="height:100%;width:${brW}%;background:var(--red);border-radius:3px"></div>
                         </div>
                         <span style="width:40px;font-family:var(--font-mono);color:var(--red);font-weight:600">${brPct.toFixed(0)}%</span>
@@ -2317,15 +2317,15 @@ async function refreshLatencyArb() {
                 const wr = s.win_rate || 0;
                 const netPnl = s.total_net_pnl || 0;
                 sh += `<div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border);border-left:3px solid ${netPnl>=0?'var(--green)':'var(--red)'}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                        <span style="font-weight:700;font-size:.85rem">${short}</span>
+                    <div class="flex-between-mb">
+                        <span class="font-bold text-base">${short}</span>
                         <span style="font-size:.72rem;color:var(--text-muted)">${s.total_trades} simulated</span>
                     </div>
                     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;font-size:.72rem">
                         <div><div style="font-weight:800;font-family:var(--font-mono);color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div class="text-muted">Win Rate</div></div>
                         <div><div style="font-weight:800;font-family:var(--font-mono);color:${netPnl>=0?'var(--green)':'var(--red)'}">${netPnl>=0?'+':''}${netPnl.toFixed(3)}%</div><div class="text-muted">Total P&L</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_net_pnl,3)}%</div><div class="text-muted">Avg Trade</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono)">${num(s.avg_hold_time_s,1)}s</div><div class="text-muted">Avg Hold</div></div>
+                        <div><div class="font-extrabold font-mono">${num(s.avg_net_pnl,3)}%</div><div class="text-muted">Avg Trade</div></div>
+                        <div><div class="font-extrabold font-mono">${num(s.avg_hold_time_s,1)}s</div><div class="text-muted">Avg Hold</div></div>
                     </div>
                 </div>`;
             });
@@ -2444,7 +2444,7 @@ function updateVMHealth(infra, ml4) {
 
     // VM1 — bot host
     let vm1 = '<div style="border-left:3px solid var(--green);padding:6px 8px;margin-bottom:8px">';
-    vm1 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span class="text-success">🟢 VM1 · bot host</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">150.230.171.48</span></div>';
+    vm1 += '<div class="flex-between-label"><span class="text-success">🟢 VM1 · bot host</span><span class="text-muted-mono-xs">150.230.171.48</span></div>';
     vm1 += makeHealthRow("CPU", cpuPct, "%", 100);
     vm1 += makeHealthRow("Memory", memPct, `% (${memUsed}/${memTotal} MB)`, 100);
     if (swapTotal > 0) vm1 += makeHealthRow("Swap", swapPct, `% (${swapUsed}/${swapTotal} MB)`, 100);
@@ -2462,7 +2462,7 @@ function updateVMHealth(infra, ml4) {
         const ml_models = ml4.models_loaded || ml4.model_count || "--";
         const ml_latency = ml4.avg_score_latency_ms || ml4.latency_ms || "--";
         vm4 = '<div style="border-left:3px solid var(--purple);padding:6px 8px">';
-        vm4 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span class="text-purple">🟢 VM4 · ML server</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">10.0.2.4:8081</span></div>';
+        vm4 += '<div class="flex-between-label"><span class="text-purple">🟢 VM4 · ML server</span><span class="text-muted-mono-xs">10.0.2.4:8081</span></div>';
         if (typeof ml_cpu === "number") vm4 += makeHealthRow("CPU", ml_cpu, "%", 100);
         if (typeof ml_mem === "number") vm4 += makeKV("Memory", ml_mem + " MB");
         vm4 += makeKV("Models Loaded", ml_models);
@@ -2471,7 +2471,7 @@ function updateVMHealth(infra, ml4) {
         vm4 += '</div>';
     } else {
         vm4 = '<div style="border-left:3px solid var(--red);padding:6px 8px">';
-        vm4 += '<div style="display:flex;justify-content:space-between;font-size:.7rem;font-weight:700;margin-bottom:6px"><span class="text-danger">🔴 VM4 · ML server</span><span style="color:var(--text-muted);font-family:var(--font-mono);font-size:.6rem">10.0.2.4:8081</span></div>';
+        vm4 += '<div class="flex-between-label"><span class="text-danger">🔴 VM4 · ML server</span><span class="text-muted-mono-xs">10.0.2.4:8081</span></div>';
         vm4 += '<div style="font-size:.65rem;color:var(--text-muted);padding:6px 0">Proxy unreachable — check /api/ml/health from bot host</div>';
         vm4 += '</div>';
     }
@@ -2914,13 +2914,13 @@ function updateRealActiveTrades(realStatus) {
             '<span class="text-warning font-bold">' + (p.leverage||0) + 'x</span>' +
             '<span style="color:var(--cyan);font-size:.72rem">' + (p.scanner||"--") + '</span>' +
             '</div>' +
-            '<div style="display:flex;align-items:center;gap:12px">' +
+            '<div class="flex-items-3">' +
             '<span style="font-size:1.1rem;font-weight:800;color:' + upnlColor + '">' + (upnl>=0?"+":"") + '$' + upnl.toFixed(2) + '</span>' +
             '<span style="color:var(--text-muted);font-size:.72rem">' + dur + '</span>' +
             '</div></div>' +
             '<div style="display:flex;gap:16px;margin-top:6px;font-size:.72rem;font-family:var(--font-mono)">' +
-            '<span class="text-muted">Entry: <span style="color:var(--text)">' + (p.entry_price||0).toFixed(dec) + '</span></span>' +
-            '<span class="text-muted">Current: <span style="color:var(--text)">' + (p.current_price||0).toFixed(dec) + '</span></span>' +
+            '<span class="text-muted">Entry: <span class="text-primary">' + (p.entry_price||0).toFixed(dec) + '</span></span>' +
+            '<span class="text-muted">Current: <span class="text-primary">' + (p.current_price||0).toFixed(dec) + '</span></span>' +
             '<span class="text-muted">SL: <span class="text-danger">' + (p.stop_loss||0).toFixed(dec) + '</span></span>' +
             '<span class="text-muted">TP1: <span class="text-success">' + (p.tp1 ? p.tp1.toFixed(dec) : "--") + '</span></span>' +
             '<span class="text-muted">Margin: $' + (p.margin||0).toFixed(2) + '</span>' +
@@ -3287,7 +3287,7 @@ async function loadVerdictSparklines() {
                 const pct = (n / total * 100);
                 return '<div class="flex items-center gap-2">' +
                     '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
-                    '<div style="flex:1;height:10px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                    '<div class="progress-track-md">' +
                     '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
                     '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
             }).join("");
@@ -3300,7 +3300,7 @@ async function loadVerdictSparklines() {
                 const pct = (n / total * 100);
                 return '<div class="flex items-center gap-2">' +
                     '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
-                    '<div style="flex:1;height:10px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                    '<div class="progress-track-md">' +
                     '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
                     '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
             }).join("");
@@ -3369,7 +3369,7 @@ async function loadFeatureImportance() {
                     const shortName = name.replace(/_/g, " ").replace(/^(scanner |regime )/, "");
                     return '<div class="flex items-center gap-2">' +
                         '<span style="font-size:.58rem;min-width:85px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(name) + '">' + esc(shortName) + '</span>' +
-                        '<div style="flex:1;height:8px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                        '<div class="progress-track-sm">' +
                         '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:var(--cyan);border-radius:2px"></div></div>' +
                         '<span style="font-size:.55rem;font-family:var(--font-mono);min-width:35px;text-align:right">' + (imp * 100).toFixed(1) + '%</span></div>';
                 }).join("");
@@ -3390,7 +3390,7 @@ async function loadFeatureImportance() {
                     const pct = (imp / maxBtc * 100);
                     return '<div class="flex items-center gap-2">' +
                         '<span style="font-size:.58rem;min-width:85px;color:#f97316;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(name) + '</span>' +
-                        '<div style="flex:1;height:8px;background:rgba(255,255,255,.03);border-radius:2px;overflow:hidden">' +
+                        '<div class="progress-track-sm">' +
                         '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:#f97316;border-radius:2px"></div></div>' +
                         '<span style="font-size:.55rem;font-family:var(--font-mono);min-width:35px;text-align:right">' + (imp * 100).toFixed(1) + '%</span></div>';
                 }).join("");
@@ -3791,7 +3791,7 @@ function updateSignalRadar(signals, status) {
                 return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">' +
                     '<span style="color:' + sideColor + ';font-weight:700">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
                     '<span class="text-muted">' + e.scanner.substring(0, 8) + '</span>' +
-                    '<span style="font-family:var(--font-mono);color:var(--cyan)">' + conviction + '%</span></div>';
+                    '<span class="font-mono text-info">' + conviction + '%</span></div>';
             }).join("");
         }
     }
@@ -3984,9 +3984,9 @@ async function loadResearchEngine() {
             coKeys.sort(function(a, b) { return coFiring[b] - coFiring[a]; });
             html += coKeys.slice(0, 5).map(function(k) {
                 let v = coFiring[k];
-                return '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0">' +
+                return '<div class="flex justify-between text-xs">' +
                     '<span class="text-muted">' + k + '</span>' +
-                    '<span style="font-family:var(--font-mono);color:var(--cyan)">' + (v * 100).toFixed(0) + '%</span></div>';
+                    '<span class="font-mono text-info">' + (v * 100).toFixed(0) + '%</span></div>';
             }).join("");
         }
 
@@ -4178,7 +4178,7 @@ async function loadCatalystCalendar() {
                 html += '<div style="display:flex;gap:6px;align-items:flex-start;font-size:.55rem;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.02)">' +
                     '<span style="color:var(--text-muted);min-width:42px;font-family:var(--font-mono)">' + e.date.substring(5) + '</span>' +
                     '<span style="width:4px;height:4px;border-radius:50%;background:' + impactCol + ';margin-top:4px;flex-shrink:0"></span>' +
-                    '<span style="color:var(--text)">' + e.event + '</span></div>';
+                    '<span class="text-primary">' + e.event + '</span></div>';
                 });
         }
 
@@ -4377,7 +4377,7 @@ async function refreshGridBot() {
                 html += '<div style="padding:8px;border:1px solid var(--border);border-radius:6px">' +
                     '<div style="font-weight:700;font-size:.72rem">' + esc(sym.replace("/USDT","")) + '</div>' +
                     '<div style="font-size:.62rem;color:var(--cyan)">Center: $' + center.toFixed(dec) + '</div>' +
-                    '<div style="font-size:.62rem;color:var(--text-muted)">Open: ' + openCount + '</div>' +
+                    '<div class="text-xs-muted">Open: ' + openCount + '</div>' +
                     '</div>';
             }
             ladders.innerHTML = html || '<div class="empty">No grid symbols</div>';
@@ -4419,12 +4419,12 @@ async function refreshBrainTab() {
                 let ad = stateRes.active_directives;
                 let lines = [];
                 if (ad.trading_paused) lines.push('<span style="color:#ff4444">PAUSED: ' + ad.pause_reason + '</span>');
-                if (ad.suppressed_scanners && ad.suppressed_scanners.length > 0) lines.push('Suppressed scanners: <span style="color:#ff8800">' + ad.suppressed_scanners.join(", ") + '</span>');
-                if (ad.suppressed_hours && ad.suppressed_hours.length > 0) lines.push('Suppressed hours: <span style="color:#ff8800">' + ad.suppressed_hours.join(", ") + 'h UTC</span>');
+                if (ad.suppressed_scanners && ad.suppressed_scanners.length > 0) lines.push('Suppressed scanners: <span class="text-orange-soft">' + ad.suppressed_scanners.join(", ") + '</span>');
+                if (ad.suppressed_hours && ad.suppressed_hours.length > 0) lines.push('Suppressed hours: <span class="text-orange-soft">' + ad.suppressed_hours.join(", ") + 'h UTC</span>');
                 if (Object.keys(ad.side_penalties || {}).length > 0) lines.push('Side penalties: ' + JSON.stringify(ad.side_penalties));
                 if (stateRes.bad_hours && stateRes.bad_hours.length > 0) lines.push('Bad hours detected: <span style="color:#ff6666">' + stateRes.bad_hours.join(", ") + 'h</span>');
                 if (stateRes.best_hours && stateRes.best_hours.length > 0) lines.push('Best hours: <span style="color:#00ff88">' + stateRes.best_hours.join(", ") + 'h</span>');
-                adDiv.innerHTML = lines.length > 0 ? lines.join("<br>") : '<span style="color:#666">No active directives (dry_run mode)</span>';
+                adDiv.innerHTML = lines.length > 0 ? lines.join("<br>") : '<span class="text-dim">No active directives (dry_run mode)</span>';
             }
 
             // Today's session
@@ -4456,7 +4456,7 @@ async function refreshBrainTab() {
                         let phtml = '';
                         for (var pn in (opt.params||{})) {
                             let p = opt.params[pn];
-                            phtml += '<div style="margin-bottom:6px"><strong>' + pn + '</strong>: ' + p.current + ' <span style="color:#666">(default: ' + p.default + ', range: ' + p.min + '-' + p.max + ')</span><br>Trades at current: ' + p.trades_at_current + ' | Adjustments: ' + p.total_adjustments + '</div>';
+                            phtml += '<div class="mb-2"><strong>' + pn + '</strong>: ' + p.current + ' <span class="text-dim">(default: ' + p.default + ', range: ' + p.min + '-' + p.max + ')</span><br>Trades at current: ' + p.trades_at_current + ' | Adjustments: ' + p.total_adjustments + '</div>';
                         }
                         optDiv.innerHTML = phtml || 'No params active';
                     }
@@ -4505,9 +4505,9 @@ async function refreshBrainTab() {
                         let wr = hc.win_rate;
                         let bg = wr >= 60 ? "rgba(0,255,136,0.25)" : wr >= 45 ? "rgba(255,200,0,0.2)" : "rgba(255,68,68,0.25)";
                         let clr = wr >= 60 ? "#00ff88" : wr >= 45 ? "#ffcc00" : "#ff4444";
-                        hhtml += '<div style="background:' + bg + ';border:1px solid #333;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#888">' + h + 'h</div><div style="color:' + clr + ';font-weight:bold">' + wr.toFixed(0) + '%</div><div style="color:#555">' + hc.sample_count + '</div></div>';
+                        hhtml += '<div style="background:' + bg + ';border:1px solid #333;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#888">' + h + 'h</div><div style="color:' + clr + ';font-weight:bold">' + wr.toFixed(0) + '%</div><div class="text-dim">' + hc.sample_count + '</div></div>';
                     } else {
-                        hhtml += '<div style="background:#111;border:1px solid #222;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div style="color:#555">' + h + 'h</div><div style="color:#333">-</div></div>';
+                        hhtml += '<div style="background:#111;border:1px solid #222;border-radius:4px;padding:4px;text-align:center;font-size:10px"><div class="text-dim">' + h + 'h</div><div style="color:#333">-</div></div>';
                     }
                 }
                 grid.innerHTML = hhtml;
@@ -4518,7 +4518,7 @@ async function refreshBrainTab() {
         if (regimeRes && regimeRes.symbols) {
             let rDiv = document.getElementById("brain-regime-container");
             if (rDiv) {
-                let rhtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Symbol</th><th class="px-2 py-1 text-muted">Current</th><th class="px-2 py-1 text-muted">Confidence</th><th class="px-2 py-1 text-muted">Predicted Next</th><th class="px-2 py-1 text-muted">Probability</th></tr></thead><tbody>';
+                let rhtml = '<table class="w-full text-xs"><thead><tr><th class="text-left px-2 py-1 text-muted">Symbol</th><th class="px-2 py-1 text-muted">Current</th><th class="px-2 py-1 text-muted">Confidence</th><th class="px-2 py-1 text-muted">Predicted Next</th><th class="px-2 py-1 text-muted">Probability</th></tr></thead><tbody>';
                 for (var sym in regimeRes.symbols) {
                     let si = regimeRes.symbols[sym];
                     let pred = (regimeRes.predictions||{})[sym] || {};
@@ -4538,7 +4538,7 @@ async function refreshBrainTab() {
         if (sessionsRes && sessionsRes.daily_summaries && sessionsRes.daily_summaries.length > 0) {
             let sDiv = document.getElementById("brain-sessions-container");
             if (sDiv) {
-                let shtml = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th style="text-align:left;padding:4px 8px;color:#aaa">Date</th><th class="px-2 py-1 text-muted">Trades</th><th class="px-2 py-1 text-muted">WR%</th><th class="px-2 py-1 text-muted">PnL</th><th class="px-2 py-1 text-muted">Best Scanner</th><th class="px-2 py-1 text-muted">Regime</th></tr></thead><tbody>';
+                let shtml = '<table class="w-full text-xs"><thead><tr><th class="text-left px-2 py-1 text-muted">Date</th><th class="px-2 py-1 text-muted">Trades</th><th class="px-2 py-1 text-muted">WR%</th><th class="px-2 py-1 text-muted">PnL</th><th class="px-2 py-1 text-muted">Best Scanner</th><th class="px-2 py-1 text-muted">Regime</th></tr></thead><tbody>';
                 sessionsRes.daily_summaries.forEach(function(ds){
                     let pclr = (ds.pnl||0) >= 0 ? "#00ff88" : "#ff4444";
                     shtml += '<tr><td class="px-2 py-1 border-b">' + ds.date + '</td>';
@@ -4582,7 +4582,7 @@ async function refreshInfraHealth() {
                     let e = entries[path] || {};
                     let age = parseFloat(e.age_sec || 0);
                     let shortPath = path.split("/").pop() || path;
-                    cacheHtml += '<div style="display:flex;justify-content:space-between;font-size:.6rem;padding:1px 0"><span class="text-muted">' +
+                    cacheHtml += '<div class="flex justify-between text-xs"><span class="text-muted">' +
                         shortPath + '</span><span style="font-family:var(--font-mono);color:' +
                         (age < 30 ? 'var(--green)' : 'var(--yellow)') + '">' + age.toFixed(0) + 's ago</span></div>';
                 });
@@ -4856,7 +4856,7 @@ function updateDashboardHeader(trkStats, closed, decision) {
         let el = document.getElementById("cmd-last-trade");
         if (el) {
             let color = lpnl >= 0 ? "var(--green)" : "var(--red)";
-            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span class="text-muted">' + sym + ' ' + side + '</span> <span style="font-size:.65rem;color:var(--text-muted)">' + reason + '</span>';
+            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span class="text-muted">' + sym + ' ' + side + '</span> <span class="text-xs text-muted">' + reason + '</span>';
         }
     }
 }
@@ -5060,7 +5060,7 @@ async function dashUpdate() {
           else if(diff<86400)ago=Math.floor(diff/3600)+"h ago";else ago=Math.floor(diff/86400)+"d ago";}
         let dur =Math.round(lt.trade_duration_sec||lt.duration_sec||0);
         let ds =dur>0?(dur<60?dur+"s":Math.floor(dur/60)+"m"):"";
-        le.innerHTML='<span style="font-weight:700;color:'+c+'">$'+(lp>=0?"+":"")+lp.toFixed(2)+'</span> '+sym+' '+(lt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(lt.exit_reason||"?")+(ds?' \u00B7 held '+ds:'')+(ago?' \u00B7 '+ago:'')+'</span>';
+        le.innerHTML='<span style="font-weight:700;color:'+c+'">$'+(lp>=0?"+":"")+lp.toFixed(2)+'</span> '+sym+' '+(lt.side||"?")+'<br><span class="text-xs-muted">'+(lt.exit_reason||"?")+(ds?' \u00B7 held '+ds:'')+(ago?' \u00B7 '+ago:'')+'</span>';
       }
     }
     // 7. Last real trade
@@ -5075,7 +5075,7 @@ async function dashUpdate() {
                 if(rt.timestamp){var rd2=Math.round((Date.now()-new Date(rt.timestamp).getTime())/1000);
                 if(rd2<60)rago2=rd2+"s ago";else if(rd2<3600)rago2=Math.floor(rd2/60)+"m ago";
                 else if(rd2<86400)rago2=Math.floor(rd2/3600)+"h ago";else rago2=Math.floor(rd2/86400)+"d ago";}
-                rle2.innerHTML='<span style="font-weight:700;color:'+rc2+'">$'+(rp>=0?"+":"")+rp.toFixed(2)+'</span> '+rsym+' '+(rt.side||"?")+'<br><span style="font-size:.62rem;color:var(--text-muted)">'+(rt.exit_reason||rt.reason||"--")+(rago2?' \u00B7 '+rago2:'')+'</span>';
+                rle2.innerHTML='<span style="font-weight:700;color:'+rc2+'">$'+(rp>=0?"+":"")+rp.toFixed(2)+'</span> '+rsym+' '+(rt.side||"?")+'<br><span class="text-xs-muted">'+(rt.exit_reason||rt.reason||"--")+(rago2?' \u00B7 '+rago2:'')+'</span>';
       }
     } else {
       let rle3 =document.getElementById("cmd-last-real-trade");
@@ -5127,8 +5127,8 @@ async function dashUpdate() {
               '<td class="text-sm">' + dt + '</td>' +
               '<td class="font-semibold">' + (t.symbol||"?") + '</td>' +
               '<td><span style="color:' + (t.side==="long"?"var(--green)":"var(--red)") + '">' + (t.side||"?").toUpperCase() + '</span></td>' +
-              '<td style="font-family:var(--font-mono);font-size:.7rem">' + (t.entry_price||0).toFixed(4) + '</td>' +
-              '<td style="font-family:var(--font-mono);font-size:.7rem">' + (t.exit_price||0).toFixed(4) + '</td>' +
+              '<td class="font-mono text-sm">' + (t.entry_price||0).toFixed(4) + '</td>' +
+              '<td class="font-mono text-sm">' + (t.exit_price||0).toFixed(4) + '</td>' +
               '<td>' + slip.toFixed(0) + 'bp</td>' +
               '<td style="color:' + pc + ';font-weight:600">$' + (p>=0?"+":"") + p.toFixed(2) + '</td>' +
               '<td>$' + margin.toFixed(0) + '</td>' +
@@ -5213,7 +5213,7 @@ async function showJourney(tradeId) {
           <div style="flex:1">
             <div class="flex justify-between items-center">
               <span style="font-weight:700;font-size:.75rem;color:${color}">${s.stage}</span>
-              <span style="font-size:.6rem;color:var(--text-muted);font-family:var(--font-mono)">+${s.latency_ms.toFixed(0)}ms</span>
+              <span class="text-xs text-muted font-mono">+${s.latency_ms.toFixed(0)}ms</span>
             </div>
             <div style="font-size:.68rem;color:var(--text-dim);margin-top:2px">${s.reason||''}</div>
           </div>
@@ -5254,7 +5254,7 @@ async function renderPipelineObs() {
       if (hfEl) {
         const fixes = (hotfix && hotfix.ok && hotfix.fixes) || null;
         if (!fixes) {
-          hfEl.innerHTML = '<div style="color:var(--text-muted);font-size:.68rem">No data</div>';
+          hfEl.innerHTML = '<div class="text-muted text-sm">No data</div>';
         } else {
           const formatAge = (s) => {
             if (s == null) return 'never';
@@ -5310,11 +5310,11 @@ async function renderPipelineObs() {
         r('Tier Valid', f.tier_valid, 'var(--green)'),
         r('Near Miss', f.tier_near_miss || f.near_miss, 'var(--yellow)'),
         r('Blocked (regime)', f.blocked_regime, 'var(--red)'),
-        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+        '<div class="border-top-dashed"></div>',
         r('Paper Emitted', f.paper_emitted, 'var(--green)'),
         r('Real Qualified', f.real_qualified, 'var(--yellow)'),
         r('Real Rejected', f.real_rejected, 'var(--red)'),
-        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+        '<div class="border-top-dashed"></div>',
         r('Real Executed', f.real_executed, 'var(--accent)'),
         r('Anti-slip Rej', f.real_anti_slip_rejected, 'var(--red)'),
       ].join('');
@@ -5357,13 +5357,13 @@ async function renderPipelineObs() {
         probBadge = `<span style="font-size:.55rem;padding:1px 5px;border-radius:3px;background:rgba(255,215,0,.12);color:var(--yellow);font-weight:800;margin-left:6px">PROB ${(prob.size_mult*100).toFixed(0)}% · ${remT}t/${remH}h</span>`;
       }
       const rows = [
-        `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;background:${!realEnabled?'rgba(255,59,92,.08)':'transparent'};border-radius:3px"><span style="color:var(--text-muted);font-weight:700">Real Trading</span><span style="display:flex;align-items:center"><span style="color:${modeColor};font-weight:800">${realMode}</span>${probBadge}</span></div>`,
+        `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 4px;background:${!realEnabled?'rgba(255,59,92,.08)':'transparent'};border-radius:3px"><span style="color:var(--text-muted);font-weight:700">Real Trading</span><span class="flex items-center"><span style="color:${modeColor};font-weight:800">${realMode}</span>${probBadge}</span></div>`,
         `<div class="flex justify-between"><span class="text-muted">Circuit Breaker</span><span style="color:${cbColor};font-weight:700">${cbLabel}</span></div>`,
-        `<div class="flex justify-between"><span class="text-muted">Consec losses</span><span style="color:var(--text-dim);font-weight:700">${cb.consecutive_losses||0} / 3</span></div>`,
+        `<div class="flex justify-between"><span class="text-muted">Consec losses</span><span class="text-dim font-bold">${cb.consecutive_losses||0} / 3</span></div>`,
         `<div class="flex justify-between"><span class="text-muted">Daily PnL</span><span style="color:${pnlColor};font-weight:700">$${(cb.daily_pnl||0).toFixed(2)}</span></div>`,
         `<div class="flex justify-between"><span class="text-muted">Total PnL</span><span style="color:${totalColor};font-weight:700">$${totalPnl.toFixed(2)}</span></div>`,
-        `<div class="flex justify-between"><span class="text-muted">Daily limit</span><span style="color:var(--text-dim);font-weight:700">$${(cb.daily_loss_limit||15).toFixed(0)}</span></div>`,
-        '<div style="border-top:1px dashed rgba(255,255,255,.08);margin:4px 0"></div>',
+        `<div class="flex justify-between"><span class="text-muted">Daily limit</span><span class="text-dim font-bold">$${(cb.daily_loss_limit||15).toFixed(0)}</span></div>`,
+        '<div class="border-top-dashed"></div>',
       ];
       const keys = Object.keys(agents);
       if (keys.length) {
@@ -5390,7 +5390,7 @@ async function renderPipelineObs() {
             roleLabel = 'DEAD';
             dotColor = 'var(--red)';
           }
-          rows.push(`<div class="flex justify-between items-center"><span style="color:var(--text-muted);display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>${k}</span><span class="flex items-center gap-2"><span style="color:var(--text-muted);font-size:.62rem">${age.toFixed(0)}s</span><span style="color:${dotColor};font-weight:800;font-size:.62rem;padding:1px 5px;border-radius:3px;background:${dotColor === 'var(--green)' ? 'rgba(0,255,157,.08)' : dotColor === 'var(--cyan)' ? 'rgba(0,212,255,.08)' : dotColor === 'var(--yellow)' ? 'rgba(255,215,0,.08)' : 'rgba(255,59,92,.08)'}">${roleLabel}</span></span></div>`);
+          rows.push(`<div class="flex justify-between items-center"><span style="color:var(--text-muted);display:flex;align-items:center;gap:5px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>${k}</span><span class="flex items-center gap-2"><span class="text-muted text-xs">${age.toFixed(0)}s</span><span style="color:${dotColor};font-weight:800;font-size:.62rem;padding:1px 5px;border-radius:3px;background:${dotColor === 'var(--green)' ? 'rgba(0,255,157,.08)' : dotColor === 'var(--cyan)' ? 'rgba(0,212,255,.08)' : dotColor === 'var(--yellow)' ? 'rgba(255,215,0,.08)' : 'rgba(255,59,92,.08)'}">${roleLabel}</span></span></div>`);
         });
       }
       // Supervisor last-known
@@ -5450,7 +5450,7 @@ function renderLossTaxonomy(data) {
   const summaryEl = document.getElementById('lt-summary');
   if (!rowsEl) return;
   if (!data || !data.ok) {
-    rowsEl.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:14px">No taxonomy data yet</div>';
+    rowsEl.innerHTML = '<div class="text-sm text-muted text-center p-3">No taxonomy data yet</div>';
     if (summaryEl) summaryEl.textContent = '0 losses';
     return;
   }
@@ -5489,7 +5489,7 @@ function renderLossTaxonomy(data) {
     .sort((a, b) => Math.abs(b[1].total_loss_usd || 0) - Math.abs(a[1].total_loss_usd || 0));
 
   if (sorted.length === 0) {
-    rowsEl.innerHTML = '<div style="font-size:.72rem;color:var(--text-muted);text-align:center;padding:14px">No losses in window</div>';
+    rowsEl.innerHTML = '<div class="text-sm text-muted text-center p-3">No losses in window</div>';
     return;
   }
 
@@ -5665,7 +5665,7 @@ function renderStageLossMap(data) {
             ${dropBadge}
           </div>
           <div style="display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.68rem">
-            <span class="text-muted">reached <span style="color:var(--text-dim);font-weight:700">${reached}</span></span>
+            <span class="text-muted">reached <span class="text-dim font-bold">${reached}</span></span>
             <span class="text-success">✓ ${passed}</span>
             <span class="text-danger">✗ ${failed}</span>
             <span class="text-muted">${s.avg_latency_ms}ms</span>
@@ -6461,7 +6461,7 @@ async function loadAnalytics() {
           `<div style="margin-bottom:6px;padding:4px 8px;border-left:2px solid var(--red);background:rgba(255,59,92,.03)">` +
           `<div style="display:flex;justify-content:space-between;font-weight:700"><span>${labelName}</span><span class="text-danger">${loss.toFixed(2)} (${b.count}t)</span></div>` +
           `<div style="height:3px;background:rgba(255,59,92,.15);border-radius:2px;margin:2px 0"><div style="height:100%;width:${barWidth}%;background:var(--red);border-radius:2px"></div></div>` +
-          `<div style="color:var(--text-muted);font-size:.6rem">${symbols || '—'}</div>` +
+          `<div class="text-muted text-xs">${symbols || '—'}</div>` +
           `</div>`
         );
       }
@@ -6564,12 +6564,12 @@ async function refreshAdmin() {
                         '</div>' +
                         // Config grid
                         '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;font-size:12px">' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Max Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.max_leverage||20) + 'x</div></div>' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Daily Loss Limit</div><div style="font-weight:700;font-family:monospace;color:#ff3b5c">' + (u.max_daily_loss_pct||3) + '%</div></div>' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Max Positions</div><div style="font-weight:700;font-family:monospace;color:#00d4ff">' + (u.max_open_positions||3) + '</div></div>' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Pref Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.preferred_leverage||5) + 'x</div></div>' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Risk/Trade</div><div style="font-weight:700;font-family:monospace;color:#f97316">' + (u.risk_per_trade_pct||1) + '%</div></div>' +
-                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"UTC") + '</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Max Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.max_leverage||20) + 'x</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Daily Loss Limit</div><div style="font-weight:700;font-family:monospace;color:#ff3b5c">' + (u.max_daily_loss_pct||3) + '%</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Max Positions</div><div style="font-weight:700;font-family:monospace;color:#00d4ff">' + (u.max_open_positions||3) + '</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Pref Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.preferred_leverage||5) + 'x</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Risk/Trade</div><div style="font-weight:700;font-family:monospace;color:#f97316">' + (u.risk_per_trade_pct||1) + '%</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"UTC") + '</div></div>' +
                         '</div>' +
                         // API Keys section
                         '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:8px">' +
@@ -6580,7 +6580,7 @@ async function refreshAdmin() {
                         // Trading pairs + extra info
                         '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11px">' +
                             '<div style="color:#5a7090">Pairs: ' + pairs.map(function(p){return '<span style="color:#00d4ff;font-weight:600;margin-right:4px">'+p+'</span>';}).join("") + '</div>' +
-                            '<div style="color:#5a7090">Last login: <span style="color:#9ba3b5">' + lastLogin + '</span>' +
+                            '<div style="color:#5a7090">Last login: <span class="text-9ba3b5">' + lastLogin + '</span>' +
                                 (u.telegram_chat_id ? ' | Telegram: <span style="color:#00d4ff">' + u.telegram_chat_id + '</span>' : '') +
                                 (u.full_name ? ' | ' + u.full_name : '') +
                             '</div>' +
@@ -6598,7 +6598,7 @@ async function refreshAdmin() {
                                 if (!el || !d) return;
                                 let keys = d.keys || [];
                                 if (keys.length === 0) {
-                                    el.innerHTML = '<span style="color:#ff8800">No keys configured</span>';
+                                    el.innerHTML = '<span class="text-orange-soft">No keys configured</span>';
                                 } else {
                                     el.innerHTML = keys.map(function(k) {
                                         let lc = k.label === "live" ? "#ff3b5c" : "#00d4ff";
@@ -6625,7 +6625,7 @@ async function refreshAdmin() {
             let sessBody = document.getElementById("admin-sessions-body");
             if (sessBody) {
                 if (sessions.length === 0) {
-                    sessBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No active sessions</td></tr>';
+                    sessBody.innerHTML = '<tr><td colspan="5" class="empty-state-pad">No active sessions</td></tr>';
                 } else {
                     let shtml = "";
                     for (var si = 0; si < sessions.length; si++) {
@@ -6649,7 +6649,7 @@ async function refreshAdmin() {
             let auditBody = document.getElementById("admin-audit-body");
             if (auditBody) {
                 if (audit.length === 0) {
-                    auditBody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:20px">No login history</td></tr>';
+                    auditBody.innerHTML = '<tr><td colspan="5" class="empty-state-pad">No login history</td></tr>';
                 } else {
                     let ahtml = "";
                     for (var ai = 0; ai < audit.length; ai++) {
@@ -6701,10 +6701,10 @@ async function adminAddApiKey(userId, email) {
     let html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,255,157,.2);border-radius:12px;padding:24px;max-width:450px;margin:20px auto">' +
         '<h3 style="color:#00ff9d;margin:0 0 16px">Add API Key: ' + email + '</h3>' +
         '<div style="display:grid;gap:10px;font-size:13px">' +
-            '<label style="color:#9ba3b5">Label<select id="admin-ak-label" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
-            '<label style="color:#9ba3b5">API Key<input id="admin-ak-key" type="text" placeholder="Enter Delta API Key" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
-            '<label style="color:#9ba3b5">API Secret<input id="admin-ak-secret" type="password" placeholder="Enter Delta API Secret" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
-            '<label style="color:#9ba3b5">Base URL (optional)<input id="admin-ak-url" type="text" placeholder="https://cdn-ind.testnet.deltaex.org (leave empty for default)" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-size:11px"></label>' +
+            '<label class="text-9ba3b5">Label<select id="admin-ak-label" class="form-input-dark"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
+            '<label class="text-9ba3b5">API Key<input id="admin-ak-key" type="text" placeholder="Enter Delta API Key" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label class="text-9ba3b5">API Secret<input id="admin-ak-secret" type="password" placeholder="Enter Delta API Secret" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label class="text-9ba3b5">Base URL (optional)<input id="admin-ak-url" type="text" placeholder="https://cdn-ind.testnet.deltaex.org (leave empty for default)" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-size:11px"></label>' +
         '</div>' +
         '<div style="background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.2);border-radius:6px;padding:8px;margin-top:12px;font-size:11px;color:#ffd700">' +
             'Keys are encrypted with Fernet (AES-128-CBC) before storage. Only the last 4 characters are visible after saving.' +
@@ -6788,17 +6788,17 @@ async function adminEditUser(userId) {
         let html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:24px;max-width:500px;margin:20px auto">' +
             '<h3 style="color:#00d4ff;margin:0 0 16px">Edit User: ' + u.email + '</h3>' +
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">' +
-                '<label style="color:#9ba3b5">Role<select id="eu-role" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="admin"'+(u.role==="admin"?" selected":"")+'>Admin</option><option value="trader"'+(u.role==="trader"?" selected":"")+'>Trader</option><option value="viewer"'+(u.role==="viewer"?" selected":"")+'>Viewer</option></select></label>' +
-                '<label style="color:#9ba3b5">Tier<select id="eu-tier" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="free"'+(u.tier==="free"?" selected":"")+'>Free</option><option value="pro"'+(u.tier==="pro"?" selected":"")+'>Pro</option><option value="enterprise"'+(u.tier==="enterprise"?" selected":"")+'>Enterprise</option></select></label>' +
-                '<label style="color:#9ba3b5">Bot Mode<select id="eu-mode" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="paper"'+(u.bot_mode==="paper"?" selected":"")+'>Paper</option><option value="demo"'+(u.bot_mode==="demo"?" selected":"")+'>Demo</option><option value="live"'+(u.bot_mode==="live"?" selected":"")+'>Live</option></select></label>' +
-                '<label style="color:#9ba3b5">Max Leverage<input id="eu-lev" type="number" value="'+(u.max_leverage||20)+'" min="1" max="50" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
-                '<label style="color:#9ba3b5">Daily Loss %<input id="eu-loss" type="number" value="'+(u.max_daily_loss_pct||3)+'" min="0.5" max="20" step="0.5" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
-                '<label style="color:#9ba3b5">Max Positions<input id="eu-pos" type="number" value="'+(u.max_open_positions||3)+'" min="1" max="10" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
-                '<label style="color:#9ba3b5">Risk/Trade %<input id="eu-risk" type="number" value="'+(u.risk_per_trade_pct||1)+'" min="0.1" max="10" step="0.1" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
-                '<label style="color:#9ba3b5">Pref Leverage<input id="eu-plev" type="number" value="'+(u.preferred_leverage||5)+'" min="1" max="50" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+                '<label class="text-9ba3b5">Role<select id="eu-role" class="form-input-dark"><option value="admin"'+(u.role==="admin"?" selected":"")+'>Admin</option><option value="trader"'+(u.role==="trader"?" selected":"")+'>Trader</option><option value="viewer"'+(u.role==="viewer"?" selected":"")+'>Viewer</option></select></label>' +
+                '<label class="text-9ba3b5">Tier<select id="eu-tier" class="form-input-dark"><option value="free"'+(u.tier==="free"?" selected":"")+'>Free</option><option value="pro"'+(u.tier==="pro"?" selected":"")+'>Pro</option><option value="enterprise"'+(u.tier==="enterprise"?" selected":"")+'>Enterprise</option></select></label>' +
+                '<label class="text-9ba3b5">Bot Mode<select id="eu-mode" class="form-input-dark"><option value="paper"'+(u.bot_mode==="paper"?" selected":"")+'>Paper</option><option value="demo"'+(u.bot_mode==="demo"?" selected":"")+'>Demo</option><option value="live"'+(u.bot_mode==="live"?" selected":"")+'>Live</option></select></label>' +
+                '<label class="text-9ba3b5">Max Leverage<input id="eu-lev" type="number" value="'+(u.max_leverage||20)+'" min="1" max="50" class="form-input-dark"></label>' +
+                '<label class="text-9ba3b5">Daily Loss %<input id="eu-loss" type="number" value="'+(u.max_daily_loss_pct||3)+'" min="0.5" max="20" step="0.5" class="form-input-dark"></label>' +
+                '<label class="text-9ba3b5">Max Positions<input id="eu-pos" type="number" value="'+(u.max_open_positions||3)+'" min="1" max="10" class="form-input-dark"></label>' +
+                '<label class="text-9ba3b5">Risk/Trade %<input id="eu-risk" type="number" value="'+(u.risk_per_trade_pct||1)+'" min="0.1" max="10" step="0.1" class="form-input-dark"></label>' +
+                '<label class="text-9ba3b5">Pref Leverage<input id="eu-plev" type="number" value="'+(u.preferred_leverage||5)+'" min="1" max="50" class="form-input-dark"></label>' +
             '</div>' +
-            '<label style="color:#9ba3b5;display:block;margin-top:10px">Trading Pairs (comma separated)<input id="eu-pairs" type="text" value="'+(Array.isArray(pairs)?pairs.join(", "):"")+'" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
-            '<label style="color:#9ba3b5;display:block;margin-top:10px">Telegram Chat ID<input id="eu-tg" type="text" value="'+(u.telegram_chat_id||"")+'" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+            '<label style="color:#9ba3b5;display:block;margin-top:10px">Trading Pairs (comma separated)<input id="eu-pairs" type="text" value="'+(Array.isArray(pairs)?pairs.join(", "):"")+'" class="form-input-dark"></label>' +
+            '<label style="color:#9ba3b5;display:block;margin-top:10px">Telegram Chat ID<input id="eu-tg" type="text" value="'+(u.telegram_chat_id||"")+'" class="form-input-dark"></label>' +
             '<div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">' +
                 '<button onclick="document.getElementById(\'admin-edit-modal\').style.display=\'none\'" style="padding:8px 20px;border:1px solid #333;background:transparent;color:#aaa;border-radius:6px;cursor:pointer">Cancel</button>' +
                 '<button onclick="adminSaveUser(\''+userId+'\')" style="padding:8px 20px;border:1px solid #00d4ff;background:rgba(0,212,255,.15);color:#00d4ff;border-radius:6px;cursor:pointer;font-weight:700">Save</button>' +

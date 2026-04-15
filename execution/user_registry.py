@@ -154,13 +154,36 @@ class UserRealRegistry:
 
         # Create DeltaClient for this user
         try:
-            from exchange.delta_client import DeltaClient
+            from delta_rest_client import DeltaRestClient
             is_testnet = "testnet" in (base_url or "") or key_label == "demo"
-            delta = DeltaClient(
-                api_key=api_key,
-                api_secret=api_secret,
-                testnet=is_testnet,
-            )
+            if not base_url:
+                base_url = "https://cdn-ind.testnet.deltaex.org" if is_testnet else "https://api.india.delta.exchange"
+
+            # Create a lightweight wrapper with the user's own keys
+            class UserDeltaClient:
+                def __init__(self, ak, sk, url, testnet):
+                    self._client = DeltaRestClient(base_url=url, api_key=ak, api_secret=sk)
+                    self.mode = "demo" if testnet else "live"
+                    self._connected = True
+                def connect(self): return True
+                def fetch_balance(self):
+                    try:
+                        wallets = self._client.get_balances()
+                        for w in (wallets or []):
+                            if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                                return float(w.get("available_balance", 0) or 0)
+                    except: pass
+                    return 0
+                def get_ticker(self, symbol):
+                    try:
+                        from exchange.delta_client import PRODUCT_MAP
+                        pid = PRODUCT_MAP.get(symbol)
+                        if pid:
+                            return self._client.get_ticker(pid)
+                    except: pass
+                    return {}
+
+            delta = UserDeltaClient(api_key, api_secret, base_url, is_testnet)
         except Exception as e:
             logger.error("Registry: DeltaClient creation failed for user %s: %s", user_id[:8], e)
             return None

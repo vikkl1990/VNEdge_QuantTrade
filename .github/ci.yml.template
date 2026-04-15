@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: vnedge
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: vnedge_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: AST parse all Python
+        run: |
+          python -c "import ast, glob; [ast.parse(open(f).read()) for f in glob.glob('**/*.py', recursive=True) if '.venv' not in f]"
+          echo "All Python files parse cleanly"
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://vnedge:testpw@localhost:5432/vnedge_test
+          FERNET_KEY: dummytestkey1234567890123456789012345678901234=
+          DASHBOARD_PASSWORD: testpw
+        run: pytest tests/unit tests/integration -v
+      - name: Build dashboard bundle
+        run: python3 scripts/build_dashboard.py
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_HOST_KEY }}" >> ~/.ssh/known_hosts
+      - name: Deploy to VM1
+        run: |
+          rsync -az --exclude='.git' --exclude='.venv' --exclude='storage' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ opc@${{ secrets.DEPLOY_HOST }}:/home/opc/crypto-trading-bot/
+          ssh -i ~/.ssh/deploy_key opc@${{ secrets.DEPLOY_HOST }} \
+            'sudo systemctl restart cryptobot'

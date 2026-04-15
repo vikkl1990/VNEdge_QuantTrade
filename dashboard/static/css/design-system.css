@@ -472,3 +472,34 @@ body {
 .font-medium { font-weight: 500; }
 .p-0 { padding: 0; }
 .p-1 { padding: var(--sp-1); }
+
+/* ─── Final utilities (A+ pass) ─── */
+.bg-base { background: var(--bg-base); }
+.bg-card { background: var(--bg-card); }
+.bg-transparent { background: transparent; }
+.opacity-60 { opacity: 0.6; }
+.opacity-80 { opacity: 0.8; }
+.cursor-not-allowed { cursor: not-allowed; }
+.align-middle { vertical-align: middle; }
+.break-all { word-break: break-all; }
+.leading-none { line-height: 1; }
+.leading-normal { line-height: 1.4; }
+.select-none { user-select: none; }
+.inline-flex { display: inline-flex; }
+.invisible { visibility: hidden; }
+.text-white { color: #fff; }
+.text-black { color: #000; }
+.border-0 { border: 0; }
+
+/* AAA contrast — bump muted colors for stricter WCAG */
+@media (prefers-contrast: more) {
+  .text-muted { color: #b0b8c8 !important; }
+  .text-dim { color: #7a8a9c !important; }
+}
+
+/* Print styles */
+@media print {
+  .header, .tab-bar, .dash-footer, .site-footer { display: none !important; }
+  .glass-card { border: 1px solid #999; box-shadow: none; }
+  body { background: white; color: black; }
+}

@@ -588,6 +588,13 @@ class DashboardServer:
             except Exception as e:
                 logger.warning("Email routes init failed: %s", e)
 
+        # WebSocket routes (independent of multi-user)
+        try:
+            from dashboard.websocket_handler import register_ws_routes
+            register_ws_routes(self._app)
+        except Exception as e:
+            logger.warning("WS routes init failed: %s", e)
+
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)
@@ -653,6 +660,9 @@ class DashboardServer:
         app.router.add_get("/api/risk-metrics", self._handle_risk_metrics)
         app.router.add_get("/api/session-heatmap", self._handle_session_heatmap)
         app.router.add_get("/api/ping", self._handle_ping)
+        app.router.add_get("/metrics", self._handle_metrics)
+        app.router.add_get("/health", self._handle_health_check)
+        app.router.add_get("/api/csrf", self._handle_csrf_token)
         app.router.add_get("/api/latency", self._handle_latency)
         app.router.add_get("/api/latency-arb", self._handle_latency_arb)
         app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
@@ -1685,6 +1695,41 @@ class DashboardServer:
     async def _handle_ping(self, request: web.Request) -> web.Response:
         """Ultra-fast ping for client-side latency measurement."""
         return web.json_response({"t": time.time() * 1000})
+
+    async def _handle_metrics(self, request: web.Request) -> web.Response:
+        """Prometheus metrics export."""
+        try:
+            from utils.observability import get_metrics_text
+            return web.Response(text=get_metrics_text(), content_type="text/plain")
+        except Exception as e:
+            return web.Response(text=f"# error: {e}\n", content_type="text/plain", status=500)
+
+    async def _handle_health_check(self, request: web.Request) -> web.Response:
+        """Liveness/readiness probe (for k8s, load balancers, monitoring)."""
+        try:
+            orch = getattr(self, '_orchestrator', None)
+            running = bool(orch and getattr(orch, '_running', False))
+            db_ok = self._db_pool is not None
+            return web.json_response({
+                "status": "ok" if running else "degraded",
+                "bot_running": running,
+                "db_connected": db_ok,
+                "uptime_sec": int(time.time() - getattr(orch, '_start_time', time.time())) if orch else 0,
+            }, status=200 if running else 503)
+        except Exception as e:
+            return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+    async def _handle_csrf_token(self, request: web.Request) -> web.Response:
+        """Issue CSRF token for current session."""
+        try:
+            from dashboard.security_middleware import generate_csrf_token
+            cookie = request.cookies.get("vn_session", "")
+            if not cookie:
+                return web.json_response({"error": "no session"}, status=401)
+            token = generate_csrf_token(cookie)
+            return web.json_response({"csrf_token": token})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def _handle_pipeline_overview(self, request: web.Request) -> web.Response:
         """Phase 0: funnel counts, real rejection leaderboard, agent heartbeats."""

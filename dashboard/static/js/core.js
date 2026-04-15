@@ -130,6 +130,15 @@ function showToast(msg, type) {
   setTimeout(() => t.remove(), 4000);
 }
 
+// ── Service Worker registration (PWA) ──
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js')
+      .then(reg => console.log('SW registered:', reg.scope))
+      .catch(err => console.warn('SW failed:', err));
+  });
+}
+
 // ── Modal close helper (for data-action="closeModal" data-arg="modal-id") ──
 function closeModal(modalId) {
   const m = document.getElementById(modalId);

@@ -130,11 +130,11 @@ class SignalLearner:
                 direction = "favorable" if avg_cond_mult > 1.0 else "unfavorable"
                 adjustments.append(f"conditions {direction}")
 
-        # 2b. Off-hours confidence penalty (01:00-05:00 UTC = low liquidity)
-        current_hour = datetime.now(timezone.utc).hour
-        if 1 <= current_hour <= 5:
-            total_mult *= 0.7
-            adjustments.append("off_hours penalty (01-05 UTC)")
+        # 2b. Off-hours penalty DISABLED — Brain handles hourly performance
+        # The Brain memory tracks per-hour win rates and only flags hours
+        # that are actually statistically negative (10+ trades, <35% WR).
+        # Hardcoded 01-05 UTC penalty was killing valid setups during
+        # asia_late session (which has 77% WR for structure_bounce in sideways).
 
         # 2c. Consecutive loss streak penalty
         if self._current_streak <= -5:

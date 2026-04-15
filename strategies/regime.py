@@ -52,13 +52,13 @@ class MarketRegimeDetector:
     """
 
     # ----- configurable thresholds -----
-    ADX_TREND_THRESHOLD: float = 25.0
+    ADX_TREND_THRESHOLD: float = 30.0       # Raised from 25: ADX<30 is NOT a confirmed trend
     ADX_STRONG_TREND: float = 40.0
     ATR_HIGH_VOL_PERCENTILE: float = 85.0
     ATR_LOW_VOL_PERCENTILE: float = 20.0
     EMA_SLOPE_THRESHOLD: float = 0.15       # % per 3 bars
     BB_SQUEEZE_PERCENTILE: float = 20.0     # bandwidth percentile
-    BB_EXPANSION_PERCENTILE: float = 80.0
+    BB_EXPANSION_PERCENTILE: float = 92.0   # Raised from 80: top 8% = genuine breakout only
     VOLUME_LOW_LIQUIDITY: float = 0.15      # relative to 20-bar SMA (lowered from 0.3 — Delta India has thinner volume)
 
     def __init__(
@@ -222,7 +222,7 @@ class MarketRegimeDetector:
             return MarketRegime.BREAKOUT, 0.70
 
         # 4) BB expansion without strong ADX = breakout just starting
-        if bw_percentile >= self.BB_EXPANSION_PERCENTILE and adx_val > 20:
+        if bw_percentile >= self.BB_EXPANSION_PERCENTILE and adx_val > 28:
             return MarketRegime.BREAKOUT, 0.60
 
         # 5) Strong trend
@@ -233,11 +233,9 @@ class MarketRegimeDetector:
                 elif ema_slope < 0 and trend_dir <= 0:
                     return MarketRegime.TRENDING_DOWN, min(0.55 + adx_val / 100, 0.95)
 
-            # ADX trending but slope ambiguous
-            if trend_dir > 0:
-                return MarketRegime.TRENDING_UP, 0.55
-            elif trend_dir < 0:
-                return MarketRegime.TRENDING_DOWN, 0.55
+            # ADX trending but slope ambiguous — NOT enough for trend classification
+            # Fall through to sideways (simple detector requires full EMA stack)
+            pass
 
         # 6) Mean reversion: low ADX + low volatility + tight bandwidth
         if (

@@ -160,7 +160,7 @@ paper_trading:
   settlement_fee_rate: 0.0006
   slippage_pct: 0.05
 orderbook:
-  enabled: false  # disabled: 3027 errors, 0 fetches. Delta L2 API needs fix.
+  enabled: true  # RE-ENABLED: fixed API response unwrapping ("result" key)
   poll_interval: 10    # seconds between L2 REST polls per symbol
   depth: 20            # levels per side
   stale_threshold: 30  # seconds before snapshot considered stale

@@ -1654,6 +1654,46 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
+  <!-- Performance Attribution Panel -->
+  <div class="glass-card mt-gap">
+    <div class="card-title">Performance Attribution</div>
+    <div class="flex items-center gap-2 mb-3">
+      <button class="btn btn--info btn--sm" data-action="refreshAttribution">Refresh</button>
+      <span class="text-muted text-xs">PnL by scanner × regime × grade</span>
+    </div>
+    <div id="attribution-table-wrap" class="overflow-x-auto max-h-300">
+      <table class="data-table w-full">
+        <thead><tr>
+          <th>Scanner</th><th>Regime</th><th>Grade</th>
+          <th class="text-right">Trades</th><th class="text-right">WR</th>
+          <th class="text-right">Avg PnL</th><th class="text-right">Total PnL</th>
+        </tr></thead>
+        <tbody id="attribution-body"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Backtest Panel -->
+  <div class="glass-card mt-gap">
+    <div class="card-title">Strategy Backtester</div>
+    <div class="grid-2" style="gap:12px;margin-bottom:12px">
+      <label class="text-9ba3b5">Symbols (comma-separated, blank = all)
+        <input id="bt-symbols" type="text" class="form-input-dark" placeholder="BTC/USDT, ETH/USDT">
+      </label>
+      <label class="text-9ba3b5">Scanners (comma-separated, blank = all)
+        <input id="bt-scanners" type="text" class="form-input-dark" placeholder="structure_bounce">
+      </label>
+      <label class="text-9ba3b5">ML Threshold
+        <input id="bt-ml" type="number" class="form-input-dark" value="0.60" step="0.01" min="0.4" max="0.9">
+      </label>
+      <label class="text-9ba3b5">Confidence Floor
+        <input id="bt-conf" type="number" class="form-input-dark" value="55" min="30" max="100">
+      </label>
+    </div>
+    <button class="btn btn--success btn--sm" data-action="runBacktest">Run Backtest</button>
+    <div id="bt-result" class="mt-3 text-sm text-muted">Configure params and click Run.</div>
+  </div>
+
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -2561,6 +2601,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div class="card-title">User Management</div>
       <div class="mb-3">
         <button class="btn btn--info btn--sm" data-action="refreshAdminUsers">Refresh</button>
+        <button class="btn btn--success btn--sm" data-action="adminAddUser" style="margin-left:8px">+ Add User</button>
         <span class="text-muted text-xs ml-auto" id="admin-user-count">0 users</span>
       </div>
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
@@ -2730,6 +2771,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <script src="/static/js/api.js"></script>
 <script src="/static/js/core.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/js/admin.js"></script>
 <div id="trade-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">

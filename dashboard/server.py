@@ -581,6 +581,13 @@ class DashboardServer:
             except Exception as e:
                 logger.warning("Backtest routes init failed: %s", e)
 
+            # Email verification routes
+            try:
+                from dashboard.email_routes import register_email_routes
+                register_email_routes(self._app, self._db_pool)
+            except Exception as e:
+                logger.warning("Email routes init failed: %s", e)
+
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)

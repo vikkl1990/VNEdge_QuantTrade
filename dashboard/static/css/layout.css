@@ -337,3 +337,40 @@
   .tab-btn { font-size: 0.5rem; padding: 2px 6px; }
   .header__logo-text { font-size: var(--text-base); }
 }
+
+/* ─── Mobile UX polish ─── */
+@media (max-width: 600px) {
+  .glass-card { padding: var(--sp-3); }
+  .card-title { font-size: var(--text-sm); }
+  .stat-value--hero { font-size: var(--text-xl); }
+  .data-table { font-size: var(--text-xs); }
+  .data-table th, .data-table td { padding: var(--sp-1) var(--sp-2); }
+  .btn { padding: var(--sp-1) var(--sp-3); font-size: var(--text-xs); }
+  .strip-bar { padding: var(--sp-2); font-size: var(--text-xs); gap: var(--sp-2); }
+  .strip-label { display: none; }
+  .header__logo-badge { display: none; }
+  .grid-4-eq { grid-template-columns: repeat(2, 1fr); }
+  .info-bar { padding: var(--sp-2) var(--sp-3); flex-wrap: wrap; }
+  .tab-bar { padding: var(--sp-1) var(--sp-3); gap: 2px; }
+  /* Ensure tab content doesn't overflow */
+  .tab-content { padding: var(--sp-2); }
+  /* Header compact */
+  .header { height: 44px; padding: 0 var(--sp-2); }
+  .header__logo-text { font-size: var(--text-sm); }
+  /* Modal full-screen on mobile */
+  .modal-box { margin: var(--sp-2); max-width: calc(100vw - 16px); padding: var(--sp-4); }
+  /* Tables scroll horizontally */
+  .data-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+
+@media (max-width: 375px) {
+  .stat-value--hero { font-size: var(--text-lg); }
+  .metric-md-value { font-size: var(--text-base); }
+}
+
+/* Touch targets ≥ 44px for accessibility */
+@media (pointer: coarse) {
+  button, .btn, .tab-btn, .win-btn, input, select {
+    min-height: 36px;
+  }
+}

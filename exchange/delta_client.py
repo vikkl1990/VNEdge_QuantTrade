@@ -856,8 +856,10 @@ class DeltaClient:
             product_id = self._get_product_id(symbol)
             resp = self._client.request("GET", f"/v2/l2orderbook/{product_id}", params={"depth": depth})
             if resp and isinstance(resp, dict):
-                buy_raw = resp.get("buy", [])
-                sell_raw = resp.get("sell", [])
+                # Delta India wraps payload in "result" — unwrap if present
+                data = resp.get("result", resp) if "result" in resp else resp
+                buy_raw = data.get("buy", [])
+                sell_raw = data.get("sell", [])
                 # Normalize to [[price, size], ...]
                 bids = []
                 for lvl in buy_raw[:depth]:

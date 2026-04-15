@@ -489,7 +489,14 @@ class TrackedSignal:
                 _pm.record_hotfix_veto("p7_zero_atr_block", f"{sig.get('symbol', '?')}_{sig.get('side', '?')}")
             except Exception:
                 pass
-            return []
+            # Return a sentinel TrackedSignal with zero prices so track_signal's
+            # existing `if not ts.entry_price` check will gracefully skip it.
+            # Previously returned [] (list) which broke caller's .entry_price access.
+            return cls(
+                trade_id=f"blocked_{sig.get('symbol', '?')}_{int(__import__('time').time())}",
+                symbol=sig.get("symbol", ""), side=sig.get("side", "long"),
+                entry_price=0.0, stop_loss=0.0,
+            )
 
         # ── MINIMUM POSITION SIZE ENFORCEMENT ──
         # Positions below $50 have fee ratios too high for any edge to survive

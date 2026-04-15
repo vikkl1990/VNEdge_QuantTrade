@@ -22,6 +22,8 @@ def register_admin_routes(app: web.Application, auth_service, db_pool):
     app.router.add_delete("/api/admin/api-keys/{key_id}", require_role("admin")(handler.handle_delete_api_key))
     app.router.add_get("/api/admin/real-overview", handler.handle_real_overview)
     app.router.add_get("/api/admin/user-trades/{user_id}", handler.handle_user_trades)
+    app.router.add_post("/api/admin/users/create", require_role("admin")(handler.handle_create_user))
+    app.router.add_delete("/api/admin/users/{user_id}", require_role("admin")(handler.handle_delete_user))
 
 
 class AdminRouteHandler:
@@ -132,6 +134,60 @@ class AdminRouteHandler:
 
         logger.warning("Admin RESET PASSWORD for user %s (sessions killed)", user_id)
         return web.json_response({"ok": True, "message": "Password reset. User will need to login again."})
+
+    async def handle_create_user(self, request: web.Request) -> web.Response:
+        """POST /api/admin/users/create — admin creates a new user."""
+        import bcrypt, re as _re
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        email = body.get("email", "").strip().lower()
+        password = body.get("password", "")
+        role = body.get("role", "trader")
+        tier = body.get("tier", "free")
+        full_name = body.get("full_name", "").strip()
+
+        if not email or "@" not in email:
+            return web.json_response({"error": "valid email required"}, status=400)
+        if not password or len(password) < 8:
+            return web.json_response({"error": "password must be 8+ chars"}, status=400)
+        if role not in ("admin", "trader", "viewer"):
+            return web.json_response({"error": "invalid role"}, status=400)
+        if tier not in ("free", "pro", "enterprise"):
+            return web.json_response({"error": "invalid tier"}, status=400)
+
+        pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(12)).decode()
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    INSERT INTO users (email, password_hash, role, tier, full_name, is_active, email_verified)
+                    VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
+                    RETURNING id, email, role, tier
+                """, email, pw_hash, role, tier, full_name)
+            logger.warning("Admin CREATED user: %s role=%s tier=%s", email, role, tier)
+            return web.json_response({"ok": True, "user": {"id": str(row["id"]), "email": row["email"], "role": row["role"], "tier": row["tier"]}})
+        except Exception as e:
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                return web.json_response({"error": f"User {email} already exists"}, status=409)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def handle_delete_user(self, request: web.Request) -> web.Response:
+        """DELETE /api/admin/users/{user_id} — admin deletes a user (cascades to trades, keys, sessions)."""
+        user_id = request.match_info.get("user_id", "")
+        # Protect against admin deleting self
+        current_user = request.get("user", {})
+        if str(current_user.get("user_id", "")) == user_id:
+            return web.json_response({"error": "cannot delete your own account"}, status=400)
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT email FROM users WHERE id = $1", user_id)
+            if not row:
+                return web.json_response({"error": "user not found"}, status=404)
+            await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+        logger.warning("Admin DELETED user: %s (%s)", user_id, row["email"])
+        return web.json_response({"ok": True})
 
     async def handle_list_api_keys(self, request: web.Request) -> web.Response:
         """GET /api/admin/users/{user_id}/api-keys — list user's API keys (masked)."""

@@ -10,31 +10,20 @@ def register_backtest_routes(app: web.Application, db_pool=None):
     """Register backtester endpoints."""
 
     async def handle_backtest_run(request: web.Request) -> web.Response:
-        """POST /api/backtest/run — trigger a backtest with custom params.
-
-        Body: {symbols, start_date, end_date, scanners, ml_threshold, leverage, ...}
-        Returns: job_id (results polled separately).
-        """
+        """POST /api/backtest/run — run backtest synchronously on historical data."""
         try:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
-
-        # Validate
-        symbols = body.get("symbols", ["BTC/USDT"])
-        if not isinstance(symbols, list) or not symbols:
-            return web.json_response({"error": "symbols required"}, status=400)
-
-        # Stub: real impl would queue a background job
-        import uuid
-        job_id = str(uuid.uuid4())[:8]
-        logger.info("Backtest queued: job=%s symbols=%s", job_id, symbols)
-        return web.json_response({
-            "job_id": job_id,
-            "status": "queued",
-            "symbols": symbols,
-            "message": "Backtest engine in development. Stub endpoint active.",
-        })
+        try:
+            from ml_training.backtest_engine import run_backtest
+            result = run_backtest(body)
+            logger.info("Backtest: %d trades, WR=%.1f%%, PnL=$%.2f",
+                        result["total_trades"], result["win_rate"], result["total_pnl"])
+            return web.json_response({"status": "complete", **result})
+        except Exception as e:
+            logger.error("Backtest error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
 
     async def handle_backtest_status(request: web.Request) -> web.Response:
         """GET /api/backtest/status/{job_id} — poll backtest progress."""

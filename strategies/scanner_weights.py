@@ -175,10 +175,14 @@ class ScannerWeightManager:
             self._states[scanner_name] = state
 
         self._save()
-        logger.info(
-            "Scanner weights updated: %s",
-            {n: f"{s.status}({s.weight:.1f}x)" for n, s in self._states.items()},
-        )
+        # Only log when weights ACTUALLY changed to reduce spam (was every 15s)
+        new_snapshot = {n: (s.status, round(s.weight, 2)) for n, s in self._states.items()}
+        if getattr(self, "_last_logged_snapshot", None) != new_snapshot:
+            logger.info(
+                "Scanner weights updated: %s",
+                {n: f"{s.status}({s.weight:.1f}x)" for n, s in self._states.items()},
+            )
+            self._last_logged_snapshot = new_snapshot
 
     def get_weight(self, scanner_name: str) -> float:
         """Return current weight multiplier for a scanner."""

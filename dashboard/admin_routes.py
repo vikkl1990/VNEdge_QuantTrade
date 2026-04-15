@@ -24,12 +24,15 @@ class AdminRouteHandler:
         self.pool = db_pool
 
     async def handle_list_users(self, request: web.Request) -> web.Response:
-        """GET /api/admin/users — list all users."""
+        """GET /api/admin/users — list all users with full config."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT id, email, role, tier, full_name, is_active,
                           email_verified, id_verification_status,
-                          bot_mode, created_at, last_login
+                          bot_mode, created_at, last_login,
+                          max_leverage, max_daily_loss_pct, max_open_positions,
+                          trading_pairs, preferred_leverage, risk_per_trade_pct,
+                          timezone, telegram_chat_id, phone
                    FROM users ORDER BY created_at DESC"""
             )
         users = []
@@ -50,16 +53,35 @@ class AdminRouteHandler:
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
 
-        allowed = {"role", "tier", "is_active", "id_verification_status"}
+        allowed = {"role", "tier", "is_active", "id_verification_status",
+                   "bot_mode", "max_leverage", "max_daily_loss_pct",
+                   "max_open_positions", "preferred_leverage", "risk_per_trade_pct",
+                   "trading_pairs", "timezone", "telegram_chat_id"}
         updates = {k: v for k, v in body.items() if k in allowed}
         if not updates:
             return web.json_response({"error": "no valid fields"}, status=400)
 
-        # Validate role
+        # Validate fields
         if "role" in updates and updates["role"] not in ("admin", "trader", "viewer"):
             return web.json_response({"error": "invalid role"}, status=400)
         if "tier" in updates and updates["tier"] not in ("free", "pro", "enterprise"):
             return web.json_response({"error": "invalid tier"}, status=400)
+        if "bot_mode" in updates and updates["bot_mode"] not in ("paper", "demo", "live"):
+            return web.json_response({"error": "invalid bot_mode"}, status=400)
+        if "max_leverage" in updates:
+            updates["max_leverage"] = max(1, min(50, int(updates["max_leverage"])))
+        if "max_daily_loss_pct" in updates:
+            updates["max_daily_loss_pct"] = max(0.5, min(20, float(updates["max_daily_loss_pct"])))
+        if "max_open_positions" in updates:
+            updates["max_open_positions"] = max(1, min(10, int(updates["max_open_positions"])))
+        if "preferred_leverage" in updates:
+            updates["preferred_leverage"] = max(1, min(50, int(updates["preferred_leverage"])))
+        if "risk_per_trade_pct" in updates:
+            updates["risk_per_trade_pct"] = max(0.1, min(10, float(updates["risk_per_trade_pct"])))
+        if "trading_pairs" in updates:
+            import json
+            if isinstance(updates["trading_pairs"], list):
+                updates["trading_pairs"] = json.dumps(updates["trading_pairs"])
 
         set_parts = []
         values = []

@@ -6487,31 +6487,56 @@ async function refreshAdmin() {
             var statEl = document.getElementById("admin-stat-users");
             if (statEl) statEl.textContent = users.length;
 
-            var body = document.getElementById("admin-users-body");
-            // Build full table HTML and replace entire table
-            var tbl = document.getElementById("admin-users-table");
-            if (tbl) {
-                var fullHtml = "<thead><tr><th>Email</th><th>Role</th><th>Mode</th><th>Active</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>";
+            // Build user cards (not table — cards show full config)
+            var container = document.getElementById("admin-users-table").parentElement;
+            if (container) {
+                var cardsHtml = "";
                 for (var i = 0; i < users.length; i++) {
                     var u = users[i];
-                    var roleColor = u.role === "admin" ? "#ff3b5c" : "#00ff9d";
+                    var roleColor = u.role === "admin" ? "#ff3b5c" : u.role === "trader" ? "#00ff9d" : "#5a7090";
                     var modeColor = u.bot_mode === "live" ? "#ff3b5c" : u.bot_mode === "demo" ? "#00d4ff" : "#5a7090";
                     var activeColor = u.is_active ? "#00ff9d" : "#ff3b5c";
                     var lastLogin = u.last_login ? formatTime(u.last_login) : "Never";
-                    fullHtml += "<tr style='border-bottom:1px solid rgba(255,255,255,.05)'>" +
-                        "<td style='padding:10px;font-weight:600;color:#e8ecf4'>" + (u.email||"--") + "</td>" +
-                        "<td style='padding:10px;color:" + roleColor + ";font-weight:700'>" + (u.role||"--").toUpperCase() + "</td>" +
-                        "<td style='padding:10px;color:" + modeColor + ";font-weight:600'>" + (u.bot_mode||"paper").toUpperCase() + "</td>" +
-                        "<td style='padding:10px;color:" + activeColor + "'>" + (u.is_active ? "Active" : "Disabled") + "</td>" +
-                        "<td style='padding:10px;color:#5a7090;font-size:12px'>" + lastLogin + "</td>" +
-                        "<td style='padding:10px;display:flex;gap:6px'>" +
-                            "<button onclick=\"adminToggleUser('" + u.id + "'," + !u.is_active + ")\" style='padding:4px 10px;font-size:11px;border:1px solid #333;background:rgba(255,255,255,.05);color:#aaa;border-radius:4px;cursor:pointer'>" + (u.is_active?"Disable":"Enable") + "</button>" +
-                            "<button onclick=\"adminResetPassword('" + u.id + "','" + (u.email||"") + "')\" style='padding:4px 10px;font-size:11px;border:1px solid #f97316;background:rgba(249,115,22,.1);color:#f97316;border-radius:4px;cursor:pointer'>Reset PW</button>" +
-                        "</td>" +
-                    "</tr>";
+                    var pairs = u.trading_pairs;
+                    if (typeof pairs === "string") try { pairs = JSON.parse(pairs); } catch(e) { pairs = []; }
+                    if (!Array.isArray(pairs)) pairs = [];
+
+                    cardsHtml += '<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:10px;padding:16px;margin-bottom:12px">' +
+                        // Header row
+                        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">' +
+                            '<div style="display:flex;align-items:center;gap:10px">' +
+                                '<span style="font-weight:700;font-size:14px;color:#e8ecf4">' + (u.email||"--") + '</span>' +
+                                '<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;color:' + roleColor + ';border:1px solid ' + roleColor + '30;background:' + roleColor + '15">' + (u.role||"--").toUpperCase() + '</span>' +
+                                '<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:700;color:' + modeColor + ';border:1px solid ' + modeColor + '30;background:' + modeColor + '15">' + (u.bot_mode||"paper").toUpperCase() + '</span>' +
+                                '<span style="padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;color:' + activeColor + '">' + (u.is_active ? "Active" : "Disabled") + '</span>' +
+                                '<span style="color:#5a7090;font-size:11px">Tier: <b style="color:#a78bfa">' + (u.tier||"free").toUpperCase() + '</b></span>' +
+                            '</div>' +
+                            '<div style="display:flex;gap:6px">' +
+                                '<button onclick="adminToggleUser(\'' + u.id + '\',' + !u.is_active + ')" style="padding:4px 12px;font-size:11px;border:1px solid #333;background:rgba(255,255,255,.05);color:#aaa;border-radius:4px;cursor:pointer">' + (u.is_active?"Disable":"Enable") + '</button>' +
+                                '<button onclick="adminResetPassword(\'' + u.id + '\',\'' + (u.email||"") + '\')" style="padding:4px 12px;font-size:11px;border:1px solid #f97316;background:rgba(249,115,22,.1);color:#f97316;border-radius:4px;cursor:pointer">Reset PW</button>' +
+                                '<button onclick="adminEditUser(\'' + u.id + '\')" style="padding:4px 12px;font-size:11px;border:1px solid #00d4ff;background:rgba(0,212,255,.1);color:#00d4ff;border-radius:4px;cursor:pointer">Edit</button>' +
+                            '</div>' +
+                        '</div>' +
+                        // Config grid
+                        '<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;font-size:12px">' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Max Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.max_leverage||20) + 'x</div></div>' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Daily Loss Limit</div><div style="font-weight:700;font-family:monospace;color:#ff3b5c">' + (u.max_daily_loss_pct||3) + '%</div></div>' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Max Positions</div><div style="font-weight:700;font-family:monospace;color:#00d4ff">' + (u.max_open_positions||3) + '</div></div>' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Pref Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.preferred_leverage||5) + 'x</div></div>' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Risk/Trade</div><div style="font-weight:700;font-family:monospace;color:#f97316">' + (u.risk_per_trade_pct||1) + '%</div></div>' +
+                            '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"UTC") + '</div></div>' +
+                        '</div>' +
+                        // Trading pairs + extra info
+                        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11px">' +
+                            '<div style="color:#5a7090">Pairs: ' + pairs.map(function(p){return '<span style="color:#00d4ff;font-weight:600;margin-right:4px">'+p+'</span>';}).join("") + '</div>' +
+                            '<div style="color:#5a7090">Last login: <span style="color:#9ba3b5">' + lastLogin + '</span>' +
+                                (u.telegram_chat_id ? ' | Telegram: <span style="color:#00d4ff">' + u.telegram_chat_id + '</span>' : '') +
+                                (u.full_name ? ' | ' + u.full_name : '') +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
                 }
-                fullHtml += "</tbody>";
-                tbl.innerHTML = fullHtml;
+                container.innerHTML = cardsHtml;
             }
         }
 
@@ -6593,6 +6618,85 @@ async function adminKillSession(tokenPrefix) {
             credentials: "same-origin"
         });
         refreshAdmin();
+    } catch(e) { alert("Failed: " + e); }
+}
+
+async function adminEditUser(userId) {
+    // Find user in cached data
+    try {
+        var r = await fetch("/api/admin/users", {credentials:"same-origin"});
+        var d = await r.json();
+        var users = d.users || d;
+        var u = null;
+        for (var i = 0; i < users.length; i++) { if (users[i].id === userId) { u = users[i]; break; } }
+        if (!u) { alert("User not found"); return; }
+
+        var pairs = u.trading_pairs;
+        if (typeof pairs === "string") try { pairs = JSON.parse(pairs); } catch(e) { pairs = []; }
+
+        var html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:24px;max-width:500px;margin:20px auto">' +
+            '<h3 style="color:#00d4ff;margin:0 0 16px">Edit User: ' + u.email + '</h3>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px">' +
+                '<label style="color:#9ba3b5">Role<select id="eu-role" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="admin"'+(u.role==="admin"?" selected":"")+'>Admin</option><option value="trader"'+(u.role==="trader"?" selected":"")+'>Trader</option><option value="viewer"'+(u.role==="viewer"?" selected":"")+'>Viewer</option></select></label>' +
+                '<label style="color:#9ba3b5">Tier<select id="eu-tier" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="free"'+(u.tier==="free"?" selected":"")+'>Free</option><option value="pro"'+(u.tier==="pro"?" selected":"")+'>Pro</option><option value="enterprise"'+(u.tier==="enterprise"?" selected":"")+'>Enterprise</option></select></label>' +
+                '<label style="color:#9ba3b5">Bot Mode<select id="eu-mode" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="paper"'+(u.bot_mode==="paper"?" selected":"")+'>Paper</option><option value="demo"'+(u.bot_mode==="demo"?" selected":"")+'>Demo</option><option value="live"'+(u.bot_mode==="live"?" selected":"")+'>Live</option></select></label>' +
+                '<label style="color:#9ba3b5">Max Leverage<input id="eu-lev" type="number" value="'+(u.max_leverage||20)+'" min="1" max="50" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+                '<label style="color:#9ba3b5">Daily Loss %<input id="eu-loss" type="number" value="'+(u.max_daily_loss_pct||3)+'" min="0.5" max="20" step="0.5" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+                '<label style="color:#9ba3b5">Max Positions<input id="eu-pos" type="number" value="'+(u.max_open_positions||3)+'" min="1" max="10" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+                '<label style="color:#9ba3b5">Risk/Trade %<input id="eu-risk" type="number" value="'+(u.risk_per_trade_pct||1)+'" min="0.1" max="10" step="0.1" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+                '<label style="color:#9ba3b5">Pref Leverage<input id="eu-plev" type="number" value="'+(u.preferred_leverage||5)+'" min="1" max="50" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+            '</div>' +
+            '<label style="color:#9ba3b5;display:block;margin-top:10px">Trading Pairs (comma separated)<input id="eu-pairs" type="text" value="'+(Array.isArray(pairs)?pairs.join(", "):"")+'" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+            '<label style="color:#9ba3b5;display:block;margin-top:10px">Telegram Chat ID<input id="eu-tg" type="text" value="'+(u.telegram_chat_id||"")+'" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"></label>' +
+            '<div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">' +
+                '<button onclick="document.getElementById(\'admin-edit-modal\').style.display=\'none\'" style="padding:8px 20px;border:1px solid #333;background:transparent;color:#aaa;border-radius:6px;cursor:pointer">Cancel</button>' +
+                '<button onclick="adminSaveUser(\''+userId+'\')" style="padding:8px 20px;border:1px solid #00d4ff;background:rgba(0,212,255,.15);color:#00d4ff;border-radius:6px;cursor:pointer;font-weight:700">Save</button>' +
+            '</div>' +
+        '</div>';
+
+        var modal = document.getElementById("admin-edit-modal");
+        if (!modal) {
+            modal = document.createElement("div");
+            modal.id = "admin-edit-modal";
+            modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center";
+            modal.onclick = function(e) { if (e.target === modal) modal.style.display = "none"; };
+            document.body.appendChild(modal);
+        }
+        modal.innerHTML = html;
+        modal.style.display = "flex";
+    } catch(e) { alert("Error: " + e); }
+}
+
+async function adminSaveUser(userId) {
+    var body = {
+        role: document.getElementById("eu-role").value,
+        tier: document.getElementById("eu-tier").value,
+        bot_mode: document.getElementById("eu-mode").value,
+        max_leverage: parseInt(document.getElementById("eu-lev").value),
+        max_daily_loss_pct: parseFloat(document.getElementById("eu-loss").value),
+        max_open_positions: parseInt(document.getElementById("eu-pos").value),
+        risk_per_trade_pct: parseFloat(document.getElementById("eu-risk").value),
+        preferred_leverage: parseInt(document.getElementById("eu-plev").value),
+        telegram_chat_id: document.getElementById("eu-tg").value,
+    };
+    var pairsStr = document.getElementById("eu-pairs").value;
+    if (pairsStr) body.trading_pairs = pairsStr.split(",").map(function(s){return s.trim();}).filter(Boolean);
+
+    try {
+        var r = await fetch("/api/admin/users/" + userId, {
+            method: "PUT",
+            headers: {"Content-Type":"application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify(body)
+        });
+        var d = await r.json();
+        if (d.ok) {
+            document.getElementById("admin-edit-modal").style.display = "none";
+            alert("User updated");
+            refreshAdmin();
+        } else {
+            alert("Error: " + (d.error || "unknown"));
+        }
     } catch(e) { alert("Failed: " + e); }
 }
 

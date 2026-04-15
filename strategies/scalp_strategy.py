@@ -3025,8 +3025,8 @@ class ScalpStrategy(BaseStrategy):
                     if _dq_hist is not None and len(_dq_hist) >= 20:
                         import numpy as _np_local
                         _q85 = float(_np_local.percentile(list(_dq_hist), 85))
-                        # Floor 0.55, ceiling 0.75
-                        _q_thresh = max(0.55, min(0.75, _q85))
+                        # Floor 0.42, ceiling 0.75 (was 0.55 — too high for sideways/asia sessions)
+                        _q_thresh = max(0.42, min(0.75, _q85))
                         ml_threshold = max(_base_threshold, _q_thresh)
                         _verdict_action = "QUANTILE_HOLDS"
                         logger.info(

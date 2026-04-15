@@ -345,7 +345,7 @@ function refreshProfile() {
 
 // ── GLOBALS ──────────────────────────────────────────────
 let activeTab = "live";
-let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null, agentsTimer = null, brainTimer = null;
+let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null, agentsTimer = null, brainTimer = null, adminTimer = null;
 let laSelectedSymbol = "BTC/USDT";
 let equityChart = null;
 let cachedPrices = {};
@@ -500,7 +500,7 @@ function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
-    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer); if(typeof adminTimer!=='undefined')clearInterval(adminTimer);
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer); clearInterval(adminTimer);
     if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
     if (tab === "latency") { refreshLatencyArb(); latencyTimer = setInterval(refreshLatencyArb, 1000); }
     if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
@@ -6509,7 +6509,7 @@ async function checkAdminAccess() {
 checkAdminAccess();
 setTimeout(checkAdminAccess, 3000);
 
-let adminTimer = null;
+// adminTimer declared globally with other timers (line 348)
 
 async function refreshAdmin() {
     let tab = document.getElementById("tab-admin");

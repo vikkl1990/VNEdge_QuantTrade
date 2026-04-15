@@ -6526,6 +6526,12 @@ async function refreshAdmin() {
                             '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Risk/Trade</div><div style="font-weight:700;font-family:monospace;color:#f97316">' + (u.risk_per_trade_pct||1) + '%</div></div>' +
                             '<div style="background:rgba(255,255,255,.02);padding:8px;border-radius:6px"><div style="color:#5a7090;font-size:10px;text-transform:uppercase;margin-bottom:2px">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"UTC") + '</div></div>' +
                         '</div>' +
+                        // API Keys section
+                        '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:8px">' +
+                            '<span style="color:#5a7090;font-size:11px;font-weight:600">API KEYS:</span>' +
+                            '<span id="admin-keys-' + u.id + '" style="font-size:11px;color:#888">loading...</span>' +
+                            '<button onclick="adminAddApiKey(\'' + u.id + '\',\'' + (u.email||"") + '\')" style="padding:2px 8px;font-size:10px;border:1px solid #00ff9d;background:rgba(0,255,157,.08);color:#00ff9d;border-radius:3px;cursor:pointer;margin-left:auto">+ Add Key</button>' +
+                        '</div>' +
                         // Trading pairs + extra info
                         '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11px">' +
                             '<div style="color:#5a7090">Pairs: ' + pairs.map(function(p){return '<span style="color:#00d4ff;font-weight:600;margin-right:4px">'+p+'</span>';}).join("") + '</div>' +
@@ -6537,6 +6543,31 @@ async function refreshAdmin() {
                     '</div>';
                 }
                 container.innerHTML = cardsHtml;
+                // Load API keys for each user
+                for (var ki = 0; ki < users.length; ki++) {
+                    (function(uid) {
+                        fetch("/api/admin/users/" + uid + "/api-keys", {credentials:"same-origin"})
+                            .then(function(r){return r.ok?r.json():null})
+                            .then(function(d) {
+                                var el = document.getElementById("admin-keys-" + uid);
+                                if (!el || !d) return;
+                                var keys = d.keys || [];
+                                if (keys.length === 0) {
+                                    el.innerHTML = '<span style="color:#ff8800">No keys configured</span>';
+                                } else {
+                                    el.innerHTML = keys.map(function(k) {
+                                        var lc = k.label === "live" ? "#ff3b5c" : "#00d4ff";
+                                        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid ' + lc + '30;margin-right:4px">' +
+                                            '<span style="color:' + lc + ';font-weight:700;font-size:10px">' + k.label.toUpperCase() + '</span>' +
+                                            '<span style="color:#888;font-family:monospace;font-size:10px">' + (k.api_key_masked||"****") + '</span>' +
+                                            (k.is_active ? '<span style="color:#00ff9d;font-size:9px">active</span>' : '<span style="color:#ff3b5c;font-size:9px">disabled</span>') +
+                                            '<button onclick="adminDeleteApiKey(\'' + k.id + '\')" style="background:none;border:none;color:#ff3b5c;cursor:pointer;font-size:12px;padding:0 2px" title="Delete">&times;</button>' +
+                                        '</span>';
+                                    }).join("");
+                                }
+                            }).catch(function(){});
+                    })(users[ki].id);
+                }
             }
         }
 
@@ -6618,6 +6649,81 @@ async function adminKillSession(tokenPrefix) {
             credentials: "same-origin"
         });
         refreshAdmin();
+    } catch(e) { alert("Failed: " + e); }
+}
+
+async function adminAddApiKey(userId, email) {
+    var html = '<div style="background:rgba(15,25,45,.95);border:1px solid rgba(0,255,157,.2);border-radius:12px;padding:24px;max-width:450px;margin:20px auto">' +
+        '<h3 style="color:#00ff9d;margin:0 0 16px">Add API Key: ' + email + '</h3>' +
+        '<div style="display:grid;gap:10px;font-size:13px">' +
+            '<label style="color:#9ba3b5">Label<select id="ak-label" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px"><option value="demo">Demo (Testnet)</option><option value="live">Live (Real Money)</option></select></label>' +
+            '<label style="color:#9ba3b5">API Key<input id="ak-key" type="text" placeholder="Enter Delta API Key" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label style="color:#9ba3b5">API Secret<input id="ak-secret" type="password" placeholder="Enter Delta API Secret" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-family:monospace"></label>' +
+            '<label style="color:#9ba3b5">Base URL (optional)<input id="ak-url" type="text" placeholder="https://cdn-ind.testnet.deltaex.org (leave empty for default)" style="width:100%;padding:6px;background:#0a1429;color:#e8ecf4;border:1px solid #333;border-radius:4px;margin-top:4px;font-size:11px"></label>' +
+        '</div>' +
+        '<div style="background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.2);border-radius:6px;padding:8px;margin-top:12px;font-size:11px;color:#ffd700">' +
+            'Keys are encrypted with Fernet (AES-128-CBC) before storage. Only the last 4 characters are visible after saving.' +
+        '</div>' +
+        '<div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">' +
+            '<button onclick="document.getElementById(\'admin-edit-modal\').style.display=\'none\'" style="padding:8px 20px;border:1px solid #333;background:transparent;color:#aaa;border-radius:6px;cursor:pointer">Cancel</button>' +
+            '<button onclick="adminSaveApiKey(\'' + userId + '\')" style="padding:8px 20px;border:1px solid #00ff9d;background:rgba(0,255,157,.15);color:#00ff9d;border-radius:6px;cursor:pointer;font-weight:700">Save Key</button>' +
+        '</div>' +
+    '</div>';
+
+    var modal = document.getElementById("admin-edit-modal");
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "admin-edit-modal";
+        modal.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center";
+        modal.onclick = function(e) { if (e.target === modal) modal.style.display = "none"; };
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = html;
+    modal.style.display = "flex";
+}
+
+async function adminSaveApiKey(userId) {
+    var label = document.getElementById("ak-label").value;
+    var apiKey = document.getElementById("ak-key").value.trim();
+    var apiSecret = document.getElementById("ak-secret").value.trim();
+    var baseUrl = document.getElementById("ak-url").value.trim();
+
+    if (!apiKey || !apiSecret) { alert("API Key and Secret are required"); return; }
+
+    if (label === "live" && !confirm("You are adding a LIVE (real money) API key. Are you sure?")) return;
+
+    try {
+        var r = await fetch("/api/admin/users/" + userId + "/api-keys", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            credentials: "same-origin",
+            body: JSON.stringify({api_key: apiKey, api_secret: apiSecret, label: label, base_url: baseUrl})
+        });
+        var d = await r.json();
+        if (d.ok) {
+            document.getElementById("admin-edit-modal").style.display = "none";
+            alert(d.message || "API key saved");
+            refreshAdmin();
+        } else {
+            alert("Error: " + (d.error || "unknown"));
+        }
+    } catch(e) { alert("Failed: " + e); }
+}
+
+async function adminDeleteApiKey(keyId) {
+    if (!confirm("Delete this API key? The user will lose exchange access.")) return;
+    try {
+        var r = await fetch("/api/admin/api-keys/" + keyId, {
+            method: "DELETE",
+            credentials: "same-origin"
+        });
+        var d = await r.json();
+        if (d.ok) {
+            alert("API key deleted");
+            refreshAdmin();
+        } else {
+            alert("Error: " + (d.error || "unknown"));
+        }
     } catch(e) { alert("Failed: " + e); }
 }
 

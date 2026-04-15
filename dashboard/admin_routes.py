@@ -1,4 +1,5 @@
-"""Admin management endpoints — user list, role changes, audit log."""
+"""Admin management endpoints — user list, role changes, audit log, API key management."""
+import json
 import logging
 from aiohttp import web
 from auth.middleware import require_role
@@ -16,6 +17,9 @@ def register_admin_routes(app: web.Application, auth_service, db_pool):
     app.router.add_delete("/api/admin/sessions/{token}", require_role("admin")(handler.handle_force_logout))
     app.router.add_get("/api/admin/audit", require_role("admin")(handler.handle_audit_log))
     app.router.add_post("/api/admin/users/{user_id}/reset-password", require_role("admin")(handler.handle_reset_password))
+    app.router.add_get("/api/admin/users/{user_id}/api-keys", require_role("admin")(handler.handle_list_api_keys))
+    app.router.add_post("/api/admin/users/{user_id}/api-keys", require_role("admin")(handler.handle_add_api_key))
+    app.router.add_delete("/api/admin/api-keys/{key_id}", require_role("admin")(handler.handle_delete_api_key))
 
 
 class AdminRouteHandler:
@@ -126,6 +130,79 @@ class AdminRouteHandler:
 
         logger.warning("Admin RESET PASSWORD for user %s (sessions killed)", user_id)
         return web.json_response({"ok": True, "message": "Password reset. User will need to login again."})
+
+    async def handle_list_api_keys(self, request: web.Request) -> web.Response:
+        """GET /api/admin/users/{user_id}/api-keys — list user's API keys (masked)."""
+        user_id = request.match_info.get("user_id", "")
+        from auth.crypto import mask_api_key, decrypt_api_key
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT k.id, k.exchange, k.label, k.api_key_enc, k.base_url,
+                          k.is_active, k.last_used, k.created_at, u.email
+                   FROM user_api_keys k
+                   JOIN users u ON k.user_id = u.id
+                   WHERE k.user_id = $1
+                   ORDER BY k.label""",
+                user_id,
+            )
+        keys = []
+        for row in rows:
+            k = dict(row)
+            k["id"] = str(k["id"])
+            # Decrypt and mask the API key for display
+            try:
+                decrypted = decrypt_api_key(k["api_key_enc"])
+                k["api_key_masked"] = mask_api_key(decrypted)
+            except Exception:
+                k["api_key_masked"] = "****"
+            del k["api_key_enc"]  # Never send encrypted blob to frontend
+            for field in ["last_used", "created_at"]:
+                if k.get(field):
+                    k[field] = k[field].isoformat()
+            keys.append(k)
+        return web.json_response({"keys": keys, "user_id": user_id})
+
+    async def handle_add_api_key(self, request: web.Request) -> web.Response:
+        """POST /api/admin/users/{user_id}/api-keys — add/update API key for user."""
+        user_id = request.match_info.get("user_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        api_key = body.get("api_key", "").strip()
+        api_secret = body.get("api_secret", "").strip()
+        label = body.get("label", "demo").strip()
+        base_url = body.get("base_url", "").strip()
+
+        if not api_key or not api_secret:
+            return web.json_response({"error": "api_key and api_secret are required"}, status=400)
+        if label not in ("demo", "live"):
+            return web.json_response({"error": "label must be 'demo' or 'live'"}, status=400)
+
+        from auth.crypto import encrypt_api_key
+        key_enc = encrypt_api_key(api_key)
+        secret_enc = encrypt_api_key(api_secret)
+
+        async with self.pool.acquire() as conn:
+            # Upsert: update if exists, insert if not
+            await conn.execute("""
+                INSERT INTO user_api_keys (user_id, exchange, label, api_key_enc, api_secret_enc, base_url)
+                VALUES ($1, 'delta', $2, $3, $4, $5)
+                ON CONFLICT (user_id, exchange, label)
+                DO UPDATE SET api_key_enc = $3, api_secret_enc = $4, base_url = $5, updated_at = NOW()
+            """, user_id, label, key_enc, secret_enc, base_url)
+
+        logger.warning("Admin added %s API key for user %s", label, user_id[:8])
+        return web.json_response({"ok": True, "message": f"{label} API key saved"})
+
+    async def handle_delete_api_key(self, request: web.Request) -> web.Response:
+        """DELETE /api/admin/api-keys/{key_id} — remove an API key."""
+        key_id = request.match_info.get("key_id", "")
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_api_keys WHERE id = $1", key_id)
+        logger.warning("Admin deleted API key %s", key_id[:8])
+        return web.json_response({"ok": True})
 
     async def handle_list_sessions(self, request: web.Request) -> web.Response:
         """GET /api/admin/sessions — all active sessions."""

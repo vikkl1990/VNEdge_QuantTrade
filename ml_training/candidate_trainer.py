@@ -791,8 +791,12 @@ class CandidateTrainer:
         symbol: str,
         scanner_func=None,
         label_mode: str = "mfe",
-        mfe_threshold_r: float = 0.2,
-        mfe_max_bars: int = 30,
+        # Phase 4.6 (2026-04-16): aligned defaults with trainer.py's actual
+        # Phase 5 / Phase 6 call sites (threshold=0.3, max_bars=20).
+        # Previously 0.2 / 30 caused subtle mismatch between per-symbol and
+        # pair-family models trained from different code paths.
+        mfe_threshold_r: float = 0.3,
+        mfe_max_bars: int = 20,
         htf_df: Optional[pd.DataFrame] = None,
         htf_1h_df: Optional[pd.DataFrame] = None,
         htf_4h_df: Optional[pd.DataFrame] = None,
@@ -1616,8 +1620,9 @@ class CandidateTrainer:
         n_estimators: int = 50,
         max_depth: int = 6,
         label_mode: str = "mfe",
-        mfe_threshold_r: float = 0.2,
-        mfe_max_bars: int = 30,
+        # Phase 4.6: unified with run_all_scanners + trainer.py (0.3 / 20)
+        mfe_threshold_r: float = 0.3,
+        mfe_max_bars: int = 20,
         htf_df: Optional[pd.DataFrame] = None,
         htf_1h_df: Optional[pd.DataFrame] = None,
         htf_4h_df: Optional[pd.DataFrame] = None,

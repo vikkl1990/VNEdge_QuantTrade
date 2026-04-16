@@ -3587,7 +3587,19 @@ function updateDeployableCapital(realStatus) {
 
     let el = function(id) { return document.getElementById(id); };
     if (el("kpi-deployable")) el("kpi-deployable").textContent = "$" + deployable.toFixed(0);
-    if (el("kpi-deploy-pct")) el("kpi-deploy-pct").textContent = "of $" + balance.toFixed(0);
+    // UI FIX (2026-04-16): was showing "$3 of $3" which is misleading when
+    // deployable == balance (no reservation). Now show "100% free" when full,
+    // or a clear "X% free" utilisation hint otherwise.
+    if (el("kpi-deploy-pct")) {
+        if (balance <= 0.01) {
+            el("kpi-deploy-pct").textContent = "no balance";
+            el("kpi-deploy-pct").style.color = "var(--text-muted)";
+        } else {
+            let freePct = Math.round(deployable / balance * 100);
+            el("kpi-deploy-pct").textContent = freePct + "% free ($" + balance.toFixed(2) + " bal)";
+            el("kpi-deploy-pct").style.color = freePct >= 70 ? "var(--green)" : freePct >= 30 ? "var(--yellow)" : "var(--red)";
+        }
+    }
     if (el("kpi-reserved")) el("kpi-reserved").textContent = "$" + reserved.toFixed(0);
     if (el("kpi-dd-buffer")) el("kpi-dd-buffer").textContent = "$" + ddBuffer.toFixed(1);
 

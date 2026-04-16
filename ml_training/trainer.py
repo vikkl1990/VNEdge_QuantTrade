@@ -656,10 +656,14 @@ class TrainingOrchestrator:
             self._save_status()
 
             # Record run in tracker for comparison
+            # Phase 4.6 (2026-04-16): fix stale run_config. Was recording
+            # label_mode="realized_r" and mfe_threshold_r=0.8 / mfe_max_bars=15
+            # while the actual training above uses MFE labels with
+            # threshold_r=0.3 and max_bars=20. Audit trail was misleading.
             self._tracker.record_run(
                 run_config={"symbols": symbols, "timeframes": timeframes,
-                            "label_mode": "realized_r", "mfe_threshold_r": 0.8,
-                            "mfe_max_bars": 15, "candidate_tf": "5m"},
+                            "label_mode": "mfe", "mfe_threshold_r": 0.3,
+                            "mfe_max_bars": 20, "candidate_tf": "5m"},
                 scanner_results=all_results,
                 ml_results=candidate_results,
                 label=f"{'_'.join(symbols)}_5m_mfe_candidates",

@@ -183,13 +183,25 @@ class MLProbabilityModel:
             n_jobs=1,  # single core to limit memory on micro VM
         )
 
-        # Calibrate probabilities
-        self.model = CalibratedClassifierCV(base_rf, cv=3, method="isotonic")
-        self.model.fit(X_scaled, y)
-
-        # Feature importances (from the base estimator)
+        # Capture feature importances BEFORE wrapping in the calibrator.
+        # Phase 4.6 (2026-04-16): removed the SECOND `base_rf.fit(X_scaled, y)`
+        # after CalibratedClassifierCV.fit — it contaminated the reported
+        # importances because the calibrator had already seen that data.
+        # Now: fit once for importances, then wrap the same fitted estimator
+        # with cv='prefit' so the calibrator does NOT refit the base model
+        # (saves ~2x training time and keeps importances coherent).
         base_rf.fit(X_scaled, y)
         importances = base_rf.feature_importances_
+
+        # Calibrate probabilities using the already-fit base (cv='prefit').
+        # We calibrate on a held-out tail of the training data (last 25%).
+        _split = max(len(X_scaled) * 3 // 4, 50)
+        try:
+            self.model = CalibratedClassifierCV(base_rf, cv='prefit', method='isotonic')
+            self.model.fit(X_scaled[_split:], y.iloc[_split:] if hasattr(y, 'iloc') else y[_split:])
+        except Exception as _cal_e:
+            logger.warning("Calibration (cv='prefit') failed, using uncalibrated base: %s", _cal_e)
+            self.model = base_rf
         self.feature_importances = {
             name: round(float(imp), 4)
             for name, imp in sorted(

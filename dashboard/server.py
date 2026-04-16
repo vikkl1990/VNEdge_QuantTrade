@@ -2290,15 +2290,28 @@ class DashboardServer:
             if not tracker and orch:
                 tracker = getattr(orch, '_signal_tracker', None)
 
-            # Regime from strategy
-            regime_info = {}
+            # Regime from strategy — _last_regime_info is keyed by symbol.
+            # Use BTC as anchor, else dominant across symbols.
+            regime_info_all = {}
             try:
-                regime_info = getattr(scalp, '_last_regime_info', {}) or {}
+                regime_info_all = getattr(scalp, '_last_regime_info', {}) or {}
             except Exception:
                 pass
 
-            regime = str(regime_info.get("regime", "unknown")).lower()
-            regime_conf = float(regime_info.get("confidence", 0) or 0)
+            _anchor = regime_info_all.get("BTC/USDT") or {}
+            if not _anchor and regime_info_all:
+                from collections import Counter as _C
+                _r = [v.get("regime") for v in regime_info_all.values() if isinstance(v, dict) and v.get("regime")]
+                if _r:
+                    _anchor = {"regime": _C(_r).most_common(1)[0][0]}
+
+            regime = str(_anchor.get("regime") or "unknown").lower()
+            # Confidence: prefer explicit, else derive from regime_age
+            if _anchor.get("confidence") is not None:
+                regime_conf = float(_anchor.get("confidence") or 0)
+            else:
+                _age = int(_anchor.get("regime_age") or 0)
+                regime_conf = 0.80 if _age >= 5 else (0.55 if _age >= 3 else (0.35 if _age >= 1 else 0.0))
 
             # Recent performance (last 20 trades) for thesis direction
             recent_trades = []
@@ -2504,20 +2517,56 @@ class DashboardServer:
                 except Exception:
                     pass
 
-            # Regime transition detection (compare recent regime vs historical)
+            # Regime transition detection — _last_regime_info is keyed by symbol:
+            #   { "BTC/USDT": {"regime": "...", "regime_age": int, ...}, ... }
+            # Build dominant regime from per-symbol observations, weighted by BTC as anchor.
             transitions = []
             try:
                 orch = getattr(self, '_orchestrator', None)
                 strategy = getattr(orch, '_strategy', None) if orch else None
                 scalp = getattr(strategy, '_scalp', strategy) if strategy else None
-                regime_info = getattr(scalp, '_last_regime_info', {}) or {}
-                current_regime = str(regime_info.get("regime", "unknown")).lower()
-                # Simple transition: flag if regime changed recently
+                regime_info_all = getattr(scalp, '_last_regime_info', {}) or {}
+
+                # Prefer BTC/USDT as market anchor; else most common regime across symbols
+                anchor = regime_info_all.get("BTC/USDT") or {}
+                if not anchor and regime_info_all:
+                    # Take the most recent/populated entry
+                    from collections import Counter as _C
+                    _regimes = [v.get("regime") for v in regime_info_all.values() if isinstance(v, dict) and v.get("regime")]
+                    if _regimes:
+                        _dominant = _C(_regimes).most_common(1)[0][0]
+                        anchor = {"regime": _dominant}
+
+                current_regime = str(anchor.get("regime") or "unknown").lower()
+
+                # Confidence proxy: higher regime_age = more stable.
+                # age >= 5 bars = stable (conf 0.8), age < 3 = transitioning (conf 0.3)
+                _age = int(anchor.get("regime_age") or 0)
+                if _age >= 5:
+                    _conf = 0.80
+                    _signal = "stable"
+                elif _age >= 3:
+                    _conf = 0.55
+                    _signal = "stable"
+                elif _age >= 1:
+                    _conf = 0.35
+                    _signal = "transitioning"
+                else:
+                    _conf = 0.0
+                    _signal = "transitioning"
+
+                # If explicit confidence is provided by the detector, prefer it.
+                if anchor.get("confidence") is not None:
+                    _conf = round(float(anchor.get("confidence")), 2)
+                    _signal = "stable" if _conf > 0.7 else "transitioning"
+
                 transitions.append({
                     "type": "regime",
                     "current": current_regime,
-                    "signal": "stable" if regime_info.get("confidence", 0) > 0.7 else "transitioning",
-                    "confidence": round(float(regime_info.get("confidence", 0) or 0), 2),
+                    "signal": _signal,
+                    "confidence": round(_conf, 2),
+                    "age_bars": _age,
+                    "anchor_symbol": "BTC/USDT" if regime_info_all.get("BTC/USDT") else "blend",
                 })
             except Exception:
                 pass

@@ -2883,13 +2883,14 @@ class SignalTracker:
             by_setup[setup]["mae_values"].append(mae_r)
             by_setup[setup]["mfe_values"].append(mfe_r)
 
-            # Per-symbol stats
+            # Per-symbol stats (READ-ONLY aggregation — not exit logic)
             if symbol not in by_symbol:
-                by_symbol[symbol] = {"total": 0, "wins": 0, "pnl": 0.0}
+                by_symbol[symbol] = {"total": 0, "wins": 0, "pnl": 0.0, "r_values": []}
             by_symbol[symbol]["total"] += 1
             if pnl > 0:
                 by_symbol[symbol]["wins"] += 1
             by_symbol[symbol]["pnl"] += pnl
+            by_symbol[symbol]["r_values"].append(exit_r)
 
         # Calculate win rates + R-metrics per setup
         for setup_data in by_setup.values():
@@ -2923,10 +2924,24 @@ class SignalTracker:
             )
 
         for sym in by_symbol.values():
-            sym["win_rate"] = round(
-                (sym["wins"] / sym["total"] * 100) if sym["total"] else 0, 1
-            )
+            n = sym["total"]
+            sym["win_rate"] = round((sym["wins"] / n * 100) if n else 0, 1)
+            sym["wr"] = sym["win_rate"]  # alias — dashboards expect both keys
             sym["pnl"] = round(sym["pnl"], 2)
+            # R-metrics (same shape as by_setup) — READ-ONLY aggregation
+            r_vals = sym.pop("r_values", [])
+            sym["trades"] = n   # alias — dashboard uses "trades"
+            sym["avg_r"] = round(sum(r_vals) / len(r_vals), 4) if r_vals else 0.0
+            sym["total_r"] = round(sum(r_vals), 4)
+            win_r = [r for r in r_vals if r > 0]
+            loss_r = [r for r in r_vals if r < 0]
+            sym["avg_win_r"] = round(sum(win_r) / len(win_r), 4) if win_r else 0.0
+            sym["avg_loss_r"] = round(sum(loss_r) / len(loss_r), 4) if loss_r else 0.0
+            wr_frac = sym["wins"] / n if n else 0
+            lr_frac = 1 - wr_frac
+            sym["expectancy_r"] = round(
+                wr_frac * sym["avg_win_r"] + lr_frac * sym["avg_loss_r"], 4
+            )
 
         win_count = len(wins)
         loss_count = len(losses)

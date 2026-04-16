@@ -1337,9 +1337,23 @@ function updateSetupLifecycle(status, closed) {
 
     // Build per-symbol status from status.prices + status.per_symbol + funnel data
     const prices = (status && status.prices) || {};
-    // Only show pairs that are actively traded (have real volume/signals)
-    const ACTIVE_PAIRS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"];
-    const symbols = Object.keys(prices).filter(s => ACTIVE_PAIRS.includes(s)).sort();
+    // Show every configured symbol that has a live price feed.
+    // Previously this was hard-coded to 4 pairs (BTC/ETH/SOL/XRP) which hid
+    // the other 7+ symbols the bot actually scans (AVAX, LINK, DOGE, LTC,
+    // ADA, DOT, TAO, plus meme alts PEPE/SHIB/WIF/SUI/NEAR/BONK).
+    // Filter out symbols with price <= 0 (failed to load) and sort by
+    // a rough priority: majors first, then alts alphabetical.
+    const PRIORITY = {"BTC/USDT":0,"ETH/USDT":1,"SOL/USDT":2,"AVAX/USDT":3,
+                      "LINK/USDT":4,"DOGE/USDT":5,"XRP/USDT":6,"LTC/USDT":7,
+                      "ADA/USDT":8,"DOT/USDT":9,"TAO/USDT":10};
+    const symbols = Object.keys(prices)
+        .filter(s => (prices[s] || 0) > 0)
+        .sort((a, b) => {
+            const pa = PRIORITY[a] != null ? PRIORITY[a] : 99;
+            const pb = PRIORITY[b] != null ? PRIORITY[b] : 99;
+            if (pa !== pb) return pa - pb;
+            return a.localeCompare(b);
+        });
     const perSym = (status && (status.per_symbol || status.symbol_status)) || {};
     const regimes = (status && (status.regimes || status.symbol_regimes)) || {};
 

@@ -174,6 +174,43 @@ PRODUCT_MAP = {
         "tick_size": 0.0001,
         "tick_size_demo": 0.0001,
     },
+    # ── Added 2026-04-16: meme perpetuals with real Delta India depth ──
+    # TRUMP: ~$400K top-5 depth, 1.1% ATR_1h — strongest meme liquidity on this venue
+    "TRUMP/USDT": {
+        "demo_id": 0,
+        "prod_id": 57227,
+        "symbol": "TRUMPUSD",
+        "contract_size": 0.1,       # 1 lot = 0.1 TRUMP
+        "tick_size": 0.001,
+        "tick_size_demo": 0.001,
+    },
+    # POPCAT: ~$73K top-5 depth, 1.55% ATR_1h
+    "POPCAT/USDT": {
+        "demo_id": 0,
+        "prod_id": 45540,
+        "symbol": "POPCATUSD",
+        "contract_size": 1.0,
+        "tick_size": 0.0001,
+        "tick_size_demo": 0.0001,
+    },
+    # MEME: marginal depth (~$600) but wide 1.66% ATR_1h. Keep under low_liquidity veto.
+    "MEME/USDT": {
+        "demo_id": 0,
+        "prod_id": 18286,
+        "symbol": "MEMEUSD",
+        "contract_size": 100.0,     # 1 lot = 100 MEME
+        "tick_size": 0.000001,
+        "tick_size_demo": 0.000001,
+    },
+    # 1MBABYDOGE: native symbol, 1M-multiplier. Thin today, left here for registry completeness.
+    "BABYDOGE/USDT": {
+        "demo_id": 0,
+        "prod_id": 50353,
+        "symbol": "1MBABYDOGEUSD",
+        "contract_size": 100.0,
+        "tick_size": 0.0000001,
+        "tick_size_demo": 0.0000001,
+    },
 }
 
 # Demo balance asset ID (USD on testnet)

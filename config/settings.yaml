@@ -16,13 +16,22 @@ symbols:
 - DOGE/USDT
 - LINK/USDT
 - AVAX/USDT
-# Meme / high-beta alts — use Delta native candle API (CCXT can't resolve)
+# Meme / high-beta alts.
+# ccxt_client now handles 1000x name mapping (PEPE->1000PEPE etc.) natively.
+# Depth snapshot 2026-04-16 (top-5 USD) informs keep/drop:
+#   TRUMP ~$400K, WIF ~$82K, POPCAT ~$73K → real liquidity
+#   SUI/NEAR — tradeable via ccxt path, regime gate manages thin windows
+#   PEPE/SHIB/BONK ~$12-$29 top-5 depth → low_liquidity regime will veto
+#   them automatically; kept in list for ML observation
 - PEPE/USDT
 - SHIB/USDT
 - WIF/USDT
 - SUI/USDT
 - NEAR/USDT
 - BONK/USDT
+- TRUMP/USDT
+- POPCAT/USDT
+- MEME/USDT
 exchange:
   name: delta
   region: india

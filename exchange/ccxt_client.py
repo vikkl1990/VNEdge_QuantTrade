@@ -222,6 +222,26 @@ class CcxtExchangeClient(ExchangeBase):
             self._use_ws = False
         return klass
 
+    # Delta India uses multiplier-prefixed names for thin-price memes to keep
+    # contract size reasonable. Canonical "PEPE/USDT" needs to map to
+    # "1000PEPE/USD:USD" on the exchange (each contract = 1000 PEPE).
+    # Keep this in sync with exchange/delta_client.py INSTRUMENTS.
+    _DELTA_BASE_OVERRIDE: Dict[str, str] = {
+        "PEPE": "1000PEPE",
+        "SHIB": "1000SHIB",
+        "BONK": "1000BONK",
+        "FLOKI": "1000FLOKI",
+        "BABYDOGE": "1MBABYDOGE",
+    }
+    # Reverse map for _from_exchange_symbol round-trip
+    _DELTA_BASE_REVERSE: Dict[str, str] = {v: k for k, v in {
+        "PEPE": "1000PEPE",
+        "SHIB": "1000SHIB",
+        "BONK": "1000BONK",
+        "FLOKI": "1000FLOKI",
+        "BABYDOGE": "1MBABYDOGE",
+    }.items()}
+
     def _to_exchange_symbol(self, symbol: str) -> str:
         """
         Convert a canonical symbol (``BTC/USDT``) to the exchange-specific
@@ -231,8 +251,10 @@ class CcxtExchangeClient(ExchangeBase):
         canonical format is used as-is.
         """
         # Delta India: BTC/USDT → BTC/USD:USD (futures) or BTC/INR (spot)
+        # Meme 1000x contracts: PEPE/USDT → 1000PEPE/USD:USD
         if self._is_delta_india:
-            base = symbol.split("/")[0]  # e.g. "BTC"
+            base = symbol.split("/")[0]  # e.g. "BTC" or "PEPE"
+            base = self._DELTA_BASE_OVERRIDE.get(base, base)
             if self._market_type == MarketType.SPOT:
                 return f"{base}/INR"
             else:
@@ -247,10 +269,14 @@ class CcxtExchangeClient(ExchangeBase):
         return symbol
 
     def _from_exchange_symbol(self, symbol: str) -> str:
-        """Strip futures suffix to return canonical symbol (``BTC/USDT``)."""
+        """Strip futures suffix to return canonical symbol (``BTC/USDT``).
+
+        Reverses 1000x meme mapping: 1000PEPE/USD:USD → PEPE/USDT.
+        """
         # Delta India: BTC/USD:USD → BTC/USDT, BTC/INR → BTC/USDT
         if self._is_delta_india:
             base = symbol.split("/")[0]
+            base = self._DELTA_BASE_REVERSE.get(base, base)
             return f"{base}/USDT"  # normalize back to canonical
 
         suffix = _FUTURES_SYMBOL_SUFFIX.get(self._exchange_name, "")

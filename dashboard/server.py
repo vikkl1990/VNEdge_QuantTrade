@@ -1104,12 +1104,47 @@ class DashboardServer:
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_regime(self, request: web.Request) -> web.Response:
-        """Return current market regime and position sizing info."""
-        data = {"regime": "unknown", "action": {}, "early_exit_stats": {}}
+        """Return current market regime and position sizing info.
+
+        _last_regime_info is keyed by SYMBOL ({BTC/USDT: {...}, ...}).
+        Previously this handler returned the raw per-symbol dict which
+        the UI couldn't consume. Now returns a flat shape + per_symbol map.
+        """
+        data = {"regime": "unknown", "confidence": 0.0, "action": {}, "per_symbol": {}, "early_exit_stats": {}}
         if self._strategy and hasattr(self._strategy, '_scalp'):
             scalp = self._strategy._scalp
-            if hasattr(scalp, '_last_regime_info'):
-                data = scalp._last_regime_info
+            regime_info_all = getattr(scalp, '_last_regime_info', {}) or {}
+            if isinstance(regime_info_all, dict):
+                # Per-symbol regimes for the UI
+                per_symbol = {}
+                for sym, info in regime_info_all.items():
+                    if isinstance(info, dict):
+                        per_symbol[sym] = {
+                            "regime": info.get("regime", "unknown"),
+                            "regime_age": info.get("regime_age", 0),
+                            "action": info.get("action", {}),
+                            "indicators_snapshot": info.get("indicators_snapshot", {}),
+                        }
+                data["per_symbol"] = per_symbol
+
+                # Anchor: BTC else dominant
+                anchor = regime_info_all.get("BTC/USDT") or {}
+                if not anchor and regime_info_all:
+                    from collections import Counter as _C
+                    _regimes = [v.get("regime") for v in regime_info_all.values()
+                                if isinstance(v, dict) and v.get("regime")]
+                    if _regimes:
+                        anchor = {"regime": _C(_regimes).most_common(1)[0][0]}
+                data["regime"] = str(anchor.get("regime") or "unknown").lower()
+                data["action"] = anchor.get("action", {}) or {}
+                # Confidence from explicit field or regime_age
+                if anchor.get("confidence") is not None:
+                    data["confidence"] = round(float(anchor.get("confidence") or 0), 2)
+                else:
+                    _age = int(anchor.get("regime_age") or 0)
+                    data["confidence"] = 0.80 if _age >= 5 else (0.55 if _age >= 3 else (0.35 if _age >= 1 else 0.0))
+                data["anchor_symbol"] = "BTC/USDT" if regime_info_all.get("BTC/USDT") else "blend"
+
             # Early exit stats from tracker
             if self._signal_tracker:
                 closed = self._signal_tracker.get_closed_signals(limit=500)

@@ -548,29 +548,68 @@ class BotBrain:
         return self._memory.get_hourly_heatmap()
 
     def get_sessions_data(self) -> Dict[str, Any]:
-        """Return session summaries for /api/brain/sessions endpoint."""
+        """Return session summaries for /api/brain/sessions endpoint.
+
+        Unions in-memory summaries (live) with optional backfill file
+        storage/daily_summaries_backfill.json (historical, populated by
+        scripts/backfill_brain_sessions.py). In-memory wins on collision
+        since it's fresher. This is the read path — no hot-path writes
+        to brain_state.json, so the bot's save logic is untouched.
+        """
         try:
-            summaries = sorted(
-                self._memory._daily_summaries.values(),
-                key=lambda s: s.date, reverse=True,
-            )[:30]
+            # In-memory (live, authoritative for recent dates)
+            mem_by_date = {
+                s.date: {
+                    "date": s.date,
+                    "trades": s.total_trades,
+                    "wins": s.wins,
+                    "wr": round(s.wins / s.total_trades * 100, 1) if s.total_trades > 0 else 0,
+                    "pnl": s.total_pnl_usd,
+                    "best_scanner": s.best_scanner,
+                    "worst_scanner": s.worst_scanner,
+                    "dominant_regime": s.dominant_regime,
+                    "regime_changes": s.regime_changes,
+                }
+                for s in self._memory._daily_summaries.values()
+                if s.date
+            }
+
+            # Merge optional backfill file (historical, only for dates not in memory)
+            try:
+                from pathlib import Path
+                import json as _json
+                _backfill_path = Path(self._memory._state_file).parent / "daily_summaries_backfill.json"
+                if _backfill_path.exists():
+                    with open(_backfill_path) as _fh:
+                        _bf = _json.load(_fh) or {}
+                    if isinstance(_bf, dict):
+                        for _date, _s in _bf.items():
+                            if _date in mem_by_date:
+                                continue  # live wins
+                            if not isinstance(_s, dict) or not _s.get("date"):
+                                continue
+                            _trades = int(_s.get("total_trades", 0))
+                            _wins = int(_s.get("wins", 0))
+                            mem_by_date[_date] = {
+                                "date": _s["date"],
+                                "trades": _trades,
+                                "wins": _wins,
+                                "wr": round(_wins / _trades * 100, 1) if _trades > 0 else 0,
+                                "pnl": _s.get("total_pnl_usd", 0.0),
+                                "best_scanner": _s.get("best_scanner", ""),
+                                "worst_scanner": _s.get("worst_scanner", ""),
+                                "dominant_regime": _s.get("dominant_regime", ""),
+                                "regime_changes": _s.get("regime_changes", 0),
+                            }
+            except Exception as _be:
+                logger.warning("get_sessions_data: backfill merge skipped: %s", _be)
+
+            daily = sorted(mem_by_date.values(), key=lambda d: d["date"], reverse=True)[:30]
+
             return {
                 "today": self._session.get_today_stats(),
                 "weekly_review": self._session.get_weekly_review(),
-                "daily_summaries": [
-                    {
-                        "date": s.date,
-                        "trades": s.total_trades,
-                        "wins": s.wins,
-                        "wr": round(s.wins / s.total_trades * 100, 1) if s.total_trades > 0 else 0,
-                        "pnl": s.total_pnl_usd,
-                        "best_scanner": s.best_scanner,
-                        "worst_scanner": s.worst_scanner,
-                        "dominant_regime": s.dominant_regime,
-                        "regime_changes": s.regime_changes,
-                    }
-                    for s in summaries
-                ],
+                "daily_summaries": daily,
             }
         except Exception as e:
             logger.error("BotBrain get_sessions_data error: %s", e)

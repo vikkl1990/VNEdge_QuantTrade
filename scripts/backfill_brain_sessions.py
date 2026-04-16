@@ -139,9 +139,12 @@ def build_summary_for_date(date: str, trades: list) -> DailySessionSummary:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--signals', default=str(PROJECT_ROOT / 'storage' / 'closed_signals.json'))
-    ap.add_argument('--brain-state', default=str(PROJECT_ROOT / 'storage' / 'brain_state.json'))
+    ap.add_argument('--output', default=str(PROJECT_ROOT / 'storage' / 'daily_summaries_backfill.json'),
+                    help='Target backfill file (separate from brain_state.json — bot never writes to this)')
+    ap.add_argument('--brain-state', default=str(PROJECT_ROOT / 'storage' / 'brain_state.json'),
+                    help='Read-only: brain_state.json used to know which dates the live bot already covers')
     ap.add_argument('--dry-run', action='store_true', help='Print summary, do not write')
-    ap.add_argument('--overwrite', action='store_true', help='Recompute existing dates (default: preserve)')
+    ap.add_argument('--overwrite', action='store_true', help='Recompute existing backfill entries (default: preserve)')
     ap.add_argument('--min-trades', type=int, default=1, help='Minimum trades per day to include')
     ap.add_argument('--group-by-entry', action='store_true',
                     help='Group by entry date (default: exit date — matches brain_session rollover semantics)')
@@ -149,11 +152,9 @@ def main(argv=None):
 
     signals_path = Path(args.signals)
     brain_path = Path(args.brain_state)
+    output_path = Path(args.output)
     if not signals_path.exists():
         print(f"ERROR: {signals_path} not found", file=sys.stderr)
-        return 2
-    if not brain_path.exists():
-        print(f"ERROR: {brain_path} not found", file=sys.stderr)
         return 2
 
     print(f"Reading trades: {signals_path}")
@@ -178,29 +179,51 @@ def main(argv=None):
         print(f"  skipped (no {ts_field}): {skipped_no_ts}")
     print(f"  unique dates: {len(by_date)}")
 
-    # Read brain_state
-    with open(brain_path) as fh:
-        brain = json.load(fh)
-    existing = brain.get('daily_summaries') or {}
-    if isinstance(existing, list):
-        print(f"WARN: daily_summaries is a list — converting to dict by date")
-        existing = {s.get('date'): s for s in existing if isinstance(s, dict) and s.get('date')}
-    print(f"  existing brain daily_summaries: {len(existing)} dates")
+    # Read brain_state (read-only — to know which dates the LIVE bot is authoritative for)
+    live_dates: set = set()
+    if brain_path.exists():
+        try:
+            with open(brain_path) as fh:
+                brain = json.load(fh)
+            _ds = brain.get('daily_summaries') or {}
+            if isinstance(_ds, dict):
+                live_dates = set(_ds.keys())
+            elif isinstance(_ds, list):
+                live_dates = {s.get('date') for s in _ds if isinstance(s, dict) and s.get('date')}
+            print(f"  live brain daily_summaries (bot owns these dates): {len(live_dates)}")
+        except Exception as e:
+            print(f"  WARN: couldn't read brain_state: {e}")
 
-    # Build new summaries
-    new_summaries = {}
+    # Read existing backfill file (if any)
+    existing_backfill: dict = {}
+    if output_path.exists():
+        try:
+            with open(output_path) as fh:
+                existing_backfill = json.load(fh) or {}
+            print(f"  existing backfill entries: {len(existing_backfill)}")
+        except Exception:
+            pass
+
+    # Build summaries for dates the LIVE bot does NOT own
+    new_summaries: dict = {}
+    skipped_live = 0
+    skipped_existing = 0
     for date in sorted(by_date.keys()):
         if len(by_date[date]) < args.min_trades:
             continue
-        if date in existing and not args.overwrite:
+        if date in live_dates:
+            skipped_live += 1
+            continue  # live bot owns this date — never shadow it
+        if date in existing_backfill and not args.overwrite:
+            skipped_existing += 1
             continue
         summary = build_summary_for_date(date, by_date[date])
         new_summaries[date] = asdict(summary)
 
-    # Merge
-    merged = dict(existing)
+    # Merge with existing backfill
+    merged = dict(existing_backfill)
     merged.update(new_summaries)
-    # Keep most recent 90 (same cap as BotBrain)
+    # Cap at 90 days (same as BrainMemory) — keep newest
     MAX = 90
     if len(merged) > MAX:
         keep = sorted(merged.keys())[-MAX:]
@@ -208,9 +231,10 @@ def main(argv=None):
 
     # Print plan
     print(f"\n=== BACKFILL PLAN ===")
-    print(f"  New dates to add:       {len(new_summaries)}")
-    print(f"  Existing dates kept:    {len(existing) - (len(existing & new_summaries.keys()) if args.overwrite else 0)}")
-    print(f"  Total after merge:      {len(merged)}")
+    print(f"  Skipped (live bot owns): {skipped_live}")
+    print(f"  Skipped (already in backfill): {skipped_existing}")
+    print(f"  New dates to write:      {len(new_summaries)}")
+    print(f"  Total in backfill file:  {len(merged)}")
     if new_summaries:
         print(f"\n  First new: {min(new_summaries)}")
         print(f"  Last new:  {max(new_summaries)}")
@@ -227,25 +251,25 @@ def main(argv=None):
         print("\n--dry-run: no changes written")
         return 0
 
-    # Backup + atomic write
-    backup_path = brain_path.with_suffix(
-        f".bak.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
-    )
-    shutil.copy2(brain_path, backup_path)
-    print(f"\n  backup: {backup_path}")
+    # Backup existing backfill (if present) + atomic write
+    if output_path.exists():
+        backup_path = output_path.with_suffix(
+            f".bak.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        shutil.copy2(output_path, backup_path)
+        print(f"\n  backup: {backup_path}")
 
-    brain['daily_summaries'] = merged
-    tmp_path = brain_path.with_suffix('.tmp')
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_suffix('.tmp')
     with open(tmp_path, 'w') as fh:
-        json.dump(brain, fh, indent=2, default=str)
-    os.replace(tmp_path, brain_path)
-    print(f"  wrote:  {brain_path}")
-    print(f"\n  DONE. daily_summaries now has {len(merged)} dates.")
-    print(f"  Note: the running bot has an in-memory copy. Daily summaries will be")
-    print(f"  re-read from disk on next restart OR overwritten at next brain save.")
-    print(f"  For immediate dashboard refresh without restart, the running bot will")
-    print(f"  clobber this file when it next saves. Either restart the bot OR run")
-    print(f"  this AFTER stopping the bot.")
+        json.dump(merged, fh, indent=2, default=str)
+    os.replace(tmp_path, output_path)
+    print(f"  wrote:  {output_path}")
+    print(f"\n  DONE. Backfill file has {len(merged)} dates.")
+    print(f"  The bot's brain_state.json is UNTOUCHED.")
+    print(f"  bot/brain.py::get_sessions_data() will union these with live in-memory")
+    print(f"  summaries (live wins on date collision) — no bot restart required IF")
+    print(f"  that code has been deployed. Otherwise restart bot to pick up new code.")
     return 0
 
 

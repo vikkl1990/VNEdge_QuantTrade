@@ -235,9 +235,16 @@ class MLProbabilityModel:
         return self.training_metrics
 
     def _walk_forward(self, X: pd.DataFrame, y: pd.Series,
-                       n_splits: int = 5) -> List[Dict]:
-        """Time-series walk-forward cross-validation."""
-        tscv = TimeSeriesSplit(n_splits=n_splits)
+                       n_splits: int = 5, gap: int = 12) -> List[Dict]:
+        """Time-series walk-forward cross-validation.
+
+        Phase 4.6 (2026-04-16): added `gap` parameter to prevent label-window
+        leakage between folds. Default 12 bars matches the directional-label
+        `forward_bars=12` window used in `build_directional_labels`. Without
+        this gap, test bar N shares label context with training bar N-12,
+        producing inflated OOS AUC.
+        """
+        tscv = TimeSeriesSplit(n_splits=n_splits, gap=gap)
         results = []
 
         for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):

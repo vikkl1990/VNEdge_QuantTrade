@@ -312,6 +312,15 @@ async def async_main(args):
         logger.exception("Fatal error in main loop")
         return 1
     finally:
+        # OPS FIX (2026-04-16): close Postgres pool on shutdown.
+        # Previously not called — connection pool was leaked across restarts,
+        # eventually exhausting Postgres max_connections.
+        try:
+            from db import close_db as _close_db
+            await _close_db()
+            logger.info("Database pool closed.")
+        except Exception as _db_close_err:
+            logger.warning("db.close_db() failed during shutdown: %s", _db_close_err)
         logger.info("Crypto Trading Bot shutdown complete.")
 
     return 0

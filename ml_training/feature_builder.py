@@ -51,8 +51,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # RSI (kept for scanner compatibility, NOT used as raw feature)
     delta = c.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    gain = delta.clip(0, None).rolling(14).mean()
+    loss = (-delta.clip(None, 0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     df["rsi_14"] = 100 - (100 / (1 + rs))
 
@@ -689,13 +689,13 @@ def build_features(
     # ================================================================
     # Bullish FVG: low[i] > high[i-2] (gap up, price skipped a zone)
     fvg_bull = (l > h.shift(2)).astype(float)
-    fvg_bull_size = (l - h.shift(2)).clip(lower=0) / atr.replace(0, np.nan)
+    fvg_bull_size = (l - h.shift(2)).clip(0, None) / atr.replace(0, np.nan)
     features["fvg_bullish"] = fvg_bull
     features["fvg_bull_size"] = fvg_bull_size
     
     # Bearish FVG: high[i] < low[i-2] (gap down)
     fvg_bear = (h < l.shift(2)).astype(float)
-    fvg_bear_size = (l.shift(2) - h).clip(lower=0) / atr.replace(0, np.nan)
+    fvg_bear_size = (l.shift(2) - h).clip(0, None) / atr.replace(0, np.nan)
     features["fvg_bearish"] = fvg_bear
     features["fvg_bear_size"] = fvg_bear_size
     
@@ -897,7 +897,7 @@ def build_features(
     ).cumcount()
     features["fvg_recency"] = np.where(
         features["fvg_bull_count_20"] + features["fvg_bear_count_20"] > 0,
-        1.0 / (bull_fvg_bars_ago.clip(lower=1)),
+        1.0 / (bull_fvg_bars_ago.clip(1, None)),
         0.0
     )
 
@@ -1248,7 +1248,7 @@ def build_features(
         retest_bear = retest_bear.astype(bool) | (
             bearish_bos.shift(lb).fillna(False).astype(bool) & ((h - recent_swing_low.shift(lb + 1)).abs() < atr * 0.3)
         )
-    features["retest_flag"] = (retest_bull.astype(float) + retest_bear.astype(float)).clip(upper=1.0)
+    features["retest_flag"] = (retest_bull.astype(float) + retest_bear.astype(float)).clip(None, 1.0)
 
     # Impulse decay: how quickly displacement fades over next few bars
     # Compare body/ATR of current bar vs the BOS bar's displacement
@@ -1304,7 +1304,7 @@ def build_features(
         # Any killzone active (composite)
         features["kz_active"] = (
             features["kz_london"] + features["kz_newyork"] + features["kz_silver_bullet"]
-        ).clip(upper=1.0)
+        ).clip(None, 1.0)
     else:
         features["kz_london"] = 0.0
         features["kz_newyork"] = 0.0

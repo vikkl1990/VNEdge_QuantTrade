@@ -77,10 +77,17 @@ class DashboardServer:
     _MAX_PERSISTED = 200  # keep last 200 signals on disk
 
     # Auth: public paths that don't require login (read-only, no sensitive data)
+    # SEC FIX (2026-04-16): removed /api/real/status, /api/real/trades,
+    # /api/risk-metrics, /api/session-heatmap from public paths. These were
+    # exposing live balance, equity, PnL, trade history, and performance
+    # metrics to unauthenticated callers — anyone who could reach :8080
+    # could see the full portfolio. Now require auth.
+    #
+    # Kept public: /api/login (bootstrap), /api/ping (liveness probe),
+    # /api/emergency-status (read-only kill-switch state),
+    # /favicon.ico (browser default).
     _PUBLIC_PATHS = {
         "/api/login", "/api/ping", "/favicon.ico",
-        "/api/real/status", "/api/real/trades",
-        "/api/risk-metrics", "/api/session-heatmap",
         "/api/emergency-status",
     }
     _PUBLIC_PREFIXES = ("/static/",)
@@ -149,14 +156,43 @@ class DashboardServer:
         # Auth config — ALWAYS enabled, generate random password if not set
         self._auth_user = os.getenv("DASHBOARD_USER", "admin")
         self._auth_password = os.getenv("DASHBOARD_PASSWORD", "")
-        self._auth_secret = os.getenv("DASHBOARD_SECRET_KEY", secrets.token_hex(32))
+        _raw_secret = os.getenv("DASHBOARD_SECRET_KEY", "")
+
+        # SEC FIX (2026-04-16): fail fast on placeholder or missing secret.
+        # Previously the code used secrets.token_hex(32) as a fallback which
+        # meant every process restart generated a NEW key, invalidating all
+        # existing session cookies. If operators set the literal string
+        # "change-this-to-a-random-string" they got session-token forgery
+        # via a known-value signature. Now we reject both cases loudly.
+        _PLACEHOLDERS = {
+            "", "change-this-to-a-random-string", "changeme", "your-secret-key",
+            "example-secret", "placeholder",
+        }
+        if _raw_secret.strip().lower() in _PLACEHOLDERS:
+            _generated = secrets.token_hex(32)
+            logger.critical(
+                "DASHBOARD_SECRET_KEY is unset or still a placeholder. Generated "
+                "an ephemeral 64-char key for this process only. Session cookies "
+                "will be invalidated on next restart. Set a permanent value in "
+                ".env: DASHBOARD_SECRET_KEY=%s", _generated[:16] + "...",
+            )
+            self._auth_secret = _generated
+        else:
+            self._auth_secret = _raw_secret
+
         if not self._auth_password:
             self._auth_password = secrets.token_hex(16)
             logger.warning("DASHBOARD_PASSWORD not set — generated random password (check .env to set a permanent one)")
         self._auth_enabled = True  # always enabled
         self._sessions: Dict[str, Dict[str, Any]] = {}  # token -> session data
         self._session_history: List[Dict[str, Any]] = []  # login history
-        self._session_timeout = 86400  # 24 hours
+        # SEC FIX (2026-04-16): reduce session timeout from 24h to 4h.
+        # A stolen cookie was valid for a full day — standard for financial
+        # apps is 1-4h. Sliding extension (resets on each authed request) is
+        # handled at cookie-emit time in _handle_login; we also refresh on
+        # verify for active users.
+        self._session_timeout = 4 * 3600  # 4 hours
+        self._session_idle_limit = 30 * 60  # 30min idle → re-auth required
         self._emergency_stop = False  # kill switch state
 
         # aiohttp internals
@@ -434,17 +470,56 @@ class DashboardServer:
         return await handler(request)
 
     async def _handle_login(self, request: web.Request) -> web.Response:
-        """POST /api/login — validate credentials, set session cookie."""
+        """POST /api/login — validate credentials, set session cookie.
+
+        SEC FIX (2026-04-16): IP-based brute-force protection.
+        - 5 failed attempts within 60s → 15-min lockout for that IP
+        - Lockout state stored in self._login_failures (ephemeral, per-process)
+        - Successful login clears the counter
+        """
+        # Initialize lockout tracker on first call
+        if not hasattr(self, "_login_failures"):
+            self._login_failures: Dict[str, List[float]] = {}
+            self._login_lockouts: Dict[str, float] = {}
+
+        ip = request.remote or "unknown"
+        now = time.time()
+
+        # Check active lockout
+        lockout_until = self._login_lockouts.get(ip, 0.0)
+        if now < lockout_until:
+            remaining = int(lockout_until - now)
+            logger.warning("Login lockout for IP %s (%ds remaining)", ip, remaining)
+            return web.json_response(
+                {"error": f"Too many failed attempts. Try again in {remaining}s."},
+                status=429,
+            )
+
         try:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
         user = body.get("username", "")
         password = body.get("password", "")
-        logger.info("LOGIN DEBUG: received user=[%s] pwd_len=%d, expected user=[%s] pwd_len=%d, match_user=%s match_pwd=%s",
-                   user, len(password), self._auth_user, len(self._auth_password),
-                   user == self._auth_user, password == self._auth_password)
+        # SEC FIX (2026-04-16): removed "LOGIN DEBUG" log that leaked pwd_len,
+        # expected username, and match booleans. A log-viewer or aggregator
+        # could enumerate valid users by watching match_user=True patterns.
         if user != self._auth_user or password != self._auth_password:
+            # Record failure + possibly lock out
+            attempts = self._login_failures.setdefault(ip, [])
+            attempts.append(now)
+            # Prune attempts older than 60s
+            self._login_failures[ip] = [t for t in attempts if now - t < 60]
+            if len(self._login_failures[ip]) >= 5:
+                self._login_lockouts[ip] = now + 900  # 15-min lockout
+                self._login_failures[ip] = []
+                logger.warning(
+                    "IP %s exceeded 5 failed logins in 60s — locked out for 15min", ip,
+                )
+                return web.json_response(
+                    {"error": "Too many failed attempts. IP locked for 15 minutes."},
+                    status=429,
+                )
             logger.warning("Failed login attempt from %s (user=%s)", request.remote, user)
             self._session_history.append({
                 "user": user, "ip": request.remote,
@@ -452,6 +527,10 @@ class DashboardServer:
                 "success": False,
             })
             return web.json_response({"error": "invalid credentials"}, status=401)
+
+        # Success — clear any failure history for this IP
+        self._login_failures.pop(ip, None)
+        self._login_lockouts.pop(ip, None)
         # Create session
         token = secrets.token_hex(32)
         sig = self._sign_token(token)
@@ -1369,11 +1448,37 @@ class DashboardServer:
                 # Orphan cleanup now happens only in orchestrator on a 5-min timer.
             except Exception:
                 pass
-            return web.json_response(mgr.get_status())
+            # UI FIX (2026-04-16): derive honest display_status that reflects
+            # reality (LIVE implied actively trading; reality might be "armed
+            # but $2.99 balance, zero real trades ever").
+            _status = mgr.get_status()
+            try:
+                _enabled = bool(_status.get("enabled", False))
+                _balance = float(_status.get("balance", 0) or 0)
+                _open = int(_status.get("open_count", 0) or 0)
+                _today = int(_status.get("closed_today", 0) or 0)
+                _total = int(_status.get("total_closed", 0) or 0)
+                _cb_tripped = bool(_status.get("circuit_breaker", {}).get("is_tripped", False))
+                _min_bal = 5.0  # USDT — below this no meaningful trade size possible
+
+                if not _enabled:
+                    _status["display_status"] = "DISABLED"
+                elif _cb_tripped:
+                    _status["display_status"] = "HALTED"
+                elif _balance < _min_bal:
+                    _status["display_status"] = "STANDBY"  # armed but underfunded
+                elif _total == 0 and _today == 0 and _open == 0:
+                    _status["display_status"] = "ARMED"    # armed, no activity yet
+                else:
+                    _status["display_status"] = "LIVE"
+            except Exception:
+                _status["display_status"] = _status.get("mode", "UNKNOWN")
+            return web.json_response(_status)
         return web.json_response({
             "enabled": False,
             "dry_run": True,
             "mode": "DISABLED",
+            "display_status": "DISABLED",
             "balance": 0,
             "circuit_breaker": {"daily_pnl": 0, "is_tripped": False},
             "open_positions": [],

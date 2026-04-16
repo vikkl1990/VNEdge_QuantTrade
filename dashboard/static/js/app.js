@@ -3799,13 +3799,17 @@ function updateSignalRadar(signals, status) {
             legend.innerHTML = '<div class="empty" style="font-size:.6rem">No recent signals — scanners running</div>';
         } else {
             let sorted = entries.sort(function(a, b) { return (b.conf * b.mlProb) - (a.conf * a.mlProb); }).slice(0, 6);
+            // UI FIX (2026-04-16): was truncating scanner name to 8 chars which
+            // cut "structure_bounce" to "structur" in every row. Now shows
+            // full name with ellipsis via CSS + tooltip.
             legend.innerHTML = sorted.map(function(e) {
                 let conviction = (e.conf / 100 * e.mlProb * 100).toFixed(0);
                 let sideColor = e.side === "long" || e.side === "buy" ? "var(--green)" : "var(--red)";
-                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0">' +
-                    '<span style="color:' + sideColor + ';font-weight:700">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
-                    '<span class="text-muted">' + e.scanner.substring(0, 8) + '</span>' +
-                    '<span class="font-mono text-info">' + conviction + '%</span></div>';
+                let fullScanner = (e.scanner || "").replace(/_/g, " ");
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0;gap:6px">' +
+                    '<span style="color:' + sideColor + ';font-weight:700;flex:0 0 auto">' + e.sym + ' ' + e.side.toUpperCase().charAt(0) + '</span>' +
+                    '<span class="text-muted" style="flex:1 1 auto;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" title="' + e.scanner + '">' + fullScanner + '</span>' +
+                    '<span class="font-mono text-info" style="flex:0 0 auto">' + conviction + '%</span></div>';
             }).join("");
         }
     }

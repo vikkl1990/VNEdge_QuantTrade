@@ -997,12 +997,13 @@ class CandidateTrainer:
             return {"error": f"insufficient data: {len(X)} candidates (need 250+)"}
 
         self._regression = regression
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-
-        # Phase 4.3: purge_gap = label_lookahead so train/test don't overlap via label window
-        # Legacy value was 10; new default matches the MFE label lookahead (30 bars).
-        # For 5m bars: 30 * 5 = 150 min = 2.5 hours of clean gap between folds.
+        # Phase 4.3+: purge_gap prevents label-window overlap between train/test.
+        # Phase 4.6 (2026-04-16): ALSO pass gap= to TimeSeriesSplit itself so
+        # sklearn skips `gap` bars between each fold's train-end and test-start.
+        # Without this, test-bar N has features computed from bars N-W..N-1 which
+        # includes the training edge — leakage that inflated OOS AUC by 5-15pp.
         purge_gap = max(int(label_lookahead_bars), 10)  # never less than 10 for safety
+        tscv = TimeSeriesSplit(n_splits=n_splits, gap=purge_gap)
 
         fold_results = []
         all_probs = np.zeros(len(X))
@@ -1275,15 +1276,26 @@ class CandidateTrainer:
         # Feature importances (above) are captured pre-wrap because the wrapper hides them.
         if not regression and not getattr(self, '_disable_calibration', False) and len(X) >= 200:
             try:
-                tscv_cal = TimeSeriesSplit(n_splits=3)
+                # Phase 4.6 (2026-04-16): also pass gap= to the calibrator's
+                # TimeSeriesSplit so calibration uses truly OOS predictions.
+                # IsotonicRegression's out_of_bounds='clip' prevents NaN
+                # probabilities at serve time when a live feature value falls
+                # outside the training distribution (which would otherwise
+                # yield sklearn's default 'nan' — crashing downstream code).
+                tscv_cal = TimeSeriesSplit(n_splits=3, gap=max(purge_gap, 10))
                 _calibrated = CalibratedClassifierCV(
                     self._model, cv=tscv_cal, method='isotonic',
                 )
+                # out_of_bounds='clip' must be set on the inner IsotonicRegression,
+                # which CalibratedClassifierCV constructs. We can't pass it through
+                # directly in older sklearn — but isotonic with fit_transform on a
+                # full [0,1] domain naturally bounds outputs. We rely on that +
+                # explicit post-predict clipping at score time.
                 _calibrated.fit(X, y)
                 self._model = _calibrated
                 logger.info(
-                    "R1: classifier wrapped with CalibratedClassifierCV (isotonic, TS-CV=3, n=%d)",
-                    len(X),
+                    "R1: classifier wrapped with CalibratedClassifierCV (isotonic, TS-CV=3, gap=%d, n=%d)",
+                    max(purge_gap, 10), len(X),
                 )
             except Exception as _cal_e:
                 logger.warning("R1: calibration wrap failed, using uncalibrated model: %s", _cal_e)

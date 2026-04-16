@@ -634,31 +634,57 @@ class ScalpStrategy(BaseStrategy):
             context["atr_regime"] = "normal"
 
         # ── (b) VWAP Hybrid Veto ──
-        # < 0.25 ATR = HARD BLOCK (true noise zone)
-        # 0.25-0.4 ATR = STRONG PENALTY (-20) (preserves early breakouts)
-        # > 0.4 ATR = clear
+        # Architecture V2 spec: abs(dist_from_vwap) < 0.3 ATR = noise zone → HARD VETO
+        # (except for vwap_mean_revert which WANTS to trade near VWAP)
+        # P5 (2026-04-16): SHADOW MODE — logs would_veto but doesn't block.
+        # After 7d observation, convert would_veto → hard block if vetoed trades have WR < 65%.
+        #
+        # Layered thresholds:
+        #   < 0.12 ATR = deep noise     → confidence -25 + would_veto
+        #   0.12-0.30 ATR = noise zone  → confidence -20 + would_veto
+        #   0.30-0.40 ATR = marginal    → confidence -10 (no veto)
+        #   > 0.40 ATR = clear          → no adjustment
+        _VWAP_HARD_VETO_THRESHOLD = 0.30   # Architecture V2 spec
+        _VWAP_HARD_VETO_ENFORCE = False     # P5 SHADOW MODE — flip to True after validation
         try:
             last_close = float(df.iloc[-1].get("close", 0))
             last_vwap = float(df.iloc[-1].get("vwap", 0))
             _atr_for_vwap = confirm_atr if confirm_atr > 0 else float(df.iloc[-1].get("atr", 1))
             if last_vwap > 0 and _atr_for_vwap > 0:
                 vwap_dist = abs(last_close - last_vwap) / _atr_for_vwap
+                context["vwap_dist_atr"] = round(vwap_dist, 3)
+
                 if vwap_dist < 0.12:
-                    # Near-VWAP zone — soft penalty instead of hard block
-                    # vwap_mean_revert WANTS to trade here, so don't block entirely
+                    # Deep noise — very near VWAP
                     context["vwap_zone"] = "noise"
-                    context["vwap_dist_atr"] = round(vwap_dist, 3)
-                    confidence_adj -= 25  # heavy penalty but not a hard block
+                    confidence_adj -= 25
                     reasons.append(f"VWAP noise zone ({vwap_dist:.3f} ATR, -25)")
-                    # Note: vwap_mean_revert scanner handles its own VWAP logic
-                elif vwap_dist < 0.25:
+                elif vwap_dist < _VWAP_HARD_VETO_THRESHOLD:
+                    # V2 noise zone (< 0.30 ATR)
+                    context["vwap_zone"] = "penalty"
                     confidence_adj -= 20
                     reasons.append(f"VWAP penalty zone ({vwap_dist:.2f} ATR, -20)")
-                    context["vwap_zone"] = "penalty"
-                    context["vwap_dist_atr"] = round(vwap_dist, 3)
+                elif vwap_dist < 0.40:
+                    # Marginal zone — slight penalty
+                    context["vwap_zone"] = "marginal"
+                    confidence_adj -= 10
+                    reasons.append(f"VWAP marginal ({vwap_dist:.2f} ATR, -10)")
                 else:
                     context["vwap_zone"] = "clear"
-                    context["vwap_dist_atr"] = round(vwap_dist, 3)
+
+                # V2 HARD VETO: if price is within noise zone (<0.30 ATR from VWAP)
+                # In shadow mode: log would_veto. In enforced mode: hard block.
+                if vwap_dist < _VWAP_HARD_VETO_THRESHOLD:
+                    context["vwap_would_veto"] = True
+                    if _VWAP_HARD_VETO_ENFORCE:
+                        return {
+                            "pass": False,
+                            "confidence_adj": 0,
+                            "reason": f"VWAP HARD VETO: {vwap_dist:.3f} ATR < {_VWAP_HARD_VETO_THRESHOLD} (V2 spec)",
+                            "context": {**context, "vwap_zone": "vetoed"},
+                        }
+                else:
+                    context["vwap_would_veto"] = False
         except Exception:
             pass
 

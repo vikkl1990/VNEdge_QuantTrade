@@ -409,19 +409,51 @@ def _compute_gate_veto_features(
 # Trade simulation (matches scanner_backtester.py _simulate_trade)
 # ──────────────────────────────────────────────────────────────────────
 
+import os as _os
+
+# Backend selection for trade simulation during training.
+#   "tracker" (default): use LiveTrackerRunner — calls the actual live
+#     signal_tracker exit logic. Zero-divergence-by-construction with live.
+#     OHLC-bar resolution is the physics ceiling (~0.5-2R noise per trade
+#     vs live tick stream), not a code issue.
+#   "simulator": use bot.trade_simulator.simulate_trade — faster, simpler,
+#     but drifts from live because it's a condensed port of exit logic.
+#     Fixed SL config + hard_loss_cap bugs 2026-04-16.
+#   "legacy": the deprecated hardcoded-SL simulator — regression reference only.
+_ML_SIM_BACKEND = _os.environ.get("ML_SIM_BACKEND", "tracker").lower()
+
+# Singleton LiveTrackerRunner per process to avoid sandbox proliferation
+_live_runner = None
+
+def _get_live_runner():
+    global _live_runner
+    if _live_runner is None:
+        from backtest.live_tracker_runner import LiveTrackerRunner
+        _live_runner = LiveTrackerRunner()
+    return _live_runner
+
+
 def _simulate_trade_outcome(
     df: pd.DataFrame, entry_idx: int, side: str,
     entry_price: float, atr: float, symbol: str,
     fee_rate: float = SCALPER_FEE_ROUND_TRIP,
     regime: str = "sideways",
     trade_type: str = "SCALP",
+    scanner: str = "structure_bounce",
 ) -> Dict[str, float]:
     """Simulate trade forward and return outcome dict.
 
-    Phase 4.0 REFACTOR (2026-04-11):
-    Delegates to bot.trade_simulator.simulate_trade — the SINGLE source of
-    truth for exit logic. Shared with scanner_backtester AND matches live
-    bot's TRADE_TYPE_CONFIG.
+    Backend selection via ML_SIM_BACKEND env var:
+      - "tracker" (default as of 2026-04-16): LiveTrackerRunner — calls the
+        actual live signal_tracker in a sandbox. Structurally correct,
+        matches live exit logic. ~0.5-2R noise from OHLC resolution.
+      - "simulator": bot.trade_simulator — faster standalone port. Set
+        ML_SIM_BACKEND=simulator to use this path.
+
+    Phase 4.0 (2026-04-11): switched from hardcoded 0.65%-SL legacy to
+    bot.trade_simulator.
+    Phase 4.6 (2026-04-16): added LiveTrackerRunner as default — no more
+    divergence between training labels and live outcomes.
 
     OLD BUG (pre-4.0):
       - Hardcoded sl_pct=0.0065 → ~3-6× tighter than live's ATR-based SL
@@ -429,14 +461,46 @@ def _simulate_trade_outcome(
       - Result: training labels based on impossible targets, models
         learned "easy" trades then deployed on "hard" live trades
     """
-    from bot.trade_simulator import simulate_trade as _unified_sim, SimulatorConfig
-
     if atr <= 0 or entry_price <= 0:
         return {"pnl_r": 0.0, "won": False, "exit_reason": "invalid_input",
                 "peak_mfe_r": 0.0, "mae_r": 0.0, "duration_bars": 0,
                 "exit_price": 0.0, "initial_risk": 0.0}
 
-    config = SimulatorConfig.from_trade_type(trade_type)
+    if _ML_SIM_BACKEND == "tracker":
+        try:
+            runner = _get_live_runner()
+            outcome = runner.simulate_trade(
+                df=df, entry_idx=entry_idx, symbol=symbol, side=side,
+                entry_price=entry_price, atr=atr, scanner=scanner,
+                confidence=65, grade="B", regime=regime, trade_type=trade_type,
+                max_bars_forward=120,
+            )
+            pnl_r = float(outcome.get("pnl_r", 0.0))
+            return {
+                "pnl_r": pnl_r,
+                "won": pnl_r > 0,
+                "exit_reason": outcome.get("exit_reason", ""),
+                "exit_price": outcome.get("exit_price", 0.0),
+                "exit_bar": outcome.get("exit_bar", 0),
+                "peak_mfe_r": outcome.get("peak_mfe_r", 0.0),
+                "mae_r": outcome.get("mae_r", 0.0),
+                "duration_bars": outcome.get("duration_bars", 0),
+                "duration_sec": int(outcome.get("duration_bars", 0)) * 60,
+                "initial_risk": outcome.get("initial_risk", 0.0),
+                "breakeven_set": outcome.get("sl_final", 0) != outcome.get("sl_initial", 0),
+            }
+        except Exception as e:
+            # Fail-over to trade_simulator if runner throws
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "LiveTrackerRunner failed, falling back to trade_simulator: %s", e,
+            )
+            # fall through to simulator path
+
+    # Default / fallback: bot.trade_simulator
+    from bot.trade_simulator import simulate_trade as _unified_sim, SimulatorConfig
+
+    config = SimulatorConfig.from_trade_type(trade_type, scanner=scanner)
     config.fee_rate_per_side = fee_rate / 2  # input is round-trip, config is per-side
 
     outcome = _unified_sim(

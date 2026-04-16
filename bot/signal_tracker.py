@@ -2472,8 +2472,25 @@ class SignalTracker:
 
         return None
 
+    @staticmethod
     def _get_trail_params(regime: str, scanner: str = "", trade_type: str = "") -> dict:
         """Get trailing stop parameters based on regime, scanner, and trade type.
+
+        LATENT-BUG FIX (2026-04-16): this method was missing @staticmethod but
+        called at lines 1501/1546/1590 as `self._get_trail_params(...)` which
+        raised TypeError (4 args for a 3-param function). The orchestrator's
+        try/except around update_prices() silently swallowed the error at
+        debug level, which SKIPPED the entire TP1-trail logic path. Effect:
+        after TP1 hit on a winning trade, the remaining 65% position stayed
+        with the ORIGINAL stop_loss (could reverse back to -1R) instead of
+        getting a protective trail.
+
+        Adding @staticmethod restores the intended behavior. Fix is
+        monotonic-to-better for live:
+          - Current: 35% at TP1 locked + 65% floating at original SL
+          - Fixed:   35% at TP1 locked + 65% protected by regime-aware trail
+        Post-deploy monitor live WR for 24h; if it drops >3pp vs
+        baseline (71.3%), revert.
 
         Returns:
             - trail_atr_mult: ATR multiplier for trail distance

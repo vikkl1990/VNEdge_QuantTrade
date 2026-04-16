@@ -159,14 +159,45 @@ class SimulatorConfig:
     verbose: bool = False
 
     @classmethod
-    def from_trade_type(cls, trade_type: str) -> "SimulatorConfig":
-        """Build config from live TRADE_TYPE_CONFIG."""
+    def from_trade_type(cls, trade_type: str, scanner: Optional[str] = None) -> "SimulatorConfig":
+        """Build config from live TRADE_TYPE_CONFIG.
+
+        IMPORTANT: TRADE_TYPE_CONFIG's sl_atr_mult is only a "reference" per the
+        code comment in signal_tracker.py — live strategy computes the actual SL
+        using the scanner-specific value from strategies.scalp_strategy._scanner_sl_tp
+        (e.g., structure_bounce=1.0 ATR, ema_momentum=1.2, trend_continuation=1.5).
+
+        Pass `scanner` to get the live-accurate SL width. Without it, falls back
+        to scalp_strategy's 2.0×ATR global default (matches live's 5m SL).
+        """
         cfg = LIVE_TRADE_TYPE_CONFIG.get(trade_type, LIVE_TRADE_TYPE_CONFIG["SCALP"])
+        # Scanner-specific SL/TP from live strategy config
+        # Keep in sync with strategies/scalp_strategy.py _scanner_sl_tp
+        SCANNER_SL_TP = {
+            "ema_momentum":       {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "trend_continuation": {"sl_atr": 1.5, "tp1_rr": 2.0, "tp2_rr": 3.0, "tp3_rr": 5.0},
+            "vwap_mean_revert":   {"sl_atr": 1.0, "tp1_rr": 1.2, "tp2_rr": 2.0, "tp3_rr": 3.0},
+            "rsi_divergence":     {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "structure_bounce":   {"sl_atr": 1.0, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "bb_squeeze":         {"sl_atr": 1.3, "tp1_rr": 1.8, "tp2_rr": 3.0, "tp3_rr": 5.0},
+            "order_block_entry":  {"sl_atr": 1.0, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "liquidity_sweep":    {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "simple_bias":        {"sl_atr": 1.5, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+            "bos_choch":          {"sl_atr": 1.2, "tp1_rr": 1.5, "tp2_rr": 2.5, "tp3_rr": 4.0},
+        }
+        scanner_cfg = SCANNER_SL_TP.get((scanner or "").lower(), {}) if scanner else {}
+        # Global default when scanner not given: 2.0×ATR — matches scalp_strategy.sl_atr_mult
+        # (the code comment in signal_tracker.TRADE_TYPE_CONFIG says "strategy uses 2.0x 5m ATR")
+        default_sl_atr = 2.0
+        sl_atr_mult = float(scanner_cfg.get("sl_atr") or default_sl_atr)
+        tp1_r = float(scanner_cfg.get("tp1_rr") or cfg.get("tp1_rr", 0.8))
+        tp2_r = float(scanner_cfg.get("tp2_rr") or cfg.get("tp2_rr", 1.2))
+        tp3_r = float(scanner_cfg.get("tp3_rr") or cfg.get("tp3_rr", 0.0))
         return cls(
-            sl_atr_mult=float(cfg.get("sl_atr_mult", 2.0)),
-            tp1_r=float(cfg.get("tp1_rr", 0.8)),
-            tp2_r=float(cfg.get("tp2_rr", 1.2)),
-            tp3_r=float(cfg.get("tp3_rr", 0.0)),
+            sl_atr_mult=sl_atr_mult,
+            tp1_r=tp1_r,
+            tp2_r=tp2_r,
+            tp3_r=tp3_r,
             early_kill_sec=int(cfg.get("early_kill_sec", 60)),
             early_kill_mfe=float(cfg.get("early_kill_mfe", 0.10)),
             max_age_sec=int(cfg.get("max_age_sec", 15 * 60)),
@@ -321,9 +352,17 @@ def simulate_trade(
             mae_r = this_bar_mae
 
         # ── [A] HARD LOSS CAP ──
-        # Even if SL hasn't triggered yet, price blew through it intrabar
+        # If the bar CLOSE breached hard loss cap, we exit.
+        # BUG FIX (2026-04-16): previously used c_j as exit_price, which overstated
+        # losses on wicks. A real broker stop fills AT the cap level, not at bar
+        # close. Now exit at the R-level-equivalent price. This matches live
+        # behavior where a hard stop order sits at the broker.
         if current_r <= config.hard_loss_cap_r:
-            exit_price = c_j
+            # Price level that corresponds to hard_loss_cap_r
+            if side == "long":
+                exit_price = entry_price + (config.hard_loss_cap_r * initial_risk)
+            else:
+                exit_price = entry_price - (config.hard_loss_cap_r * initial_risk)
             exit_bar = j
             exit_reason = "hard_loss_cap"
             break

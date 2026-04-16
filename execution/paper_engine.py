@@ -91,8 +91,8 @@ class PaperExecutionEngine:
         - Volatility factor: scaled by current_atr / avg_atr
         - Capped at 0.15%
         """
-        # 1. Base slippage
-        base_slip = 0.02 if is_maker else 0.05
+        # 1. Base slippage (FIX 7: raised to simulate real market conditions)
+        base_slip = 0.04 if is_maker else 0.08  # was 0.02/0.05 — now realistic
 
         # 2. Size impact: larger positions move the book more
         excess_usd = max(0, position_usd - 500.0)
@@ -198,21 +198,27 @@ class PaperExecutionEngine:
         """Simulate a market entry order."""
         lev = leverage or self.default_leverage
 
-        # MAKER-ONLY: use maker fee (post_only=True simulation)
-        # In real execution: place limit order slightly inside spread
-        # In paper: simulate with maker fee + reduced slippage
+        # MAKER-ONLY: post_only limit order rests at signal price = ZERO slippage
+        # In real execution: place limit order at signal_price, waits for fill
+        # In paper: fill at signal_price exactly (no slippage for maker)
         use_maker = True  # Always maker for entry (Scalper optimization)
 
-        # Realistic slippage model (position-size and liquidity aware)
-        est_position_usd = (position_size * entry_price / lev) if position_size else 500.0
-        slip_pct = self._calculate_realistic_slippage(
-            symbol, side, est_position_usd, is_maker=use_maker,
-        )
-        slip = entry_price * (slip_pct / 100.0)
-        if side == "long":
-            fill_price = entry_price + slip
+        # Maker orders: zero slippage (order rests in book at signal price)
+        # Taker orders would use _calculate_realistic_slippage
+        if use_maker:
+            slip = 0.0
+            slip_pct = 0.0
+            fill_price = entry_price  # exact fill at signal price
         else:
-            fill_price = entry_price - slip
+            est_position_usd = (position_size * entry_price / lev) if position_size else 500.0
+            slip_pct = self._calculate_realistic_slippage(
+                symbol, side, est_position_usd, is_maker=False,
+            )
+            slip = entry_price * (slip_pct / 100.0)
+            if side == "long":
+                fill_price = entry_price + slip
+            else:
+                fill_price = entry_price - slip
 
         # Calculate position size if not specified
         if position_size is None:

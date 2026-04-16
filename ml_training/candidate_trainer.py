@@ -41,6 +41,7 @@ try:
     _HAS_LGBM = True
 except ImportError:
     _HAS_LGBM = False
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
@@ -1193,12 +1194,35 @@ class CandidateTrainer:
                 )
         self._model.fit(X, y)
 
-        # Feature importances
+        # Feature importances — capture BEFORE calibration wrap (CalibratedClassifierCV
+        # hides feature_importances_ behind base_estimator_)
         importance = dict(zip(
             self._feature_names,
             [round(float(v), 4) for v in self._model.feature_importances_],
         ))
         top_features = dict(sorted(importance.items(), key=lambda x: -x[1])[:20])
+
+        # R1: Wrap classifier with CalibratedClassifierCV (isotonic, TimeSeriesSplit cv=3)
+        # Why: live audit (2026-04-15) showed model is ~20pp miscalibrated — predicts 55%
+        # when reality is 73%, predicts 82% when reality is 57%. Hard threshold gates
+        # downstream (scalp_strategy.py:2474, 2513) become wrong. Wrapping with isotonic
+        # calibration on time-ordered folds aligns predicted probability with empirical
+        # win rate without touching the underlying ranker. Memory: project_ml_calibration_audit.
+        # Feature importances (above) are captured pre-wrap because the wrapper hides them.
+        if not regression and not getattr(self, '_disable_calibration', False) and len(X) >= 200:
+            try:
+                tscv_cal = TimeSeriesSplit(n_splits=3)
+                _calibrated = CalibratedClassifierCV(
+                    self._model, cv=tscv_cal, method='isotonic',
+                )
+                _calibrated.fit(X, y)
+                self._model = _calibrated
+                logger.info(
+                    "R1: classifier wrapped with CalibratedClassifierCV (isotonic, TS-CV=3, n=%d)",
+                    len(X),
+                )
+            except Exception as _cal_e:
+                logger.warning("R1: calibration wrap failed, using uncalibrated model: %s", _cal_e)
 
         # Aggregate OOS metrics
         oos_mask = all_mask

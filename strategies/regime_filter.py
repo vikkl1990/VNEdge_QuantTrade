@@ -15,6 +15,15 @@ from typing import Dict, Any, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Advanced regime detector instance (P0 upgrade)
+_advanced_detector = None
+def _get_detector():
+    global _advanced_detector
+    if _advanced_detector is None:
+        from strategies.regime import MarketRegimeDetector
+        _advanced_detector = MarketRegimeDetector()
+    return _advanced_detector
+
 
 @dataclass
 class RegimeAction:
@@ -65,21 +74,22 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "preferred": [
             "bos_choch", "momentum_surge", "ema_momentum",
         ],
-        "blocked": ["vwap_reclaim"],       # VWAP less reliable in breakouts
+        "blocked": ["vwap_mean_revert"],       # VWAP less reliable in breakouts
         "confidence_boost": 8,
         "size_mult": 1.1,
         "sl_mult": 1.1,                    # Slightly wider for breakout volatility
         "ev_threshold_adj": -0.03,
     },
     "ranging": {
-        "allowed": [                       # Only mean-reversion scanners
-            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
-            "structure_bounce",
+        "allowed": [                       # P1: expanded ranging scanners
+            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
+            "structure_bounce", "cvd_divergence", "bos_choch",
+            "order_block_entry", "vwap_mean_revert", "rsi_extreme",
+            "bb_squeeze",
         ],
-        "preferred": ["vwap_reclaim", "liquidity_sweep"],
+        "preferred": ["liquidity_sweep", "cvd_divergence", "rsi_extreme"],
         "blocked": [
-            "ema_momentum", "momentum_ride", "momentum_surge",
-            "post_impulse", "supertrend_flip",
+            "momentum_ride", "momentum_surge", "supertrend_flip",
         ],
         "confidence_boost": 3,
         "size_mult": 0.7,
@@ -87,14 +97,15 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "ev_threshold_adj": 0.0,
     },
     "sideways": {
-        "allowed": [
-            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
-            "structure_bounce",
+        "allowed": [                       # P1: same as ranging
+            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
+            "structure_bounce", "cvd_divergence", "bos_choch",
+            "order_block_entry", "vwap_mean_revert", "rsi_extreme",
+            "bb_squeeze",
         ],
-        "preferred": ["vwap_reclaim", "liquidity_sweep"],
+        "preferred": ["liquidity_sweep", "cvd_divergence", "rsi_extreme"],
         "blocked": [
-            "ema_momentum", "momentum_ride", "momentum_surge",
-            "post_impulse", "supertrend_flip",
+            "momentum_ride", "momentum_surge", "supertrend_flip",
         ],
         "confidence_boost": 3,
         "size_mult": 0.7,
@@ -102,12 +113,13 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "ev_threshold_adj": 0.0,
     },
     "volatile": {
-        "allowed": [                       # Only high-conviction scanners
-            "ema_momentum", "bos_choch",
+        "allowed": [                       # P5: expanded volatile scanners
+            "ema_momentum", "bos_choch", "structure_bounce",
+            "liquidity_sweep", "rsi_extreme", "rsi_divergence",
         ],
         "preferred": [],
         "blocked": [
-            "vwap_reclaim", "rsi_divergence", "supertrend_flip",
+            "vwap_mean_revert", "rsi_divergence", "supertrend_flip",
             "momentum_surge",
         ],
         "confidence_boost": 0,
@@ -116,12 +128,13 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "ev_threshold_adj": 0.05,          # Higher bar in volatile
     },
     "high_volatility": {
-        "allowed": [
-            "ema_momentum", "bos_choch",
+        "allowed": [                       # P5: expanded high_vol scanners
+            "ema_momentum", "bos_choch", "structure_bounce",
+            "liquidity_sweep", "rsi_extreme", "rsi_divergence",
         ],
         "preferred": [],
         "blocked": [
-            "vwap_reclaim", "rsi_divergence", "supertrend_flip",
+            "vwap_mean_revert", "rsi_divergence", "supertrend_flip",
             "momentum_surge",
         ],
         "confidence_boost": 0,
@@ -131,7 +144,7 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "mean_reversion": {
         "allowed": [
-            "vwap_reclaim", "rsi_divergence", "liquidity_sweep",
+            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
             "structure_bounce",
         ],
         "preferred": ["rsi_divergence", "liquidity_sweep"],
@@ -145,11 +158,13 @@ REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
         "ev_threshold_adj": 0.0,
     },
     "quiet": {
-        "allowed": "*",
-        "preferred": ["liquidity_sweep"],  # Sweep setups work well in quiet markets
+        "allowed": [                       # Limited scanners in quiet
+            "liquidity_sweep", "structure_bounce", "rsi_extreme",
+        ],
+        "preferred": ["liquidity_sweep"],
         "blocked": [],
         "confidence_boost": 3,
-        "size_mult": 0.8,
+        "size_mult": 0.7,
         "sl_mult": 1.0,
         "ev_threshold_adj": 0.0,
     },
@@ -213,16 +228,30 @@ class RegimeFilter:
     HIGH_VOL_PERCENTILE = 75   # above this = volatile
     LOW_VOL_PERCENTILE = 25    # below this = quiet
 
-    def detect_regime(self, indicators: Dict[str, Any]) -> str:
+    def detect_regime(self, indicators: Dict[str, Any], df=None) -> str:
         """Detect current market regime from indicator values.
 
-        Returns: "trending_up", "trending_down", "ranging", "volatile", "quiet"
+        P0 upgrade: Uses MarketRegimeDetector (ADX, ATR percentile, volume,
+        BB squeeze) when a DataFrame is provided, falling back to simple
+        EMA+BB detection otherwise.
 
-        Fix (2026-03-31): bb_bandwidth < 0.015 was mis-classifying smooth
-        directional drifts (1-2% intraday moves) as "quiet" because Bollinger
-        Bands stay tight during steady grinds. Now checks price displacement
-        relative to EMA50 and EMA ordering before declaring quiet.
+        Returns: "trending_up", "trending_down", "ranging", "volatile",
+                 "quiet", "breakout", "mean_reversion", "low_liquidity",
+                 "high_volatility", "sideways"
         """
+        # --- P0: Try advanced detector if df available ---
+        if df is not None and len(df) >= 100:
+            try:
+                detector = _get_detector()
+                ctx = detector.detect_regime(df)
+                regime_str = ctx.regime.value  # MarketRegime enum -> string
+                logger.debug("Advanced regime: %s (conf=%.2f, adx=%.1f, atr_pct=%.0f, vol=%.2f)",
+                            regime_str, ctx.confidence, ctx.adx, ctx.atr_percentile, ctx.volume_ratio)
+                return regime_str
+            except Exception as e:
+                logger.debug("Advanced regime detection failed, falling back: %s", e)
+
+        # --- Fallback: simple EMA + BB detection ---
         import math
         ema8 = indicators.get("ema_8", 0)
         ema21 = indicators.get("ema_21", 0)

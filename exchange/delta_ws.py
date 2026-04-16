@@ -35,12 +35,20 @@ WS_URL_DEMO = "wss://socket.testnet.delta.exchange"
 WS_URL = WS_URL_PROD  # Default to production
 
 # Symbol mapping: our format → Delta WS format
+# FIX C1: Expanded to all active trading pairs so update_real_trades() sees price ticks
+# for every pair that can have a real position (previously missing: XRP/LTC/ADA/LINK/DOT/TAO)
 SYMBOL_MAP = {
     "BTC/USDT": "BTCUSD",
     "ETH/USDT": "ETHUSD",
     "AVAX/USDT": "AVAXUSD",
     "SOL/USDT": "SOLUSD",
     "DOGE/USDT": "DOGEUSD",
+    "XRP/USDT": "XRPUSD",
+    "LTC/USDT": "LTCUSD",
+    "ADA/USDT": "ADAUSD",
+    "LINK/USDT": "LINKUSD",
+    "DOT/USDT": "DOTUSD",
+    "TAO/USDT": "TAOUSD",
 }
 
 REVERSE_MAP = {v: k for k, v in SYMBOL_MAP.items()}

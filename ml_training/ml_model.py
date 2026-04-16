@@ -64,7 +64,8 @@ class MLProbabilityModel:
     def train(self, df: pd.DataFrame, htf_df: Optional[pd.DataFrame] = None,
               tp_r: float = 1.5, sl_r: float = 1.0, max_bars: int = 60,
               signal_indices: Optional[List[int]] = None,
-              label_mode: str = "directional") -> Dict:
+              label_mode: str = "directional",  # default per memory: reduce problem difficulty; call-site can override to binary/mfe
+              ) -> Dict:
         """Train the model on historical candle data.
 
         Parameters
@@ -161,7 +162,18 @@ class MLProbabilityModel:
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X)
 
-        base_rf = RandomForestClassifier(
+        try:
+            import lightgbm as _lgb
+            base_rf = _lgb.LGBMClassifier(
+                n_estimators=200, max_depth=6, learning_rate=0.05,
+                min_child_samples=30, subsample=0.8, colsample_bytree=0.8,
+                reg_alpha=0.1, reg_lambda=1.0, is_unbalance=True,
+                random_state=42, n_jobs=1, verbose=-1,
+            )
+            logger.info("Using LightGBM classifier (Upgrade 5)")
+        except ImportError:
+            logger.warning("LightGBM not available, falling back to RandomForest")
+            base_rf = RandomForestClassifier(
             n_estimators=50,
             max_depth=6,
             min_samples_leaf=30,

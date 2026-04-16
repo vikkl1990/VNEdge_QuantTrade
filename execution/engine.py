@@ -171,14 +171,38 @@ class ExecutionEngine:
             if self.market_type == "futures":
                 await self._set_leverage(symbol, leverage)
 
-            # Place market order
+            # Place order based on config (maker = limit at signal price, taker = market)
             order_side = "buy" if side == TradeSide.LONG else "sell"
-            order = await self._place_order_with_retry(
-                symbol=symbol,
-                order_type="market",
-                side=order_side,
-                amount=position_size,
-            )
+            exec_cfg = {"order_type": "auto", "retry_taker_on_reject": True}  # hardcoded since engine has no _config
+            _order_type = exec_cfg.get("order_type", "maker")
+            
+            if _order_type in ("maker", "auto"):
+                # Post-only limit order at signal price (zero slippage, maker fee)
+                order = await self._place_order_with_retry(
+                    symbol=symbol,
+                    order_type="limit",
+                    side=order_side,
+                    amount=position_size,
+                    price=entry_price,
+                    params={"postOnly": True},
+                )
+                # If limit order rejected (price crossed), retry as market
+                if order is None and exec_cfg.get("retry_taker_on_reject", True):
+                    logger.warning("Maker order rejected for %s — retrying as taker", symbol)
+                    order = await self._place_order_with_retry(
+                        symbol=symbol,
+                        order_type="market",
+                        side=order_side,
+                        amount=position_size,
+                    )
+            else:
+                # Pure taker: market order
+                order = await self._place_order_with_retry(
+                    symbol=symbol,
+                    order_type="market",
+                    side=order_side,
+                    amount=position_size,
+                )
 
             if order is None:
                 trade.mark_failed("order_rejected_after_retries")

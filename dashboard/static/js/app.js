@@ -4622,17 +4622,30 @@ async function refreshInfraHealth() {
                 kv("Log Exists", s.log_exists ? "Yes" : "No", s.log_exists ? "var(--green)" : "var(--red)");
         }
 
-        // 3. Orderbook Cache
+        // 3. Orderbook Cache — honest state labeling (2026-04-16)
+        //   RUNNING  (green)  — healthy
+        //   STALLED  (yellow) — task alive but failing a lot
+        //   DEGRADED (red)    — task alive but REST client is None
+        //   STOPPED  (red)    — task not alive
         let obWrap = document.getElementById("ob-cache-health");
         if (obWrap && d.orderbook_cache) {
             let ob = d.orderbook_cache;
-            let running = ob.running;
+            let state = ob.state || (ob.running ? "RUNNING" : "STOPPED");
+            let stateColor = {
+                "RUNNING":  "var(--green)",
+                "STALLED":  "var(--yellow)",
+                "DEGRADED": "var(--red)",
+                "STOPPED":  "var(--red)",
+            }[state] || "var(--text-muted)";
+            let errCount = ob.error_count || 0;
+            let errColor = errCount > 100 ? "var(--red)" : errCount > 10 ? "var(--yellow)" : "var(--green)";
+            let errRate = ob.error_rate != null ? ` (${(ob.error_rate * 100).toFixed(0)}%)` : "";
             obWrap.innerHTML =
-                kv("Status", running ? "RUNNING" : "OFF", running ? "var(--green)" : "var(--red)") +
+                kv("Status", state, stateColor) +
                 kv("Symbols", String(ob.symbols || 0)) +
                 kv("Cached", String(ob.cached || 0)) +
                 kv("Fetches", String(ob.fetch_count || 0)) +
-                kv("Errors", String(ob.error_count || 0), (ob.error_count || 0) > 10 ? "var(--red)" : "var(--green)");
+                kv("Errors", String(errCount) + errRate, errColor);
         }
     } catch (e) { console.error("refreshInfraHealth error:", e); }
 }

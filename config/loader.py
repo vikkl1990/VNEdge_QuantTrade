@@ -1,11 +1,14 @@
 """Configuration loader - reads settings.yaml and .env into a unified config dict."""
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 _config: Optional[Dict[str, Any]] = None
 

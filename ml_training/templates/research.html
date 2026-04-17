@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VN Edge — Research Center</title>
+<link rel="icon" href="/static/logo-dark.jpg" type="image/jpeg">
+<style>
+:root {
+  --bg: #0a1429;
+  --bg-card: rgba(255,255,255,.04);
+  --border: rgba(0,255,157,.08);
+  --border-active: rgba(0,255,157,.25);
+  --accent: #00ff9d;
+  --accent-dim: rgba(0,255,157,.08);
+  --green: #00ff9d;
+  --red: #ff3b5c;
+  --yellow: #ffd700;
+  --cyan: #00d4ff;
+  --purple: #a78bfa;
+  --orange: #f97316;
+  --text: #e8ecf4;
+  --text-dim: #9ba3b5;
+  --text-muted: #5a7090;
+  --radius: 8px;
+  --font-mono: 'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;
+  --font-sans: -apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Roboto,sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  min-height: 100vh;
+  background-image: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(0,255,157,.02), transparent);
+}
+.header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 0 28px; height: 60px;
+  background: rgba(10,20,41,.95);
+  border-bottom: 1px solid rgba(0,255,157,.12);
+  position: sticky; top: 0; z-index: 200;
+  box-shadow: 0 2px 30px rgba(0,0,0,.5);
+  backdrop-filter: blur(20px);
+}
+.brand {
+  display:flex; align-items:center; gap: 14px;
+}
+.brand-name {
+  font-size: 1.1rem; font-weight: 900;
+  letter-spacing: 2px; color: #fff;
+  font-family: var(--font-sans);
+}
+.brand-tagline {
+  font-size: .55rem; letter-spacing: 3px;
+  color: var(--accent); font-weight: 600;
+  text-transform: uppercase;
+  text-shadow: 0 0 12px rgba(0,255,157,.3);
+}
+.header-right { display:flex; align-items:center; gap: 14px; }
+.btn {
+  background: rgba(0,255,157,.08);
+  border: 1px solid rgba(0,255,157,.25);
+  color: var(--accent);
+  padding: 6px 14px; border-radius: 6px;
+  font-family: var(--font-mono); font-size: .7rem;
+  cursor: pointer; transition: all .15s;
+  text-transform: uppercase; letter-spacing: 1px; font-weight: 600;
+}
+.btn:hover { background: rgba(0,255,157,.15); border-color: var(--accent); }
+.btn-danger {
+  background: rgba(255,59,92,.08);
+  border-color: rgba(255,59,92,.25);
+  color: var(--red);
+}
+.btn-danger:hover { background: rgba(255,59,92,.15); border-color: var(--red); }
+.btn-sm { padding: 3px 8px; font-size: .62rem; }
+.fresh { font-size: .6rem; color: var(--text-muted); font-family: var(--font-mono); }
+
+.content { padding: 20px 24px; max-width: 1600px; margin: 0 auto; }
+
+/* Summary strip */
+.summary { display:grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+.sum-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  position: relative;
+}
+.sum-card .sum-label {
+  font-size: .6rem; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;
+}
+.sum-card .sum-value {
+  font-size: 1.8rem; font-weight: 800; font-family: var(--font-sans);
+  margin-top: 6px; line-height: 1;
+}
+.sum-card.alert { border-color: rgba(255,59,92,.3); box-shadow: 0 0 20px rgba(255,59,92,.08); }
+.sum-card.alert .sum-value { color: var(--red); }
+.sum-card.ok .sum-value { color: var(--green); }
+.sum-card.warn .sum-value { color: var(--yellow); }
+
+/* Grids */
+.grid-2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid-wide { display:grid; grid-template-columns: 2fr 1fr; gap: 14px; margin-bottom: 14px; }
+
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.panel h3 {
+  color: var(--accent); font-size: .78rem;
+  margin-bottom: 10px; text-transform: uppercase;
+  letter-spacing: 1.5px; font-weight: 700;
+  font-family: var(--font-sans);
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.panel h3 .h-sub { font-size: .6rem; color: var(--text-muted); font-weight: 400; letter-spacing: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+th {
+  text-align: left; padding: 7px 8px;
+  border-bottom: 1px solid var(--border-active);
+  color: var(--accent);
+  font-size: .62rem; text-transform: uppercase;
+  letter-spacing: 1px; font-weight: 600;
+}
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+tr:hover { background: rgba(0,255,157,.03); }
+
+.badge {
+  display: inline-block; padding: 2px 7px;
+  border-radius: 10px; font-size: .65rem;
+  font-weight: 700; letter-spacing: .5px;
+}
+.badge-green { background: rgba(0,255,157,.15); color: var(--green); border: 1px solid rgba(0,255,157,.3); }
+.badge-red   { background: rgba(255,59,92,.15); color: var(--red); border: 1px solid rgba(255,59,92,.3); }
+.badge-yellow { background: rgba(255,215,0,.12); color: var(--yellow); border: 1px solid rgba(255,215,0,.3); }
+.badge-purple { background: rgba(167,139,250,.12); color: var(--purple); border: 1px solid rgba(167,139,250,.3); }
+.badge-cyan { background: rgba(0,212,255,.12); color: var(--cyan); border: 1px solid rgba(0,212,255,.3); }
+
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+.neutral { color: var(--yellow); }
+.muted { color: var(--text-muted); }
+
+.empty {
+  padding: 24px; text-align: center;
+  color: var(--text-muted); font-size: .75rem;
+}
+
+.metric-row {
+  display: flex; justify-content: space-between;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.metric-row:last-child { border: none; }
+.metric-row .label { color: var(--text-dim); }
+.metric-row .value { font-weight: 700; }
+
+/* Timeline */
+.timeline { max-height: 400px; overflow-y: auto; }
+.tl-event {
+  padding: 6px 8px;
+  border-left: 2px solid var(--border-active);
+  margin-bottom: 4px;
+  font-size: .7rem;
+  display: flex; gap: 10px;
+}
+.tl-event.kind-cohort_degradation { border-left-color: var(--red); }
+.tl-event.kind-cache_update { border-left-color: var(--cyan); }
+.tl-event.kind-cache_refresh { border-left-color: var(--purple); }
+.tl-ts { color: var(--text-muted); font-size: .6rem; min-width: 80px; }
+.tl-kind { color: var(--accent); font-weight: 600; min-width: 120px; font-size: .6rem; }
+.tl-body { color: var(--text-dim); flex: 1; }
+
+/* Loading state */
+.loading {
+  color: var(--text-muted); font-size: .7rem;
+  padding: 14px; text-align: center;
+}
+.loading::after {
+  content: '...'; display: inline-block;
+  animation: dot 1.2s steps(4) infinite;
+}
+@keyframes dot { 0%{width:0} 100%{width:1em} }
+
+@media (max-width: 900px) {
+  .summary { grid-template-columns: 1fr 1fr; }
+  .grid-2, .grid-wide { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="brand">
+    <div>
+      <div class="brand-name">VN EDGE</div>
+      <div class="brand-tagline">Research Center · Innovation Lab</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="freshness" class="fresh">—</span>
+    <button class="btn btn-sm" onclick="refreshNow()">Refresh Caches</button>
+    <a href="/" class="btn btn-sm" style="text-decoration:none">← ML Lab</a>
+  </div>
+</div>
+
+<div class="content">
+  <!-- Summary strip -->
+  <div class="summary">
+    <div id="sum-healthy" class="sum-card ok">
+      <div class="sum-label">Healthy Cohorts</div>
+      <div class="sum-value">—</div>
+    </div>
+    <div id="sum-degraded" class="sum-card">
+      <div class="sum-label">Degraded (Alerts)</div>
+      <div class="sum-value">—</div>
+    </div>
+    <div id="sum-weakspots" class="sum-card">
+      <div class="sum-label">Weakspots (30d)</div>
+      <div class="sum-value">—</div>
+    </div>
+    <div id="sum-suggestions" class="sum-card">
+      <div class="sum-label">Pending Suggestions</div>
+      <div class="sum-value">—</div>
+    </div>
+  </div>
+
+  <!-- Cohort Health -->
+  <div class="panel">
+    <h3>Cohort Health
+      <span class="h-sub">rolling-50 WR vs historical · alert if -8pp</span>
+    </h3>
+    <div id="cohort-table" class="loading">Loading</div>
+  </div>
+
+  <!-- Weakspots + Strengths side-by-side -->
+  <div class="grid-2">
+    <div class="panel">
+      <h3>Top Weakspots
+        <span class="h-sub">4-factor · ranked by gap</span>
+      </h3>
+      <div id="weakspots-table" class="loading">Loading</div>
+    </div>
+    <div class="panel">
+      <h3>Top Strengths
+        <span class="h-sub">lean harder into these</span>
+      </h3>
+      <div id="strengths-table" class="loading">Loading</div>
+    </div>
+  </div>
+
+  <!-- Policy Variants -->
+  <div class="panel">
+    <h3>Proposed Policy Variants
+      <span class="h-sub">simulated min_confidence lifts · human approval required</span>
+    </h3>
+    <div id="variants-container" class="loading">Loading</div>
+  </div>
+
+  <!-- Active Vetoes + Timeline -->
+  <div class="grid-wide">
+    <div class="panel">
+      <h3>Research Timeline
+        <span class="h-sub">recent events</span>
+      </h3>
+      <div id="timeline-container" class="timeline loading">Loading</div>
+    </div>
+    <div class="panel">
+      <h3>Active Vetoes
+        <span class="h-sub">frozen cohorts</span>
+      </h3>
+      <div id="vetoes-container" class="loading">Loading</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const RESEARCH_ROOT = '/api/research';
+
+async function fetchJSON(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+function esc(s) {
+  return String(s || '').replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+function pp(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  const sign = n > 0 ? '+' : '';
+  const color = n > 0 ? 'var(--green)' : n < 0 ? 'var(--red)' : 'var(--text-muted)';
+  return `<span style="color:${color}">${sign}${n.toFixed(1)}pp</span>`;
+}
+
+function pctColor(v) {
+  if (v >= 70) return 'var(--green)';
+  if (v >= 55) return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+// Summary
+async function loadSummary() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/summary`);
+  if (!d) return;
+  const ch = d.cohort_health || {};
+  const ws = d.weakspots || {};
+  const sg = d.suggestions || {};
+  const setV = (id, val, cls) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.querySelector('.sum-value').textContent = val;
+      el.className = 'sum-card ' + cls;
+    }
+  };
+  setV('sum-healthy', ch.healthy || 0, 'sum-card ok');
+  setV('sum-degraded', ch.degraded || 0, (ch.degraded || 0) > 0 ? 'sum-card alert' : 'sum-card');
+  setV('sum-weakspots', ws.count || 0, (ws.count || 0) > 3 ? 'sum-card warn' : 'sum-card');
+  setV('sum-suggestions', sg.pending || 0, (sg.pending || 0) > 0 ? 'sum-card warn' : 'sum-card');
+  const el = document.getElementById('freshness');
+  if (el && d.generated_at) {
+    const age = Math.round((Date.now() - new Date(d.generated_at).getTime()) / 1000);
+    el.textContent = `cached ${age}s ago`;
+  }
+}
+
+// Cohort Health table
+async function loadCohorts() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/cohort-health`);
+  const el = document.getElementById('cohort-table');
+  if (!el) return;
+  if (!d || !d.cohorts || !d.cohorts.length) {
+    el.innerHTML = '<div class="empty">No cohort data yet</div>';
+    return;
+  }
+  const rows = d.cohorts.map(c => {
+    const verdictCls = c.verdict === 'DEGRADED' ? 'badge-red' :
+                       c.verdict === 'IMPROVED' ? 'badge-green' : 'badge-yellow';
+    const sign = c.delta_pp > 0 ? '+' : '';
+    const deltaColor = c.delta_pp > 3 ? 'var(--green)' : c.delta_pp < -3 ? 'var(--red)' : 'var(--text-dim)';
+    const freeze = c.verdict === 'DEGRADED' ?
+      `<button class="btn btn-sm btn-danger" onclick="freezeCohort('${esc(c.scanner)}','${esc(c.regime)}','${esc(c.side)}')">Freeze</button>` : '';
+    return `<tr>
+      <td>${esc(c.cohort)}</td>
+      <td style="text-align:right">${c.n_historical}</td>
+      <td style="text-align:right;color:${pctColor(c.wr_historical)}">${c.wr_historical.toFixed(1)}%</td>
+      <td style="text-align:right;color:${pctColor(c.wr_recent)}">${c.wr_recent.toFixed(1)}%</td>
+      <td style="text-align:right;color:${deltaColor};font-weight:700">${sign}${c.delta_pp.toFixed(1)}pp</td>
+      <td><span class="badge ${verdictCls}">${c.verdict}</span></td>
+      <td style="text-align:right">${freeze}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr>
+      <th>Cohort</th>
+      <th style="text-align:right">N</th>
+      <th style="text-align:right">WR Hist</th>
+      <th style="text-align:right">WR Recent</th>
+      <th style="text-align:right">Δ</th>
+      <th>Verdict</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Weakspots + Strengths
+async function loadWeakspots() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/weakspots`);
+  const weakEl = document.getElementById('weakspots-table');
+  const strEl = document.getElementById('strengths-table');
+  if (!d) return;
+  const mkRow = c => `<tr>
+    <td>${esc(c.scanner)} × ${esc(c.regime)}</td>
+    <td>${esc(c.side)}</td>
+    <td>${esc(c.session || '*')}</td>
+    <td style="text-align:right">${c.n}</td>
+    <td style="text-align:right;color:${pctColor(c.wr)}">${c.wr.toFixed(1)}%</td>
+    <td style="text-align:right">${pp(c.gap_pp)}</td>
+  </tr>`;
+  const mkTable = rows => `<table>
+    <thead><tr>
+      <th>Scanner × Regime</th>
+      <th>Side</th>
+      <th>Session</th>
+      <th style="text-align:right">N</th>
+      <th style="text-align:right">WR</th>
+      <th style="text-align:right">Gap</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  const w = (d.weakspots || []).slice(0, 10).map(mkRow).join('');
+  const s = (d.strengths || []).slice(0, 10).map(mkRow).join('');
+  weakEl.innerHTML = w ? mkTable(w) : '<div class="empty">No weakspots detected</div>';
+  strEl.innerHTML = s ? mkTable(s) : '<div class="empty">No top-strengths yet</div>';
+}
+
+// Policy Variants
+async function loadVariants() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/policy-variants`);
+  const el = document.getElementById('variants-container');
+  if (!d || !d.cohorts || !d.cohorts.length) {
+    el.innerHTML = '<div class="empty">No policy variants proposed yet</div>';
+    return;
+  }
+  const parts = d.cohorts.map((c, idx) => {
+    const coh = c.cohort;
+    const cohLabel = `${esc(coh.scanner)} × ${esc(coh.regime)} × ${esc(coh.side)}${coh.session && coh.session !== '*' ? ' × ' + esc(coh.session) : ''}`;
+    const variantRows = (c.variants || []).map((v, vi) => {
+      const color = v.wr_lift_pp > 3 ? 'var(--green)' : v.wr_lift_pp < 0 ? 'var(--red)' : 'var(--text-dim)';
+      const rec = v.recommended ? '<span class="badge badge-green" style="margin-left:6px">RECOMMENDED</span>' : '';
+      return `<tr>
+        <td>min_conf = ${v.params.min_confidence}</td>
+        <td style="text-align:right">${v.n_after_filter} (${v.kept_pct}%)</td>
+        <td style="text-align:right">${v.wr.toFixed(1)}%</td>
+        <td style="text-align:right;color:${color};font-weight:700">${v.wr_lift_pp >= 0 ? '+' : ''}${v.wr_lift_pp.toFixed(1)}pp</td>
+        <td style="text-align:right;color:var(--text-muted);font-size:.7rem">[${v.wr_95ci[0]}, ${v.wr_95ci[1]}]</td>
+        <td>${rec}</td>
+        <td style="text-align:right">
+          <button class="btn btn-sm" onclick='approveVariant(${JSON.stringify(JSON.stringify({cohort: coh, params: v.params, expected_lift_pp: v.wr_lift_pp}))})'>Approve</button>
+        </td>
+      </tr>`;
+    }).join('');
+    return `<div style="margin-bottom:14px;padding:10px;background:rgba(0,255,157,.02);border:1px solid var(--border);border-radius:8px">
+      <div style="font-weight:700;color:var(--text);margin-bottom:4px">${cohLabel}</div>
+      <div style="font-size:.7rem;color:var(--text-muted);margin-bottom:8px">Baseline: n=${c.baseline_n}, WR=${c.baseline_wr.toFixed(1)}% (95%CI ${c.baseline_wr_95ci[0]}-${c.baseline_wr_95ci[1]})</div>
+      <table><thead><tr>
+        <th>Param</th><th style="text-align:right">Kept N</th><th style="text-align:right">WR</th>
+        <th style="text-align:right">Lift</th><th style="text-align:right">95% CI</th><th></th><th></th>
+      </tr></thead><tbody>${variantRows}</tbody></table>
+    </div>`;
+  }).join('');
+  el.innerHTML = parts;
+}
+
+// Timeline
+async function loadTimeline() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/timeline?limit=50`);
+  const el = document.getElementById('timeline-container');
+  if (!d || !d.events || !d.events.length) {
+    el.innerHTML = '<div class="empty">No research events yet</div>';
+    return;
+  }
+  const events = d.events.slice().reverse();
+  const rows = events.map(e => {
+    const t = e.ts ? new Date(e.ts) : null;
+    const tStr = t ? t.toISOString().slice(11, 19) : '?';
+    const body = e.cohort ? `${esc(e.cohort)} · ${e.delta_pp || ''}pp` :
+                 e.key ? `key=${esc(e.key)}` :
+                 e.keys ? `keys=[${(e.keys || []).map(esc).join(', ')}]` :
+                 '';
+    return `<div class="tl-event kind-${esc(e.kind)}">
+      <span class="tl-ts">${tStr}</span>
+      <span class="tl-kind">${esc(e.kind)}</span>
+      <span class="tl-body">${body}</span>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows;
+}
+
+// Vetoes
+async function loadVetoes() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/vetoes`);
+  const el = document.getElementById('vetoes-container');
+  if (!d || !d.vetoes || !d.vetoes.length) {
+    el.innerHTML = '<div class="empty">No active vetoes</div>';
+    return;
+  }
+  const rows = d.vetoes.map((v, i) => `<div class="metric-row">
+    <span class="label">${esc(v.scanner || '?')} × ${esc(v.regime || '?')} × ${esc(v.side || '?')}</span>
+    <span>
+      <span class="value muted" style="font-size:.65rem">since ${esc((v.created_at || '').slice(0, 10))}</span>
+      <button class="btn btn-sm btn-danger" style="margin-left:8px" onclick="removeVeto(${i})">Remove</button>
+    </span>
+  </div>`).join('');
+  el.innerHTML = rows;
+}
+
+// Actions
+async function refreshNow() {
+  const r = await fetchJSON(`${RESEARCH_ROOT}/refresh`, { method: 'POST' });
+  if (r && r.status === 'ok') {
+    setTimeout(loadAll, 500);
+  } else {
+    alert('Refresh failed — check ML trainer logs');
+  }
+}
+
+async function freezeCohort(scanner, regime, side) {
+  if (!confirm(`Freeze trading for ${scanner} × ${regime} × ${side}?\n\nThis is SHADOW MODE only (logs would_veto, doesn't actually block trades yet). Next session wires enforcement.`)) return;
+  const body = { scanner, regime, side, reason: 'dashboard-freeze', mode: 'shadow' };
+  const r = await fetch(`${RESEARCH_ROOT}/vetoes/add`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (r.ok) { setTimeout(loadAll, 300); } else { alert('Freeze failed'); }
+}
+
+async function removeVeto(idx) {
+  if (!confirm('Remove this veto?')) return;
+  const r = await fetch(`${RESEARCH_ROOT}/vetoes/remove`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx }),
+  });
+  if (r.ok) { setTimeout(loadAll, 300); } else { alert('Remove failed'); }
+}
+
+async function approveVariant(payload) {
+  const data = JSON.parse(payload);
+  if (!confirm(`Approve variant?\n\nCohort: ${data.cohort.scanner} × ${data.cohort.regime} × ${data.cohort.side}\nmin_conf → ${data.params.min_confidence}\nExpected lift: ${data.expected_lift_pp >= 0 ? '+' : ''}${data.expected_lift_pp.toFixed(1)}pp\n\nShadow-mode only — next session wires enforcement.`)) return;
+  const body = { ...data, approved_at: new Date().toISOString(), mode: 'shadow' };
+  const r = await fetch(`${RESEARCH_ROOT}/suggestions/approve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (r.ok) { alert('Approved (shadow mode)'); setTimeout(loadAll, 300); } else { alert('Approval failed'); }
+}
+
+// Main
+async function loadAll() {
+  loadSummary();
+  loadCohorts();
+  loadWeakspots();
+  loadVariants();
+  loadTimeline();
+  loadVetoes();
+}
+loadAll();
+setInterval(loadAll, 30000);
+</script>
+</body>
+</html>

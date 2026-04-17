@@ -714,6 +714,12 @@ class MLDashboard:
         self._app.router.add_get("/api/research/timeline", self._handle_research_timeline)
         self._app.router.add_post("/api/research/refresh", self._handle_research_refresh)
         self._app.router.add_get("/api/research/summary", self._handle_research_summary)
+        self._app.router.add_get("/research", self._handle_research_page)
+        # Mutating endpoints (human-in-loop actions from UI)
+        self._app.router.add_post("/api/research/suggestions/approve", self._handle_research_suggestions_approve)
+        self._app.router.add_post("/api/research/suggestions/reject", self._handle_research_suggestions_reject)
+        self._app.router.add_post("/api/research/vetoes/add", self._handle_research_vetoes_add)
+        self._app.router.add_post("/api/research/vetoes/remove", self._handle_research_vetoes_remove)
 
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
@@ -2236,6 +2242,183 @@ class MLDashboard:
             },
         }
         return web.json_response(summary, dumps=_json_dumps)
+
+    # -------------------------------------------------------------------
+    #  Research UI page + mutating endpoints
+    # -------------------------------------------------------------------
+    async def _handle_research_page(self, request):
+        """GET /research — serve the Research Center HTML page."""
+        template_path = PROJECT_ROOT / "ml_training" / "templates" / "research.html"
+        if not template_path.exists():
+            return web.Response(
+                text="<h1>Research page not deployed</h1>",
+                content_type="text/html", status=503,
+            )
+        try:
+            return web.Response(
+                body=template_path.read_bytes(),
+                content_type="text/html",
+                headers={"Cache-Control": "no-cache"},
+            )
+        except Exception as e:
+            return web.Response(text=f"Error: {e}", status=500)
+
+    def _research_file(self, name: str):
+        """Path helper — storage/research/{name}."""
+        from pathlib import Path as _P
+        d = PROJECT_ROOT / "storage" / "research"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / name
+
+    def _read_json_or_default(self, path, default):
+        """Safe JSON read — returns default if missing/corrupt."""
+        import json as _j
+        try:
+            if not path.exists():
+                return default
+            with open(path) as fh:
+                return _j.load(fh)
+        except Exception:
+            return default
+
+    def _write_json_atomic(self, path, data):
+        """Atomic write via tmp+rename."""
+        import json as _j, os as _os
+        tmp = str(path) + ".tmp"
+        with open(tmp, "w") as fh:
+            _j.dump(data, fh, indent=2, default=str)
+        _os.replace(tmp, path)
+
+    def _append_event(self, kind: str, payload: dict):
+        """Emit to storage/research/events.jsonl (same format as research_center)."""
+        import json as _j
+        path = self._research_file("events.jsonl")
+        evt = {"ts": datetime.now(timezone.utc).isoformat(), "kind": kind, **payload}
+        try:
+            with open(path, "a") as fh:
+                fh.write(_j.dump(evt, default=str) if False else "")
+                # use json.dumps properly
+                fh.write(_j.dumps(evt, default=str) + "\n")
+        except Exception as e:
+            logger.warning("append_event failed: %s", e)
+
+    async def _handle_research_suggestions_approve(self, request):
+        """POST /api/research/suggestions/approve — record an approved variant
+        for later shadow-mode enforcement by the bot's prefilter adapter.
+
+        Stored in storage/research/approved_variants.json. NEVER auto-enforced.
+        Phase-1 contract: bot reads this file and LOGS what it would do
+        (vwap_would_veto style), but does not change trading behavior
+        until a follow-up commit flips the enforce flag.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        path = self._research_file("approved_variants.json")
+        store = self._read_json_or_default(path, {"variants": [], "updated_at": None})
+        body.setdefault("approved_at", datetime.now(timezone.utc).isoformat())
+        body.setdefault("mode", "shadow")
+        body["id"] = f"var_{int(datetime.now(timezone.utc).timestamp())}_{len(store['variants'])}"
+        store["variants"].append(body)
+        store["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("variant_approved", {
+            "id": body["id"],
+            "cohort": body.get("cohort"),
+            "params": body.get("params"),
+            "mode": body.get("mode"),
+        })
+        return web.json_response({"status": "ok", "id": body["id"], "mode": "shadow"})
+
+    async def _handle_research_suggestions_reject(self, request):
+        """POST /api/research/suggestions/reject — record rejection reason."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        path = self._research_file("rejected_variants.jsonl")
+        body["rejected_at"] = datetime.now(timezone.utc).isoformat()
+        import json as _j
+        with open(path, "a") as fh:
+            fh.write(_j.dumps(body, default=str) + "\n")
+        self._append_event("variant_rejected", {
+            "cohort": body.get("cohort"),
+            "reason": body.get("reason", "unspecified"),
+        })
+        return web.json_response({"status": "ok"})
+
+    async def _handle_research_vetoes_add(self, request):
+        """POST /api/research/vetoes/add — freeze a cohort.
+
+        Phase-1 SHADOW MODE: writes to storage/research/active_vetoes.json
+        where the bot's prefilter adapter reads it. Currently the adapter
+        only LOGS would_veto — doesn't actually block. Enforcement
+        flip is a separate commit after observation.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        scanner = body.get("scanner")
+        regime = body.get("regime")
+        side = body.get("side")
+        if not (scanner and regime and side):
+            return web.json_response({"error": "scanner, regime, side required"}, status=400)
+
+        path = self._research_file("active_vetoes.json")
+        store = self._read_json_or_default(path, {"vetoes": [], "last_updated": None})
+        # Avoid duplicates
+        key = (scanner, regime, side)
+        already = any(
+            (v.get("scanner"), v.get("regime"), v.get("side")) == key
+            for v in store["vetoes"]
+        )
+        if already:
+            return web.json_response({"status": "already_exists"}, status=200)
+
+        store["vetoes"].append({
+            "scanner": scanner, "regime": regime, "side": side,
+            "reason": body.get("reason", "manual"),
+            "mode": body.get("mode", "shadow"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("veto_added", {
+            "scanner": scanner, "regime": regime, "side": side,
+            "mode": body.get("mode", "shadow"),
+        })
+        return web.json_response({"status": "ok", "mode": body.get("mode", "shadow")})
+
+    async def _handle_research_vetoes_remove(self, request):
+        """POST /api/research/vetoes/remove — unfreeze a cohort by index."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        idx = body.get("index")
+        if not isinstance(idx, int):
+            return web.json_response({"error": "index (int) required"}, status=400)
+
+        path = self._research_file("active_vetoes.json")
+        store = self._read_json_or_default(path, {"vetoes": [], "last_updated": None})
+        if idx < 0 or idx >= len(store["vetoes"]):
+            return web.json_response({"error": "index out of range"}, status=400)
+
+        removed = store["vetoes"].pop(idx)
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("veto_removed", {
+            "scanner": removed.get("scanner"),
+            "regime": removed.get("regime"),
+            "side": removed.get("side"),
+        })
+        return web.json_response({"status": "ok", "removed": removed})
 
     # -------------------------------------------------------------------
     #  Start server

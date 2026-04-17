@@ -381,6 +381,17 @@ class ScalpStrategy(BaseStrategy):
         self._regime_filter = RegimeFilter()
         self._last_regime_info: Dict[str, Dict[str, Any]] = {}  # symbol → regime info
 
+        # --- Research Center shadow adapter (2026-04-17) ---
+        # Reads storage/research/active_vetoes.json (written by ResearchCenter UI)
+        # and logs `would_veto` metadata on matching signals. SHADOW MODE only —
+        # never blocks trades. Enforcement flag flips in a separate commit after
+        # 7d of observation showing the vetoed cohorts are indeed losers.
+        # Reloaded from disk every N scans (60s mtime check) so UI changes
+        # take effect without bot restart.
+        self._research_vetoes: List[Dict[str, Any]] = []
+        self._research_vetoes_mtime: float = 0.0
+        self._research_vetoes_check_interval: int = 60  # seconds
+
         # --- Regime transition tracking (per-symbol) ---
         self._prev_regime: Dict[str, str] = {}       # symbol → previous regime
         self._regime_age: Dict[str, int] = {}         # symbol → bars held in current regime
@@ -746,6 +757,25 @@ class ScalpStrategy(BaseStrategy):
             if transition["in_transition"]:
                 reasons.append(f"regime transition ({transition['transition_type']})")
 
+        # ── Research Center shadow veto (2026-04-17) ──
+        # Check if the Research Center has flagged this (scanner, regime, side)
+        # as a frozen cohort. We don't know `scanner`/`side` yet at prefilter
+        # time (that's per-scanner output), so we attach the LOOKUP_TABLE to
+        # context and let downstream per-scanner code mark `research_would_veto=True`
+        # on individual signals. Pure metadata, no blocking.
+        try:
+            self._refresh_research_vetoes()
+            # Build a fast-lookup set of (regime, side) for any veto matching this
+            # regime, regardless of scanner — so the caller can quickly filter.
+            applicable = [
+                v for v in self._research_vetoes
+                if v.get("regime") == regime
+            ]
+            if applicable:
+                context["research_applicable_vetoes"] = applicable
+        except Exception:
+            pass  # never break prefilter on research-center read error
+
         return {
             "pass": True,
             "confidence_adj": confidence_adj,
@@ -753,6 +783,38 @@ class ScalpStrategy(BaseStrategy):
             "context": context,
             "regime_transition": transition,
         }
+
+    def _refresh_research_vetoes(self) -> None:
+        """Read storage/research/active_vetoes.json if mtime changed.
+
+        Called from prefilter — CHEAP (stat + optional json load).
+        Reloads at most every self._research_vetoes_check_interval seconds.
+        Read-only: never writes anything, never raises.
+        """
+        import os, json, time
+        try:
+            now = time.time()
+            last_check = getattr(self, "_research_vetoes_last_check", 0.0)
+            if now - last_check < self._research_vetoes_check_interval:
+                return
+            self._research_vetoes_last_check = now
+
+            path = Path(__file__).resolve().parent.parent / "storage" / "research" / "active_vetoes.json"
+            if not path.exists():
+                self._research_vetoes = []
+                return
+
+            mtime = path.stat().st_mtime
+            if mtime == self._research_vetoes_mtime:
+                return  # no change since last read
+
+            with open(path) as fh:
+                data = json.load(fh) or {}
+            self._research_vetoes = data.get("vetoes", []) if isinstance(data, dict) else []
+            self._research_vetoes_mtime = mtime
+        except Exception:
+            # Fail silent — research-center disk issues must never break trading
+            pass
 
     # ------------------------------------------------------------------
     # Interface

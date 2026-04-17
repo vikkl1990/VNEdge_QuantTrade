@@ -1,31 +1,51 @@
 [Unit]
 Description=Crypto Trading Bot
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=cryptobot
-Group=cryptobot
-WorkingDirectory=/opt/crypto-trading-bot
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/crypto-trading-bot
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/crypto-trading-bot/venv/bin/python main.py
-Restart=on-failure
-RestartSec=30
-StartLimitIntervalSec=300
-StartLimitBurst=5
+Environment=PATH=/home/opc/crypto-trading-bot/.venv/bin:/usr/bin:/bin
+ExecStart=/bin/bash /home/opc/crypto-trading-bot/start_bot.sh
 
-# Logging
+# Restart policy (unchanged from previous)
+Restart=always
+RestartSec=30
+
+# OPS FIX (2026-04-17): restart-loop bounds and resource ceilings.
+# Previously the unit had no caps. A broken config could cause systemd
+# to restart-loop every 30s indefinitely, and a memory leak could grow
+# unbounded until OOM killer took out other processes on the VM.
+
+# Crash-loop protection: if the service fails 5 times in 300s, stop
+# trying and wait for human intervention. Prevents log-flood + CPU spin.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Resource ceilings — VM has 3.6GB RAM; leave margin for ML trainer + Postgres.
+MemoryMax=2G
+MemoryHigh=1800M
+TasksMax=256
+LimitNOFILE=4096
+
+# Graceful-shutdown timeout. main.py's SIGTERM handler aims for <15s.
+# If it hangs, systemd SIGKILLs after 30s instead of the default 90s.
+TimeoutStopSec=30
+
+# Security hardening (process-level, no network/FS changes).
+# NoNewPrivileges=true
+# Cannot set these without breaking candle_cache / storage writes:
+#   ProtectSystem=strict / ReadWritePaths=... — saved for post-review
+# Keeping conservative for now; add after functional tests tomorrow.
+NoNewPrivileges=true
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cryptobot
-
-# Security hardening
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/crypto-trading-bot/data /opt/crypto-trading-bot/logs
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

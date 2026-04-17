@@ -392,6 +392,16 @@ class ScalpStrategy(BaseStrategy):
         self._research_vetoes_mtime: float = 0.0
         self._research_vetoes_check_interval: int = 60  # seconds
 
+        # --- Research Center shadow promotion adapter (2026-04-17) ---
+        # Reads storage/research/active_promotions.json (written by ResearchCenter UI
+        # approve action) and attaches matching entries to prefilter context so
+        # downstream scanner scoring can log `research_would_boost` metadata.
+        # SHADOW MODE only — never changes trading behavior. Enforcement flag
+        # flips in a separate commit after 7d of observation showing the
+        # promoted cohorts sustain edge.
+        self._research_promotions: List[Dict[str, Any]] = []
+        self._research_promotions_mtime: float = 0.0
+
         # --- Regime transition tracking (per-symbol) ---
         self._prev_regime: Dict[str, str] = {}       # symbol → previous regime
         self._regime_age: Dict[str, int] = {}         # symbol → bars held in current regime
@@ -757,22 +767,31 @@ class ScalpStrategy(BaseStrategy):
             if transition["in_transition"]:
                 reasons.append(f"regime transition ({transition['transition_type']})")
 
-        # ── Research Center shadow veto (2026-04-17) ──
+        # ── Research Center shadow veto + promotion (2026-04-17) ──
         # Check if the Research Center has flagged this (scanner, regime, side)
-        # as a frozen cohort. We don't know `scanner`/`side` yet at prefilter
-        # time (that's per-scanner output), so we attach the LOOKUP_TABLE to
-        # context and let downstream per-scanner code mark `research_would_veto=True`
+        # as a frozen cohort OR approved a local promotion. We don't know
+        # `scanner`/`side` yet at prefilter time (that's per-scanner output),
+        # so we attach LOOKUP_TABLES to context and let downstream per-scanner
+        # code mark `research_would_veto=True` or `research_would_boost=True`
         # on individual signals. Pure metadata, no blocking.
         try:
             self._refresh_research_vetoes()
-            # Build a fast-lookup set of (regime, side) for any veto matching this
-            # regime, regardless of scanner — so the caller can quickly filter.
-            applicable = [
+            self._refresh_research_promotions()
+            # Build a fast-lookup set of (regime, side) for any veto/promotion
+            # matching this regime, regardless of scanner — so the caller can
+            # quickly filter.
+            applicable_vetoes = [
                 v for v in self._research_vetoes
                 if v.get("regime") == regime
             ]
-            if applicable:
-                context["research_applicable_vetoes"] = applicable
+            if applicable_vetoes:
+                context["research_applicable_vetoes"] = applicable_vetoes
+            applicable_promotions = [
+                p for p in self._research_promotions
+                if p.get("regime") == regime
+            ]
+            if applicable_promotions:
+                context["research_applicable_promotions"] = applicable_promotions
         except Exception:
             pass  # never break prefilter on research-center read error
 
@@ -814,6 +833,29 @@ class ScalpStrategy(BaseStrategy):
             self._research_vetoes_mtime = mtime
         except Exception:
             # Fail silent — research-center disk issues must never break trading
+            pass
+
+    def _refresh_research_promotions(self) -> None:
+        """Read storage/research/active_promotions.json if mtime changed.
+
+        Mirrors _refresh_research_vetoes. Loaded at most every
+        self._research_vetoes_check_interval seconds (shared throttle so
+        both files re-read on the same tick). Read-only, never raises.
+        """
+        import json
+        try:
+            path = Path(__file__).resolve().parent.parent / "storage" / "research" / "active_promotions.json"
+            if not path.exists():
+                self._research_promotions = []
+                return
+            mtime = path.stat().st_mtime
+            if mtime == self._research_promotions_mtime:
+                return
+            with open(path) as fh:
+                data = json.load(fh) or {}
+            self._research_promotions = data.get("promotions", []) if isinstance(data, dict) else []
+            self._research_promotions_mtime = mtime
+        except Exception:
             pass
 
     # ------------------------------------------------------------------

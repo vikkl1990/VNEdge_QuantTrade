@@ -54,6 +54,11 @@ RESEARCH_DIR = STORAGE / "research"
 EVENTS_FILE = RESEARCH_DIR / "events.jsonl"
 SUGGESTIONS_FILE = RESEARCH_DIR / "suggestions.json"
 VETOES_FILE = RESEARCH_DIR / "active_vetoes.json"
+PROMOTIONS_FILE = RESEARCH_DIR / "active_promotions.json"
+SCANNER_WEIGHTS_FILE = STORAGE / "scanner_weights.json"
+# Remembered mtime of scanner_weights.json — used to detect status changes and emit events
+_SCANNER_WEIGHTS_MTIME_CACHE: Dict[str, float] = {"mtime": 0.0}
+_SCANNER_STATUS_SNAPSHOT: Dict[str, Tuple[str, float]] = {}
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -387,6 +392,230 @@ def active_vetoes() -> Dict[str, Any]:
         return {"error": str(e), "vetoes": [], "count": 0}
 
 
+def active_promotions() -> Dict[str, Any]:
+    """Read approved cohort-level scanner promotions. These override the global
+    scanner_weights.json status for the specific cohort only. Shadow-first:
+    `mode` field gates whether the bot enforces or just logs."""
+    if not PROMOTIONS_FILE.exists():
+        return {"promotions": [], "count": 0}
+    try:
+        with open(PROMOTIONS_FILE) as fh:
+            data = json.load(fh)
+        return {
+            "promotions": data.get("promotions", []),
+            "count": len(data.get("promotions", [])),
+            "last_updated": data.get("last_updated"),
+        }
+    except Exception as e:
+        return {"error": str(e), "promotions": [], "count": 0}
+
+
+def scanner_registry() -> Dict[str, Any]:
+    """Read live per-scanner status from scanner_weights.json + detect transitions.
+
+    Returns rich info for UI:
+      - scanners: list of {name, status, weight, expectancy_r, win_rate, sample_count,
+                   edge_ratio, avg_mae_r, avg_mfe_r, reason, recovery_stage, last_updated}
+      - summary: {active, reduced, suppressed, shadow, total}
+      - stale_seconds: how old the file is vs now
+      - source_path: where it was loaded from (for ops debugging)
+
+    Side effect: if any scanner transitioned status since the last read, emits
+    a `scanner_status_change` event to events.jsonl.
+    """
+    result: Dict[str, Any] = {
+        "scanners": [],
+        "summary": {"active": 0, "reduced": 0, "suppressed": 0, "shadow": 0, "total": 0},
+        "source_path": str(SCANNER_WEIGHTS_FILE),
+        "stale_seconds": None,
+        "loaded": False,
+    }
+    if not SCANNER_WEIGHTS_FILE.exists():
+        result["error"] = "scanner_weights.json not found (expected sync from trading VM)"
+        return result
+    try:
+        st = SCANNER_WEIGHTS_FILE.stat()
+        result["stale_seconds"] = int(time.time() - st.st_mtime)
+        with open(SCANNER_WEIGHTS_FILE) as fh:
+            raw = json.load(fh) or {}
+    except Exception as e:
+        result["error"] = f"load failed: {e}"
+        return result
+
+    # scanner_weights.json is a flat dict of name -> ScannerState-as-dict
+    if not isinstance(raw, dict):
+        result["error"] = "unexpected schema (expected dict of scanners)"
+        return result
+
+    scanners: List[Dict[str, Any]] = []
+    current_snapshot: Dict[str, Tuple[str, float]] = {}
+    for name, state in raw.items():
+        if not isinstance(state, dict):
+            continue
+        status = state.get("status", "active")
+        weight = float(state.get("weight", 1.0))
+        expectancy = float(state.get("expectancy_r", 0.0))
+        win_rate = float(state.get("win_rate", 0.0))
+        n = int(state.get("sample_count", 0))
+        # win_rate may be stored as percent (71.5) or fraction (0.715) — normalise
+        if win_rate > 1.5:
+            wr_pct = round(win_rate, 2)
+        else:
+            wr_pct = round(win_rate * 100, 2)
+        scanners.append({
+            "name": name,
+            "status": status,
+            "weight": round(weight, 3),
+            "expectancy_r": round(expectancy, 4),
+            "avg_r": round(float(state.get("avg_r", 0.0)), 4),
+            "total_r": round(float(state.get("total_r", 0.0)), 3),
+            "win_rate": wr_pct,
+            "sample_count": n,
+            "edge_ratio": round(float(state.get("edge_ratio", 0.0)), 3),
+            "avg_mae_r": round(float(state.get("avg_mae_r", 0.0)), 4),
+            "avg_mfe_r": round(float(state.get("avg_mfe_r", 0.0)), 4),
+            "rolling_expectancy": round(float(state.get("rolling_expectancy", 0.0)), 4),
+            "recovery_stage": state.get("recovery_stage", ""),
+            "reason": state.get("reason", ""),
+            "last_updated": state.get("last_updated", ""),
+        })
+        current_snapshot[name] = (status, round(weight, 2))
+
+    # Detect transitions vs last read — emit event for each change
+    previous = _SCANNER_STATUS_SNAPSHOT
+    for name, (new_status, new_weight) in current_snapshot.items():
+        prev = previous.get(name)
+        if prev is None:
+            # First time we see this scanner — emit an informational event, not a change
+            _emit_event("scanner_seen", {"scanner": name, "status": new_status, "weight": new_weight})
+        elif prev != (new_status, new_weight):
+            _emit_event("scanner_status_change", {
+                "scanner": name,
+                "from_status": prev[0], "from_weight": prev[1],
+                "to_status": new_status, "to_weight": new_weight,
+            })
+    # Update snapshot
+    _SCANNER_STATUS_SNAPSHOT.clear()
+    _SCANNER_STATUS_SNAPSHOT.update(current_snapshot)
+
+    # Summary counts
+    summary = {"active": 0, "reduced": 0, "suppressed": 0, "shadow": 0, "total": len(scanners)}
+    for s in scanners:
+        summary[s["status"]] = summary.get(s["status"], 0) + 1
+
+    # Sort: most-penalised first (suppressed > shadow > reduced > active),
+    # then by sample_count desc so high-volume scanners lead within each tier.
+    status_rank = {"suppressed": 0, "shadow": 1, "reduced": 2, "active": 3}
+    scanners.sort(key=lambda s: (status_rank.get(s["status"], 4), -s["sample_count"]))
+
+    result["loaded"] = True
+    result["scanners"] = scanners
+    result["summary"] = summary
+    return result
+
+
+def propose_scanner_promotions(
+    min_n: int = 15, edge_gap_pp: float = 5.0, days: int = 30
+) -> Dict[str, Any]:
+    """Find cohorts that could earn a local 'ACTIVE' promotion even if the
+    scanner is globally REDUCED/SUPPRESSED.
+
+    Logic: A scanner with overall bad edge may still have a strong sub-cohort
+    (e.g., liquidity_sweep is globally -0.14R but could be +0.30R in
+    trending_up × long × us_session). This surfaces those pockets for
+    human-in-loop approval. Writes nothing; UI calls the approve endpoint.
+
+    Criteria for a candidate:
+      - Scanner status is reduced/suppressed (has room to be promoted)
+      - Cohort n >= min_n
+      - Cohort WR >= baseline_wr + edge_gap_pp
+      - Cohort avg_r > 0
+    """
+    registry = scanner_registry()
+    if not registry.get("loaded"):
+        return {"candidates": [], "count": 0, "source_note": registry.get("error", "registry unavailable")}
+
+    # Index scanners by name
+    penalised = {
+        s["name"]: s for s in registry["scanners"]
+        if s["status"] in ("reduced", "suppressed", "shadow")
+    }
+    if not penalised:
+        return {"candidates": [], "count": 0, "source_note": "no penalised scanners — nothing to propose"}
+
+    # Compute baseline + cohort WRs
+    trades = _load_trades(days=days)
+    if not trades:
+        return {"candidates": [], "count": 0, "source_note": "no trades in window"}
+    total_wins = sum(1 for t in trades if (t.get("exit_r") or 0) > 0)
+    baseline_wr = (total_wins / len(trades)) * 100.0
+
+    # Group by 3-factor (scanner × regime × side)
+    by_cohort: Dict[tuple, List[dict]] = defaultdict(list)
+    for t in trades:
+        md = t.get("metadata") or {}
+        scn = md.get("setup_type") or md.get("scanner") or "?"
+        if scn not in penalised:
+            continue  # we only care about penalised scanners' cohorts
+        reg = md.get("regime") or "?"
+        side = t.get("side") or "?"
+        by_cohort[(scn, reg, side)].append(t)
+
+    candidates: List[Dict[str, Any]] = []
+    for (scn, reg, side), cohort_trades in by_cohort.items():
+        n = len(cohort_trades)
+        if n < min_n:
+            continue
+        wins = sum(1 for t in cohort_trades if (t.get("exit_r") or 0) > 0)
+        wr = (wins / n) * 100.0
+        avg_r = sum(t.get("exit_r") or 0 for t in cohort_trades) / n
+        gap_pp = wr - baseline_wr
+        if gap_pp < edge_gap_pp or avg_r <= 0:
+            continue
+        # Wilson lower bound (approximate, for stability filter)
+        p = wins / n
+        z = 1.96
+        denom = 1 + z * z / n
+        centre = p + z * z / (2 * n)
+        spread = z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5
+        wilson_lower = max(0.0, (centre - spread) / denom) * 100.0
+        # Require lower CI to be near or above baseline — otherwise it's sampling noise
+        if wilson_lower < baseline_wr - 3.0:
+            continue
+
+        candidates.append({
+            "scanner": scn,
+            "regime": reg,
+            "side": side,
+            "n": n,
+            "wr": round(wr, 2),
+            "avg_r": round(avg_r, 4),
+            "gap_pp": round(gap_pp, 2),
+            "wilson_lower_ci": round(wilson_lower, 2),
+            "baseline_wr": round(baseline_wr, 2),
+            "current_global_status": penalised[scn]["status"],
+            "current_global_weight": penalised[scn]["weight"],
+            "rationale": (
+                f"Globally {penalised[scn]['status']} (w={penalised[scn]['weight']}) "
+                f"but in {reg} × {side}: WR {wr:.1f}% on n={n}, "
+                f"avg_r +{avg_r:.3f}R, lower_CI {wilson_lower:.1f}% > baseline-3"
+            ),
+        })
+
+    # Sort by gap_pp (biggest upside first)
+    candidates.sort(key=lambda c: -c["gap_pp"])
+
+    return {
+        "candidates": candidates,
+        "count": len(candidates),
+        "baseline_wr": round(baseline_wr, 2),
+        "total_trades": len(trades),
+        "min_n": min_n,
+        "edge_gap_pp": edge_gap_pp,
+        "days": days,
+    }
+
+
 def scan_suggestions() -> Dict[str, Any]:
     """Read pending suggestions for human review."""
     if not SUGGESTIONS_FILE.exists():
@@ -478,6 +707,14 @@ class ResearchCenter:
             self._set("edge_trajectory", edge_trajectory(days=14, bucket_hours=6), 1200)
         except Exception as e:
             logger.exception("edge_trajectory refresh failed: %s", e)
+        try:
+            self._set("scanner_registry", scanner_registry(), 120)
+        except Exception as e:
+            logger.exception("scanner_registry refresh failed: %s", e)
+        try:
+            self._set("scanner_promotions", propose_scanner_promotions(), 1800)
+        except Exception as e:
+            logger.exception("scanner_promotions refresh failed: %s", e)
         _emit_event("cache_refresh", {"keys": list(self._cache.keys())})
 
     async def start(self):
@@ -496,20 +733,30 @@ class ResearchCenter:
 
     async def _loop(self):
         """Simple tick-based scheduler. Each capability runs on its own cadence."""
-        last_runs = {k: 0.0 for k in ("cohort_health", "weakspots", "policy_variants", "edge_trajectory")}
+        last_runs = {k: 0.0 for k in (
+            "cohort_health", "weakspots", "policy_variants", "edge_trajectory",
+            "scanner_registry", "scanner_promotions",
+        )}
         intervals = {
-            "cohort_health": 300,     # 5 min
-            "weakspots": 1800,        # 30 min
-            "policy_variants": 3600,  # 1 h
-            "edge_trajectory": 600,   # 10 min
+            "cohort_health": 300,         # 5 min
+            "weakspots": 1800,            # 30 min
+            "policy_variants": 3600,      # 1 h
+            "edge_trajectory": 600,       # 10 min
+            "scanner_registry": 60,       # 1 min — catches status transitions fast
+            "scanner_promotions": 900,    # 15 min — expensive (baseline + cohort groupby)
         }
         runners: Dict[str, Callable] = {
             "cohort_health": lambda: analyze_cohort_health(),
             "weakspots": lambda: mine_weakspots(days=30),
             "policy_variants": lambda: propose_policy_variants(days=30),
             "edge_trajectory": lambda: edge_trajectory(days=14, bucket_hours=6),
+            "scanner_registry": lambda: scanner_registry(),
+            "scanner_promotions": lambda: propose_scanner_promotions(),
         }
-        ttls = {"cohort_health": 600, "weakspots": 3600, "policy_variants": 7200, "edge_trajectory": 1200}
+        ttls = {
+            "cohort_health": 600, "weakspots": 3600, "policy_variants": 7200,
+            "edge_trajectory": 1200, "scanner_registry": 120, "scanner_promotions": 1800,
+        }
 
         try:
             while True:

@@ -258,6 +258,23 @@ tr:hover { background: rgba(0,255,157,.03); }
     </div>
   </div>
 
+  <!-- Live Scanner Registry -->
+  <div class="panel">
+    <h3>Live Scanner Registry
+      <span class="h-sub">continuously tuned per-scanner status · auto-gated by expectancy</span>
+      <span id="registry-meta" class="h-sub" style="margin-left:12px;color:var(--text-dim)"></span>
+    </h3>
+    <div id="registry-container" class="loading">Loading</div>
+  </div>
+
+  <!-- Promotion Candidates -->
+  <div class="panel">
+    <h3>Cohort Promotion Candidates
+      <span class="h-sub">globally-penalised scanners with local pockets of edge · human approval required</span>
+    </h3>
+    <div id="promo-candidates-container" class="loading">Loading</div>
+  </div>
+
   <!-- Policy Variants -->
   <div class="panel">
     <h3>Proposed Policy Variants
@@ -266,7 +283,7 @@ tr:hover { background: rgba(0,255,157,.03); }
     <div id="variants-container" class="loading">Loading</div>
   </div>
 
-  <!-- Active Vetoes + Timeline -->
+  <!-- Active Vetoes + Active Promotions + Timeline -->
   <div class="grid-wide">
     <div class="panel">
       <h3>Research Timeline
@@ -276,9 +293,13 @@ tr:hover { background: rgba(0,255,157,.03); }
     </div>
     <div class="panel">
       <h3>Active Vetoes
-        <span class="h-sub">frozen cohorts</span>
+        <span class="h-sub">frozen cohorts (shadow)</span>
       </h3>
       <div id="vetoes-container" class="loading">Loading</div>
+      <h3 style="margin-top:16px">Active Promotions
+        <span class="h-sub">approved cohort unlocks (shadow)</span>
+      </h3>
+      <div id="promotions-container" class="loading">Loading</div>
     </div>
   </div>
 </div>
@@ -491,6 +512,138 @@ async function loadVetoes() {
   el.innerHTML = rows;
 }
 
+// Live Scanner Registry — continuously-tuned per-scanner status
+async function loadScannerRegistry() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/scanner-registry`);
+  const el = document.getElementById('registry-container');
+  const metaEl = document.getElementById('registry-meta');
+  if (!d) { el.innerHTML = '<div class="empty">Registry unavailable</div>'; return; }
+  if (!d.loaded) {
+    el.innerHTML = `<div class="empty">scanner_weights.json not synced yet.
+      <br><span style="font-size:.7rem;color:var(--text-muted)">Expected path: ${esc(d.source_path || '?')}</span>
+      ${d.error ? `<br><span style="font-size:.7rem;color:var(--red)">${esc(d.error)}</span>` : ''}</div>`;
+    if (metaEl) metaEl.textContent = '';
+    return;
+  }
+  if (metaEl) {
+    const stale = d.stale_seconds != null ? `updated ${d.stale_seconds}s ago` : '';
+    const s = d.summary || {};
+    metaEl.textContent = `${s.total} scanners · ${s.active || 0} active · ${s.reduced || 0} reduced · ${s.suppressed || 0} suppressed · ${s.shadow || 0} shadow · ${stale}`;
+  }
+
+  const statusBadge = (st) => {
+    const cls = st === 'active' ? 'badge-green' :
+                st === 'reduced' ? 'badge-yellow' :
+                st === 'suppressed' ? 'badge-red' :
+                'badge-yellow';
+    return `<span class="badge ${cls}">${esc(st)}</span>`;
+  };
+  const rows = (d.scanners || []).map(s => {
+    const expSign = s.expectancy_r >= 0 ? '+' : '';
+    const expColor = s.expectancy_r > 0.05 ? 'var(--green)' :
+                     s.expectancy_r < -0.1 ? 'var(--red)' : 'var(--text-dim)';
+    const wrCol = pctColor(s.win_rate);
+    const wt = (s.weight || 0).toFixed(2);
+    const wtColor = s.weight >= 1.2 ? 'var(--green)' :
+                    s.weight <= 0.6 ? 'var(--red)' : 'var(--text)';
+    const stage = s.recovery_stage ? `<span class="badge badge-yellow" style="margin-left:4px">${esc(s.recovery_stage)}</span>` : '';
+    return `<tr>
+      <td style="font-weight:700">${esc(s.name)} ${stage}</td>
+      <td>${statusBadge(s.status)}</td>
+      <td style="text-align:right;color:${wtColor};font-weight:700">${wt}×</td>
+      <td style="text-align:right;color:${expColor}">${expSign}${s.expectancy_r.toFixed(3)}R</td>
+      <td style="text-align:right;color:${wrCol}">${s.win_rate.toFixed(1)}%</td>
+      <td style="text-align:right">${s.sample_count}</td>
+      <td style="text-align:right">${s.edge_ratio.toFixed(2)}</td>
+      <td style="color:var(--text-muted);font-size:.7rem">${esc(s.reason || '')}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr>
+      <th>Scanner</th>
+      <th>Status</th>
+      <th style="text-align:right">Weight</th>
+      <th style="text-align:right">Expectancy</th>
+      <th style="text-align:right">WR</th>
+      <th style="text-align:right">N</th>
+      <th style="text-align:right">MFE/MAE</th>
+      <th>Reason</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Promotion candidates — scanners that could earn cohort-level unlocks
+async function loadPromotionCandidates() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/promotion-candidates`);
+  const el = document.getElementById('promo-candidates-container');
+  if (!d) { el.innerHTML = '<div class="empty">Unavailable</div>'; return; }
+  if (!d.candidates || !d.candidates.length) {
+    const note = d.source_note ? ` <span style="font-size:.7rem;color:var(--text-muted)">(${esc(d.source_note)})</span>` : '';
+    el.innerHTML = `<div class="empty">No promotion candidates right now${note}</div>`;
+    return;
+  }
+  const rows = d.candidates.map(c => {
+    const payload = JSON.stringify({
+      scanner: c.scanner, regime: c.regime, side: c.side,
+      reason: `Cohort WR ${c.wr}% (n=${c.n}), lower_CI ${c.wilson_lower_ci}%, globally ${c.current_global_status}`,
+      mode: 'shadow',
+    });
+    return `<tr>
+      <td style="font-weight:700">${esc(c.scanner)}</td>
+      <td>${esc(c.regime)}</td>
+      <td>${esc(c.side)}</td>
+      <td style="text-align:right">${c.n}</td>
+      <td style="text-align:right;color:${pctColor(c.wr)}">${c.wr.toFixed(1)}%</td>
+      <td style="text-align:right;color:var(--text-muted);font-size:.7rem">[${c.wilson_lower_ci.toFixed(1)}%]</td>
+      <td style="text-align:right;color:var(--green);font-weight:700">+${c.gap_pp.toFixed(1)}pp</td>
+      <td style="text-align:right;color:var(--green)">+${c.avg_r.toFixed(3)}R</td>
+      <td><span class="badge badge-yellow">${esc(c.current_global_status)}</span></td>
+      <td style="text-align:right">
+        <button class="btn btn-sm" onclick='approvePromotion(${JSON.stringify(payload)})'>Approve</button>
+      </td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<div style="font-size:.7rem;color:var(--text-muted);margin-bottom:6px">
+    Baseline WR: ${d.baseline_wr}% on ${d.total_trades} trades · min_n=${d.min_n} · gap_threshold=+${d.edge_gap_pp}pp
+  </div><table>
+    <thead><tr>
+      <th>Scanner</th><th>Regime</th><th>Side</th>
+      <th style="text-align:right">N</th>
+      <th style="text-align:right">Cohort WR</th>
+      <th style="text-align:right">Lower CI</th>
+      <th style="text-align:right">Gap</th>
+      <th style="text-align:right">Avg R</th>
+      <th>Global</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Active (approved) promotions — what the bot reads
+async function loadActivePromotions() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/promotions`);
+  const el = document.getElementById('promotions-container');
+  if (!d || !d.promotions || !d.promotions.length) {
+    el.innerHTML = '<div class="empty">No active promotions</div>';
+    return;
+  }
+  const rows = d.promotions.map((p, i) => {
+    const sess = p.session ? ` × ${esc(p.session)}` : '';
+    return `<div class="metric-row">
+      <span class="label">${esc(p.scanner || '?')} × ${esc(p.regime || '?')} × ${esc(p.side || '?')}${sess}
+        <span class="badge badge-green" style="margin-left:6px;font-size:.55rem">${esc(p.mode || 'shadow')}</span>
+      </span>
+      <span>
+        <span class="value muted" style="font-size:.65rem">weight ${p.weight != null ? Number(p.weight).toFixed(2) : '1.00'}× · since ${esc((p.created_at || '').slice(0, 10))}</span>
+        <button class="btn btn-sm btn-danger" style="margin-left:8px" onclick="removePromotion(${i})">Remove</button>
+      </span>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows;
+}
+
 // Actions
 async function refreshNow() {
   const r = await fetchJSON(`${RESEARCH_ROOT}/refresh`, { method: 'POST' });
@@ -531,6 +684,30 @@ async function approveVariant(payload) {
   if (r.ok) { alert('Approved (shadow mode)'); setTimeout(loadAll, 300); } else { alert('Approval failed'); }
 }
 
+async function approvePromotion(payload) {
+  const data = JSON.parse(payload);
+  if (!confirm(`Approve scanner promotion?\n\nCohort: ${data.scanner} × ${data.regime} × ${data.side}\nReason: ${data.reason}\n\nBot will treat this cohort as ACTIVE (weight 1.0) even if scanner is globally penalised.\n\nShadow-mode only — bot logs would_boost but does NOT enforce yet.`)) return;
+  const r = await fetch(`${RESEARCH_ROOT}/promotions/approve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  });
+  if (r.ok) {
+    alert('Promotion approved (shadow mode). Bot will pick it up within 60s via mtime poll.');
+    setTimeout(loadAll, 300);
+  } else {
+    alert('Approval failed');
+  }
+}
+
+async function removePromotion(idx) {
+  if (!confirm('Remove this promotion?')) return;
+  const r = await fetch(`${RESEARCH_ROOT}/promotions/remove`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx }),
+  });
+  if (r.ok) { setTimeout(loadAll, 300); } else { alert('Remove failed'); }
+}
+
 // Main
 async function loadAll() {
   loadSummary();
@@ -539,6 +716,9 @@ async function loadAll() {
   loadVariants();
   loadTimeline();
   loadVetoes();
+  loadScannerRegistry();
+  loadPromotionCandidates();
+  loadActivePromotions();
 }
 loadAll();
 setInterval(loadAll, 30000);

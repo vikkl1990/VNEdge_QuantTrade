@@ -720,6 +720,12 @@ class MLDashboard:
         self._app.router.add_post("/api/research/suggestions/reject", self._handle_research_suggestions_reject)
         self._app.router.add_post("/api/research/vetoes/add", self._handle_research_vetoes_add)
         self._app.router.add_post("/api/research/vetoes/remove", self._handle_research_vetoes_remove)
+        # Scanner registry + promotions (2026-04-17)
+        self._app.router.add_get("/api/research/scanner-registry", self._handle_research_scanner_registry)
+        self._app.router.add_get("/api/research/promotions", self._handle_research_promotions)
+        self._app.router.add_get("/api/research/promotion-candidates", self._handle_research_promotion_candidates)
+        self._app.router.add_post("/api/research/promotions/approve", self._handle_research_promotions_approve)
+        self._app.router.add_post("/api/research/promotions/remove", self._handle_research_promotions_remove)
 
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
@@ -2215,12 +2221,17 @@ class MLDashboard:
     async def _handle_research_summary(self, request):
         """Headline summary for the Research tab landing view."""
         from ml_training.research_center import (
-            analyze_cohort_health, mine_weakspots, scan_suggestions, active_vetoes,
+            analyze_cohort_health, mine_weakspots, scan_suggestions,
+            active_vetoes, scanner_registry, active_promotions,
+            propose_scanner_promotions,
         )
         health = self._cached_or_live("cohort_health", analyze_cohort_health)
         weak = self._cached_or_live("weakspots", lambda: mine_weakspots(30, 30))
         sug = scan_suggestions()
         vetoes = active_vetoes()
+        registry = self._cached_or_live("scanner_registry", scanner_registry)
+        promo_candidates = self._cached_or_live("scanner_promotions", propose_scanner_promotions)
+        promos = active_promotions()
 
         summary = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2239,6 +2250,15 @@ class MLDashboard:
             },
             "vetoes": {
                 "active": vetoes.get("count", 0),
+            },
+            "scanner_registry": {
+                "loaded": (registry or {}).get("loaded", False),
+                "stale_seconds": (registry or {}).get("stale_seconds"),
+                "summary": (registry or {}).get("summary", {}),
+            },
+            "promotions": {
+                "candidates": (promo_candidates or {}).get("count", 0),
+                "active": promos.get("count", 0),
             },
         }
         return web.json_response(summary, dumps=_json_dumps)
@@ -2417,6 +2437,126 @@ class MLDashboard:
             "scanner": removed.get("scanner"),
             "regime": removed.get("regime"),
             "side": removed.get("side"),
+        })
+        return web.json_response({"status": "ok", "removed": removed})
+
+    # -------------------------------------------------------------------
+    #  Scanner Registry + Promotions (2026-04-17)
+    # -------------------------------------------------------------------
+    async def _handle_research_scanner_registry(self, request):
+        """GET /api/research/scanner-registry — live per-scanner status from
+        scanner_weights.json (synced from trading VM).  Returns rich table
+        data for the UI.  Also triggers emit of scanner_status_change events
+        if any statuses have transitioned since the last read."""
+        from ml_training.research_center import scanner_registry
+        return web.json_response(
+            self._cached_or_live("scanner_registry", scanner_registry),
+            dumps=_json_dumps,
+        )
+
+    async def _handle_research_promotion_candidates(self, request):
+        """GET /api/research/promotion-candidates — Research Center's auto
+        proposals for cohort-level promotions of globally-penalised scanners."""
+        from ml_training.research_center import propose_scanner_promotions
+        min_n = int(request.query.get("min_n", 15))
+        gap_pp = float(request.query.get("gap_pp", 5.0))
+        days = int(request.query.get("days", 30))
+        # Default-param path is cached; custom params compute live
+        if min_n == 15 and gap_pp == 5.0 and days == 30:
+            return web.json_response(
+                self._cached_or_live("scanner_promotions", propose_scanner_promotions),
+                dumps=_json_dumps,
+            )
+        return web.json_response(
+            propose_scanner_promotions(min_n=min_n, edge_gap_pp=gap_pp, days=days),
+            dumps=_json_dumps,
+        )
+
+    async def _handle_research_promotions(self, request):
+        """GET /api/research/promotions — list of APPROVED cohort-level promotions
+        currently in effect (what the bot reads via its mtime-poll adapter).
+
+        Response schema mirrors /api/research/vetoes:
+            {"promotions": [...], "count": N, "last_updated": "..."}
+        """
+        from ml_training.research_center import active_promotions
+        return web.json_response(active_promotions(), dumps=_json_dumps)
+
+    async def _handle_research_promotions_approve(self, request):
+        """POST /api/research/promotions/approve — human-in-loop approval of a
+        cohort-level scanner promotion. Writes to active_promotions.json
+        where the bot's scalp_strategy shadow adapter reads.
+
+        Body: {scanner, regime, side, [session], [weight], [mode], [reason]}
+        mode defaults to "shadow"; bot logs would_boost only until mode=="enforce".
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        scanner = body.get("scanner")
+        regime = body.get("regime")
+        side = body.get("side")
+        if not (scanner and regime and side):
+            return web.json_response(
+                {"error": "scanner, regime, side required"}, status=400,
+            )
+
+        path = self._research_file("active_promotions.json")
+        store = self._read_json_or_default(path, {"promotions": [], "last_updated": None})
+        key = (scanner, regime, side, body.get("session") or "")
+        already = any(
+            (p.get("scanner"), p.get("regime"), p.get("side"), p.get("session") or "") == key
+            for p in store["promotions"]
+        )
+        if already:
+            return web.json_response({"status": "already_exists"}, status=200)
+
+        entry = {
+            "scanner": scanner,
+            "regime": regime,
+            "side": side,
+            "session": body.get("session"),
+            "weight": float(body.get("weight", 1.0)),
+            "reason": body.get("reason", "manual approval"),
+            "mode": body.get("mode", "shadow"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        store["promotions"].append(entry)
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("promotion_approved", {
+            "scanner": scanner, "regime": regime, "side": side,
+            "session": body.get("session"), "weight": entry["weight"],
+            "mode": entry["mode"],
+        })
+        return web.json_response({"status": "ok", "mode": entry["mode"], "entry": entry})
+
+    async def _handle_research_promotions_remove(self, request):
+        """POST /api/research/promotions/remove — unroll a promotion by index."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        idx = body.get("index")
+        if not isinstance(idx, int):
+            return web.json_response({"error": "index (int) required"}, status=400)
+
+        path = self._research_file("active_promotions.json")
+        store = self._read_json_or_default(path, {"promotions": [], "last_updated": None})
+        if idx < 0 or idx >= len(store["promotions"]):
+            return web.json_response({"error": "index out of range"}, status=400)
+
+        removed = store["promotions"].pop(idx)
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("promotion_removed", {
+            "scanner": removed.get("scanner"),
+            "regime": removed.get("regime"),
+            "side": removed.get("side"),
+            "session": removed.get("session"),
         })
         return web.json_response({"status": "ok", "removed": removed})
 

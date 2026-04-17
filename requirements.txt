@@ -1,39 +1,56 @@
+# Pinned dependencies — DO NOT loosen without pip-audit pass.
+# Phase 3 hygiene (2026-04-16): all versions pinned to what's currently
+# running on cryptobot-vm-a1 to prevent silent breakage from transitive
+# minor-version bumps. To update: run `pip-audit` first, then change
+# the pin, then re-deploy.
+
 # Core trading library
-ccxt>=4.0.0
+ccxt==4.5.44
 
 # Data processing
-pandas>=2.0.0
-numpy>=1.24.0
+pandas==3.0.1
+numpy==2.4.3
 
 # Async HTTP and web dashboard
-aiohttp>=3.9.0
-aiohttp-jinja2>=1.6
-jinja2>=3.1.0
+aiohttp==3.13.3
+aiohttp-jinja2==1.6
+jinja2==3.1.6
 
 # Database
-aiosqlite>=0.19.0
+aiosqlite==0.22.1
+asyncpg==0.31.0
 
 # Configuration
-pyyaml>=6.0
-python-dotenv>=1.0.0
+pyyaml==6.0.3
+python-dotenv==1.2.1
 
 # Terminal output
-colorama>=0.4.6
+colorama==0.4.6
 
 # Charting / visualization
-matplotlib>=3.7.0
+matplotlib==3.10.8
 
 # Data validation
-pydantic>=2.0.0
+pydantic==2.12.4
 
 # WebSocket support
-websockets>=12.0
+websockets==16.0
 
 # Security / encryption
-cryptography>=41.0.0
+cryptography>=41.0.0,<46.0.0   # range-pinned: cryptography has had CVEs, stay within known-good major
+bcrypt==5.0.0
 
 # System monitoring
-psutil>=5.9.0
+psutil>=5.9.0,<7.0.0
 
 # High-performance event loop (Linux/macOS only)
 uvloop>=0.19.0;platform_system!="Windows"
+
+# ML stack (used by ml_training/, candidate_trainer.py)
+scikit-learn==1.8.0
+scipy==1.17.1
+lightgbm==4.6.0
+
+# Exchange client
+delta-rest-client==1.0.13
+requests==2.32.5

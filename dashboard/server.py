@@ -451,18 +451,27 @@ class DashboardServer:
                 "full_name": session.get("full_name", ""),
             }
 
-        # Allow ALL GET/HEAD requests (read-only dashboard data)
-        if method in ("GET", "HEAD"):
+        # SEC FIX (2026-04-16): previously allowed ALL GET/HEAD through
+        # without auth ("read-only dashboard data"). But /api/real/status,
+        # /api/real/trades, /api/risk-metrics are GET endpoints that leak
+        # balance, position history, and performance metrics. Removing them
+        # from _PUBLIC_PATHS didn't help because of this blanket rule.
+        #
+        # New policy: auth required for ALL /api/* endpoints except the
+        # ones explicitly in _PUBLIC_PATHS (login, ping, emergency-status).
+        # Non-API paths (HTML/static) still allow GET without auth so the
+        # login page itself loads.
+        if method in ("GET", "HEAD") and not path.startswith("/api/"):
             return await handler(request)
 
-        # POST requests: require auth (state-changing operations)
+        # /api/* — auth required (except bootstrap paths)
         if path in ("/api/login", "/api/logout", "/api/register"):
             return await handler(request)
 
         if session:
             return await handler(request)
 
-        # Not authenticated for POST
+        # Not authenticated — deny
         if path.startswith("/api/"):
             return web.json_response({"error": "unauthorized"}, status=401)
 

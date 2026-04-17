@@ -3663,8 +3663,19 @@ function updateLiveEdge(closed) {
         el("kpi-edge-ev").textContent = "$" + ev.toFixed(2);
         el("kpi-edge-ev").style.color = ev >= 0 ? "var(--green)" : "var(--red)";
     }
-    if (el("kpi-avg-win")) el("kpi-avg-win").textContent = "$" + avgWin.toFixed(2);
-    if (el("kpi-avg-loss")) el("kpi-avg-loss").textContent = "$" + avgLoss.toFixed(2);
+    // UI FIX (2026-04-16): flag asymmetric risk — when avg_loss > avg_win,
+    // dollar wins are smaller than dollar losses. Even at high WR this means
+    // a single losing streak kills the edge. Show a warning glyph to keep
+    // operators honest about fragility.
+    let asymmetric = avgLoss > avgWin && winCount > 0 && lossCount > 0;
+    let asymWarn = asymmetric ? ' <span title="Avg loss > avg win — edge fragile if WR drops" style="color:var(--yellow);font-size:.7rem">⚠</span>' : '';
+    if (el("kpi-avg-win")) {
+        el("kpi-avg-win").innerHTML = "$" + avgWin.toFixed(2) + (asymmetric ? ' <span style="color:var(--text-muted);font-size:.65rem">(&lt; loss)</span>' : '');
+    }
+    if (el("kpi-avg-loss")) {
+        el("kpi-avg-loss").innerHTML = "$" + avgLoss.toFixed(2) + asymWarn;
+        el("kpi-avg-loss").style.color = asymmetric ? "var(--yellow)" : "";
+    }
     if (el("kpi-paper-count")) el("kpi-paper-count").textContent = closed.length;
 }
 
@@ -3676,15 +3687,20 @@ function updateRealEdge(realStatus) {
     let totalPnl = parseFloat(realStatus.total_pnl || 0);
 
     if (closed.length === 0) {
-        if (el("kpi-real-edge")) el("kpi-real-edge").textContent = "--R";
-        if (el("kpi-real-wr")) el("kpi-real-wr").textContent = "--%";
-        if (el("kpi-real-pnl")) { el("kpi-real-pnl").textContent = "$0"; el("kpi-real-pnl").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-count")) el("kpi-real-count").textContent = "0";
+        // UI FIX (2026-04-16): previously filled 5 fields with "--R / --% / $0 / 0"
+        // which looked like a dead dashboard. Now show a single explicit message
+        // and dim the whole card so users know real trading simply hasn't started.
+        if (el("kpi-real-edge")) { el("kpi-real-edge").textContent = "—"; el("kpi-real-edge").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-wr")) { el("kpi-real-wr").textContent = "no trades"; el("kpi-real-wr").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-pnl")) { el("kpi-real-pnl").textContent = "yet"; el("kpi-real-pnl").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-count")) { el("kpi-real-count").textContent = "0"; el("kpi-real-count").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-avg-win")) { el("kpi-real-avg-win").textContent = "—"; el("kpi-real-avg-win").style.color = "var(--text-muted)"; }
+        if (el("kpi-real-avg-loss")) { el("kpi-real-avg-loss").textContent = "—"; el("kpi-real-avg-loss").style.color = "var(--text-muted)"; }
         if (el("kpi-real-cb")) {
             let cb = realStatus.circuit_breaker || {};
             let tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
-            el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
-            el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
+            el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "armed";
+            el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--text-muted)";
         }
         return;
     }
@@ -6514,7 +6530,11 @@ async function loadAnalytics() {
       }
       const summary = document.getElementById('loss-analysis-summary');
       if (summary) {
-        summary.textContent = `${totalN} losses in 24h, total -$${Math.abs(total).toFixed(2)}. Sorted by $ loss impact.`;
+        // UI FIX (2026-04-16): one loss can appear in multiple category
+        // buckets (chop + early_kill etc.). Previously the summary said
+        // "N losses in 24h" while the bars summed to > N, which was
+        // confusing. Now explicitly note the overlap.
+        summary.textContent = `${totalN} losses in 24h, total -$${Math.abs(total).toFixed(2)}. Bars sum > N because a trade can match multiple categories. Sorted by $ loss impact.`;
       }
     }
   } catch(e) {

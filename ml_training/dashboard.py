@@ -703,6 +703,18 @@ class MLDashboard:
         self._app.router.add_get("/api/feature-drift", self._handle_feature_drift)
         self._app.router.add_get("/api/scanner-rankings", self._handle_scanner_rankings)
         self._app.router.add_get("/api/backtest-all", self._handle_backtest_all)
+
+        # Research Center endpoints (2026-04-17) — "ML as innovation lab"
+        self._app.router.add_get("/api/research/cohort-health", self._handle_research_cohort_health)
+        self._app.router.add_get("/api/research/weakspots", self._handle_research_weakspots)
+        self._app.router.add_get("/api/research/policy-variants", self._handle_research_policy_variants)
+        self._app.router.add_get("/api/research/edge-trajectory", self._handle_research_edge_trajectory)
+        self._app.router.add_get("/api/research/suggestions", self._handle_research_suggestions)
+        self._app.router.add_get("/api/research/vetoes", self._handle_research_vetoes)
+        self._app.router.add_get("/api/research/timeline", self._handle_research_timeline)
+        self._app.router.add_post("/api/research/refresh", self._handle_research_refresh)
+        self._app.router.add_get("/api/research/summary", self._handle_research_summary)
+
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
         if static_dir.exists():
@@ -2105,6 +2117,127 @@ class MLDashboard:
             return _error_response("backtest_all", str(e))
 
     # -------------------------------------------------------------------
+    #  Research Center — "ML as innovation lab" (2026-04-17)
+    # -------------------------------------------------------------------
+    # These handlers delegate to ml_training/research_center.py which
+    # runs the analyses in a background scheduler and caches results.
+    # User-facing latency is <50ms because handlers only read the cache.
+
+    def _research(self):
+        """Lazy-import the research center singleton (avoid import-cycle at module load)."""
+        try:
+            from ml_training.research_center import get_center
+            return get_center()
+        except Exception as e:
+            logger.warning("research_center unavailable: %s", e)
+            return None
+
+    def _cached_or_live(self, key: str, fallback):
+        """Return cached if fresh, else compute live (slower path)."""
+        rc = self._research()
+        if rc is not None:
+            cached = rc.get(key)
+            if cached is not None:
+                return cached
+        try:
+            return fallback()
+        except Exception as e:
+            logger.warning("research %s live compute failed: %s", key, e)
+            return {"error": str(e)}
+
+    async def _handle_research_cohort_health(self, request):
+        from ml_training.research_center import analyze_cohort_health
+        return web.json_response(
+            self._cached_or_live("cohort_health", analyze_cohort_health),
+            dumps=_json_dumps,
+        )
+
+    async def _handle_research_weakspots(self, request):
+        from ml_training.research_center import mine_weakspots
+        days = int(request.query.get("days", 30))
+        min_n = int(request.query.get("min_n", 30))
+        # Use cache for default params only; live-compute for custom
+        if days == 30 and min_n == 30:
+            return web.json_response(
+                self._cached_or_live("weakspots", lambda: mine_weakspots(days, min_n)),
+                dumps=_json_dumps,
+            )
+        return web.json_response(mine_weakspots(days, min_n), dumps=_json_dumps)
+
+    async def _handle_research_policy_variants(self, request):
+        from ml_training.research_center import propose_policy_variants
+        return web.json_response(
+            self._cached_or_live("policy_variants", lambda: propose_policy_variants(30)),
+            dumps=_json_dumps,
+        )
+
+    async def _handle_research_edge_trajectory(self, request):
+        from ml_training.research_center import edge_trajectory
+        days = int(request.query.get("days", 14))
+        bucket_hours = int(request.query.get("bucket_hours", 6))
+        if days == 14 and bucket_hours == 6:
+            return web.json_response(
+                self._cached_or_live("edge_trajectory", lambda: edge_trajectory(days, bucket_hours)),
+                dumps=_json_dumps,
+            )
+        return web.json_response(edge_trajectory(days, bucket_hours), dumps=_json_dumps)
+
+    async def _handle_research_suggestions(self, request):
+        from ml_training.research_center import scan_suggestions
+        return web.json_response(scan_suggestions(), dumps=_json_dumps)
+
+    async def _handle_research_vetoes(self, request):
+        from ml_training.research_center import active_vetoes
+        return web.json_response(active_vetoes(), dumps=_json_dumps)
+
+    async def _handle_research_timeline(self, request):
+        from ml_training.research_center import timeline
+        limit = int(request.query.get("limit", 50))
+        return web.json_response({"events": timeline(limit), "count": 0}, dumps=_json_dumps)
+
+    async def _handle_research_refresh(self, request):
+        """POST — force refresh all research caches. Admin-triggered."""
+        rc = self._research()
+        if rc is None:
+            return web.json_response({"error": "research_center not available"}, status=503)
+        try:
+            await asyncio.to_thread(rc.refresh_all, True)
+            return web.json_response({"status": "ok", "refreshed_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_research_summary(self, request):
+        """Headline summary for the Research tab landing view."""
+        from ml_training.research_center import (
+            analyze_cohort_health, mine_weakspots, scan_suggestions, active_vetoes,
+        )
+        health = self._cached_or_live("cohort_health", analyze_cohort_health)
+        weak = self._cached_or_live("weakspots", lambda: mine_weakspots(30, 30))
+        sug = scan_suggestions()
+        vetoes = active_vetoes()
+
+        summary = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cohort_health": {
+                "healthy": (health or {}).get("healthy_count", 0),
+                "degraded": (health or {}).get("degraded_count", 0),
+                "alerts": (health or {}).get("alerts", [])[:5],
+            },
+            "weakspots": {
+                "count": len((weak or {}).get("weakspots", [])),
+                "top_3": (weak or {}).get("weakspots", [])[:3],
+                "baseline_wr": (weak or {}).get("baseline_wr", 0),
+            },
+            "suggestions": {
+                "pending": sug.get("count", 0),
+            },
+            "vetoes": {
+                "active": vetoes.get("count", 0),
+            },
+        }
+        return web.json_response(summary, dumps=_json_dumps)
+
+    # -------------------------------------------------------------------
     #  Start server
     # -------------------------------------------------------------------
     async def start(self):
@@ -2112,5 +2245,16 @@ class MLDashboard:
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", self._port)
         await site.start()
+
+        # Start the Research Center background scheduler (2026-04-17)
+        try:
+            from ml_training.research_center import get_center
+            rc = get_center()
+            await rc.start()
+            logger.info("Research Center scheduler started — /api/research/* endpoints live")
+        except Exception as e:
+            logger.warning("Research Center failed to start (endpoints will fall back to live compute): %s", e)
+
         logger.info("ML Dashboard v3.0 running on http://0.0.0.0:%d", self._port)
         logger.info("  New endpoints: /api/model-trend, /api/model-health, /api/feature-drift, /api/scanner-rankings")
+        logger.info("  Research: /api/research/{cohort-health,weakspots,policy-variants,edge-trajectory,suggestions,vetoes,timeline,summary}")

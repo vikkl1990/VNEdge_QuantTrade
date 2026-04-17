@@ -39,6 +39,17 @@ mkdir -p "$(dirname "$LOG")"
         echo "  weights:  OK ($(du -h "$SRC/scanner_weights.json" | cut -f1))"
     fi
 
+    # 5. research/scanner_funnel.jsonl (per-scan attrition samples, append-only)
+    #    Authoritative on VM1 — scalp_strategy._emit_funnel_sample writes it
+    #    at ~1/min/symbol. VM4 Research Center aggregates into the
+    #    "Scanner Attrition Funnel" UI card.
+    FUNNEL="$SRC/research/scanner_funnel.jsonl"
+    if [ -f "$FUNNEL" ]; then
+        ssh $SSH_OPTS "$VM4" "mkdir -p $DST/research" 2>/dev/null || true
+        rsync -az -e "ssh $SSH_OPTS" "$FUNNEL" "$VM4:$DST/research/scanner_funnel.jsonl"
+        echo "  funnel:   OK ($(wc -l < "$FUNNEL") lines, $(du -h "$FUNNEL" | cut -f1))"
+    fi
+
     echo "=== $TS sync done ==="
 } >> "$LOG" 2>&1
 

@@ -726,6 +726,13 @@ class MLDashboard:
         self._app.router.add_get("/api/research/promotion-candidates", self._handle_research_promotion_candidates)
         self._app.router.add_post("/api/research/promotions/approve", self._handle_research_promotions_approve)
         self._app.router.add_post("/api/research/promotions/remove", self._handle_research_promotions_remove)
+        # Scanner Attrition Funnel + Variants (Phase 1-3 of scanner research, 2026-04-17)
+        self._app.router.add_get("/api/research/scanner-funnel", self._handle_research_scanner_funnel)
+        self._app.router.add_get("/api/research/scanner-offline", self._handle_research_scanner_offline)
+        self._app.router.add_get("/api/research/scanner-variants", self._handle_research_scanner_variants)
+        self._app.router.add_get("/api/research/scanner-variants/active", self._handle_research_scanner_variants_active)
+        self._app.router.add_post("/api/research/scanner-variants/approve", self._handle_research_scanner_variants_approve)
+        self._app.router.add_post("/api/research/scanner-variants/remove", self._handle_research_scanner_variants_remove)
 
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
@@ -2558,6 +2565,101 @@ class MLDashboard:
             "side": removed.get("side"),
             "session": removed.get("session"),
         })
+        return web.json_response({"status": "ok", "removed": removed})
+
+    # -------------------------------------------------------------------
+    #  Scanner Attrition Funnel + Variants (Phase 1-3 scanner research, 2026-04-17)
+    # -------------------------------------------------------------------
+    async def _handle_research_scanner_funnel(self, request):
+        """GET /api/research/scanner-funnel — aggregated 7d per-scanner
+        attrition report (attempts, triggers, rejection reasons, failure_mode
+        classification). Answers: 'for each scanner, why isn't it firing?'"""
+        from ml_training.research_center import scanner_funnel_analysis
+        days = int(request.query.get("days", 7))
+        if days == 7:
+            return web.json_response(
+                self._cached_or_live("scanner_funnel", lambda: scanner_funnel_analysis(7)),
+                dumps=_json_dumps,
+            )
+        return web.json_response(scanner_funnel_analysis(days=days), dumps=_json_dumps)
+
+    async def _handle_research_scanner_offline(self, request):
+        """GET /api/research/scanner-offline — offline diagnostic replay
+        from scripts/diagnose_scanners.py. Shows theoretical vs production
+        trigger rate, pinpointing where signals die in the filter stack."""
+        from ml_training.research_center import scanner_offline_diagnosis
+        return web.json_response(scanner_offline_diagnosis(), dumps=_json_dumps)
+
+    async def _handle_research_scanner_variants(self, request):
+        """GET /api/research/scanner-variants — Research Center's auto-proposed
+        per-scanner tuning variants (threshold relax, filter exemption, etc.)
+        based on funnel analysis. Humans approve via the approve endpoint."""
+        from ml_training.research_center import propose_scanner_variants
+        return web.json_response(
+            self._cached_or_live("scanner_variants", propose_scanner_variants),
+            dumps=_json_dumps,
+        )
+
+    async def _handle_research_scanner_variants_active(self, request):
+        """GET /api/research/scanner-variants/active — currently-approved
+        scanner tuning variants (what the bot reads via mtime poll)."""
+        from ml_training.research_center import active_scanner_variants
+        return web.json_response(active_scanner_variants(), dumps=_json_dumps)
+
+    async def _handle_research_scanner_variants_approve(self, request):
+        """POST /api/research/scanner-variants/approve — human-in-loop approval
+        of a proposed scanner variant. Writes to storage/research/scanner_variants.json
+        where the bot's shadow adapter reads. Shadow-first: logs would_fire_with_variant
+        for 7d before enforcement flag flips."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        scanner = body.get("scanner")
+        proposal = body.get("proposal")
+        if not (scanner and proposal):
+            return web.json_response({"error": "scanner + proposal required"}, status=400)
+
+        path = self._research_file("scanner_variants.json")
+        store = self._read_json_or_default(path, {"variants": [], "last_updated": None})
+        entry = {
+            "scanner": scanner,
+            "proposal": proposal,
+            "mode": body.get("mode", "shadow"),
+            "reason": body.get("reason", "auto-proposed by Research Lab"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        store["variants"].append(entry)
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("scanner_variant_approved", {
+            "scanner": scanner,
+            "proposal_type": proposal.get("type"),
+            "mode": entry["mode"],
+        })
+        return web.json_response({"status": "ok", "mode": entry["mode"], "entry": entry})
+
+    async def _handle_research_scanner_variants_remove(self, request):
+        """POST /api/research/scanner-variants/remove — unroll by index."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        idx = body.get("index")
+        if not isinstance(idx, int):
+            return web.json_response({"error": "index (int) required"}, status=400)
+
+        path = self._research_file("scanner_variants.json")
+        store = self._read_json_or_default(path, {"variants": [], "last_updated": None})
+        if idx < 0 or idx >= len(store["variants"]):
+            return web.json_response({"error": "index out of range"}, status=400)
+
+        removed = store["variants"].pop(idx)
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("scanner_variant_removed", {"scanner": removed.get("scanner")})
         return web.json_response({"status": "ok", "removed": removed})
 
     # -------------------------------------------------------------------

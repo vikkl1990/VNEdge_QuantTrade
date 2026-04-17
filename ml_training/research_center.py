@@ -56,6 +56,9 @@ SUGGESTIONS_FILE = RESEARCH_DIR / "suggestions.json"
 VETOES_FILE = RESEARCH_DIR / "active_vetoes.json"
 PROMOTIONS_FILE = RESEARCH_DIR / "active_promotions.json"
 SCANNER_WEIGHTS_FILE = STORAGE / "scanner_weights.json"
+SCANNER_FUNNEL_FILE = RESEARCH_DIR / "scanner_funnel.jsonl"
+SCANNER_OFFLINE_REPLAY_FILE = RESEARCH_DIR / "scanner_offline_replay.json"
+SCANNER_VARIANTS_FILE = RESEARCH_DIR / "scanner_variants.json"
 # Remembered mtime of scanner_weights.json — used to detect status changes and emit events
 _SCANNER_WEIGHTS_MTIME_CACHE: Dict[str, float] = {"mtime": 0.0}
 _SCANNER_STATUS_SNAPSHOT: Dict[str, Tuple[str, float]] = {}
@@ -616,6 +619,335 @@ def propose_scanner_promotions(
     }
 
 
+# ─────────────────────────────────────────────────────────────────
+# Scanner Funnel Analysis — visibility into why scanners don't fire
+# (Phase 1 of scanner research, 2026-04-17)
+# ─────────────────────────────────────────────────────────────────
+
+def scanner_funnel_analysis(days: int = 7) -> Dict[str, Any]:
+    """Aggregate scanner_funnel.jsonl records to understand WHY each scanner
+    isn't firing. Answers two questions per scanner:
+
+      1. How often was it ALLOWED to run (in `allowed_scanners`) vs skipped by
+         regime filter?
+      2. Of the times it ran, how often did it trigger? When it didn't, what
+         were the dominant rejection reasons?
+
+    Output shape: {
+        "scanners": {
+            "ema_momentum": {
+                "attempts": 1234,          # times in allowed_scanners
+                "regime_blocks": 5680,     # times skipped (regime filter said no)
+                "triggered": 3,            # of attempts, how many produced a setup
+                "trigger_rate_pct": 0.24,
+                "status": "active",         # from scanner_weights.json (if loaded)
+                "top_reasons": [
+                    {"reason": "No cross: EMA8 already above EMA21...", "count": 987, "pct": 80.0},
+                    ...
+                ],
+                "failure_mode": "MODE_1",   # 1=never triggers, 2=triggers but dies, 3=forced shadow
+                "failure_verdict": "..."
+            },
+            ...
+        },
+        "summary": {"total_samples": N, "total_scanners_seen": K, "days": D},
+    }
+    """
+    if not SCANNER_FUNNEL_FILE.exists():
+        return {
+            "scanners": {},
+            "summary": {"total_samples": 0, "total_scanners_seen": 0, "days": days},
+            "error": "scanner_funnel.jsonl not found — bot may need a restart to enable sampling",
+        }
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    # Per-scanner accumulators
+    attempts: Dict[str, int] = Counter()
+    triggered: Dict[str, int] = Counter()
+    regime_blocks: Dict[str, int] = Counter()
+    reasons: Dict[str, Counter] = defaultdict(Counter)
+    total_samples = 0
+
+    # Pull the full list of known scanners from the most recent record so we
+    # can also show "never seen" with zero-stat rows
+    all_scanners_seen: set = set()
+
+    try:
+        with open(SCANNER_FUNNEL_FILE) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                ts = _parse_ts(rec.get("ts"))
+                if not ts or ts < cutoff:
+                    continue
+                total_samples += 1
+                allowed = set(rec.get("allowed") or [])
+                all_scanners_seen.update(allowed)
+                # Count results
+                for r in rec.get("results") or []:
+                    scn = r.get("scanner", "?")
+                    all_scanners_seen.add(scn)
+                    attempts[scn] += 1
+                    if r.get("triggered"):
+                        triggered[scn] += 1
+                    else:
+                        reason = (r.get("reason") or "").strip() or "(no reason captured)"
+                        reasons[scn][reason] += 1
+                # For scanners NOT in allowed list, they were skipped due to regime
+                # We need the full scanner universe to count regime_blocks properly.
+                # Approx: track scanners seen in ANY previous sample's `allowed` list.
+                # For now, regime_blocks is an estimate from later consolidation.
+    except Exception as e:
+        return {"error": str(e), "scanners": {}, "summary": {"total_samples": 0}}
+
+    # Load current status from scanner_weights for failure-mode classification
+    weights_status: Dict[str, str] = {}
+    try:
+        reg = scanner_registry()
+        for s in reg.get("scanners", []):
+            weights_status[s["name"]] = s["status"]
+    except Exception:
+        pass
+
+    # Hardcoded FORCED_STATES from scanner_weights (keep in sync with strategies/scanner_weights.py)
+    forced_shadow = {"supertrend_flip", "momentum_surge"}
+
+    # Build per-scanner output
+    scanners_out: Dict[str, Dict[str, Any]] = {}
+    for scn in all_scanners_seen:
+        n_attempts = attempts.get(scn, 0)
+        n_triggered = triggered.get(scn, 0)
+        n_regime_blocks = max(0, total_samples - n_attempts)  # if it wasn't in allowed, regime blocked it
+        trigger_rate = (n_triggered / n_attempts * 100.0) if n_attempts else 0.0
+
+        # Top reasons when not triggered
+        top_reasons = []
+        total_rejections = n_attempts - n_triggered
+        for reason, cnt in reasons.get(scn, Counter()).most_common(5):
+            top_reasons.append({
+                "reason": reason[:200],
+                "count": cnt,
+                "pct": round(cnt / total_rejections * 100.0, 1) if total_rejections else 0.0,
+            })
+
+        # Failure-mode classification
+        status = weights_status.get(scn, "unknown")
+        if scn in forced_shadow or status in ("suppressed", "shadow"):
+            mode = "MODE_3"
+            verdict = f"Forced status={status} — blocked by risk policy (historical negative edge)"
+        elif n_triggered == 0 and n_attempts > 0:
+            mode = "MODE_1"
+            verdict = f"Never triggers — ran {n_attempts}× in last {days}d, scanner logic says NO every time"
+        elif n_triggered > 0 and trigger_rate < 2.0:
+            mode = "MODE_1_MARGINAL"
+            verdict = f"Rarely triggers ({n_triggered}/{n_attempts} = {trigger_rate:.2f}%) — scanner gates too tight"
+        elif n_triggered > 0:
+            mode = "MODE_2"
+            verdict = f"Triggers {n_triggered}× but may be dying in downstream filters — cross-check with closed_signals"
+        elif n_attempts == 0 and n_regime_blocks > 0:
+            mode = "MODE_0"
+            verdict = f"Blocked by regime filter {n_regime_blocks}× — not in any regime's allowed_scanners list"
+        else:
+            mode = "UNKNOWN"
+            verdict = "Insufficient data"
+
+        scanners_out[scn] = {
+            "attempts": n_attempts,
+            "triggered": n_triggered,
+            "regime_blocks": n_regime_blocks,
+            "trigger_rate_pct": round(trigger_rate, 2),
+            "status": status,
+            "top_reasons": top_reasons,
+            "failure_mode": mode,
+            "failure_verdict": verdict,
+        }
+
+    # Sort output: most problematic first (MODE_1 > MODE_1_MARGINAL > MODE_2 > MODE_3 > MODE_0)
+    mode_rank = {"MODE_1": 0, "MODE_1_MARGINAL": 1, "MODE_2": 2, "MODE_0": 3, "MODE_3": 4, "UNKNOWN": 5}
+    sorted_scanners = dict(sorted(
+        scanners_out.items(),
+        key=lambda kv: (mode_rank.get(kv[1]["failure_mode"], 9), -kv[1]["attempts"]),
+    ))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scanners": sorted_scanners,
+        "summary": {
+            "total_samples": total_samples,
+            "total_scanners_seen": len(all_scanners_seen),
+            "days": days,
+            "mode_counts": Counter(s["failure_mode"] for s in scanners_out.values()),
+        },
+    }
+
+
+def scanner_offline_diagnosis() -> Dict[str, Any]:
+    """Read the latest offline replay output (scripts/diagnose_scanners.py).
+    If nothing has been written yet, returns empty.
+
+    Complements scanner_funnel_analysis: the funnel shows what's happening in
+    PRODUCTION; the offline replay shows what SHOULD theoretically happen if
+    we ran each scanner on the same candle stream without the filter layer.
+    The gap between theoretical and production triggers pinpoints where
+    signals die.
+    """
+    if not SCANNER_OFFLINE_REPLAY_FILE.exists():
+        return {
+            "scanners": {},
+            "summary": {},
+            "error": "scanner_offline_replay.json not found — run scripts/diagnose_scanners.py",
+        }
+    try:
+        with open(SCANNER_OFFLINE_REPLAY_FILE) as fh:
+            return json.load(fh)
+    except Exception as e:
+        return {"error": str(e), "scanners": {}}
+
+
+def propose_scanner_variants() -> Dict[str, Any]:
+    """Phase 3: based on funnel analysis, propose specific tuning variants for
+    scanners in MODE_1 (never triggers), MODE_1_MARGINAL (rarely triggers),
+    and MODE_2 (triggers but dies in downstream filters).
+
+    Each variant is bounded to ±20% of current defaults and tagged with the
+    failure_mode that motivated it. Human approves via UI → written to
+    storage/research/scanner_variants.json where the bot's shadow adapter
+    reads and LOGS would_fire_with_variant for 7d before any enforcement.
+    """
+    funnel = scanner_funnel_analysis(days=7)
+    if not funnel.get("scanners"):
+        return {"variants": [], "count": 0, "source_note": "no funnel data yet"}
+
+    variants: List[Dict[str, Any]] = []
+    for scn, data in funnel["scanners"].items():
+        mode = data["failure_mode"]
+        if mode == "MODE_3":
+            continue  # retired — no tuning
+        if mode == "MODE_0":
+            continue  # regime-blocked, needs different fix (regime whitelist)
+
+        # Heuristic prescription per scanner based on top rejection reason
+        top_reason = data["top_reasons"][0]["reason"] if data["top_reasons"] else ""
+        proposal: Optional[Dict[str, Any]] = None
+
+        if mode in ("MODE_1", "MODE_1_MARGINAL"):
+            # Never/rarely triggers — loosen the gate
+            lr = top_reason.lower()
+            if "rsi" in lr and ("too high" in lr or "too low" in lr):
+                proposal = {
+                    "type": "threshold_relax",
+                    "param": "rsi_range",
+                    "direction": "widen",
+                    "magnitude_pct": 15,
+                    "hypothesis": "Widen RSI band by 15% — current band is too narrow to trigger",
+                }
+            elif "already crossed" in lr or "no cross" in lr:
+                proposal = {
+                    "type": "lookback_widen",
+                    "param": "cross_lookback_bars",
+                    "direction": "widen",
+                    "magnitude_pct": 20,
+                    "hypothesis": "Allow setups within last 5 bars instead of 2 — EMAs rarely cross on the exact bar",
+                }
+            elif "bandwidth" in lr or "squeeze" in lr:
+                proposal = {
+                    "type": "threshold_relax",
+                    "param": "bb_bandwidth_threshold",
+                    "direction": "widen",
+                    "magnitude_pct": 20,
+                    "hypothesis": "Relax squeeze bandwidth cutoff — current market rarely compresses this much",
+                }
+            elif "price above" in lr or "price below" in lr or "no pullback" in lr:
+                proposal = {
+                    "type": "threshold_relax",
+                    "param": "pullback_tolerance_pct",
+                    "direction": "widen",
+                    "magnitude_pct": 15,
+                    "hypothesis": "Widen pullback zone by 15% — exact EMA touch is rare",
+                }
+            elif "volume" in lr:
+                proposal = {
+                    "type": "threshold_relax",
+                    "param": "volume_multiplier",
+                    "direction": "lower",
+                    "magnitude_pct": 15,
+                    "hypothesis": "Lower volume requirement — current bar may not be representative",
+                }
+            else:
+                proposal = {
+                    "type": "generic_relax",
+                    "param": "unknown",
+                    "direction": "widen",
+                    "magnitude_pct": 10,
+                    "hypothesis": f"Unknown rejection pattern: {top_reason[:80]}",
+                }
+
+        elif mode == "MODE_2":
+            # Triggers but dying downstream — propose filter exemption or cohort unlock
+            proposal = {
+                "type": "filter_exemption",
+                "param": "exempt_filters",
+                "direction": "exempt",
+                "exempt_candidates": _guess_exempt_filters(scn),
+                "hypothesis": "Scanner triggers but signals aren't closing — one of the downstream filters kills them",
+            }
+
+        if proposal is None:
+            continue
+
+        variants.append({
+            "scanner": scn,
+            "mode": mode,
+            "current_triggers_7d": data["triggered"],
+            "current_attempts_7d": data["attempts"],
+            "top_reason": top_reason,
+            "proposal": proposal,
+        })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "variants": variants,
+        "count": len(variants),
+    }
+
+
+def _guess_exempt_filters(scanner: str) -> List[str]:
+    """Heuristic map: which downstream filters are LIKELY to kill each scanner
+    by design. Used to seed MODE_2 exemption proposals."""
+    mapping = {
+        "vwap_mean_revert": ["vwap_hard_veto"],   # by design reverts TO vwap
+        "vwap_bounce": ["vwap_hard_veto"],          # also trades AT vwap
+        "bb_squeeze": ["confluence_required"],      # rarely confluences
+        "rsi_extreme": ["vwap_hard_veto"],          # often during low-ATR ranges
+        "cvd_divergence": ["confluence_required"],  # standalone signal
+        "post_impulse": ["atr_prefilter_low"],      # needs reduced ATR
+        "bb_band_walk": ["atr_prefilter_high"],     # trend continuation scenario
+    }
+    return mapping.get(scanner, [])
+
+
+def active_scanner_variants() -> Dict[str, Any]:
+    """Read approved scanner variants (written by UI approve button).
+    Bot reads via mtime poll — same pattern as active_promotions/active_vetoes."""
+    if not SCANNER_VARIANTS_FILE.exists():
+        return {"variants": [], "count": 0}
+    try:
+        with open(SCANNER_VARIANTS_FILE) as fh:
+            data = json.load(fh)
+        return {
+            "variants": data.get("variants", []),
+            "count": len(data.get("variants", [])),
+            "last_updated": data.get("last_updated"),
+        }
+    except Exception as e:
+        return {"error": str(e), "variants": [], "count": 0}
+
+
 def scan_suggestions() -> Dict[str, Any]:
     """Read pending suggestions for human review."""
     if not SUGGESTIONS_FILE.exists():
@@ -715,6 +1047,14 @@ class ResearchCenter:
             self._set("scanner_promotions", propose_scanner_promotions(), 1800)
         except Exception as e:
             logger.exception("scanner_promotions refresh failed: %s", e)
+        try:
+            self._set("scanner_funnel", scanner_funnel_analysis(days=7), 300)
+        except Exception as e:
+            logger.exception("scanner_funnel refresh failed: %s", e)
+        try:
+            self._set("scanner_variants", propose_scanner_variants(), 900)
+        except Exception as e:
+            logger.exception("scanner_variants refresh failed: %s", e)
         _emit_event("cache_refresh", {"keys": list(self._cache.keys())})
 
     async def start(self):
@@ -735,7 +1075,7 @@ class ResearchCenter:
         """Simple tick-based scheduler. Each capability runs on its own cadence."""
         last_runs = {k: 0.0 for k in (
             "cohort_health", "weakspots", "policy_variants", "edge_trajectory",
-            "scanner_registry", "scanner_promotions",
+            "scanner_registry", "scanner_promotions", "scanner_funnel", "scanner_variants",
         )}
         intervals = {
             "cohort_health": 300,         # 5 min
@@ -744,6 +1084,8 @@ class ResearchCenter:
             "edge_trajectory": 600,       # 10 min
             "scanner_registry": 60,       # 1 min — catches status transitions fast
             "scanner_promotions": 900,    # 15 min — expensive (baseline + cohort groupby)
+            "scanner_funnel": 300,        # 5 min — funnel.jsonl grows over time
+            "scanner_variants": 900,      # 15 min — depends on funnel
         }
         runners: Dict[str, Callable] = {
             "cohort_health": lambda: analyze_cohort_health(),
@@ -752,10 +1094,13 @@ class ResearchCenter:
             "edge_trajectory": lambda: edge_trajectory(days=14, bucket_hours=6),
             "scanner_registry": lambda: scanner_registry(),
             "scanner_promotions": lambda: propose_scanner_promotions(),
+            "scanner_funnel": lambda: scanner_funnel_analysis(days=7),
+            "scanner_variants": lambda: propose_scanner_variants(),
         }
         ttls = {
             "cohort_health": 600, "weakspots": 3600, "policy_variants": 7200,
             "edge_trajectory": 1200, "scanner_registry": 120, "scanner_promotions": 1800,
+            "scanner_funnel": 600, "scanner_variants": 1800,
         }
 
         try:

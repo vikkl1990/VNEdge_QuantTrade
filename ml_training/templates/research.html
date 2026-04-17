@@ -267,6 +267,32 @@ tr:hover { background: rgba(0,255,157,.03); }
     <div id="registry-container" class="loading">Loading</div>
   </div>
 
+  <!-- Scanner Attrition Funnel -->
+  <div class="panel">
+    <h3>Scanner Attrition Funnel
+      <span class="h-sub">why each scanner isn't firing · 7d window · classifies failure mode</span>
+      <span id="funnel-meta" class="h-sub" style="margin-left:12px;color:var(--text-dim)"></span>
+    </h3>
+    <div id="funnel-container" class="loading">Loading</div>
+  </div>
+
+  <!-- Offline Scanner Replay -->
+  <div class="panel">
+    <h3>Offline Scanner Replay
+      <span class="h-sub">theoretical vs production trigger rate · pinpoints filter-stack vs scanner-code culprits</span>
+      <span id="offline-meta" class="h-sub" style="margin-left:12px;color:var(--text-dim)"></span>
+    </h3>
+    <div id="offline-container" class="loading">Loading</div>
+  </div>
+
+  <!-- Scanner Tuning Variants -->
+  <div class="panel">
+    <h3>Scanner Tuning Variants
+      <span class="h-sub">auto-proposed fixes per failure mode · threshold relax / filter exemption · shadow-first</span>
+    </h3>
+    <div id="scanner-variants-container" class="loading">Loading</div>
+  </div>
+
   <!-- Promotion Candidates -->
   <div class="panel">
     <h3>Cohort Promotion Candidates
@@ -644,6 +670,193 @@ async function loadActivePromotions() {
   el.innerHTML = rows;
 }
 
+// Scanner Attrition Funnel — why each scanner isn't firing
+async function loadScannerFunnel() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/scanner-funnel`);
+  const el = document.getElementById('funnel-container');
+  const metaEl = document.getElementById('funnel-meta');
+  if (!d || d.error) {
+    const msg = (d && d.error) || 'Funnel data unavailable';
+    el.innerHTML = `<div class="empty">${esc(msg)}<br><span style="font-size:.7rem;color:var(--text-muted)">Bot needs to have emitted scanner_funnel.jsonl (1 sample/min/symbol after restart).</span></div>`;
+    if (metaEl) metaEl.textContent = '';
+    return;
+  }
+  const s = d.summary || {};
+  const scanners = d.scanners || {};
+  const keys = Object.keys(scanners);
+  if (!keys.length) {
+    el.innerHTML = '<div class="empty">Waiting for funnel samples — will populate ~60s after bot restart.</div>';
+    if (metaEl) metaEl.textContent = '';
+    return;
+  }
+  if (metaEl) {
+    const mc = s.mode_counts || {};
+    const modeStr = Object.entries(mc).map(([k,v]) => `${k}:${v}`).join(' · ');
+    metaEl.textContent = `${s.total_samples} samples · ${s.total_scanners_seen} scanners · ${modeStr}`;
+  }
+
+  const modeBadge = (m) => {
+    const cls = m === 'MODE_1' ? 'badge-red' :
+                m === 'MODE_1_MARGINAL' ? 'badge-yellow' :
+                m === 'MODE_2' ? 'badge-yellow' :
+                m === 'MODE_3' ? 'badge-red' :
+                m === 'MODE_0' ? 'badge-yellow' :
+                'badge-green';
+    return `<span class="badge ${cls}">${esc(m)}</span>`;
+  };
+
+  const rows = keys.map(name => {
+    const x = scanners[name];
+    const topReasons = (x.top_reasons || []).slice(0, 3).map(r =>
+      `<div style="font-size:.7rem;color:var(--text-muted)">${esc(r.reason)} <span style="color:var(--red)">${r.pct}%</span> (${r.count}×)</div>`
+    ).join('');
+    const triggerCol = x.triggered > 0 ? 'var(--green)' : x.attempts > 0 ? 'var(--red)' : 'var(--text-muted)';
+    return `<tr>
+      <td style="font-weight:700">${esc(name)}</td>
+      <td>${modeBadge(x.failure_mode)}</td>
+      <td style="text-align:right">${x.attempts}</td>
+      <td style="text-align:right;color:${triggerCol};font-weight:700">${x.triggered}</td>
+      <td style="text-align:right">${x.trigger_rate_pct}%</td>
+      <td style="text-align:right">${x.regime_blocks}</td>
+      <td style="color:var(--text-muted);font-size:.7rem">${esc(x.failure_verdict)}</td>
+      <td>${topReasons || '<span style="color:var(--text-muted)">—</span>'}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr>
+      <th>Scanner</th>
+      <th>Mode</th>
+      <th style="text-align:right">Ran</th>
+      <th style="text-align:right">Triggered</th>
+      <th style="text-align:right">Rate</th>
+      <th style="text-align:right">Regime blocked</th>
+      <th>Verdict</th>
+      <th>Top rejection reasons</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Offline Scanner Replay — theoretical vs production
+async function loadScannerOffline() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/scanner-offline`);
+  const el = document.getElementById('offline-container');
+  const metaEl = document.getElementById('offline-meta');
+  if (!d || d.error) {
+    const msg = (d && d.error) || 'Offline replay not yet run';
+    el.innerHTML = `<div class="empty">${esc(msg)}<br>
+      <span style="font-size:.7rem;color:var(--text-muted)">
+      Run on ML VM: <code>python3 scripts/diagnose_scanners.py --days 30</code><br>
+      Or wait for the nightly cron.
+      </span></div>`;
+    if (metaEl) metaEl.textContent = '';
+    return;
+  }
+  const scanners = d.scanners || {};
+  const keys = Object.keys(scanners);
+  if (!keys.length) {
+    el.innerHTML = '<div class="empty">No scanner data yet</div>';
+    return;
+  }
+  if (metaEl) {
+    metaEl.textContent = `${d.symbols_loaded} symbols · ${d.bars_replayed} bars · window ${d.window_days}d · tf ${d.timeframe} · generated ${(d.generated_at||'').slice(0,16)}`;
+  }
+  const hintBadge = (m) => {
+    const cls = m === 'MODE_1' ? 'badge-red' :
+                m === 'MODE_2' ? 'badge-yellow' :
+                m === 'HEALTHY' ? 'badge-green' :
+                'badge-yellow';
+    return `<span class="badge ${cls}">${esc(m)}</span>`;
+  };
+  const rows = keys
+    .sort((a, b) => (scanners[b].theoretical_hits || 0) - (scanners[a].theoretical_hits || 0))
+    .map(name => {
+      const x = scanners[name];
+      return `<tr>
+        <td style="font-weight:700">${esc(name)}</td>
+        <td style="text-align:right">${x.theoretical_hits}</td>
+        <td style="text-align:right">${x.production_attempts_7d}</td>
+        <td style="text-align:right">${x.production_triggered_7d}</td>
+        <td>${hintBadge(x.mode_hint)}</td>
+        <td style="color:var(--text-muted);font-size:.7rem">${esc(x.interpretation)}</td>
+      </tr>`;
+    }).join('');
+  el.innerHTML = `<table>
+    <thead><tr>
+      <th>Scanner</th>
+      <th style="text-align:right">Offline hits (30d)</th>
+      <th style="text-align:right">Prod attempts (7d)</th>
+      <th style="text-align:right">Prod triggers (7d)</th>
+      <th>Hint</th>
+      <th>Interpretation</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// Scanner Tuning Variants — auto-proposed fixes
+async function loadScannerVariants() {
+  const d = await fetchJSON(`${RESEARCH_ROOT}/scanner-variants`);
+  const activeD = await fetchJSON(`${RESEARCH_ROOT}/scanner-variants/active`);
+  const el = document.getElementById('scanner-variants-container');
+  if (!d) { el.innerHTML = '<div class="empty">Variants unavailable</div>'; return; }
+  const variants = d.variants || [];
+  const active = (activeD && activeD.variants) || [];
+
+  let activeHtml = '';
+  if (active.length) {
+    const activeRows = active.map((v, i) =>
+      `<tr>
+        <td style="font-weight:700">${esc(v.scanner)}</td>
+        <td>${esc(v.proposal && v.proposal.type || '?')}</td>
+        <td style="color:var(--text-muted);font-size:.7rem">${esc(v.proposal && v.proposal.hypothesis || '')}</td>
+        <td><span class="badge badge-green">${esc(v.mode || 'shadow')}</span></td>
+        <td style="color:var(--text-muted);font-size:.65rem">since ${esc((v.created_at||'').slice(0,10))}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="removeScannerVariant(${i})">Remove</button></td>
+      </tr>`
+    ).join('');
+    activeHtml = `<div style="margin-bottom:10px"><b>Active variants (approved):</b></div>
+      <table style="margin-bottom:14px"><thead><tr>
+        <th>Scanner</th><th>Type</th><th>Hypothesis</th><th>Mode</th><th>Since</th><th></th>
+      </tr></thead><tbody>${activeRows}</tbody></table>`;
+  }
+
+  if (!variants.length) {
+    el.innerHTML = activeHtml + '<div class="empty">No proposed variants right now (insufficient funnel data or all scanners healthy)</div>';
+    return;
+  }
+  const proposalRows = variants.map(v => {
+    const p = v.proposal || {};
+    const payload = JSON.stringify({
+      scanner: v.scanner,
+      proposal: p,
+      reason: `Auto-proposed for ${v.mode} from funnel: ${(v.top_reason || '').slice(0,80)}`,
+      mode: 'shadow',
+    });
+    return `<tr>
+      <td style="font-weight:700">${esc(v.scanner)}</td>
+      <td><span class="badge badge-yellow">${esc(v.mode)}</span></td>
+      <td>${esc(p.type || '?')}</td>
+      <td style="text-align:right">${v.current_triggers_7d}/${v.current_attempts_7d}</td>
+      <td style="color:var(--text-muted);font-size:.7rem">${esc(p.hypothesis || '')}</td>
+      <td style="color:var(--text-muted);font-size:.65rem">${esc((v.top_reason || '').slice(0, 80))}</td>
+      <td><button class="btn btn-sm" onclick='approveScannerVariant(${JSON.stringify(payload)})'>Approve</button></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = activeHtml + `<table>
+    <thead><tr>
+      <th>Scanner</th>
+      <th>Mode</th>
+      <th>Proposal</th>
+      <th style="text-align:right">Triggered/Ran (7d)</th>
+      <th>Hypothesis</th>
+      <th>Top rejection</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${proposalRows}</tbody>
+  </table>`;
+}
+
 // Actions
 async function refreshNow() {
   const r = await fetchJSON(`${RESEARCH_ROOT}/refresh`, { method: 'POST' });
@@ -708,6 +921,31 @@ async function removePromotion(idx) {
   if (r.ok) { setTimeout(loadAll, 300); } else { alert('Remove failed'); }
 }
 
+async function approveScannerVariant(payload) {
+  const data = JSON.parse(payload);
+  const p = data.proposal || {};
+  if (!confirm(`Approve scanner variant?\n\nScanner: ${data.scanner}\nProposal: ${p.type} (${p.direction}, ${p.magnitude_pct || ''}%)\nHypothesis: ${p.hypothesis}\n\nSHADOW MODE only — bot logs would_fire_with_variant but does NOT change behavior until enforce flag flips after 7d observation.`)) return;
+  const r = await fetch(`${RESEARCH_ROOT}/scanner-variants/approve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  });
+  if (r.ok) {
+    alert('Variant approved (shadow mode).');
+    setTimeout(loadAll, 300);
+  } else {
+    alert('Approval failed');
+  }
+}
+
+async function removeScannerVariant(idx) {
+  if (!confirm('Remove this scanner variant?')) return;
+  const r = await fetch(`${RESEARCH_ROOT}/scanner-variants/remove`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx }),
+  });
+  if (r.ok) { setTimeout(loadAll, 300); } else { alert('Remove failed'); }
+}
+
 // Main
 async function loadAll() {
   loadSummary();
@@ -719,6 +957,9 @@ async function loadAll() {
   loadScannerRegistry();
   loadPromotionCandidates();
   loadActivePromotions();
+  loadScannerFunnel();
+  loadScannerOffline();
+  loadScannerVariants();
 }
 loadAll();
 setInterval(loadAll, 30000);

@@ -402,6 +402,15 @@ class ScalpStrategy(BaseStrategy):
         self._research_promotions: List[Dict[str, Any]] = []
         self._research_promotions_mtime: float = 0.0
 
+        # --- Scanner attrition funnel sampling (Phase 1 of scanner research, 2026-04-17) ---
+        # Every ~60s per symbol, snapshot the full scanner-loop outcome
+        # (allowed_scanners, which triggered, which didn't and why) to
+        # storage/research/scanner_funnel.jsonl so the Research Center can
+        # build per-scanner attrition reports. Pure additive logging — zero
+        # effect on trading behavior. Append-only, best-effort, fail-silent.
+        self._funnel_last_emit: Dict[str, float] = {}       # symbol → epoch seconds
+        self._funnel_emit_interval_sec: float = 60.0
+
         # --- Regime transition tracking (per-symbol) ---
         self._prev_regime: Dict[str, str] = {}       # symbol → previous regime
         self._regime_age: Dict[str, int] = {}         # symbol → bars held in current regime
@@ -856,6 +865,76 @@ class ScalpStrategy(BaseStrategy):
             self._research_promotions = data.get("promotions", []) if isinstance(data, dict) else []
             self._research_promotions_mtime = mtime
         except Exception:
+            pass
+
+    def _emit_funnel_sample(
+        self,
+        symbol: str,
+        regime: str,
+        atr_ratio: float,
+        allowed_scanners: List[Any],
+        scan_results: List[Any],
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Append a compact snapshot of scanner-loop outcome to
+        storage/research/scanner_funnel.jsonl. Rate-limited per-symbol to
+        self._funnel_emit_interval_sec (default 60s) so the file stays
+        manageable (~1 line per symbol per minute = ~1.5 MB/day for 16 symbols).
+
+        Wrapped broadly in try/except — funnel logging must NEVER interrupt
+        the trading hot-path. Atomic append via single write() call.
+        """
+        import json as _json, time as _time
+        try:
+            now = _time.time()
+            last = self._funnel_last_emit.get(symbol, 0.0)
+            if now - last < self._funnel_emit_interval_sec:
+                return
+            self._funnel_last_emit[symbol] = now
+
+            # Build compact result list
+            results = []
+            for sr in scan_results:
+                if sr.setup_result is not None:
+                    results.append({
+                        "scanner": sr.scanner_name,
+                        "triggered": True,
+                        "score": round(sr.weighted_score, 1),
+                        "side": sr.side.value if sr.side else None,
+                        "status": sr.scanner_status,
+                        "weight": round(sr.scanner_weight, 2),
+                    })
+                else:
+                    reason = ""
+                    if sr.penalties:
+                        reason = sr.penalties[0] if isinstance(sr.penalties[0], str) else str(sr.penalties[0])
+                    results.append({
+                        "scanner": sr.scanner_name,
+                        "triggered": False,
+                        "reason": (reason or "")[:160],  # cap length
+                        "proximity": round(sr.raw_score, 1),
+                        "status": sr.scanner_status,
+                        "weight": round(sr.scanner_weight, 2),
+                    })
+
+            allowed_names = [s.__name__.replace("_scan_", "") for s in allowed_scanners]
+
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "symbol": symbol,
+                "regime": regime,
+                "atr_ratio": round(float(atr_ratio or 0), 3),
+                "allowed": allowed_names,
+                "session_id": session_id,
+                "results": results,
+            }
+
+            path = Path(__file__).resolve().parent.parent / "storage" / "research" / "scanner_funnel.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as fh:
+                fh.write(_json.dumps(record, default=str) + "\n")
+        except Exception:
+            # Funnel logging must never affect trading — swallow all errors
             pass
 
     # ------------------------------------------------------------------
@@ -1767,6 +1846,16 @@ class ScalpStrategy(BaseStrategy):
             nt_names = [sr.scanner_name for sr in not_triggered]
             logger.info("FUNNEL %s | SCAN RESULT #%d | triggered=%s | no_trigger=%s",
                        symbol, pass_cnt, t_names or "NONE", nt_names)
+
+        # --- Research Center: persist scanner-loop outcome for funnel analysis ---
+        # Pure additive, rate-limited to 1/min per symbol, fail-silent.
+        self._emit_funnel_sample(
+            symbol=symbol,
+            regime=regime,
+            atr_ratio=float(getattr(self, "_atr_ratio", 0) or 0),
+            allowed_scanners=allowed_scanners,
+            scan_results=scan_results,
+        )
 
         # ── Update setup lifecycle candidates for dashboard ──
         _lifecycle_candidates: List[Dict[str, Any]] = []

@@ -715,6 +715,7 @@ class DashboardServer:
 
         # Pages
         app.router.add_get("/", self._handle_index)
+        app.router.add_get("/admin", self._handle_admin_panel)  # production admin panel (2026-04-19)
 
         # JSON API
         app.router.add_get("/api/status", self._handle_status)
@@ -850,6 +851,24 @@ class DashboardServer:
         return web.Response(
             text=self._idx_cache, content_type="text/html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
+
+    async def _handle_admin_panel(self, request: web.Request) -> web.Response:
+        """GET /admin — production admin panel HTML.
+
+        The middleware ensures the caller is authenticated. Role enforcement
+        (admin only) is done CLIENT-SIDE via /api/session check in the JS bundle,
+        AND SERVER-SIDE via require_role('admin') on every /api/admin/* handler.
+        Non-admin users who hit /admin will see the UI shell load but the first
+        /api/admin/system-stats fetch returns 403, and the JS redirects to /.
+        """
+        admin_path = _TEMPLATES_DIR / "admin_panel.html"
+        if not admin_path.exists():
+            return web.Response(text="Admin panel template not found", status=500)
+        body = admin_path.read_text(encoding="utf-8")
+        return web.Response(
+            text=body, content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
     async def _handle_status(self, request: web.Request) -> web.Response:

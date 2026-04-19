@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VN Edge — Admin Control</title>
+<link rel="icon" href="/static/logo-dark.jpg" type="image/jpeg">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+:root{--bg:#0a1429;--bg-card:rgba(255,255,255,.04);--border:rgba(167,139,250,.12);--border-active:rgba(167,139,250,.35);--accent:#a78bfa;--green:#00ff9d;--red:#ff3b5c;--yellow:#ffd700;--cyan:#00d4ff;--purple:#a78bfa;--orange:#f97316;--text:#e8ecf4;--text-dim:#9ba3b5;--text-muted:#5a7090;--radius:8px;--font-mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;--font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Roboto,sans-serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:13px;background-image:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(167,139,250,.03),transparent)}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(167,139,250,.2);border-radius:3px}
+::selection{background:rgba(167,139,250,.25)}
+.header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;background:#0a1429;border-bottom:1px solid rgba(167,139,250,.15);position:sticky;top:0;z-index:200}
+.header-brand{display:flex;align-items:center;gap:14px}
+.header-brand img{height:40px;border-radius:8px}
+.header-brand-text{display:flex;flex-direction:column}
+.brand-name{font-size:1.15rem;font-weight:900;letter-spacing:2.5px;color:#fff}
+.brand-tagline{font-size:.55rem;letter-spacing:3px;color:var(--purple);font-weight:700;text-transform:uppercase}
+.header-right{display:flex;align-items:center;gap:14px}
+.nav-links{display:flex;gap:2px}
+.nav-links a{padding:8px 14px;border-radius:6px;color:var(--text-dim);text-decoration:none;font-weight:600;font-size:.75rem;letter-spacing:.3px;transition:all .15s}
+.nav-links a:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav-links a.active{background:rgba(167,139,250,.12);color:var(--purple)}
+.user-chip{padding:5px 12px;border-radius:16px;background:rgba(167,139,250,.1);color:var(--purple);font-size:.7rem;font-weight:700;border:1px solid rgba(167,139,250,.25);display:flex;align-items:center;gap:6px}
+.user-chip::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--purple);box-shadow:0 0 6px var(--purple)}
+
+.wrap{max-width:1600px;margin:0 auto;padding:20px 24px}
+
+/* Stats grid */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.stat{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;backdrop-filter:blur(20px)}
+.stat-label{font-size:.65rem;color:var(--text-muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;font-weight:600}
+.stat-value{font-size:1.6rem;font-weight:800;color:var(--text);font-family:var(--font-mono);letter-spacing:-.5px}
+.stat-value.ok{color:var(--green)}
+.stat-value.warn{color:var(--yellow)}
+.stat-value.alert{color:var(--red)}
+.stat-sub{font-size:.65rem;color:var(--text-muted);margin-top:4px}
+
+/* Tabs */
+.tabs{display:flex;gap:0;background:var(--bg-card);border:1px solid var(--border);border-radius:10px 10px 0 0;overflow-x:auto;margin-bottom:0}
+.tab{padding:12px 18px;cursor:pointer;color:var(--text-muted);border-bottom:2px solid transparent;transition:all .15s;font-size:.75rem;font-weight:600;letter-spacing:.5px;white-space:nowrap;user-select:none}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--purple);border-bottom-color:var(--purple);background:rgba(167,139,250,.04)}
+.tab .count{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;background:rgba(255,255,255,.06);font-size:.65rem;font-weight:700}
+
+.panel{background:var(--bg-card);border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;padding:18px}
+.panel-tools{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.panel-tools input[type=search],.panel-tools input[type=text]{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);color:var(--text);padding:7px 12px;border-radius:6px;font-size:.75rem;outline:none;min-width:220px}
+.panel-tools input[type=search]:focus,.panel-tools input[type=text]:focus{border-color:var(--purple)}
+.panel-tools select{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);color:var(--text);padding:7px 10px;border-radius:6px;font-size:.75rem;cursor:pointer}
+
+.btn{padding:7px 14px;border-radius:6px;font-size:.7rem;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;font-family:inherit;letter-spacing:.3px}
+.btn-primary{background:var(--purple);color:#000;border-color:var(--purple)}
+.btn-primary:hover{background:#b99ff9}
+.btn-ghost{background:transparent;color:var(--text-dim);border-color:rgba(255,255,255,.12)}
+.btn-ghost:hover{color:var(--text);border-color:rgba(255,255,255,.3)}
+.btn-danger{background:rgba(255,59,92,.15);color:var(--red);border-color:rgba(255,59,92,.3)}
+.btn-danger:hover{background:rgba(255,59,92,.25)}
+.btn-warn{background:rgba(255,215,0,.12);color:var(--yellow);border-color:rgba(255,215,0,.3)}
+.btn-warn:hover{background:rgba(255,215,0,.2)}
+.btn-ok{background:rgba(0,255,157,.1);color:var(--green);border-color:rgba(0,255,157,.3)}
+.btn-ok:hover{background:rgba(0,255,157,.2)}
+.btn-sm{padding:4px 10px;font-size:.65rem}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:.75rem}
+thead th{text-align:left;padding:10px 12px;background:rgba(167,139,250,.05);color:var(--text-dim);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.65rem;border-bottom:1px solid rgba(167,139,250,.1)}
+tbody tr{border-bottom:1px solid rgba(255,255,255,.04);transition:background .1s}
+tbody tr:hover{background:rgba(167,139,250,.03)}
+td{padding:10px 12px;color:var(--text);vertical-align:middle}
+td.mono{font-family:var(--font-mono)}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.6rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.badge-ok{background:rgba(0,255,157,.12);color:var(--green);border:1px solid rgba(0,255,157,.3)}
+.badge-warn{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.badge-alert{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
+.badge-cyan{background:rgba(0,212,255,.12);color:var(--cyan);border:1px solid rgba(0,212,255,.3)}
+.badge-purple{background:rgba(167,139,250,.12);color:var(--purple);border:1px solid rgba(167,139,250,.3)}
+.badge-muted{background:rgba(255,255,255,.05);color:var(--text-muted);border:1px solid rgba(255,255,255,.1)}
+
+/* Expandable rows */
+.expand-row{background:rgba(167,139,250,.02)}
+.expand-content{padding:14px 20px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.expand-section{background:rgba(0,0,0,.2);border-radius:6px;padding:12px;border:1px solid rgba(255,255,255,.04)}
+.expand-section h4{font-size:.65rem;color:var(--text-muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;font-weight:700}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:center;font-size:.7rem}
+.kv label{color:var(--text-muted)}
+.kv input,.kv select{background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.08);color:var(--text);padding:5px 8px;border-radius:4px;font-size:.7rem;width:100%;font-family:inherit}
+
+/* Modal */
+.modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px)}
+.modal-bg.hide{display:none}
+.modal{background:#0f1a33;border:1px solid var(--border-active);border-radius:12px;padding:20px;min-width:420px;max-width:640px;max-height:90vh;overflow-y:auto}
+.modal h3{margin-bottom:14px;color:var(--purple);font-size:1rem;letter-spacing:.5px}
+.modal .form-row{margin-bottom:12px}
+.modal label{display:block;font-size:.65rem;color:var(--text-muted);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+.modal input,.modal select,.modal textarea{width:100%;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.1);color:var(--text);padding:8px 12px;border-radius:6px;font-size:.8rem;font-family:inherit}
+.modal textarea{min-height:80px;resize:vertical}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06)}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;right:24px;background:#0f1a33;border:1px solid var(--purple);border-radius:8px;padding:12px 18px;color:var(--text);font-size:.75rem;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:1100;animation:slideIn .2s ease-out}
+.toast.err{border-color:var(--red)}
+.toast.ok{border-color:var(--green)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+.empty{padding:40px 20px;text-align:center;color:var(--text-muted);font-size:.75rem}
+.loading{padding:30px 20px;text-align:center;color:var(--text-muted);font-size:.75rem}
+
+.broadcast-alert{background:rgba(255,215,0,.08);border-left:3px solid var(--yellow);padding:10px 14px;margin-bottom:14px;border-radius:4px;display:flex;justify-content:space-between;align-items:center;font-size:.75rem}
+.broadcast-alert.critical{background:rgba(255,59,92,.08);border-color:var(--red)}
+.broadcast-alert.info{background:rgba(0,212,255,.06);border-color:var(--cyan)}
+
+code{font-family:var(--font-mono);background:rgba(167,139,250,.08);padding:1px 5px;border-radius:3px;font-size:.68rem}
+.diff-box{background:rgba(0,0,0,.3);border-radius:4px;padding:8px;font-family:var(--font-mono);font-size:.65rem;max-height:120px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-dim)}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-brand">
+    <img src="/static/logo-dark.jpg" alt="VN Edge">
+    <div class="header-brand-text">
+      <div class="brand-name">VN EDGE</div>
+      <div class="brand-tagline">Admin Control Panel</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <nav class="nav-links">
+      <a href="/" title="Main trading dashboard">← Dashboard</a>
+      <a href="/admin" class="active">Admin</a>
+    </nav>
+    <span class="user-chip" id="user-chip">loading</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- Broadcast alerts -->
+  <div id="broadcast-wrap"></div>
+
+  <!-- Stats overview -->
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat"><div class="stat-label">Total Users</div><div class="stat-value" id="stat-users">—</div><div class="stat-sub" id="stat-users-sub"></div></div>
+    <div class="stat"><div class="stat-label">Live Sessions</div><div class="stat-value" id="stat-sessions">—</div></div>
+    <div class="stat"><div class="stat-label">Open Real Trades</div><div class="stat-value" id="stat-opens">—</div></div>
+    <div class="stat"><div class="stat-label">24h P&amp;L (system)</div><div class="stat-value" id="stat-pnl24">—</div><div class="stat-sub" id="stat-pnl24-sub"></div></div>
+    <div class="stat"><div class="stat-label">Active API Keys</div><div class="stat-value" id="stat-keys">—</div></div>
+    <div class="stat"><div class="stat-label">Failed Logins (1h)</div><div class="stat-value" id="stat-failed">—</div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" data-tab="users">Users <span class="count" id="count-users">0</span></div>
+    <div class="tab" data-tab="sessions">Sessions <span class="count" id="count-sessions">0</span></div>
+    <div class="tab" data-tab="failed">Failed Logins</div>
+    <div class="tab" data-tab="audit">Admin Audit</div>
+    <div class="tab" data-tab="broadcast">Broadcast</div>
+    <div class="tab" data-tab="system">System</div>
+  </div>
+
+  <!-- USERS TAB -->
+  <div class="panel" id="pane-users">
+    <div class="panel-tools">
+      <input type="search" id="user-search" placeholder="Search by email...">
+      <select id="user-filter-mode">
+        <option value="">All modes</option>
+        <option value="paper">Paper only</option>
+        <option value="demo">Demo</option>
+        <option value="live">Live</option>
+      </select>
+      <select id="user-filter-role">
+        <option value="">All roles</option>
+        <option value="admin">Admin</option>
+        <option value="trader">Trader</option>
+        <option value="viewer">Viewer</option>
+      </select>
+      <button class="btn btn-primary" onclick="openCreateUserModal()">+ New User</button>
+      <button class="btn btn-ghost" onclick="loadUsers()">Refresh</button>
+      <button class="btn btn-ghost" onclick="exportUsersCSV()">Export CSV</button>
+    </div>
+    <table id="users-table">
+      <thead><tr>
+        <th>Email</th><th>Role</th><th>Tier</th><th>Mode</th><th>Active</th>
+        <th style="text-align:right">Leverage</th><th style="text-align:right">Keys</th>
+        <th>Last Login</th><th>Created</th><th style="text-align:right">Actions</th>
+      </tr></thead>
+      <tbody id="users-body"><tr><td colspan="10" class="loading">Loading users...</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- SESSIONS TAB -->
+  <div class="panel" id="pane-sessions" style="display:none">
+    <div class="panel-tools">
+      <button class="btn btn-ghost" onclick="loadSessions()">Refresh</button>
+      <span style="color:var(--text-muted);font-size:.7rem;margin-left:auto">Showing sessions with expires_at &gt; NOW</span>
+    </div>
+    <table id="sessions-table">
+      <thead><tr>
+        <th>Email</th><th>Role</th><th>IP</th><th>Created</th><th>Last Activity</th>
+        <th>Expires</th><th style="text-align:right">Requests</th><th>Token</th><th></th>
+      </tr></thead>
+      <tbody id="sessions-body"><tr><td colspan="9" class="loading">Loading sessions...</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- FAILED LOGINS TAB -->
+  <div class="panel" id="pane-failed" style="display:none">
+    <div class="panel-tools">
+      <select id="failed-window">
+        <option value="1">Last 1h</option>
+        <option value="6">Last 6h</option>
+        <option value="24" selected>Last 24h</option>
+        <option value="168">Last 7d</option>
+      </select>
+      <button class="btn btn-ghost" onclick="loadFailedLogins()">Refresh</button>
+    </div>
+    <table id="failed-table">
+      <thead><tr>
+        <th>IP</th><th>Email attempted</th><th style="text-align:right">Attempts</th>
+        <th>First</th><th>Last</th><th>Reasons</th>
+      </tr></thead>
+      <tbody id="failed-body"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- ADMIN AUDIT TAB -->
+  <div class="panel" id="pane-audit" style="display:none">
+    <div class="panel-tools">
+      <input type="text" id="audit-action-filter" placeholder="Filter by action (e.g. user.update)">
+      <button class="btn btn-ghost" onclick="loadAdminAudit()">Apply</button>
+      <button class="btn btn-ghost" onclick="exportAuditCSV()">Export CSV</button>
+    </div>
+    <table id="audit-table">
+      <thead><tr>
+        <th>Time</th><th>Admin</th><th>Action</th><th>Target</th><th>Status</th>
+        <th>IP</th><th>Diff</th>
+      </tr></thead>
+      <tbody id="audit-body"><tr><td colspan="7" class="loading">Loading...</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- BROADCAST TAB -->
+  <div class="panel" id="pane-broadcast" style="display:none">
+    <div class="panel-tools">
+      <button class="btn btn-primary" onclick="openBroadcastModal()">+ New Broadcast</button>
+      <button class="btn btn-ghost" onclick="loadBroadcasts()">Refresh</button>
+    </div>
+    <div id="broadcast-list"><div class="loading">Loading...</div></div>
+  </div>
+
+  <!-- SYSTEM TAB -->
+  <div class="panel" id="pane-system" style="display:none">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="expand-section">
+        <h4>Fernet Key Rotation</h4>
+        <p style="color:var(--text-dim);font-size:.7rem;margin-bottom:10px">
+          Re-encrypts all user_api_keys records under the per-user derived Fernet cipher.
+          Idempotent: already-rewrapped records are unchanged. Legacy master-only records
+          are upgraded. Run dry-run first to see impact.
+        </p>
+        <button class="btn btn-ghost" onclick="runFernetRewrap(true)">Dry Run</button>
+        <button class="btn btn-warn" onclick="runFernetRewrap(false)">Execute Rewrap</button>
+        <div id="fernet-result" style="margin-top:10px"></div>
+      </div>
+      <div class="expand-section">
+        <h4>Quick Actions</h4>
+        <p style="color:var(--text-dim);font-size:.7rem;margin-bottom:10px">
+          Direct links to operational pages.
+        </p>
+        <a href="/" class="btn btn-ghost" style="margin-right:6px;text-decoration:none;display:inline-block">Main Dashboard</a>
+        <a href="http://158.101.112.94:8081/research" target="_blank" class="btn btn-ghost" style="text-decoration:none;display:inline-block">Research Lab</a>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Modals -->
+<div class="modal-bg hide" id="modal-bg" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-body"></div>
+</div>
+<div id="toast-container"></div>
+
+<script>
+const API = '/api/admin';
+let _users = [];
+let _sessionUser = null;
+
+async function fetchJSON(url, opts) {
+  try {
+    const r = await fetch(url, {...opts, credentials: 'same-origin'});
+    if (r.status === 401) { location.href = '/'; return null; }
+    if (r.status === 403) { toast('Not authorized — admin required', 'err'); return null; }
+    if (!r.ok) { const body = await r.json().catch(()=>({})); toast(body.error || `HTTP ${r.status}`, 'err'); return null; }
+    return await r.json();
+  } catch (e) { toast('Network error: '+e, 'err'); return null; }
+}
+
+function toast(msg, kind='') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || 'ok');
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+function esc(s) { return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return Math.floor(diff)+'s ago';
+  if (diff < 3600) return Math.floor(diff/60)+'m ago';
+  if (diff < 86400) return Math.floor(diff/3600)+'h ago';
+  return d.toISOString().slice(0,10);
+}
+
+function showModal(html) {
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-bg').classList.remove('hide');
+}
+function closeModal() { document.getElementById('modal-bg').classList.add('hide'); }
+
+// Tabs
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    const name = t.dataset.tab;
+    ['users','sessions','failed','audit','broadcast','system'].forEach(p => {
+      document.getElementById('pane-'+p).style.display = (p===name ? 'block' : 'none');
+    });
+    if (name === 'sessions') loadSessions();
+    else if (name === 'failed') loadFailedLogins();
+    else if (name === 'audit') loadAdminAudit();
+    else if (name === 'broadcast') loadBroadcasts();
+  });
+});
+
+// ── SESSION + TOP STATS ──
+async function loadSessionInfo() {
+  try {
+    const r = await fetch('/api/session', {credentials:'same-origin'});
+    if (!r.ok) { location.href = '/'; return; }
+    const d = await r.json();
+    _sessionUser = d;
+    const role = d.role || (d.user && d.user.role);
+    if (role !== 'admin') {
+      toast('Admin role required', 'err');
+      setTimeout(() => location.href = '/', 1500);
+      return;
+    }
+    const email = d.email || (d.user && d.user.email) || 'admin';
+    document.getElementById('user-chip').textContent = email;
+  } catch (e) {}
+}
+
+async function loadStats() {
+  const s = await fetchJSON(`${API}/system-stats`);
+  if (!s) return;
+  document.getElementById('stat-users').textContent = s.users.total_users;
+  document.getElementById('stat-users-sub').textContent = `${s.users.active_users} active · ${s.users.live_users} live`;
+  document.getElementById('stat-sessions').textContent = s.sessions.live_sessions;
+  document.getElementById('stat-opens').textContent = s.trades.open_real;
+  const pnl = Number(s.trades.pnl_24h || 0);
+  const pnlEl = document.getElementById('stat-pnl24');
+  pnlEl.textContent = '$' + pnl.toFixed(2);
+  pnlEl.className = 'stat-value ' + (pnl > 0 ? 'ok' : pnl < 0 ? 'alert' : '');
+  document.getElementById('stat-pnl24-sub').textContent = `${s.trades.trades_24h} trades`;
+  document.getElementById('stat-keys').textContent = s.keys.active_keys;
+  const failedEl = document.getElementById('stat-failed');
+  failedEl.textContent = s.security.failed_logins_1h;
+  failedEl.className = 'stat-value ' + (s.security.failed_logins_1h > 10 ? 'alert' : s.security.failed_logins_1h > 0 ? 'warn' : 'ok');
+}
+
+// ── BROADCASTS ──
+async function loadActiveBroadcasts() {
+  const d = await fetchJSON(`${API}/broadcast`);
+  if (!d) return;
+  const wrap = document.getElementById('broadcast-wrap');
+  wrap.innerHTML = (d.messages || []).map(m =>
+    `<div class="broadcast-alert ${esc(m.severity)}">
+      <div><strong>${esc(m.severity.toUpperCase())}:</strong> ${esc(m.message)}</div>
+      <button class="btn btn-sm btn-ghost" onclick="deleteBroadcast(${m.id})">Dismiss</button>
+    </div>`
+  ).join('');
+}
+
+// ── USERS TAB ──
+async function loadUsers() {
+  const d = await fetchJSON(`${API}/users`);
+  if (!d) return;
+  _users = d.users || [];
+  document.getElementById('count-users').textContent = _users.length;
+  renderUsers();
+}
+
+function renderUsers() {
+  const search = (document.getElementById('user-search').value || '').toLowerCase();
+  const fmode = document.getElementById('user-filter-mode').value;
+  const frole = document.getElementById('user-filter-role').value;
+  const filtered = _users.filter(u =>
+    (!search || (u.email || '').toLowerCase().includes(search))
+    && (!fmode || u.bot_mode === fmode)
+    && (!frole || u.role === frole)
+  );
+  const body = document.getElementById('users-body');
+  if (!filtered.length) { body.innerHTML = '<tr><td colspan="10" class="empty">No users match.</td></tr>'; return; }
+  body.innerHTML = filtered.map(u => {
+    const roleB = `<span class="badge badge-${u.role==='admin'?'alert':u.role==='trader'?'purple':'muted'}">${esc(u.role)}</span>`;
+    const modeB = `<span class="badge badge-${u.bot_mode==='live'?'alert':u.bot_mode==='demo'?'cyan':'muted'}">${esc(u.bot_mode)}</span>`;
+    const tierB = `<span class="badge badge-purple">${esc(u.tier)}</span>`;
+    const activeB = u.is_active
+      ? '<span class="badge badge-ok">active</span>'
+      : '<span class="badge badge-alert">disabled</span>';
+    return `<tr>
+      <td class="mono"><a href="#" onclick="toggleUserExpand('${u.id}');return false" style="color:var(--purple);text-decoration:none">${esc(u.email)}</a></td>
+      <td>${roleB}</td>
+      <td>${tierB}</td>
+      <td>${modeB}</td>
+      <td>${activeB}</td>
+      <td style="text-align:right;font-family:var(--font-mono)">${u.max_leverage||'—'}x</td>
+      <td style="text-align:right" id="keycount-${u.id}">—</td>
+      <td style="font-size:.7rem;color:var(--text-dim)">${fmtTime(u.last_login)}</td>
+      <td style="font-size:.7rem;color:var(--text-dim)">${fmtTime(u.created_at)}</td>
+      <td style="text-align:right">
+        <button class="btn btn-sm btn-ghost" onclick="toggleUserExpand('${u.id}')">Manage</button>
+      </td>
+    </tr>
+    <tr class="expand-row" id="expand-${u.id}" style="display:none"><td colspan="10"><div id="expand-body-${u.id}"></div></td></tr>`;
+  }).join('');
+  // Lazy-load key counts
+  filtered.forEach(u => fetch(`${API}/users/${u.id}/api-keys`, {credentials:'same-origin'}).then(r=>r.json()).then(k => {
+    const el = document.getElementById('keycount-' + u.id);
+    if (el) el.textContent = (k.keys || []).length;
+  }).catch(()=>{}));
+}
+
+async function toggleUserExpand(id) {
+  const row = document.getElementById('expand-' + id);
+  const body = document.getElementById('expand-body-' + id);
+  if (row.style.display === 'table-row') { row.style.display = 'none'; return; }
+  // Collapse others
+  document.querySelectorAll('.expand-row').forEach(r => r.style.display = 'none');
+  row.style.display = 'table-row';
+  body.innerHTML = '<div class="loading">Loading user details...</div>';
+  const d = await fetchJSON(`${API}/users/${id}/dashboard`);
+  if (!d) { body.innerHTML = '<div class="empty">Failed to load</div>'; return; }
+  renderUserDetail(id, d);
+}
+
+function renderUserDetail(id, d) {
+  const u = d.user || {};
+  const keys = d.keys || [];
+  const opens = d.open_positions || [];
+  const recents = d.recent_trades || [];
+  const pnl = d.pnl_24h || {};
+
+  const keysHTML = keys.length ? keys.map((k, i) => `
+    <div style="background:rgba(0,0,0,.2);padding:8px;border-radius:4px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;font-size:.7rem">
+      <div>
+        <span class="badge badge-${k.label==='live'?'alert':'cyan'}">${esc(k.label)}</span>
+        <span class="badge ${k.is_active?'badge-ok':'badge-muted'}">${k.is_active?'active':'inactive'}</span>
+        ${k.stale ? '<span class="badge badge-warn">STALE</span>' : ''}
+        <code>${esc(k.api_key_masked)}</code>
+        <span style="color:var(--text-muted);margin-left:8px">created ${fmtTime(k.created_at)} · last used ${fmtTime(k.last_used)}</span>
+      </div>
+      <div>
+        <button class="btn btn-sm btn-ok" onclick="testApiKey('${id}','${esc(k.label)}')">Test</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteApiKey('${k.id}')">Revoke</button>
+      </div>
+    </div>`).join('') : '<div class="empty">No keys configured</div>';
+
+  const opensHTML = opens.length ? `<table><thead><tr>
+    <th>Symbol</th><th>Side</th><th>Type</th><th>Entry</th><th>Qty</th><th>Opened</th>
+  </tr></thead><tbody>${opens.map(o => `<tr>
+    <td class="mono">${esc(o.symbol)}</td>
+    <td><span class="badge badge-${o.side==='long'?'ok':'alert'}">${esc(o.side)}</span></td>
+    <td><span class="badge badge-muted">${esc(o.trade_type)}</span></td>
+    <td class="mono">${o.entry_price}</td>
+    <td class="mono">${o.quantity}</td>
+    <td style="font-size:.65rem;color:var(--text-dim)">${fmtTime(o.opened_at)}</td>
+  </tr>`).join('')}</tbody></table>` : '<div class="empty">No open positions</div>';
+
+  const recentsHTML = recents.length ? `<table><thead><tr>
+    <th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Closed</th>
+  </tr></thead><tbody>${recents.slice(0,10).map(t => {
+    const pnl = Number(t.pnl_usd || 0);
+    return `<tr>
+      <td class="mono">${esc(t.symbol)}</td>
+      <td><span class="badge badge-${t.side==='long'?'ok':'alert'}">${esc(t.side)}</span></td>
+      <td class="mono">${t.entry_price}</td>
+      <td class="mono">${t.exit_price||'—'}</td>
+      <td class="mono" style="color:${pnl>0?'var(--green)':pnl<0?'var(--red)':'var(--text-dim)'}">$${pnl.toFixed(2)}</td>
+      <td style="font-size:.65rem;color:var(--text-dim)">${fmtTime(t.closed_at)}</td>
+    </tr>`;
+  }).join('')}</tbody></table>` : '<div class="empty">No closed trades</div>';
+
+  const bodyEl = document.getElementById('expand-body-' + id);
+  bodyEl.innerHTML = `<div class="expand-content">
+    <div class="expand-section">
+      <h4>Configuration</h4>
+      <div class="kv"><label>Role</label>
+        <select id="cfg-role-${id}">
+          <option value="admin" ${u.role==='admin'?'selected':''}>admin</option>
+          <option value="trader" ${u.role==='trader'?'selected':''}>trader</option>
+          <option value="viewer" ${u.role==='viewer'?'selected':''}>viewer</option>
+        </select>
+      </div>
+      <div class="kv"><label>Tier</label>
+        <select id="cfg-tier-${id}">
+          <option value="free" ${u.tier==='free'?'selected':''}>free</option>
+          <option value="pro" ${u.tier==='pro'?'selected':''}>pro</option>
+          <option value="enterprise" ${u.tier==='enterprise'?'selected':''}>enterprise</option>
+        </select>
+      </div>
+      <div class="kv"><label>Bot mode</label>
+        <select id="cfg-mode-${id}">
+          <option value="paper" ${u.bot_mode==='paper'?'selected':''}>paper</option>
+          <option value="demo" ${u.bot_mode==='demo'?'selected':''}>demo</option>
+          <option value="live" ${u.bot_mode==='live'?'selected':''}>live</option>
+        </select>
+      </div>
+      <div class="kv"><label>Active</label>
+        <select id="cfg-active-${id}">
+          <option value="true" ${u.is_active?'selected':''}>enabled</option>
+          <option value="false" ${!u.is_active?'selected':''}>disabled</option>
+        </select>
+      </div>
+      <div class="kv"><label>Max leverage</label><input type="number" id="cfg-lev-${id}" value="${u.max_leverage||20}" min="1" max="50"></div>
+      <div class="kv"><label>Max daily loss %</label><input type="number" id="cfg-dloss-${id}" value="${u.max_daily_loss_pct||3}" step="0.5" min="0.5" max="20"></div>
+      <div class="kv"><label>Max open positions</label><input type="number" id="cfg-maxopen-${id}" value="${u.max_open_positions||5}" min="1" max="10"></div>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" onclick="saveUserConfig('${id}')">Save Config</button>
+        <button class="btn btn-warn btn-sm" onclick="resetPassword('${id}')">Reset Password</button>
+        <button class="btn btn-danger btn-sm" onclick="emergencyStop('${id}')">Emergency Stop</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteUser('${id}','${esc(u.email)}')">Delete User</button>
+      </div>
+    </div>
+    <div class="expand-section">
+      <h4>API Keys</h4>
+      ${keysHTML}
+      <button class="btn btn-sm btn-primary" style="margin-top:8px" onclick="openAddKeyModal('${id}')">+ Add Key</button>
+    </div>
+    <div class="expand-section" style="grid-column:1/-1">
+      <h4>24h P&amp;L</h4>
+      <div style="display:flex;gap:18px;font-size:.75rem">
+        <div>Trades: <b>${pnl.trades_24h || 0}</b></div>
+        <div>Wins: <b style="color:var(--green)">${pnl.wins_24h || 0}</b></div>
+        <div>WR: <b>${pnl.wr_24h_pct || 0}%</b></div>
+        <div>P&amp;L: <b style="color:${(pnl.pnl_24h_usd||0)>0?'var(--green)':(pnl.pnl_24h_usd||0)<0?'var(--red)':'var(--text)'}">$${(pnl.pnl_24h_usd||0).toFixed(2)}</b></div>
+      </div>
+    </div>
+    <div class="expand-section">
+      <h4>Open Positions (${opens.length})</h4>
+      ${opensHTML}
+    </div>
+    <div class="expand-section">
+      <h4>Recent Closed Trades</h4>
+      ${recentsHTML}
+    </div>
+  </div>`;
+}
+
+async function saveUserConfig(id) {
+  const body = {
+    role: document.getElementById('cfg-role-'+id).value,
+    tier: document.getElementById('cfg-tier-'+id).value,
+    bot_mode: document.getElementById('cfg-mode-'+id).value,
+    is_active: document.getElementById('cfg-active-'+id).value === 'true',
+    max_leverage: parseInt(document.getElementById('cfg-lev-'+id).value),
+    max_daily_loss_pct: parseFloat(document.getElementById('cfg-dloss-'+id).value),
+    max_open_positions: parseInt(document.getElementById('cfg-maxopen-'+id).value),
+  };
+  const r = await fetchJSON(`${API}/users/${id}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) { toast('Config saved', 'ok'); loadUsers(); }
+}
+
+async function resetPassword(id) {
+  if (!confirm('Reset password for this user?\n\nA new password will be generated and displayed ONCE.')) return;
+  const r = await fetchJSON(`${API}/users/${id}/reset-password`, {method:'POST'});
+  if (r && r.password) {
+    prompt('Password reset. Copy now — will not be shown again:', r.password);
+    toast('Password reset', 'ok');
+  }
+}
+
+async function emergencyStop(id) {
+  if (!confirm('EMERGENCY STOP?\n\n• Force bot_mode → paper\n• Kill cached user_registry manager\n• Logged to admin_audit_log\n\nNote: open real positions remain open and must be closed manually via the exchange.')) return;
+  const r = await fetchJSON(`${API}/users/${id}/emergency-stop`, {method:'POST'});
+  if (r) { toast('Emergency stop executed', 'ok'); loadUsers(); }
+}
+
+async function deleteUser(id, email) {
+  if (!confirm(`DELETE user ${email}?\n\nThis is irreversible. All their trades, signals, keys, sessions will be cascade-deleted.\n\nType DELETE to confirm.`)) return;
+  const entered = prompt('Type DELETE exactly to confirm:');
+  if (entered !== 'DELETE') return;
+  const r = await fetchJSON(`${API}/users/${id}`, {method:'DELETE'});
+  if (r) { toast('User deleted', 'ok'); loadUsers(); }
+}
+
+async function testApiKey(userId, label) {
+  toast('Testing ' + label + ' key...', 'ok');
+  const r = await fetchJSON(`${API}/users/${userId}/test-api-key`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({label}),
+  });
+  if (r && r.ok) toast(`${label} key OK. Balance: $${(r.balance_usdt||0).toFixed(2)}`, 'ok');
+  else toast(`Key test failed: ${r && r.error || 'unknown'}`, 'err');
+}
+
+async function deleteApiKey(keyId) {
+  if (!confirm('Delete this API key?')) return;
+  const r = await fetchJSON(`${API}/api-keys/${keyId}`, {method:'DELETE'});
+  if (r) { toast('Key deleted', 'ok'); loadUsers(); }
+}
+
+function openAddKeyModal(userId) {
+  showModal(`<h3>Add API Key</h3>
+    <div class="form-row"><label>Label</label>
+      <select id="mk-label"><option value="demo">demo</option><option value="live">live</option></select></div>
+    <div class="form-row"><label>API Key</label><input type="text" id="mk-key" autocomplete="off"></div>
+    <div class="form-row"><label>API Secret</label><input type="text" id="mk-secret" autocomplete="off"></div>
+    <div class="form-row"><label>Base URL (optional — default inferred)</label><input type="text" id="mk-url" placeholder="https://api.india.delta.exchange"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddKey('${userId}')">Add Key</button>
+    </div>`);
+}
+
+async function submitAddKey(userId) {
+  const body = {
+    label: document.getElementById('mk-label').value,
+    api_key: document.getElementById('mk-key').value.trim(),
+    api_secret: document.getElementById('mk-secret').value.trim(),
+    base_url: document.getElementById('mk-url').value.trim(),
+  };
+  if (!body.api_key || !body.api_secret) { toast('Key + secret required', 'err'); return; }
+  const r = await fetchJSON(`${API}/users/${userId}/api-keys`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) { closeModal(); toast('Key saved', 'ok'); loadUsers(); }
+}
+
+function openCreateUserModal() {
+  showModal(`<h3>Create New User</h3>
+    <div class="form-row"><label>Email</label><input type="email" id="nu-email"></div>
+    <div class="form-row"><label>Full Name</label><input type="text" id="nu-name"></div>
+    <div class="form-row"><label>Initial Password</label><input type="text" id="nu-pw" placeholder="auto-generate if empty"></div>
+    <div class="form-row"><label>Role</label>
+      <select id="nu-role"><option value="trader">trader</option><option value="admin">admin</option><option value="viewer">viewer</option></select></div>
+    <div class="form-row"><label>Tier</label>
+      <select id="nu-tier"><option value="free">free</option><option value="pro">pro</option><option value="enterprise">enterprise</option></select></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitCreateUser()">Create</button>
+    </div>`);
+}
+async function submitCreateUser() {
+  const body = {
+    email: document.getElementById('nu-email').value.trim(),
+    full_name: document.getElementById('nu-name').value.trim(),
+    password: document.getElementById('nu-pw').value.trim(),
+    role: document.getElementById('nu-role').value,
+    tier: document.getElementById('nu-tier').value,
+  };
+  if (!body.email) { toast('Email required', 'err'); return; }
+  const r = await fetchJSON(`${API}/users/create`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) {
+    closeModal();
+    if (r.password) prompt('User created. Initial password (copy now):', r.password);
+    else toast('User created', 'ok');
+    loadUsers();
+  }
+}
+
+// Debounced filters
+['user-search','user-filter-mode','user-filter-role'].forEach(id =>
+  document.getElementById(id).addEventListener('input', () => renderUsers())
+);
+
+// ── SESSIONS ──
+async function loadSessions() {
+  const d = await fetchJSON(`${API}/sessions`);
+  if (!d) return;
+  const rows = d.sessions || [];
+  document.getElementById('count-sessions').textContent = rows.length;
+  const body = document.getElementById('sessions-body');
+  body.innerHTML = rows.length ? rows.map(s => `<tr>
+    <td class="mono">${esc(s.email)}</td>
+    <td><span class="badge badge-${s.role==='admin'?'alert':'muted'}">${esc(s.role)}</span></td>
+    <td class="mono">${esc(s.ip_address||'—')}</td>
+    <td style="font-size:.7rem">${fmtTime(s.created_at)}</td>
+    <td style="font-size:.7rem">${fmtTime(s.last_activity)}</td>
+    <td style="font-size:.7rem">${fmtTime(s.expires_at)}</td>
+    <td style="text-align:right;font-family:var(--font-mono)">${s.request_count||0}</td>
+    <td><code>${esc(s.token)}</code></td>
+    <td><button class="btn btn-sm btn-danger" onclick="forceLogout('${esc(s.token.replace(/\\.\\.\\.$/,''))}')">Force Logout</button></td>
+  </tr>`).join('') : '<tr><td colspan="9" class="empty">No active sessions</td></tr>';
+}
+async function forceLogout(tokenPrefix) {
+  if (!confirm('Force logout this session?')) return;
+  const r = await fetchJSON(`${API}/sessions/${tokenPrefix}`, {method:'DELETE'});
+  if (r) { toast('Logged out', 'ok'); loadSessions(); }
+}
+
+// ── FAILED LOGINS ──
+async function loadFailedLogins() {
+  const hours = document.getElementById('failed-window').value;
+  const d = await fetchJSON(`${API}/failed-logins?hours=${hours}`);
+  if (!d) return;
+  const rows = d.failures || [];
+  const body = document.getElementById('failed-body');
+  body.innerHTML = rows.length ? rows.map(f => `<tr>
+    <td class="mono">${esc(f.ip_address||'—')}</td>
+    <td class="mono">${esc(f.email||'—')}</td>
+    <td style="text-align:right;font-family:var(--font-mono);color:${f.attempts>5?'var(--red)':'var(--text)'}">${f.attempts}</td>
+    <td style="font-size:.7rem">${fmtTime(f.first_attempt)}</td>
+    <td style="font-size:.7rem">${fmtTime(f.last_attempt)}</td>
+    <td style="font-size:.7rem;color:var(--text-muted)">${(f.reasons||[]).join(', ')}</td>
+  </tr>`).join('') : '<tr><td colspan="6" class="empty">No failed logins</td></tr>';
+}
+
+// ── ADMIN AUDIT ──
+async function loadAdminAudit() {
+  const action = document.getElementById('audit-action-filter').value.trim();
+  const q = action ? `?action=${encodeURIComponent(action)}` : '';
+  const d = await fetchJSON(`${API}/admin-audit${q}`);
+  if (!d) return;
+  const rows = d.entries || [];
+  const body = document.getElementById('audit-body');
+  body.innerHTML = rows.length ? rows.map(e => {
+    const diffBefore = JSON.stringify(e.before_json || {}, null, 0);
+    const diffAfter  = JSON.stringify(e.after_json  || {}, null, 0);
+    const statusBadge = e.status_code >= 400 ? 'badge-alert' : 'badge-ok';
+    return `<tr>
+      <td style="font-size:.7rem">${fmtTime(e.created_at)}</td>
+      <td class="mono">${esc(e.admin_email||'—')}</td>
+      <td><code>${esc(e.action)}</code></td>
+      <td class="mono">${esc(e.target_email||'—')}</td>
+      <td><span class="badge ${statusBadge}">${e.status_code||'—'}</span></td>
+      <td class="mono">${esc(e.ip_address||'—')}</td>
+      <td><div class="diff-box"><b>before:</b> ${esc(diffBefore.slice(0,200))}<br><b>after:</b> ${esc(diffAfter.slice(0,200))}</div></td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="7" class="empty">No audit entries</td></tr>';
+}
+function exportAuditCSV() {
+  const rows = Array.from(document.querySelectorAll('#audit-table tr')).map(tr =>
+    Array.from(tr.querySelectorAll('th,td')).map(td => `"${(td.innerText||'').replace(/"/g,'""')}"`).join(','));
+  const csv = rows.join('\n');
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'admin_audit_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+function exportUsersCSV() {
+  if (!_users.length) return;
+  const cols = ['email','role','tier','bot_mode','is_active','max_leverage','max_daily_loss_pct','created_at','last_login'];
+  const lines = [cols.join(',')];
+  _users.forEach(u => lines.push(cols.map(c => `"${String(u[c]??'').replace(/"/g,'""')}"`).join(',')));
+  const blob = new Blob([lines.join('\n')], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'users_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+}
+
+// ── BROADCASTS ──
+async function loadBroadcasts() {
+  const d = await fetchJSON(`${API}/broadcast`);
+  if (!d) return;
+  const list = d.messages || [];
+  document.getElementById('broadcast-list').innerHTML = list.length ? list.map(m =>
+    `<div class="broadcast-alert ${esc(m.severity)}">
+      <div><strong>[${esc(m.severity.toUpperCase())}]</strong> ${esc(m.message)}
+      <br><span style="color:var(--text-muted);font-size:.65rem">created ${fmtTime(m.created_at)} · expires ${m.ends_at?fmtTime(m.ends_at):'never'}</span></div>
+      <button class="btn btn-sm btn-danger" onclick="deleteBroadcast(${m.id})">Delete</button>
+    </div>`).join('') : '<div class="empty">No active broadcasts</div>';
+}
+function openBroadcastModal() {
+  showModal(`<h3>New Broadcast Message</h3>
+    <div class="form-row"><label>Severity</label>
+      <select id="bc-sev"><option value="info">info</option><option value="warning">warning</option><option value="critical">critical</option></select></div>
+    <div class="form-row"><label>Message (shown to all users)</label><textarea id="bc-msg"></textarea></div>
+    <div class="form-row"><label>Auto-expire (ISO or empty for never)</label><input type="text" id="bc-ends" placeholder="2026-04-20T12:00:00Z"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitBroadcast()">Broadcast</button>
+    </div>`);
+}
+async function submitBroadcast() {
+  const body = {
+    message: document.getElementById('bc-msg').value.trim(),
+    severity: document.getElementById('bc-sev').value,
+    ends_at: document.getElementById('bc-ends').value.trim() || null,
+  };
+  if (!body.message) { toast('Message required', 'err'); return; }
+  const r = await fetchJSON(`${API}/broadcast`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) { closeModal(); toast('Broadcast created', 'ok'); loadBroadcasts(); loadActiveBroadcasts(); }
+}
+async function deleteBroadcast(id) {
+  if (!confirm('Dismiss this broadcast?')) return;
+  const r = await fetchJSON(`${API}/broadcast/${id}`, {method:'DELETE'});
+  if (r) { toast('Dismissed', 'ok'); loadBroadcasts(); loadActiveBroadcasts(); }
+}
+
+// ── SYSTEM TAB ──
+async function runFernetRewrap(dryRun) {
+  if (!dryRun && !confirm('Run Fernet rewrap?\n\nAll user_api_keys records will be re-encrypted under the per-user derived cipher. Idempotent — runs are safe to repeat.')) return;
+  const r = await fetchJSON(`${API}/fernet/rotate-rewrap`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dry_run: dryRun}),
+  });
+  if (r) {
+    document.getElementById('fernet-result').innerHTML = `<div class="expand-section" style="margin-top:8px">
+      <pre style="color:var(--text-dim);font-size:.7rem">${esc(JSON.stringify(r, null, 2))}</pre>
+    </div>`;
+    toast(dryRun ? 'Dry-run complete' : 'Rewrap complete', 'ok');
+  }
+}
+
+// ── INIT ──
+(async function init() {
+  await loadSessionInfo();
+  await loadStats();
+  await loadActiveBroadcasts();
+  await loadUsers();
+  // Auto-refresh stats every 30s
+  setInterval(loadStats, 30000);
+})();
+</script>
+</body>
+</html>

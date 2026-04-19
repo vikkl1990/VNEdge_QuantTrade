@@ -600,9 +600,35 @@ async function loadKeys() {
       </div>
       <div>
         <button class="btn btn-sm btn-ghost" onclick="testKey('${esc(k.id)}')">Test</button>
+        <button class="btn btn-sm ${k.is_active?'btn-warn':'btn-primary'}" onclick="toggleKeyActive('${esc(k.id)}',${k.is_active})">${k.is_active?'Disable':'Enable'}</button>
+        <button class="btn btn-sm btn-ghost" onclick="openReplaceKeyModal('${esc(k.label)}')">Replace</button>
         <button class="btn btn-sm btn-danger" onclick="deleteKey('${esc(k.id)}')">Delete</button>
       </div>
     </div>`).join('');
+}
+async function toggleKeyActive(id, currentActive) {
+  const next = !currentActive;
+  if (next === false && !confirm('Disable this key?\n\nThe bot will stop using it for trades until you re-enable.')) return;
+  const r = await fetchJSON(`/api/user/api-keys/${encodeURIComponent(id)}/toggle-active`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({is_active: next}),
+  });
+  if (r) { toast(`Key ${r.is_active?'enabled':'disabled'}`, 'ok'); loadKeys(); }
+}
+function openReplaceKeyModal(label) {
+  // Pre-fill label, user supplies new key/secret → UPSERT replaces
+  showModal(`<h3>Replace ${esc(label)} Key</h3>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">
+      Paste the new ${esc(label)} key + secret. The existing ${esc(label)} key will be replaced atomically — any cached bot manager invalidates within 60s.
+    </div>
+    <div class="field"><label>Label (locked)</label><input type="text" id="k-label" value="${esc(label)}" readonly></div>
+    <div class="field"><label>New API key</label><input type="text" id="k-key" autocomplete="off"></div>
+    <div class="field"><label>New API secret</label><input type="text" id="k-secret" autocomplete="off"></div>
+    <div class="field"><label>Base URL (optional)</label><input type="text" id="k-url"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddKey()">Replace Key</button>
+    </div>`);
 }
 async function testKey(id) {
   toast('Testing key…', '');

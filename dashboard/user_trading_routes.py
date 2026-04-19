@@ -38,6 +38,174 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
         session = request.get("session") or {}
         return str(session.get("user_id", ""))
 
+    # Cache: user_id -> (timestamp, result_dict). 60s TTL to avoid
+    # hammering Delta on every page load. Cleared on key changes.
+    _conn_status_cache: dict = {}
+
+    async def handle_user_connection_status(request: web.Request) -> web.Response:
+        """GET /api/user/connection-status — on-demand check of the user's
+        current trading readiness. Drives the login popup that tells the
+        user EXACTLY whether they're connected to Delta or not.
+
+        Return shape:
+          {
+            "bot_mode": "paper"|"demo"|"live",
+            "key_required": bool,        # false if paper mode
+            "key_present": bool,          # true if a matching-label active key exists
+            "key_label_expected": str,    # "demo" or "live" (matching bot_mode)
+            "connected": bool,            # Delta accepted the key on a balance probe
+            "balance_usdt": float,        # None if not connected
+            "status": str,                # "ok" | "no_key" | "key_rejected" | "delta_unreachable" | "paper_only"
+            "message": str,               # human-readable
+            "severity": str,              # "ok" | "warning" | "critical" | "info"
+            "checked_at": iso8601,
+            "cache_age_sec": int,         # 0 if freshly fetched
+          }
+        """
+        import time, asyncio, json as _json
+        from datetime import datetime, timezone as _tz
+
+        user_id = await _get_user_id(request)
+        if not user_id:
+            return web.json_response({"error": "unauthorized"}, status=401)
+
+        force = request.query.get("force", "").lower() in ("1", "true", "yes")
+        now = time.time()
+        cached = _conn_status_cache.get(user_id)
+        if cached and not force and (now - cached[0]) < 60.0:
+            out = dict(cached[1])
+            out["cache_age_sec"] = int(now - cached[0])
+            return web.json_response(out)
+
+        # Load user + (optional) matching key in one query
+        async with db_pool.acquire() as conn:
+            user_row = await conn.fetchrow(
+                "SELECT email, bot_mode FROM users WHERE id = $1", user_id,
+            )
+            if not user_row:
+                return web.json_response({"error": "user not found"}, status=404)
+            bot_mode = user_row["bot_mode"] or "paper"
+
+            key_row = None
+            expected_label = None
+            if bot_mode in ("demo", "live"):
+                expected_label = bot_mode
+                key_row = await conn.fetchrow(
+                    """SELECT api_key_enc, api_secret_enc, base_url
+                       FROM user_api_keys
+                       WHERE user_id = $1 AND exchange = 'delta'
+                         AND label = $2 AND is_active = TRUE""",
+                    user_id, expected_label,
+                )
+
+        result = {
+            "bot_mode": bot_mode,
+            "key_required": bot_mode in ("demo", "live"),
+            "key_present": key_row is not None,
+            "key_label_expected": expected_label,
+            "connected": False,
+            "balance_usdt": None,
+            "checked_at": datetime.now(_tz.utc).isoformat(),
+            "cache_age_sec": 0,
+        }
+
+        # Paper: no key needed, all good
+        if bot_mode == "paper":
+            result["status"] = "paper_only"
+            result["severity"] = "info"
+            result["message"] = "Paper trading mode — no exchange connection needed."
+            _conn_status_cache[user_id] = (now, result)
+            return web.json_response(result)
+
+        # Demo/Live but no matching key
+        if not key_row:
+            result["status"] = "no_key"
+            result["severity"] = "warning"
+            result["message"] = (
+                f"Bot mode is '{bot_mode}' but no active '{expected_label}' API key on file. "
+                f"Upload one via the Admin panel or /api/user/api-keys."
+            )
+            _conn_status_cache[user_id] = (now, result)
+            return web.json_response(result)
+
+        # Probe Delta with the decrypted key
+        try:
+            from auth.crypto import decrypt_api_key
+            api_key = decrypt_api_key(key_row["api_key_enc"], user_id=user_id)
+            api_secret = decrypt_api_key(key_row["api_secret_enc"], user_id=user_id)
+            base_url = key_row["base_url"] or (
+                "https://cdn-ind.testnet.deltaex.org" if bot_mode == "demo"
+                else "https://api.india.delta.exchange"
+            )
+        except Exception as e:
+            result["status"] = "decrypt_failed"
+            result["severity"] = "critical"
+            result["message"] = f"API key decrypt failed — key may be corrupt or Fernet master rotated: {str(e)[:120]}"
+            _conn_status_cache[user_id] = (now, result)
+            return web.json_response(result)
+
+        def _probe():
+            try:
+                from delta_rest_client import DeltaRestClient
+                client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
+                wallets = client.get_balances()
+                usdt_bal = 0.0
+                for w in (wallets or []):
+                    if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                        usdt_bal = float(w.get("available_balance", 0) or 0)
+                        break
+                return {"ok": True, "balance": usdt_bal}
+            except Exception as e:
+                msg = str(e)
+                # Heuristic: key problem vs network problem
+                lower = msg.lower()
+                if any(s in lower for s in ("unauthorized", "invalid", "forbidden", "signature", "ip_not_allowed", "api_key")):
+                    return {"ok": False, "reason": "key_rejected", "error": msg[:200]}
+                return {"ok": False, "reason": "delta_unreachable", "error": msg[:200]}
+
+        try:
+            probe = await asyncio.to_thread(_probe)
+        except Exception as e:
+            probe = {"ok": False, "reason": "delta_unreachable", "error": str(e)[:200]}
+
+        if probe.get("ok"):
+            result["connected"] = True
+            result["balance_usdt"] = round(probe["balance"], 2)
+            result["status"] = "ok"
+            result["severity"] = "ok"
+            result["message"] = (
+                f"Connected to Delta {bot_mode.upper()} — balance ${probe['balance']:.2f} USDT."
+            )
+            # Bump last_used on the key
+            try:
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        """UPDATE user_api_keys SET last_used = NOW()
+                           WHERE user_id = $1 AND label = $2""",
+                        user_id, expected_label,
+                    )
+            except Exception:
+                pass
+        elif probe.get("reason") == "key_rejected":
+            result["status"] = "key_rejected"
+            result["severity"] = "critical"
+            result["message"] = (
+                f"Delta rejected the {expected_label} API key (invalid / revoked / IP not allowed). "
+                f"Rotate the key in Delta console and re-upload."
+            )
+            result["error_detail"] = probe.get("error", "")
+        else:
+            result["status"] = "delta_unreachable"
+            result["severity"] = "warning"
+            result["message"] = (
+                f"Can't reach Delta right now — network issue or Delta is down. "
+                f"Will retry automatically."
+            )
+            result["error_detail"] = probe.get("error", "")
+
+        _conn_status_cache[user_id] = (now, result)
+        return web.json_response(result)
+
     # ── Real Trading Status ──
     async def handle_user_real_status(request: web.Request) -> web.Response:
         """GET /api/user/real/status — User's real trading status."""
@@ -364,5 +532,6 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
     app.router.add_get("/api/user/strategies", handle_user_strategies_list)
     app.router.add_post("/api/user/strategies", handle_user_strategy_create)
     app.router.add_post("/api/user/real/cb-reset", handle_user_cb_reset)
+    app.router.add_get("/api/user/connection-status", handle_user_connection_status)
 
-    logger.info("Per-user trading routes registered (8 endpoints)")
+    logger.info("Per-user trading routes registered (9 endpoints)")

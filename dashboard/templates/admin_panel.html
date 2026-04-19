@@ -831,12 +831,61 @@ async function runFernetRewrap(dryRun) {
   }
 }
 
+// ── DELTA CONNECTION STATUS POPUP (mirrors main dashboard) ──
+async function showConnectionStatusPopup() {
+  try {
+    const r = await fetch('/api/user/connection-status', {credentials:'same-origin'});
+    if (!r.ok) return;
+    const d = await r.json();
+    const old = document.getElementById('delta-conn-popup');
+    if (old) old.remove();
+    const cmap = {
+      ok:       { border:'#00ff9d', icon:'✓' },
+      warning:  { border:'#ffd700', icon:'⚠' },
+      critical: { border:'#ff3b5c', icon:'✕' },
+      info:     { border:'#00d4ff', icon:'ℹ' },
+    };
+    const c = cmap[d.severity] || cmap.info;
+    const balance = d.balance_usdt != null
+      ? `<div style="font-family:var(--font-mono);font-size:.72rem;color:var(--text-dim);margin-top:4px">USDT balance: <b style="color:var(--text)">$${d.balance_usdt.toFixed(2)}</b></div>`
+      : '';
+    const popup = document.createElement('div');
+    popup.id = 'delta-conn-popup';
+    popup.style.cssText = `position:fixed;top:72px;right:24px;z-index:9999;background:#0f1a33;
+      border:1px solid ${c.border};border-left:4px solid ${c.border};border-radius:10px;
+      padding:14px 18px;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,.5);
+      font-size:.78rem;line-height:1.4;animation:connSlide .3s ease-out`;
+    popup.innerHTML = `<style>@keyframes connSlide{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}</style>
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <span style="font-size:1.2rem;color:${c.border};line-height:1;margin-top:1px">${c.icon}</span>
+        <div style="flex:1">
+          <div style="font-weight:700;text-transform:uppercase;letter-spacing:1px;font-size:.62rem;color:${c.border};margin-bottom:4px">
+            Delta Connection — ${(d.bot_mode||'?').toUpperCase()}
+          </div>
+          <div>${esc(d.message||'')}</div>
+          ${balance}
+          <div style="margin-top:10px;display:flex;gap:12px;font-size:.7rem">
+            ${d.status === 'no_key' || d.status === 'key_rejected'
+              ? '<span style="color:var(--purple)">Use the Users tab to add/replace keys</span>'
+              : ''}
+            <a href="#" onclick="document.getElementById('delta-conn-popup').remove();return false" style="color:var(--text-muted);margin-left:auto;text-decoration:none">Dismiss</a>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(popup);
+    if (d.severity === 'ok' || d.status === 'paper_only') {
+      setTimeout(() => { const p = document.getElementById('delta-conn-popup'); if (p) p.remove(); }, 5000);
+    }
+  } catch (e) {}
+}
+
 // ── INIT ──
 (async function init() {
   await loadSessionInfo();
   await loadStats();
   await loadActiveBroadcasts();
   await loadUsers();
+  showConnectionStatusPopup();  // fire once on admin page load
   // Auto-refresh stats every 30s
   setInterval(loadStats, 30000);
 })();

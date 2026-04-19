@@ -15,11 +15,106 @@ async function checkSession() {
             if (d.auth_enabled) {
                 document.getElementById("session-info").textContent = d.user;
             }
+            // Kick off the Delta connection-status check (non-blocking)
+            showConnectionStatusPopup(false);
             return true;
         }
     } catch (e) {}
     document.getElementById("login-overlay").classList.remove("hidden");
     return false;
+}
+
+// ── DELTA CONNECTION STATUS POPUP (2026-04-19) ─────────────
+// Shown on every login/page-load. Tells the user whether their trading
+// setup is actually connected to Delta India, or if something is missing.
+// Non-blocking: fires in the background and only shows UI when there's
+// something worth saying. For "paper_only" mode it only shows a small
+// info banner and auto-dismisses after 3s.
+async function showConnectionStatusPopup(force) {
+    try {
+        const url = force ? "/api/user/connection-status?force=1" : "/api/user/connection-status";
+        const r = await fetch(url, {credentials: "same-origin"});
+        if (!r.ok) return;
+        const d = await r.json();
+        _renderConnectionModal(d);
+    } catch (e) {
+        // Silent — connection probe failures must not break the dashboard
+    }
+}
+
+function _renderConnectionModal(d) {
+    // Remove any existing popup
+    const old = document.getElementById("delta-conn-popup");
+    if (old) old.remove();
+
+    const severity = d.severity || "info";
+    const colorMap = {
+        ok:       { bg: "rgba(0,255,157,.08)",  border: "#00ff9d", icon: "✓", iconColor: "#00ff9d" },
+        warning:  { bg: "rgba(255,215,0,.08)",  border: "#ffd700", icon: "⚠", iconColor: "#ffd700" },
+        critical: { bg: "rgba(255,59,92,.08)",  border: "#ff3b5c", icon: "✕", iconColor: "#ff3b5c" },
+        info:     { bg: "rgba(0,212,255,.06)",  border: "#00d4ff", icon: "ℹ", iconColor: "#00d4ff" },
+    };
+    const c = colorMap[severity] || colorMap.info;
+
+    const actions = [];
+    if (d.status === "no_key") {
+        actions.push(`<a href="/admin" style="color:#a78bfa;text-decoration:underline;font-weight:600">Add API key</a>`);
+    }
+    if (d.status === "key_rejected") {
+        actions.push(`<a href="/admin" style="color:#ff3b5c;text-decoration:underline;font-weight:600">Fix in admin</a>`);
+    }
+    if (d.status === "paper_only") {
+        // no action needed, just info
+    }
+    actions.push(`<a href="#" onclick="document.getElementById('delta-conn-popup').remove();return false" style="color:#5a7090;text-decoration:none;margin-left:auto">Dismiss</a>`);
+
+    const balanceLine = (d.balance_usdt != null)
+        ? `<div style="font-family:'SF Mono',monospace;font-size:.72rem;color:#9ba3b5;margin-top:4px">USDT balance: <b style="color:#e8ecf4">$${d.balance_usdt.toFixed(2)}</b></div>`
+        : "";
+
+    const popup = document.createElement("div");
+    popup.id = "delta-conn-popup";
+    popup.style.cssText = `
+        position: fixed; top: 72px; right: 24px; z-index: 9999;
+        background: #0f1a33; border: 1px solid ${c.border};
+        border-left: 4px solid ${c.border};
+        border-radius: 10px; padding: 14px 18px;
+        max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,.5);
+        font-family: -apple-system, 'Inter', sans-serif; color: #e8ecf4;
+        font-size: .78rem; line-height: 1.4;
+        animation: connSlide .3s ease-out;
+    `;
+    popup.innerHTML = `
+        <style>@keyframes connSlide{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}</style>
+        <div style="display:flex;align-items:flex-start;gap:10px">
+            <span style="font-size:1.2rem;color:${c.iconColor};line-height:1;margin-top:1px">${c.icon}</span>
+            <div style="flex:1">
+                <div style="font-weight:700;text-transform:uppercase;letter-spacing:1px;font-size:.62rem;color:${c.iconColor};margin-bottom:4px">
+                    Delta Connection — ${(d.bot_mode||'?').toUpperCase()}
+                </div>
+                <div style="color:#e8ecf4">${_escapeHTML(d.message || "")}</div>
+                ${balanceLine}
+                ${d.error_detail ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:#5a7090;font-size:.65rem">Details</summary><div style="font-family:'SF Mono',monospace;font-size:.62rem;color:#9ba3b5;margin-top:4px;max-width:380px;word-break:break-all">${_escapeHTML(d.error_detail)}</div></details>` : ''}
+                <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;gap:14px;align-items:center;font-size:.7rem">
+                    ${actions.join('')}
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(popup);
+
+    // Auto-dismiss OK / paper-info after a few seconds; keep warnings visible
+    if (severity === "ok" || d.status === "paper_only") {
+        setTimeout(() => {
+            const p = document.getElementById("delta-conn-popup");
+            if (p) p.remove();
+        }, 5000);
+    }
+}
+
+function _escapeHTML(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 async function handleLogin(e) {
@@ -39,6 +134,8 @@ async function handleLogin(e) {
             document.getElementById("login-overlay").classList.add("hidden");
             document.getElementById("logout-btn").style.display = "";
             document.getElementById("session-info").textContent = email;
+            // Show Delta connection status popup right after login
+            showConnectionStatusPopup(true);
             return false;
         }
         errEl.textContent = "Invalid credentials";

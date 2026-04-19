@@ -19,8 +19,23 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
     """Register per-user real trading endpoints."""
 
     async def _get_user_id(request: web.Request) -> str:
-        """Extract user_id from session. Returns empty string if not authenticated."""
-        session = request.get("session", {})
+        """Extract user_id from the auth middleware's session.
+
+        SEC FIX (2026-04-19): Previously returned empty string on missing session,
+        which could slip through callers that did `if not user_id` but then
+        still ran queries with `WHERE user_id = ''` — matching nothing but
+        still revealing query structure. Now the middleware is the single
+        source of truth — if it set request["user"], we trust it; otherwise
+        return "" and the caller MUST 401. Also: prefer request["user"]
+        (middleware-set) over request["session"] (transport-set) since the
+        former is canonical.
+        """
+        user = request.get("user") or {}
+        user_id = user.get("user_id")
+        if user_id:
+            return str(user_id)
+        # Fallback: request["session"] (some legacy call sites)
+        session = request.get("session") or {}
         return str(session.get("user_id", ""))
 
     # ── Real Trading Status ──
@@ -49,7 +64,15 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
 
     # ── Real Trading Toggle ──
     async def handle_user_real_toggle(request: web.Request) -> web.Response:
-        """POST /api/user/real/toggle — Enable/disable user's real trading."""
+        """POST /api/user/real/toggle — Enable/disable user's real trading.
+
+        SEC FIX (2026-04-19): Before allowing a mode flip to 'demo' or 'live',
+        verify that the user has at least one ACTIVE API key with the matching
+        label in user_api_keys. Previously this endpoint unconditionally wrote
+        new bot_mode to the users table, which produced users stuck in a
+        broken state (bot_mode=live but no live key → silent fallback to
+        demo key, which we just removed in Phase 2.1).
+        """
         user_id = await _get_user_id(request)
         if not user_id:
             return web.json_response({"error": "unauthorized"}, status=401)
@@ -60,6 +83,30 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
             return web.json_response({"error": "Invalid mode. Use: paper, demo, live"}, status=400)
 
         try:
+            # Pre-flight: when switching to demo/live, require a matching-label key
+            if new_mode in ("demo", "live"):
+                required_label = new_mode  # "demo" or "live"
+                async with db_pool.acquire() as conn:
+                    key_row = await conn.fetchrow(
+                        """
+                        SELECT id FROM user_api_keys
+                        WHERE user_id = $1 AND exchange = 'delta'
+                          AND label = $2 AND is_active = TRUE
+                        LIMIT 1
+                        """,
+                        user_id, required_label,
+                    )
+                if not key_row:
+                    return web.json_response({
+                        "error": f"no active '{required_label}' API key on file",
+                        "hint": (
+                            f"Upload a '{required_label}'-labeled API key via "
+                            f"/api/user/api-keys before switching to {new_mode} mode. "
+                            f"Shadow trading (paper) always works without keys."
+                        ),
+                        "current_mode_blocked": True,
+                    }, status=400)
+
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE users SET bot_mode = $1, updated_at = NOW() WHERE id = $2",
@@ -70,6 +117,10 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
             if new_mode == "paper" and user_id in user_registry._managers:
                 del user_registry._managers[user_id]
                 logger.info("User %s switched to paper — manager removed", user_id[:8])
+
+            # Any mode change invalidates cached manager so it rebuilds with new key
+            if user_id in user_registry._managers and new_mode != "paper":
+                del user_registry._managers[user_id]
 
             # Force user refresh
             user_registry._last_user_refresh = 0

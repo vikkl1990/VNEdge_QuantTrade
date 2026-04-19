@@ -231,12 +231,45 @@ class DeltaClient:
     MIN_ORDER_DELAY_MS = 400  # Minimum ms between orders on same symbol
     CANCEL_RATE_ALERT_PCT = 15  # Alert if cancel rate > 15%
 
-    def __init__(self, mode: str = "demo"):
+    def __init__(
+        self,
+        mode: str = "demo",
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        base_url: Optional[str] = None,
+        owner: Optional[str] = None,
+    ):
         """
         Args:
             mode: "demo" for testnet, "live" for production
+            api_key: explicit API key (preferred — multi-user per-user path).
+                When provided, connect() uses it directly and does NOT read .env.
+            api_secret: explicit API secret. Required if api_key is provided.
+            base_url: explicit base URL. Defaults are inferred from mode.
+            owner: who this client represents. One of:
+                - user_id (UUID string) for per-user clients
+                - "system" for the legacy shared-account path (ONLY valid when
+                  explicit keys are omitted and .env has DELTA_API_KEY set —
+                  otherwise connect() refuses to start)
+                - None is NOT allowed when keys aren't explicit (fail-fast)
+
+        SEC FIX (2026-04-19):
+            Previously this class silently fell back to the global .env
+            DELTA_API_KEY/DELTA_API_SECRET any time it was instantiated
+            without explicit keys. That meant the multi-user system's
+            legacy RealTradingManager was executing ALL users' trades
+            under one hardcoded account, corrupting audit trails.
+
+            Now callers MUST opt into the legacy path explicitly by passing
+            owner="system", AND they get a loud warning on every connect().
+            Per-user callers (UserRealRegistry) pass their own keys and
+            never touch .env.
         """
         self.mode = mode
+        self._explicit_api_key = api_key
+        self._explicit_api_secret = api_secret
+        self._explicit_base_url = base_url
+        self._owner = owner or "unspecified"
         self._client = None
         self._connected = False
         self._balance_cache: Optional[float] = None
@@ -258,22 +291,62 @@ class DeltaClient:
         self._api_errors: List[float] = []  # timestamps of API errors
 
     def connect(self) -> bool:
-        """Initialize the Delta REST client."""
+        """Initialize the Delta REST client.
+
+        Credential resolution order:
+          1. Explicit keys passed to __init__ (multi-user per-user path)
+          2. If owner="system": fall back to .env (LEGACY, single-shared-account,
+             emits WARNING on every call). Any other owner value rejects the fallback.
+        """
         try:
             from delta_rest_client import DeltaRestClient, OrderType
             self._OrderType = OrderType  # store for use in other methods
 
-            if self.mode == "demo":
-                api_key = os.getenv("DELTA_DEMO_API_KEY", "")
-                api_secret = os.getenv("DELTA_DEMO_API_SECRET", "")
-                base_url = os.getenv("DELTA_DEMO_BASE_URL", "https://cdn-ind.testnet.deltaex.org")
+            api_key = self._explicit_api_key or ""
+            api_secret = self._explicit_api_secret or ""
+            base_url = self._explicit_base_url or ""
+
+            # Path A: explicit keys
+            if api_key and api_secret:
+                if not base_url:
+                    base_url = ("https://cdn-ind.testnet.deltaex.org"
+                                if self.mode == "demo"
+                                else "https://api.india.delta.exchange")
+                logger.info("DELTA [%s]: connecting with explicit keys (owner=%s)",
+                            self.mode.upper(), str(self._owner)[:12])
+
+            # Path B: legacy shared-account fallback (explicit opt-in via owner="system")
+            elif self._owner == "system":
+                if self.mode == "demo":
+                    api_key = os.getenv("DELTA_DEMO_API_KEY", "")
+                    api_secret = os.getenv("DELTA_DEMO_API_SECRET", "")
+                    base_url = os.getenv("DELTA_DEMO_BASE_URL",
+                                         "https://cdn-ind.testnet.deltaex.org")
+                else:
+                    api_key = os.getenv("DELTA_API_KEY", "")
+                    api_secret = os.getenv("DELTA_API_SECRET", "")
+                    base_url = "https://api.india.delta.exchange"
+                if api_key or api_secret:
+                    logger.warning(
+                        "DELTA [%s]: using LEGACY shared-account .env keys (owner=system). "
+                        "This is deprecated — migrate to UserRealRegistry for multi-user.",
+                        self.mode.upper(),
+                    )
+
+            # Path C: refuse — no keys, not opted into legacy
             else:
-                api_key = os.getenv("DELTA_API_KEY", "")
-                api_secret = os.getenv("DELTA_API_SECRET", "")
-                base_url = "https://api.india.delta.exchange"
+                logger.error(
+                    "DELTA [%s]: refusing to connect — no explicit keys passed and "
+                    "owner=%s is not 'system'. Callers must pass api_key/api_secret.",
+                    self.mode.upper(), self._owner,
+                )
+                return False
 
             if not api_key or not api_secret:
-                logger.error("DELTA: No API credentials for %s mode", self.mode)
+                logger.error(
+                    "DELTA [%s]: no credentials resolved (owner=%s) — connect aborted",
+                    self.mode.upper(), self._owner,
+                )
                 return False
 
             self._client = DeltaRestClient(

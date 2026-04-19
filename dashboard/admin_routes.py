@@ -207,9 +207,11 @@ class AdminRouteHandler:
         for row in rows:
             k = dict(row)
             k["id"] = str(k["id"])
-            # Decrypt and mask the API key for display
+            # Decrypt and mask the API key for display.
+            # Pass user_id so the per-user cipher is tried first (new scheme);
+            # falls back to master cipher for legacy ciphertexts.
             try:
-                decrypted = decrypt_api_key(k["api_key_enc"])
+                decrypted = decrypt_api_key(k["api_key_enc"], user_id=user_id)
                 k["api_key_masked"] = mask_api_key(decrypted)
             except Exception:
                 k["api_key_masked"] = "****"
@@ -238,9 +240,11 @@ class AdminRouteHandler:
         if label not in ("demo", "live"):
             return web.json_response({"error": "label must be 'demo' or 'live'"}, status=400)
 
-        from auth.crypto import encrypt_api_key
-        key_enc = encrypt_api_key(api_key)
-        secret_enc = encrypt_api_key(api_secret)
+        # SEC FIX (2026-04-19): encrypt under per-user derived key, not master.
+        # Compromise of one user's ciphertext no longer exposes other users'.
+        from auth.crypto import encrypt_for_user
+        key_enc = encrypt_for_user(api_key, user_id)
+        secret_enc = encrypt_for_user(api_secret, user_id)
 
         async with self.pool.acquire() as conn:
             # Upsert: update if exists, insert if not

@@ -317,8 +317,14 @@ class RealTradingManager:
         # Delta SDK clients (replaces ccxt for order execution)
         # DRY RUN → demo DeltaClient (testnet)
         # LIVE → live DeltaClient (production)
-        self._delta_demo = DeltaClient(mode="demo")
-        self._delta_live = DeltaClient(mode="live")
+        #
+        # SEC FIX (2026-04-19): These are the LEGACY shared-account clients.
+        # owner="system" is an explicit opt-in so DeltaClient.connect() will
+        # fall back to .env credentials. Per-user real trading goes through
+        # UserRealRegistry (execution/user_registry.py) which passes each
+        # user's own decrypted keys — never touches .env.
+        self._delta_demo = DeltaClient(mode="demo", owner="system")
+        self._delta_live = DeltaClient(mode="live", owner="system")
         self._delta_connected = False
 
         # Legacy ccxt demo exchange (used by _get_trading_exchange fallback)

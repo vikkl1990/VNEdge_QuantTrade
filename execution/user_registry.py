@@ -120,7 +120,13 @@ class UserRealRegistry:
             logger.debug("Registry: no API keys for user %s", user_id[:8])
             return None
 
-        # Determine which key to use (live > demo)
+        # Determine which key to use based on bot_mode.
+        # SEC FIX (2026-04-19): STRICT LABEL MATCH — no "any active key" fallback.
+        # Previously, if a user had bot_mode=live but only a demo key, the code
+        # silently fell through to the demo key and executed "live" trades on
+        # testnet (confusing), OR vice versa (catastrophic — demo user trading
+        # real money). Now: require exact label match. If missing, return None
+        # and the /api/user/real/toggle handler refuses the mode flip upfront.
         bot_mode = user_info.get("bot_mode", "paper")
         if bot_mode == "paper":
             return None  # Paper-only user, no real manager needed
@@ -131,22 +137,20 @@ class UserRealRegistry:
             if k["label"] == key_label and k["is_active"]:
                 key_data = k
                 break
-        # Fallback to any active key
-        if not key_data:
-            for k in api_keys:
-                if k["is_active"]:
-                    key_data = k
-                    break
 
         if not key_data:
-            logger.debug("Registry: no active %s key for user %s", key_label, user_id[:8])
+            logger.warning(
+                "Registry: user %s bot_mode=%s but no active '%s' key — "
+                "refusing to use mismatched key. Ask user to upload a %s-labeled key.",
+                user_id[:8], bot_mode, key_label, key_label,
+            )
             return None
 
-        # Decrypt API keys
+        # Decrypt API keys — per-user cipher first, falls back to legacy master key.
         try:
             from auth.crypto import decrypt_api_key
-            api_key = decrypt_api_key(key_data["api_key_enc"])
-            api_secret = decrypt_api_key(key_data["api_secret_enc"])
+            api_key = decrypt_api_key(key_data["api_key_enc"], user_id=str(user_id))
+            api_secret = decrypt_api_key(key_data["api_secret_enc"], user_id=str(user_id))
             base_url = key_data.get("base_url", "")
         except Exception as e:
             logger.error("Registry: key decryption failed for user %s: %s", user_id[:8], e)

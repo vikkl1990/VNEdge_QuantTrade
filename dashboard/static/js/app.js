@@ -357,17 +357,30 @@ async function loadApiKeys() {
     try {
         const r = await fetch("/api/user/api-keys", {credentials: "same-origin"});
         if (!r.ok) return;
-        const keys = await r.json();
+        // API returns {keys: [...]} — extract the array.
+        // Tolerate a bare-array response too for older snapshots.
+        const body = await r.json();
+        const keys = Array.isArray(body) ? body : (body && Array.isArray(body.keys) ? body.keys : []);
         const container = document.getElementById("api-keys-list");
-        if (!keys || keys.length === 0) return;
+        if (!container) return;
+        if (!keys.length) {
+            container.innerHTML = `<div style="color:var(--text-muted);font-size:.75rem;padding:12px">
+              No API keys yet. <a href="/profile" style="color:var(--accent)">Add one in Profile → API Keys</a>.
+            </div>`;
+            return;
+        }
         container.innerHTML = "";
         keys.forEach(k => {
-            const masked = k.key_masked || "\u2022".repeat(12);
+            // Backend returns 'api_key_masked' (current) or 'key_masked' (legacy) — accept either.
+            const masked = k.api_key_masked || k.key_masked || "****";
+            const active = k.is_active ? '<span style="color:var(--green);font-size:.65rem">active</span>'
+                                       : '<span style="color:var(--text-muted);font-size:.65rem">inactive</span>';
             container.innerHTML += `
                 <div class="api-key-row">
                     <div class="api-key-info">
                         <span class="api-key-label">${k.label || k.exchange}</span>
                         <span class="api-key-masked">${masked}</span>
+                        ${active}
                     </div>
                     <div class="api-key-actions">
                         <button class="btn-sm btn-edit" onclick="openApiKeyModal('${k.id}')">Edit</button>

@@ -410,13 +410,24 @@ async function submitApiKey() {
     const editId = document.getElementById("ak-edit-id").value;
     const errEl = document.getElementById("ak-error");
     errEl.style.display = "none";
+    // Backend expects `api_key` / `api_secret` (not `key`/`secret`) and
+    // does not use passphrase — updated 2026-04-19 to match /api/user/api-keys.
     const payload = {
         exchange: document.getElementById("ak-exchange").value,
         label: document.getElementById("ak-label").value,
-        key: document.getElementById("ak-key").value,
-        secret: document.getElementById("ak-secret").value,
-        passphrase: document.getElementById("ak-passphrase").value
+        api_key: document.getElementById("ak-key").value.trim(),
+        api_secret: document.getElementById("ak-secret").value.trim(),
     };
+    if (!payload.label) {
+        errEl.textContent = "Choose environment (demo or live)";
+        errEl.style.display = "block";
+        return;
+    }
+    if (!payload.api_key || !payload.api_secret) {
+        errEl.textContent = "API key + secret required";
+        errEl.style.display = "block";
+        return;
+    }
     try {
         const url = editId ? `/api/user/api-keys/${editId}` : "/api/user/api-keys";
         const method = editId ? "PUT" : "POST";

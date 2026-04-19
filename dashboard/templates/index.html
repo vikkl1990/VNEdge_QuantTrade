@@ -2415,19 +2415,116 @@ textarea.contact-input{min-height:100px;resize:vertical}
 </script>
 
 <!-- ═══ API KEY MODAL ═══════════════════════════════════════ -->
+<!-- Rewrite 2026-04-19: predefined exchange + label dropdowns + inline
+     validation via /api/user/api-keys/validate before save. Save button
+     stays disabled until a successful validation confirms the key works. -->
 <div id="apikey-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
-  <div class="login-box" style="width:420px">
+  <div class="login-box" style="width:460px">
     <div class="login-title" style="font-size:1.2rem;margin-bottom:20px" id="ak-modal-title">Add API Key</div>
-    <input type="text" id="ak-exchange" class="login-input" placeholder="Exchange (e.g. Binance)">
-    <input type="text" id="ak-label" class="login-input" placeholder="Label (e.g. Main Account)">
-    <input type="text" id="ak-key" class="login-input" placeholder="API Key">
-    <input type="password" id="ak-secret" class="login-input" placeholder="API Secret">
-    <input type="text" id="ak-passphrase" class="login-input" placeholder="Passphrase (optional)">
+
+    <label style="display:block;font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">Exchange</label>
+    <select id="ak-exchange" class="login-input" style="margin-bottom:12px">
+      <option value="delta" selected>Delta India (Futures)</option>
+      <option value="delta_spot" disabled>Delta India Spot (not yet supported)</option>
+      <option value="binance" disabled>Binance (not yet supported)</option>
+      <option value="bybit" disabled>Bybit (not yet supported)</option>
+      <option value="okx" disabled>OKX (not yet supported)</option>
+    </select>
+
+    <label style="display:block;font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">Environment</label>
+    <select id="ak-label" class="login-input" style="margin-bottom:12px">
+      <option value="">— choose —</option>
+      <option value="demo">Demo (Testnet) — fake money, real exchange behaviour</option>
+      <option value="live">Live (Production) — REAL money</option>
+    </select>
+
+    <label style="display:block;font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">API Key</label>
+    <input type="text" id="ak-key" class="login-input" placeholder="paste from Delta console" autocomplete="off" style="margin-bottom:12px">
+
+    <label style="display:block;font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px">API Secret</label>
+    <input type="password" id="ak-secret" class="login-input" placeholder="paste from Delta console" autocomplete="off" style="margin-bottom:12px">
+
     <input type="hidden" id="ak-edit-id">
-    <button class="login-btn" data-action="submitApiKey">SAVE KEY</button>
-    <div class="login-error" id="ak-error" style="display:none"></div>
+
+    <!-- Inline validation result shown here -->
+    <div id="ak-validation" style="margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;display:none"></div>
+
+    <div style="display:flex;gap:10px">
+      <button id="ak-validate-btn" class="login-btn" style="flex:1;background:transparent;border:1px solid var(--accent);color:var(--accent)" onclick="validateApiKeyInline()">Test Key</button>
+      <button id="ak-save-btn" class="login-btn" style="flex:1" data-action="submitApiKey" disabled title="Test the key first to enable save">SAVE KEY</button>
+    </div>
+    <div class="login-error" id="ak-error" style="display:none;margin-top:10px"></div>
   </div>
 </div>
+
+<script>
+// ── Inline API-key validation (shared with /profile modal logic) ──
+async function validateApiKeyInline() {
+  const exchange = document.getElementById('ak-exchange').value;
+  const label = document.getElementById('ak-label').value;
+  const apiKey = document.getElementById('ak-key').value.trim();
+  const apiSecret = document.getElementById('ak-secret').value.trim();
+
+  const resEl = document.getElementById('ak-validation');
+  const saveBtn = document.getElementById('ak-save-btn');
+  const testBtn = document.getElementById('ak-validate-btn');
+
+  resEl.style.display = 'block';
+  saveBtn.disabled = true;
+
+  if (!label) {
+    resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);color:var(--yellow)';
+    resEl.textContent = 'Choose an environment (demo or live) first.';
+    return;
+  }
+  if (!apiKey || !apiSecret) {
+    resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);color:var(--yellow)';
+    resEl.textContent = 'Paste both key and secret, then click Test.';
+    return;
+  }
+
+  testBtn.disabled = true;
+  testBtn.textContent = 'Testing…';
+  resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);color:var(--info)';
+  resEl.textContent = 'Probing Delta…';
+
+  try {
+    const r = await fetch('/api/user/api-keys/validate', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({exchange, label, api_key: apiKey, api_secret: apiSecret}),
+    });
+    const d = await r.json().catch(() => ({}));
+
+    if (d.ok) {
+      resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.3);color:var(--green)';
+      resEl.innerHTML = `<b>✓ Key validated</b><br>${d.message}<br><small style="color:var(--text-muted)">Base URL: ${d.base_url}</small>`;
+      saveBtn.disabled = false;
+      saveBtn.title = 'Key tested OK — safe to save';
+    } else {
+      resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(255,59,92,.06);border:1px solid rgba(255,59,92,.3);color:var(--red)';
+      resEl.innerHTML = `<b>✕ ${d.status || 'validation failed'}</b><br>${d.message || 'Unknown error'}` +
+        (d.error_detail ? `<br><small style="color:var(--text-muted);word-break:break-all">${d.error_detail}</small>` : '');
+    }
+  } catch (e) {
+    resEl.style.cssText = 'margin-bottom:12px;padding:10px;border-radius:6px;font-size:.8rem;background:rgba(255,59,92,.06);border:1px solid rgba(255,59,92,.3);color:var(--red)';
+    resEl.textContent = 'Network error: ' + e;
+  } finally {
+    testBtn.disabled = false;
+    testBtn.textContent = 'Test Key';
+  }
+}
+
+// Reset validation + disable save on field edits
+['ak-exchange','ak-label','ak-key','ak-secret'].forEach(id => {
+  document.getElementById(id) && document.getElementById(id).addEventListener('input', () => {
+    const resEl = document.getElementById('ak-validation');
+    if (resEl) resEl.style.display = 'none';
+    const saveBtn = document.getElementById('ak-save-btn');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.title = 'Test the key first to enable save'; }
+  });
+});
+</script>
 
 <!-- ═══ AGENTS TAB ═══════════════════════════════════════ -->
 <div class="tab-content" role="tabpanel" id="tab-agents">

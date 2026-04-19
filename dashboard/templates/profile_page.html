@@ -769,18 +769,98 @@ async function deleteKey(id) {
 }
 function openAddKeyModal() {
   showModal(`<h3>Add API Key</h3>
-    <div class="field"><label>Label</label>
-      <select id="k-label"><option value="demo">demo (testnet)</option><option value="live">live (production)</option></select></div>
     <div class="field"><label>Exchange</label>
-      <select id="k-ex"><option value="delta">delta</option></select></div>
-    <div class="field"><label>API key</label><input type="text" id="k-key" autocomplete="off"></div>
-    <div class="field"><label>API secret</label><input type="text" id="k-secret" autocomplete="off"></div>
+      <select id="k-ex">
+        <option value="delta">Delta India (Futures)</option>
+        <option value="delta_spot" disabled>Delta India Spot (not yet supported)</option>
+        <option value="binance" disabled>Binance (not yet supported)</option>
+        <option value="bybit" disabled>Bybit (not yet supported)</option>
+        <option value="okx" disabled>OKX (not yet supported)</option>
+      </select>
+    </div>
+    <div class="field"><label>Environment</label>
+      <select id="k-label">
+        <option value="">— choose —</option>
+        <option value="demo">Demo (Testnet) — fake money, real exchange behaviour</option>
+        <option value="live">Live (Production) — REAL money</option>
+      </select>
+    </div>
+    <div class="field"><label>API Key</label><input type="text" id="k-key" autocomplete="off" placeholder="paste from Delta console"></div>
+    <div class="field"><label>API Secret</label><input type="password" id="k-secret" autocomplete="off" placeholder="paste from Delta console"></div>
     <div class="field"><label>Base URL (optional, default inferred)</label><input type="text" id="k-url" placeholder="https://api.india.delta.exchange"></div>
+    <div id="k-validation" style="margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;display:none"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitAddKey()">Save Key</button>
+      <button class="btn" id="k-test-btn" style="background:transparent;border:1px solid var(--accent);color:var(--accent)" onclick="validateKeyBeforeSave()">Test Key</button>
+      <button class="btn btn-primary" id="k-save-btn" onclick="submitAddKey()" disabled title="Test the key first to enable save">Save Key</button>
     </div>`);
+  // Wire input-change listener to reset validation + disable save
+  ['k-ex','k-label','k-key','k-secret','k-url'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', () => {
+      const v = document.getElementById('k-validation'); if (v) v.style.display = 'none';
+      const s = document.getElementById('k-save-btn');
+      if (s) { s.disabled = true; s.title = 'Test the key first to enable save'; }
+    });
+  });
 }
+
+async function validateKeyBeforeSave() {
+  const v = document.getElementById('k-validation');
+  const saveBtn = document.getElementById('k-save-btn');
+  const testBtn = document.getElementById('k-test-btn');
+  const body = {
+    exchange: document.getElementById('k-ex').value,
+    label: document.getElementById('k-label').value,
+    api_key: document.getElementById('k-key').value.trim(),
+    api_secret: document.getElementById('k-secret').value.trim(),
+    base_url: document.getElementById('k-url').value.trim(),
+  };
+  v.style.display = 'block';
+  saveBtn.disabled = true;
+
+  if (!body.label) {
+    v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);color:var(--yellow)';
+    v.textContent = 'Choose an environment (demo or live) first.';
+    return;
+  }
+  if (!body.api_key || !body.api_secret) {
+    v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(255,215,0,.08);border:1px solid rgba(255,215,0,.3);color:var(--yellow)';
+    v.textContent = 'Paste both key and secret, then click Test.';
+    return;
+  }
+
+  testBtn.disabled = true;
+  testBtn.textContent = 'Testing…';
+  v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);color:var(--cyan)';
+  v.textContent = 'Probing Delta with your credentials…';
+
+  try {
+    const r = await fetch('/api/user/api-keys/validate', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d.ok) {
+      v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.3);color:var(--green)';
+      v.innerHTML = `<b>✓ Key validated</b><br>${esc(d.message||'')}<br><span style="color:var(--text-muted)">Base URL: ${esc(d.base_url||'')}</span>`;
+      saveBtn.disabled = false;
+      saveBtn.title = 'Key tested OK — safe to save';
+    } else {
+      v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(255,59,92,.06);border:1px solid rgba(255,59,92,.3);color:var(--red)';
+      v.innerHTML = `<b>✕ ${esc(d.status||'validation failed')}</b><br>${esc(d.message||'Unknown error')}` +
+        (d.error_detail ? `<br><span style="color:var(--text-muted);word-break:break-all">${esc(d.error_detail)}</span>` : '');
+    }
+  } catch (e) {
+    v.style.cssText = 'margin:10px 0;padding:10px;border-radius:6px;font-size:.75rem;background:rgba(255,59,92,.06);border:1px solid rgba(255,59,92,.3);color:var(--red)';
+    v.textContent = 'Network error: ' + e;
+  } finally {
+    testBtn.disabled = false;
+    testBtn.textContent = 'Test Key';
+  }
+}
+
 async function submitAddKey() {
   const body = {
     label: document.getElementById('k-label').value,
@@ -789,11 +869,12 @@ async function submitAddKey() {
     api_secret: document.getElementById('k-secret').value.trim(),
     base_url: document.getElementById('k-url').value.trim(),
   };
+  if (!body.label) { toast('Environment required', 'err'); return; }
   if (!body.api_key || !body.api_secret) { toast('Key + secret required', 'err'); return; }
   const r = await fetchJSON('/api/user/api-keys', {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
   });
-  if (r) { closeModal(); toast('Key saved', 'ok'); loadKeys(); }
+  if (r) { closeModal(); toast(`Key ${r.action || 'saved'}`, 'ok'); loadKeys(); }
 }
 
 // ── Activity ──

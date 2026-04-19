@@ -29,6 +29,7 @@ def register_user_routes(app: web.Application, auth_service, db_pool):
     app.router.add_get("/api/user/api-keys", handler.handle_list_api_keys)
     app.router.add_delete("/api/user/api-keys/{key_id}", handler.handle_delete_api_key)
     app.router.add_post("/api/user/api-keys/{key_id}/toggle-active", handler.handle_toggle_api_key_active)
+    app.router.add_post("/api/user/api-keys/validate", handler.handle_validate_api_key)
 
     # Settings
     app.router.add_get("/api/user/settings", handler.handle_get_settings)
@@ -303,6 +304,106 @@ class UserRouteHandler:
             logger.info("API key deleted: user=%s key_id=%s", user["email"], key_id)
             return web.json_response({"ok": True})
         return web.json_response({"error": "key not found"}, status=404)
+
+    async def handle_validate_api_key(self, request: web.Request) -> web.Response:
+        """POST /api/user/api-keys/validate — dry-run probe of UNSAVED credentials.
+
+        Accepts raw api_key/api_secret in the request body and probes Delta's
+        /balances endpoint. Returns balance on success or categorised error on
+        failure. Nothing is persisted — pure validation.
+
+        Body: {exchange, label, api_key, api_secret, [base_url]}
+        Returns: {ok, balance_usdt|null, status, message, [error_detail]}
+        """
+        user = request.get("user")
+        if not user:
+            return web.json_response({"error": "unauthorized"}, status=401)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        exchange = (body.get("exchange") or "delta").lower()
+        label = body.get("label", "")
+        api_key = (body.get("api_key") or "").strip()
+        api_secret = (body.get("api_secret") or "").strip()
+        base_url = (body.get("base_url") or "").strip()
+
+        if exchange != "delta":
+            return web.json_response({
+                "ok": False, "status": "unsupported_exchange",
+                "message": f"Exchange '{exchange}' not supported yet. Only 'delta' (Delta India).",
+            }, status=400)
+        if label not in ("demo", "live"):
+            return web.json_response({
+                "ok": False, "status": "invalid_label",
+                "message": "Label must be 'demo' (testnet) or 'live' (production).",
+            }, status=400)
+        if not api_key or not api_secret:
+            return web.json_response({
+                "ok": False, "status": "missing_credentials",
+                "message": "Both api_key and api_secret are required.",
+            }, status=400)
+        if len(api_key) < 8 or len(api_secret) < 20:
+            return web.json_response({
+                "ok": False, "status": "malformed",
+                "message": "Key or secret looks truncated. Double-check you copied the full value.",
+            }, status=400)
+
+        resolved_base = base_url or (
+            "https://cdn-ind.testnet.deltaex.org" if label == "demo"
+            else "https://api.india.delta.exchange"
+        )
+
+        import asyncio
+        def _probe():
+            try:
+                from delta_rest_client import DeltaRestClient
+                client = DeltaRestClient(base_url=resolved_base, api_key=api_key, api_secret=api_secret)
+                wallets = client.get_balances()
+                usdt_bal = 0.0
+                for w in (wallets or []):
+                    if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                        usdt_bal = float(w.get("available_balance", 0) or 0)
+                        break
+                return {"ok": True, "balance": usdt_bal, "wallet_count": len(wallets or [])}
+            except Exception as e:
+                msg = str(e)
+                lower = msg.lower()
+                if any(s in lower for s in ("unauthorized", "invalid", "forbidden", "signature", "api_key", "ip_not_allowed")):
+                    return {"ok": False, "reason": "key_rejected", "error": msg[:200]}
+                return {"ok": False, "reason": "delta_unreachable", "error": msg[:200]}
+
+        try:
+            result = await asyncio.to_thread(_probe)
+        except Exception as e:
+            result = {"ok": False, "reason": "probe_failed", "error": str(e)[:200]}
+
+        if result.get("ok"):
+            return web.json_response({
+                "ok": True,
+                "balance_usdt": round(result["balance"], 2),
+                "wallet_count": result.get("wallet_count", 0),
+                "status": "ok",
+                "message": f"Connected to Delta {label.upper()} — balance ${result['balance']:.2f} USDT.",
+                "base_url": resolved_base,
+            })
+
+        reason = result.get("reason", "unknown")
+        if reason == "key_rejected":
+            return web.json_response({
+                "ok": False, "status": "key_rejected",
+                "message": "Delta rejected these credentials. Check the key/secret, ensure IP restrictions allow this server, and that the key is enabled in the Delta console.",
+                "error_detail": result.get("error", ""),
+                "base_url": resolved_base,
+            }, status=200)  # 200 with ok=false so UI can show detail
+        return web.json_response({
+            "ok": False, "status": "delta_unreachable",
+            "message": "Can't reach Delta right now. Try again in a moment.",
+            "error_detail": result.get("error", ""),
+            "base_url": resolved_base,
+        }, status=200)
 
     async def handle_toggle_api_key_active(self, request: web.Request) -> web.Response:
         """POST /api/user/api-keys/{key_id}/toggle-active — enable or disable

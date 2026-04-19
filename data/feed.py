@@ -275,11 +275,27 @@ class DataFeed:
     # Historical bootstrap
     # ------------------------------------------------------------------
 
+    # Delta India uses 1000x-multiplier prefixes for thin-price memes
+    # so contract size stays reasonable. Keep in sync with
+    # exchange/ccxt_client.py._DELTA_BASE_OVERRIDE (2026-04-19).
+    _DELTA_BASE_OVERRIDE = {
+        "PEPE": "1000PEPE",
+        "SHIB": "1000SHIB",
+        "BONK": "1000BONK",
+        "FLOKI": "1000FLOKI",
+        "BABYDOGE": "1MBABYDOGE",
+    }
+
     def _to_exchange_symbol(self, symbol: str) -> str:
-        """Convert canonical symbol to exchange format."""
+        """Convert canonical symbol to exchange format.
+
+        Delta India: BTC/USDT → BTC/USD:USD (futures).
+        Meme 1000x contracts: PEPE/USDT → 1000PEPE/USD:USD.
+        """
         region = self._cfg["exchange"].get("region", "").lower()
         if self._exchange_name == "delta" and region == "india":
             base = symbol.split("/")[0]
+            base = self._DELTA_BASE_OVERRIDE.get(base, base)
             return f"{base}/USD:USD"
         return symbol
 

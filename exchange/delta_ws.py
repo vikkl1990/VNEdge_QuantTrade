@@ -37,6 +37,10 @@ WS_URL = WS_URL_PROD  # Default to production
 # Symbol mapping: our format → Delta WS format
 # FIX C1: Expanded to all active trading pairs so update_real_trades() sees price ticks
 # for every pair that can have a real position (previously missing: XRP/LTC/ADA/LINK/DOT/TAO)
+# FIX 2026-04-19: Added meme coins with 1000x multiplier prefix (matches
+# _DELTA_BASE_OVERRIDE in exchange/ccxt_client.py and data/feed.py).
+# Without these, DeltaWS silently drops meme subscriptions → no live price feed
+# → scanners can't evaluate memes in real-time → zero meme signals.
 SYMBOL_MAP = {
     "BTC/USDT": "BTCUSD",
     "ETH/USDT": "ETHUSD",
@@ -49,6 +53,18 @@ SYMBOL_MAP = {
     "LINK/USDT": "LINKUSD",
     "DOT/USDT": "DOTUSD",
     "TAO/USDT": "TAOUSD",
+    # Memes with 1000x multiplier (thin-price contracts on Delta India)
+    "PEPE/USDT": "1000PEPEUSD",
+    "SHIB/USDT": "1000SHIBUSD",
+    "BONK/USDT": "1000BONKUSD",
+    "FLOKI/USDT": "1000FLOKIUSD",
+    # 1:1 memes (normal contract size)
+    "WIF/USDT": "WIFUSD",
+    "SUI/USDT": "SUIUSD",
+    "NEAR/USDT": "NEARUSD",
+    "TRUMP/USDT": "TRUMPUSD",
+    "POPCAT/USDT": "POPCATUSD",
+    "MEME/USDT": "MEMEUSD",
 }
 
 REVERSE_MAP = {v: k for k, v in SYMBOL_MAP.items()}

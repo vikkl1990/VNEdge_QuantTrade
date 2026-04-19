@@ -636,9 +636,11 @@ class DashboardServer:
         if self._auth_service and self._db_pool:
             from dashboard.user_routes import register_user_routes
             from dashboard.admin_routes import register_admin_routes
+            from dashboard.profile_routes import register_profile_routes
             register_user_routes(self._app, self._auth_service, self._db_pool)
             register_admin_routes(self._app, self._auth_service, self._db_pool)
-            logger.info("Multi-user routes registered (user profile, API keys, admin)")
+            register_profile_routes(self._app, self._auth_service, self._db_pool)
+            logger.info("Multi-user routes registered (user profile, API keys, admin, self-service profile)")
 
             # Per-user real trading routes
             orch = getattr(self, '_orchestrator', None)
@@ -716,6 +718,7 @@ class DashboardServer:
         # Pages
         app.router.add_get("/", self._handle_index)
         app.router.add_get("/admin", self._handle_admin_panel)  # production admin panel (2026-04-19)
+        app.router.add_get("/profile", self._handle_profile_page)  # production profile page (2026-04-19)
 
         # JSON API
         app.router.add_get("/api/status", self._handle_status)
@@ -851,6 +854,17 @@ class DashboardServer:
         return web.Response(
             text=self._idx_cache, content_type="text/html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+        )
+
+    async def _handle_profile_page(self, request: web.Request) -> web.Response:
+        """GET /profile — production user profile page HTML."""
+        profile_path = _TEMPLATES_DIR / "profile_page.html"
+        if not profile_path.exists():
+            return web.Response(text="Profile page template not found", status=500)
+        body = profile_path.read_text(encoding="utf-8")
+        return web.Response(
+            text=body, content_type="text/html",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
     async def _handle_admin_panel(self, request: web.Request) -> web.Response:

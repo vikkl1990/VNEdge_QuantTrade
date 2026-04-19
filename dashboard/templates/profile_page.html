@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VN Edge — My Profile</title>
+<link rel="icon" href="/static/logo-dark.jpg" type="image/jpeg">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root{--bg:#0a1429;--bg-card:rgba(255,255,255,.04);--border:rgba(0,255,157,.1);--border-active:rgba(0,255,157,.3);--accent:#00ff9d;--green:#00ff9d;--red:#ff3b5c;--yellow:#ffd700;--cyan:#00d4ff;--purple:#a78bfa;--orange:#f97316;--text:#e8ecf4;--text-dim:#9ba3b5;--text-muted:#5a7090;--radius:8px;--font-mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,monospace;--font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI','Inter',Roboto,sans-serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:13px;background-image:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(0,255,157,.03),transparent)}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(0,255,157,.2);border-radius:3px}
+.header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:60px;background:#0a1429;border-bottom:1px solid rgba(0,255,157,.12);position:sticky;top:0;z-index:200}
+.header-brand{display:flex;align-items:center;gap:14px}
+.header-brand img{height:40px;border-radius:8px}
+.brand-name{font-size:1.15rem;font-weight:800;letter-spacing:2.5px;color:#fff}
+.brand-tagline{font-size:.55rem;letter-spacing:3px;color:var(--green);font-weight:700;text-transform:uppercase}
+.header-right{display:flex;align-items:center;gap:14px}
+.nav-links a{padding:8px 14px;border-radius:6px;color:var(--text-dim);text-decoration:none;font-weight:600;font-size:.75rem;letter-spacing:.3px}
+.nav-links a:hover{color:var(--text)}
+.nav-links a.active{background:rgba(0,255,157,.1);color:var(--green)}
+.user-chip{padding:5px 12px;border-radius:16px;background:rgba(0,255,157,.08);color:var(--green);font-size:.7rem;font-weight:700;border:1px solid rgba(0,255,157,.25)}
+
+.wrap{max-width:1200px;margin:0 auto;padding:24px;display:grid;grid-template-columns:200px 1fr;gap:24px}
+@media(max-width:768px){.wrap{grid-template-columns:1fr}}
+
+.sidebar{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 0;height:fit-content;position:sticky;top:80px}
+.sidebar-item{display:block;padding:10px 18px;color:var(--text-dim);cursor:pointer;font-size:.75rem;font-weight:600;letter-spacing:.3px;border-left:3px solid transparent;transition:all .15s;user-select:none}
+.sidebar-item:hover{color:var(--text);background:rgba(255,255,255,.02)}
+.sidebar-item.active{color:var(--green);border-left-color:var(--green);background:rgba(0,255,157,.05)}
+.sidebar-item .hint{display:block;font-size:.6rem;color:var(--text-muted);font-weight:400;margin-top:1px}
+
+.section{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:22px;margin-bottom:14px;display:none}
+.section.active{display:block}
+.section h2{color:var(--green);font-size:1rem;letter-spacing:.5px;margin-bottom:4px;font-weight:700}
+.section .subtitle{color:var(--text-muted);font-size:.75rem;margin-bottom:18px}
+
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.65rem;color:var(--text-muted);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase;font-weight:600}
+.field input,.field select,.field textarea{width:100%;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);color:var(--text);padding:9px 12px;border-radius:6px;font-size:.8rem;font-family:inherit}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--green)}
+.field input[readonly]{background:rgba(0,0,0,.1);color:var(--text-dim)}
+.field .help{font-size:.65rem;color:var(--text-muted);margin-top:4px}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+.btn{padding:8px 16px;border-radius:6px;font-size:.75rem;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;font-family:inherit;letter-spacing:.3px}
+.btn-primary{background:var(--green);color:#000;border-color:var(--green)}
+.btn-primary:hover{opacity:.9}
+.btn-ghost{background:transparent;color:var(--text-dim);border-color:rgba(255,255,255,.15)}
+.btn-ghost:hover{color:var(--text);border-color:rgba(255,255,255,.3)}
+.btn-danger{background:rgba(255,59,92,.12);color:var(--red);border-color:rgba(255,59,92,.3)}
+.btn-danger:hover{background:rgba(255,59,92,.22)}
+.btn-warn{background:rgba(255,215,0,.12);color:var(--yellow);border-color:rgba(255,215,0,.3)}
+.btn-sm{padding:5px 12px;font-size:.68rem}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.6rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.badge-ok{background:rgba(0,255,157,.12);color:var(--green);border:1px solid rgba(0,255,157,.3)}
+.badge-warn{background:rgba(255,215,0,.12);color:var(--yellow);border:1px solid rgba(255,215,0,.3)}
+.badge-alert{background:rgba(255,59,92,.12);color:var(--red);border:1px solid rgba(255,59,92,.3)}
+.badge-cyan{background:rgba(0,212,255,.12);color:var(--cyan);border:1px solid rgba(0,212,255,.3)}
+.badge-purple{background:rgba(167,139,250,.12);color:var(--purple);border:1px solid rgba(167,139,250,.3)}
+.badge-muted{background:rgba(255,255,255,.05);color:var(--text-muted);border:1px solid rgba(255,255,255,.08)}
+
+.card-row{background:rgba(0,0,0,.2);border-radius:6px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:.75rem;flex-wrap:wrap}
+
+table{width:100%;border-collapse:collapse;font-size:.72rem}
+thead th{text-align:left;padding:8px 10px;background:rgba(0,255,157,.04);color:var(--text-dim);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.6rem;border-bottom:1px solid rgba(0,255,157,.08)}
+tbody tr{border-bottom:1px solid rgba(255,255,255,.04)}
+td{padding:8px 10px;color:var(--text)}
+.mono{font-family:var(--font-mono)}
+
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:1000;backdrop-filter:blur(4px)}
+.modal-bg.hide{display:none}
+.modal{background:#0f1a33;border:1px solid var(--border-active);border-radius:12px;padding:22px;min-width:380px;max-width:520px;max-height:90vh;overflow-y:auto}
+.modal h3{margin-bottom:14px;color:var(--green);font-size:1rem}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;padding-top:14px;border-top:1px solid rgba(255,255,255,.06)}
+
+.toast{position:fixed;bottom:24px;right:24px;background:#0f1a33;border:1px solid var(--green);border-radius:8px;padding:12px 18px;color:var(--text);font-size:.75rem;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:1100;animation:slideIn .2s ease-out}
+.toast.err{border-color:var(--red)}
+.toast.warn{border-color:var(--yellow)}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+.danger-zone{background:rgba(255,59,92,.04);border:1px dashed rgba(255,59,92,.3);border-radius:8px;padding:14px;margin-top:12px}
+.danger-zone h4{color:var(--red);font-size:.8rem;margin-bottom:6px}
+
+.kv{display:grid;grid-template-columns:150px 1fr;gap:8px;margin-bottom:6px;font-size:.75rem}
+.kv .k{color:var(--text-muted)}
+
+.empty{padding:24px;text-align:center;color:var(--text-muted);font-size:.75rem}
+.loading{padding:20px;text-align:center;color:var(--text-muted);font-size:.75rem}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-brand">
+    <img src="/static/logo-dark.jpg" alt="VN Edge">
+    <div>
+      <div class="brand-name">VN EDGE</div>
+      <div class="brand-tagline">My Profile</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <nav class="nav-links">
+      <a href="/">← Dashboard</a>
+      <a href="/profile" class="active">Profile</a>
+    </nav>
+    <span class="user-chip" id="user-chip">…</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-item active" data-section="account">Account<span class="hint">Name, email, timezone</span></div>
+    <div class="sidebar-item" data-section="security">Security<span class="hint">Password, 2FA, sessions</span></div>
+    <div class="sidebar-item" data-section="keys">API Keys<span class="hint">Delta demo / live</span></div>
+    <div class="sidebar-item" data-section="trading">Trading<span class="hint">Limits, leverage, pairs</span></div>
+    <div class="sidebar-item" data-section="notifications">Notifications<span class="hint">Alerts + telegram</span></div>
+    <div class="sidebar-item" data-section="activity">Activity<span class="hint">Logins + audit</span></div>
+    <div class="sidebar-item" data-section="danger">Danger Zone<span class="hint">Export, delete</span></div>
+  </nav>
+
+  <!-- Content -->
+  <main>
+
+  <!-- ACCOUNT -->
+  <section class="section active" id="sec-account">
+    <h2>Account</h2>
+    <div class="subtitle">Your basic profile information.</div>
+    <div class="field-row">
+      <div class="field"><label>Email</label><input type="email" id="f-email" readonly><div class="help"><a href="#" onclick="openEmailChangeModal();return false" style="color:var(--green)">Change email</a></div></div>
+      <div class="field"><label>Full Name</label><input type="text" id="f-full-name"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Phone</label><input type="tel" id="f-phone"></div>
+      <div class="field"><label>Timezone</label>
+        <select id="f-timezone">
+          <option value="Asia/Kolkata">Asia/Kolkata</option>
+          <option value="UTC">UTC</option>
+          <option value="America/New_York">America/New_York</option>
+          <option value="America/Los_Angeles">America/Los_Angeles</option>
+          <option value="Europe/London">Europe/London</option>
+          <option value="Europe/Paris">Europe/Paris</option>
+          <option value="Asia/Singapore">Asia/Singapore</option>
+          <option value="Asia/Tokyo">Asia/Tokyo</option>
+          <option value="Asia/Shanghai">Asia/Shanghai</option>
+          <option value="Asia/Dubai">Asia/Dubai</option>
+          <option value="Australia/Sydney">Australia/Sydney</option>
+        </select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Role</label><input type="text" id="f-role" readonly></div>
+      <div class="field"><label>Tier</label><input type="text" id="f-tier" readonly></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Email verified</label><input type="text" id="f-verified" readonly></div>
+      <div class="field"><label>KYC status</label><input type="text" id="f-kyc" readonly></div>
+    </div>
+    <button class="btn btn-primary" onclick="saveAccount()">Save Account</button>
+  </section>
+
+  <!-- SECURITY -->
+  <section class="section" id="sec-security">
+    <h2>Security</h2>
+    <div class="subtitle">Password, two-factor auth, and active sessions.</div>
+
+    <div style="margin-bottom:20px">
+      <h4 style="color:var(--text);font-size:.85rem;margin-bottom:10px">Password</h4>
+      <button class="btn btn-primary" onclick="openPasswordModal()">Change Password</button>
+      <span style="color:var(--text-muted);font-size:.7rem;margin-left:10px">Requires current password.</span>
+    </div>
+
+    <div style="margin-bottom:20px">
+      <h4 style="color:var(--text);font-size:.85rem;margin-bottom:10px">Two-Factor Authentication (TOTP)</h4>
+      <div id="twofa-status" style="margin-bottom:10px;font-size:.75rem;color:var(--text-dim)">Loading...</div>
+      <button class="btn btn-primary" id="twofa-toggle-btn" onclick="toggle2FA()">Loading...</button>
+      <span style="color:var(--text-muted);font-size:.7rem;margin-left:10px">Google Authenticator / Authy compatible.</span>
+    </div>
+
+    <div>
+      <h4 style="color:var(--text);font-size:.85rem;margin-bottom:10px">Active Sessions</h4>
+      <div id="sessions-list" class="loading">Loading sessions…</div>
+      <div style="margin-top:10px">
+        <button class="btn btn-warn btn-sm" onclick="logoutAllOthers()">Logout all other devices</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- KEYS -->
+  <section class="section" id="sec-keys">
+    <h2>API Keys</h2>
+    <div class="subtitle">Delta India credentials for demo (testnet) and live (production) trading.</div>
+    <div id="keys-list" class="loading">Loading keys…</div>
+    <button class="btn btn-primary" style="margin-top:12px" onclick="openAddKeyModal()">+ Add Key</button>
+    <div class="help" style="color:var(--text-muted);font-size:.7rem;margin-top:10px">
+      Keys are encrypted at rest with a per-user derived Fernet cipher. Secrets are never sent back to the UI.
+    </div>
+  </section>
+
+  <!-- TRADING -->
+  <section class="section" id="sec-trading">
+    <h2>Trading Configuration</h2>
+    <div class="subtitle">Your risk limits and scanner preferences.</div>
+    <div class="field-row">
+      <div class="field"><label>Bot Mode</label>
+        <select id="f-bot-mode">
+          <option value="paper">paper (simulation)</option>
+          <option value="demo">demo (testnet)</option>
+          <option value="live">live (production)</option>
+        </select>
+        <div class="help" id="mode-help"></div>
+      </div>
+      <div class="field"><label>Max leverage cap (admin-set)</label><input type="number" id="f-max-lev" readonly></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Preferred leverage</label><input type="number" id="f-pref-lev" min="1" max="50"></div>
+      <div class="field"><label>Risk per trade (%)</label><input type="number" id="f-risk-pct" step="0.1" min="0.1" max="10"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Max daily loss (%)</label><input type="number" id="f-daily-loss" step="0.5" min="0.5" max="20"></div>
+      <div class="field"><label>Max open positions</label><input type="number" id="f-max-open" min="1" max="10"></div>
+    </div>
+    <button class="btn btn-primary" onclick="saveTrading()">Save Trading</button>
+  </section>
+
+  <!-- NOTIFICATIONS -->
+  <section class="section" id="sec-notifications">
+    <h2>Notifications</h2>
+    <div class="subtitle">Telegram + per-event alert preferences.</div>
+    <div class="field"><label>Telegram chat ID</label><input type="text" id="f-telegram"><div class="help">Message @vnedge_bot on Telegram then paste the chat ID here.</div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem"><input type="checkbox" id="f-n-signal"> Signal alerts</label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem"><input type="checkbox" id="f-n-trade"> Trade execution</label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem"><input type="checkbox" id="f-n-tp"> Take profit hit</label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem"><input type="checkbox" id="f-n-sl"> Stop loss hit</label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:.8rem"><input type="checkbox" id="f-n-sys"> System alerts</label>
+    </div>
+    <button class="btn btn-primary" style="margin-top:16px" onclick="saveNotifications()">Save Notifications</button>
+  </section>
+
+  <!-- ACTIVITY -->
+  <section class="section" id="sec-activity">
+    <h2>Activity</h2>
+    <div class="subtitle">Your recent logins + profile change history.</div>
+
+    <div style="margin-bottom:20px">
+      <h4 style="color:var(--text);font-size:.85rem;margin-bottom:10px">Login history (7d)</h4>
+      <table id="logins-table"><thead><tr>
+        <th>When</th><th>Status</th><th>IP</th><th>User agent</th><th>Reason (if failed)</th>
+      </tr></thead><tbody id="logins-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody></table>
+    </div>
+
+    <div>
+      <h4 style="color:var(--text);font-size:.85rem;margin-bottom:10px">Profile change log</h4>
+      <table id="audit-table"><thead><tr>
+        <th>When</th><th>Action</th><th>Status</th><th>IP</th><th>Change</th>
+      </tr></thead><tbody id="audit-body"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody></table>
+    </div>
+  </section>
+
+  <!-- DANGER ZONE -->
+  <section class="section" id="sec-danger">
+    <h2>Danger Zone</h2>
+    <div class="subtitle">Irreversible operations. Take care.</div>
+
+    <div class="danger-zone">
+      <h4>Export my data</h4>
+      <p style="color:var(--text-dim);font-size:.72rem;margin-bottom:10px">
+        Download a JSON bundle of your profile, API key metadata (no secrets),
+        trades, sessions, login history, and audit log. GDPR-style export.
+      </p>
+      <a href="/api/user/data-export" class="btn btn-primary" style="text-decoration:none;display:inline-block">Download Export</a>
+    </div>
+
+    <div class="danger-zone" style="margin-top:12px">
+      <h4>Delete my account</h4>
+      <p style="color:var(--text-dim);font-size:.72rem;margin-bottom:10px">
+        Account deletion is admin-mediated. Contact your admin or email support to
+        initiate deletion. All trades, keys, and sessions will be cascade-removed
+        after a grace period.
+      </p>
+      <button class="btn btn-danger" onclick="alert('Account deletion is admin-mediated for safety. Please contact your admin.')">Request Deletion</button>
+    </div>
+  </section>
+
+  </main>
+</div>
+
+<div class="modal-bg hide" id="modal-bg" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modal-body"></div>
+</div>
+<div id="toast-container"></div>
+
+<script>
+const API = '/api';
+let _profile = null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtTime(iso){if(!iso)return'—';const d=new Date(iso);const diff=(new Date()-d)/1000;if(diff<60)return Math.floor(diff)+'s ago';if(diff<3600)return Math.floor(diff/60)+'m ago';if(diff<86400)return Math.floor(diff/3600)+'h ago';return d.toISOString().slice(0,10)}
+function toast(msg, kind=''){const e=document.createElement('div');e.className='toast '+(kind||'');e.textContent=msg;document.getElementById('toast-container').appendChild(e);setTimeout(()=>e.remove(),3500)}
+function showModal(html){document.getElementById('modal-body').innerHTML=html;document.getElementById('modal-bg').classList.remove('hide')}
+function closeModal(){document.getElementById('modal-bg').classList.add('hide')}
+async function fetchJSON(url,opts){try{const r=await fetch(url,{...opts,credentials:'same-origin'});if(r.status===401){location.href='/';return null}if(!r.ok){const b=await r.json().catch(()=>({}));toast(b.error||`HTTP ${r.status}`,'err');return null}return await r.json()}catch(e){toast('Network error: '+e,'err');return null}}
+
+// ── Sidebar navigation ──
+document.querySelectorAll('.sidebar-item').forEach(it => {
+  it.addEventListener('click', () => {
+    document.querySelectorAll('.sidebar-item').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    it.classList.add('active');
+    const name = it.dataset.section;
+    document.getElementById('sec-'+name).classList.add('active');
+    if (name === 'security') { load2FAStatus(); loadSessions(); }
+    if (name === 'keys') loadKeys();
+    if (name === 'activity') loadActivity();
+  });
+});
+
+// ── Session / profile bootstrap ──
+async function init() {
+  const sess = await fetch('/api/session', {credentials:'same-origin'}).then(r=>r.ok?r.json():null);
+  if (!sess) { location.href = '/'; return; }
+  const email = sess.email || (sess.user && sess.user.email) || '';
+  document.getElementById('user-chip').textContent = email;
+
+  const p = await fetchJSON('/api/user/profile');
+  if (!p) return;
+  _profile = p;
+  // Hydrate Account section
+  document.getElementById('f-email').value = p.email || '';
+  document.getElementById('f-full-name').value = p.full_name || '';
+  document.getElementById('f-phone').value = p.phone || '';
+  document.getElementById('f-timezone').value = p.timezone || 'Asia/Kolkata';
+  document.getElementById('f-role').value = p.role || '';
+  document.getElementById('f-tier').value = p.tier || '';
+  document.getElementById('f-verified').value = p.email_verified ? 'verified' : 'not verified';
+  document.getElementById('f-kyc').value = p.id_verification_status || 'unverified';
+
+  // Trading
+  document.getElementById('f-bot-mode').value = p.bot_mode || 'paper';
+  document.getElementById('f-max-lev').value = p.max_leverage || 20;
+  document.getElementById('f-pref-lev').value = p.preferred_leverage || 5;
+  document.getElementById('f-risk-pct').value = p.risk_per_trade_pct || 1.0;
+  document.getElementById('f-daily-loss').value = p.max_daily_loss_pct || 3.0;
+  document.getElementById('f-max-open').value = p.max_open_positions || 3;
+  updateModeHelp();
+
+  // Notifications
+  document.getElementById('f-telegram').value = p.telegram_chat_id || '';
+  document.getElementById('f-n-signal').checked = !!p.notify_on_signal;
+  document.getElementById('f-n-trade').checked = !!p.notify_on_trade;
+  document.getElementById('f-n-tp').checked = !!p.notify_on_tp_hit;
+  document.getElementById('f-n-sl').checked = !!p.notify_on_sl_hit;
+  document.getElementById('f-n-sys').checked = !!p.notify_on_system;
+}
+
+function updateModeHelp() {
+  const mode = document.getElementById('f-bot-mode').value;
+  const msgs = {
+    paper: 'Simulation only — no Delta keys needed.',
+    demo: 'Testnet trading — requires a "demo" API key.',
+    live: 'PRODUCTION trading — real money. Requires a "live" API key.',
+  };
+  document.getElementById('mode-help').textContent = msgs[mode] || '';
+}
+document.getElementById('f-bot-mode').addEventListener('change', updateModeHelp);
+
+// ── Account save ──
+async function saveAccount() {
+  const body = {
+    full_name: document.getElementById('f-full-name').value,
+    phone: document.getElementById('f-phone').value,
+    timezone: document.getElementById('f-timezone').value,
+  };
+  const r = await fetchJSON('/api/user/profile', {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) toast('Account saved', 'ok');
+}
+
+// ── Trading save ──
+async function saveTrading() {
+  const newMode = document.getElementById('f-bot-mode').value;
+  if (newMode !== (_profile.bot_mode || 'paper')) {
+    // Mode change goes through the pre-flight-validated toggle endpoint
+    const r = await fetchJSON('/api/user/real/toggle', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bot_mode: newMode}),
+    });
+    if (!r) return;
+    _profile.bot_mode = newMode;
+  }
+  const body = {
+    preferred_leverage: parseInt(document.getElementById('f-pref-lev').value),
+    risk_per_trade_pct: parseFloat(document.getElementById('f-risk-pct').value),
+    max_daily_loss_pct: parseFloat(document.getElementById('f-daily-loss').value),
+    max_open_positions: parseInt(document.getElementById('f-max-open').value),
+  };
+  const r2 = await fetchJSON('/api/user/profile', {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r2) toast('Trading config saved', 'ok');
+}
+
+// ── Notifications save ──
+async function saveNotifications() {
+  const body = {
+    telegram_chat_id: document.getElementById('f-telegram').value,
+    notify_on_signal: document.getElementById('f-n-signal').checked,
+    notify_on_trade: document.getElementById('f-n-trade').checked,
+    notify_on_tp_hit: document.getElementById('f-n-tp').checked,
+    notify_on_sl_hit: document.getElementById('f-n-sl').checked,
+    notify_on_system: document.getElementById('f-n-sys').checked,
+  };
+  const r = await fetchJSON('/api/user/profile', {
+    method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) toast('Notifications saved', 'ok');
+}
+
+// ── Password change modal ──
+function openPasswordModal() {
+  showModal(`<h3>Change Password</h3>
+    <div class="field"><label>Current password</label><input type="password" id="pw-current"></div>
+    <div class="field"><label>New password (min 8)</label><input type="password" id="pw-new"></div>
+    <div class="field"><label>Confirm new</label><input type="password" id="pw-confirm"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:.75rem;margin-top:8px">
+      <input type="checkbox" id="pw-logout" checked> Log out other devices after change</label>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitPasswordChange()">Change Password</button>
+    </div>`);
+}
+async function submitPasswordChange() {
+  const cur = document.getElementById('pw-current').value;
+  const nw = document.getElementById('pw-new').value;
+  const cf = document.getElementById('pw-confirm').value;
+  const logoutOthers = document.getElementById('pw-logout').checked;
+  if (nw.length < 8) { toast('New password must be 8+ chars', 'err'); return; }
+  if (nw !== cf) { toast('Passwords do not match', 'err'); return; }
+  const r = await fetchJSON('/api/user/password/change', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({current_password: cur, new_password: nw, logout_others: logoutOthers}),
+  });
+  if (r) {
+    closeModal();
+    toast(`Password changed — ${r.sessions_killed||0} other sessions logged out`, 'ok');
+    loadSessions();
+  }
+}
+
+// ── Email change modal ──
+function openEmailChangeModal() {
+  showModal(`<h3>Change Email</h3>
+    <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">
+      A confirmation link will be sent to the new email address. The change is not effective until you click that link.
+    </div>
+    <div class="field"><label>Current password</label><input type="password" id="em-current"></div>
+    <div class="field"><label>New email</label><input type="email" id="em-new"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEmailChange()">Send confirmation</button>
+    </div>`);
+}
+async function submitEmailChange() {
+  const cur = document.getElementById('em-current').value;
+  const ne = document.getElementById('em-new').value.trim().toLowerCase();
+  if (!ne.includes('@')) { toast('Invalid email', 'err'); return; }
+  const r = await fetchJSON('/api/user/email/change', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({current_password: cur, new_email: ne}),
+  });
+  if (r) {
+    closeModal();
+    if (r.confirm_url) {
+      // In dev/single-tenant we show the link; in prod it goes by email only.
+      if (confirm('Email change requested. Click OK to copy the confirmation link (for dev):\n\n' + r.confirm_url)) {
+        navigator.clipboard && navigator.clipboard.writeText(r.confirm_url);
+      }
+    } else {
+      toast('Confirmation link sent to new address', 'ok');
+    }
+  }
+}
+
+// ── 2FA ──
+async function load2FAStatus() {
+  const d = await fetchJSON('/api/2fa/status');
+  if (!d) return;
+  const s = document.getElementById('twofa-status');
+  const btn = document.getElementById('twofa-toggle-btn');
+  if (d.enabled) {
+    s.innerHTML = '<span class="badge badge-ok">Enabled</span> <span style="color:var(--text-muted);font-size:.7rem">TOTP active on this account.</span>';
+    btn.textContent = 'Disable 2FA';
+    btn.className = 'btn btn-danger';
+  } else {
+    s.innerHTML = '<span class="badge badge-warn">Disabled</span> <span style="color:var(--text-muted);font-size:.7rem">Add a second factor to protect your account.</span>';
+    btn.textContent = 'Enable 2FA';
+    btn.className = 'btn btn-primary';
+  }
+}
+async function toggle2FA() {
+  const d = await fetchJSON('/api/2fa/status');
+  if (!d) return;
+  if (d.enabled) {
+    // Disable flow
+    const code = prompt('Enter a TOTP code from your authenticator to disable 2FA:');
+    if (!code) return;
+    const r = await fetchJSON('/api/2fa/disable', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code}),
+    });
+    if (r) { toast('2FA disabled', 'ok'); load2FAStatus(); }
+  } else {
+    // Enable flow — get secret + QR URI
+    const s = await fetchJSON('/api/2fa/setup', {method:'POST'});
+    if (!s) return;
+    showModal(`<h3>Enable Two-Factor Authentication</h3>
+      <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px">
+        Scan the QR code with Google Authenticator, Authy, or similar — then enter the 6-digit code to confirm.
+      </div>
+      <div style="background:#fff;padding:12px;border-radius:8px;text-align:center;margin-bottom:12px">
+        ${s.qr_data ? `<img src="${esc(s.qr_data)}" alt="2FA QR" style="width:180px;height:180px">` : '<div>(no QR generated — use the manual key below)</div>'}
+      </div>
+      <div class="field"><label>Manual key (if you can't scan)</label><input type="text" readonly value="${esc(s.secret||'')}"></div>
+      <div class="field"><label>6-digit code</label><input type="text" id="twofa-code" maxlength="6" inputmode="numeric" autocomplete="off"></div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submit2FAVerify()">Verify & Enable</button>
+      </div>`);
+  }
+}
+async function submit2FAVerify() {
+  const code = document.getElementById('twofa-code').value.trim();
+  if (code.length !== 6) { toast('Enter the 6-digit code', 'err'); return; }
+  const r = await fetchJSON('/api/2fa/verify', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code}),
+  });
+  if (r && r.ok) {
+    closeModal();
+    if (r.backup_codes && r.backup_codes.length) {
+      prompt('2FA enabled. Save these backup codes (shown once):', r.backup_codes.join('\n'));
+    }
+    toast('2FA enabled', 'ok');
+    load2FAStatus();
+  }
+}
+
+// ── Sessions ──
+async function loadSessions() {
+  const d = await fetchJSON('/api/user/sessions');
+  if (!d) return;
+  const el = document.getElementById('sessions-list');
+  if (!d.sessions.length) { el.innerHTML = '<div class="empty">No active sessions.</div>'; return; }
+  el.innerHTML = d.sessions.map(s => `
+    <div class="card-row">
+      <div>
+        ${s.is_current ? '<span class="badge badge-ok">THIS DEVICE</span>' : '<span class="badge badge-muted">other</span>'}
+        <span class="mono" style="color:var(--text-dim)">${esc(s.ip_address||'?')}</span>
+        <span style="color:var(--text-muted);font-size:.65rem">${esc((s.user_agent||'').slice(0,80))}</span>
+        <br><span style="color:var(--text-muted);font-size:.65rem">created ${fmtTime(s.created_at)} · last active ${fmtTime(s.last_activity)} · ${s.request_count||0} requests</span>
+      </div>
+      <div>
+        ${s.is_current
+          ? '<span style="color:var(--text-muted);font-size:.7rem">(current)</span>'
+          : `<button class="btn btn-sm btn-danger" onclick="revokeSession('${esc(s.token_prefix)}')">Revoke</button>`}
+      </div>
+    </div>`).join('');
+}
+async function revokeSession(tokenPrefix) {
+  if (!confirm('Revoke this session? That device will be logged out.')) return;
+  const r = await fetchJSON('/api/user/sessions/'+encodeURIComponent(tokenPrefix), {method:'DELETE'});
+  if (r) { toast('Session revoked', 'ok'); loadSessions(); }
+}
+async function logoutAllOthers() {
+  if (!confirm('Log out ALL other devices?\n\nYour current session stays active.')) return;
+  const r = await fetchJSON('/api/user/sessions/logout-all', {method:'POST'});
+  if (r) { toast(`Logged out ${r.killed} other sessions`, 'ok'); loadSessions(); }
+}
+
+// ── Keys ──
+async function loadKeys() {
+  const d = await fetchJSON('/api/user/api-keys');
+  if (!d) return;
+  const keys = d.keys || [];
+  const el = document.getElementById('keys-list');
+  if (!keys.length) { el.innerHTML = '<div class="empty">No API keys configured.</div>'; return; }
+  el.innerHTML = keys.map(k => `
+    <div class="card-row">
+      <div>
+        <span class="badge badge-${k.label==='live'?'alert':'cyan'}">${esc(k.label)}</span>
+        <span class="badge ${k.is_active?'badge-ok':'badge-muted'}">${k.is_active?'active':'inactive'}</span>
+        <span class="mono" style="color:var(--text-dim)">${esc(k.api_key_masked)}</span>
+        <br><span style="color:var(--text-muted);font-size:.65rem">created ${fmtTime(k.created_at)} · last used ${fmtTime(k.last_used)} · ${esc(k.base_url||'default')}</span>
+      </div>
+      <div>
+        <button class="btn btn-sm btn-ghost" onclick="testKey('${esc(k.id)}')">Test</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteKey('${esc(k.id)}')">Delete</button>
+      </div>
+    </div>`).join('');
+}
+async function testKey(id) {
+  toast('Testing key…', '');
+  const r = await fetchJSON(`/api/user/api-keys/${encodeURIComponent(id)}/test`, {method:'POST'});
+  if (r && r.ok) toast(`Key OK — balance $${(r.balance_usdt||0).toFixed(2)}`, 'ok');
+  else if (r) toast('Key failed: '+(r.error||'unknown'), 'err');
+}
+async function deleteKey(id) {
+  if (!confirm('Delete this API key?\n\nThis cannot be undone.')) return;
+  const r = await fetchJSON(`/api/user/api-keys/${encodeURIComponent(id)}`, {method:'DELETE'});
+  if (r) { toast('Key deleted', 'ok'); loadKeys(); }
+}
+function openAddKeyModal() {
+  showModal(`<h3>Add API Key</h3>
+    <div class="field"><label>Label</label>
+      <select id="k-label"><option value="demo">demo (testnet)</option><option value="live">live (production)</option></select></div>
+    <div class="field"><label>Exchange</label>
+      <select id="k-ex"><option value="delta">delta</option></select></div>
+    <div class="field"><label>API key</label><input type="text" id="k-key" autocomplete="off"></div>
+    <div class="field"><label>API secret</label><input type="text" id="k-secret" autocomplete="off"></div>
+    <div class="field"><label>Base URL (optional, default inferred)</label><input type="text" id="k-url" placeholder="https://api.india.delta.exchange"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddKey()">Save Key</button>
+    </div>`);
+}
+async function submitAddKey() {
+  const body = {
+    label: document.getElementById('k-label').value,
+    exchange: document.getElementById('k-ex').value,
+    api_key: document.getElementById('k-key').value.trim(),
+    api_secret: document.getElementById('k-secret').value.trim(),
+    base_url: document.getElementById('k-url').value.trim(),
+  };
+  if (!body.api_key || !body.api_secret) { toast('Key + secret required', 'err'); return; }
+  const r = await fetchJSON('/api/user/api-keys', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+  });
+  if (r) { closeModal(); toast('Key saved', 'ok'); loadKeys(); }
+}
+
+// ── Activity ──
+async function loadActivity() {
+  const d = await fetchJSON('/api/user/activity?hours=168');
+  const a = await fetchJSON('/api/user/audit');
+  if (d) {
+    const logins = d.logins || [];
+    document.getElementById('logins-body').innerHTML = logins.length
+      ? logins.map(l => `<tr>
+          <td style="font-size:.7rem">${fmtTime(l.created_at)}</td>
+          <td><span class="badge ${l.success?'badge-ok':'badge-alert'}">${l.success?'ok':'fail'}</span></td>
+          <td class="mono">${esc(l.ip_address||'')}</td>
+          <td style="color:var(--text-muted);font-size:.65rem">${esc((l.user_agent||'').slice(0,60))}</td>
+          <td style="color:var(--red);font-size:.65rem">${esc(l.failure_reason||'')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="empty">No login history</td></tr>';
+  }
+  if (a) {
+    const entries = a.entries || [];
+    document.getElementById('audit-body').innerHTML = entries.length
+      ? entries.map(e => `<tr>
+          <td style="font-size:.7rem">${fmtTime(e.created_at)}</td>
+          <td><code>${esc(e.action)}</code></td>
+          <td><span class="badge ${e.status_code>=400?'badge-alert':'badge-ok'}">${e.status_code||'?'}</span></td>
+          <td class="mono">${esc(e.ip_address||'')}</td>
+          <td style="font-size:.65rem;color:var(--text-muted);max-width:300px;word-break:break-all">${esc(JSON.stringify(e.after_json||{}).slice(0,160))}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="empty">No profile changes yet</td></tr>';
+  }
+}
+
+// Kick off
+init();
+</script>
+</body>
+</html>

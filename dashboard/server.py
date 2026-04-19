@@ -64,6 +64,21 @@ _TEMPLATES_DIR = _DASHBOARD_DIR / "templates"
 _STATIC_DIR = _DASHBOARD_DIR / "static"
 
 
+def _bust(static_dir, relpath: str) -> str:
+    """Append ?v=<mtime> to a static file path so browsers pick up new
+    versions automatically. If the path already has a query string or the
+    file can't be stat'd, return it unchanged.
+    """
+    if '?' in relpath:
+        return relpath
+    try:
+        p = static_dir / relpath
+        mtime = int(p.stat().st_mtime)
+        return f"{relpath}?v={mtime}"
+    except Exception:
+        return relpath
+
+
 class DashboardServer:
     """Async web dashboard that exposes bot state via HTTP.
 
@@ -849,19 +864,42 @@ class DashboardServer:
         index_path = _TEMPLATES_DIR / "index.html"
         if not index_path.exists():
             return web.Response(text="Dashboard template not found", status=500)
-        if True:  # always reload template (cache was serving stale login form)
-            self._idx_cache = index_path.read_text(encoding="utf-8")
+        html = index_path.read_text(encoding="utf-8")
+        # Cache-bust static JS/CSS by rewriting the href/src to include
+        # the file's mtime. Prevents the class of bugs where we push a new
+        # app.js and users keep seeing old cached versions (404s on new
+        # endpoints, missing new functions, etc.). (2026-04-19)
+        html = self._bust_static_refs(html)
+        self._idx_cache = html
         return web.Response(
             text=self._idx_cache, content_type="text/html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
         )
+
+    def _bust_static_refs(self, html: str) -> str:
+        """Rewrite /static/js/foo.js → /static/js/foo.js?v=<mtime> so the
+        browser always refetches when the file changes on disk. Covers
+        both <script src="..."> and <link href="..."> references."""
+        import re
+        static_dir = _STATIC_DIR
+        html = re.sub(
+            r'src="/static/([^"?]+)"',
+            lambda m: f'src="/static/{_bust(static_dir, m.group(1))}"',
+            html,
+        )
+        html = re.sub(
+            r'href="/static/([^"?]+)"',
+            lambda m: f'href="/static/{_bust(static_dir, m.group(1))}"',
+            html,
+        )
+        return html
 
     async def _handle_profile_page(self, request: web.Request) -> web.Response:
         """GET /profile — production user profile page HTML."""
         profile_path = _TEMPLATES_DIR / "profile_page.html"
         if not profile_path.exists():
             return web.Response(text="Profile page template not found", status=500)
-        body = profile_path.read_text(encoding="utf-8")
+        body = self._bust_static_refs(profile_path.read_text(encoding="utf-8"))
         return web.Response(
             text=body, content_type="text/html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
@@ -879,7 +917,7 @@ class DashboardServer:
         admin_path = _TEMPLATES_DIR / "admin_panel.html"
         if not admin_path.exists():
             return web.Response(text="Admin panel template not found", status=500)
-        body = admin_path.read_text(encoding="utf-8")
+        body = self._bust_static_refs(admin_path.read_text(encoding="utf-8"))
         return web.Response(
             text=body, content_type="text/html",
             headers={"Cache-Control": "no-cache, no-store, must-revalidate"},

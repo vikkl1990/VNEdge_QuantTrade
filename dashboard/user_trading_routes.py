@@ -148,12 +148,16 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
             try:
                 from delta_rest_client import DeltaRestClient
                 client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
-                wallets = client.get_balances()
+                # delta-rest-client on this VM requires asset_id (USDT = 5).
+                wallets = client.get_balances(asset_id=5)
                 usdt_bal = 0.0
-                for w in (wallets or []):
-                    if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                        usdt_bal = float(w.get("available_balance", 0) or 0)
-                        break
+                if isinstance(wallets, dict):
+                    usdt_bal = float(wallets.get("available_balance", 0) or 0)
+                else:
+                    for w in (wallets or []):
+                        if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                            usdt_bal = float(w.get("available_balance", 0) or 0)
+                            break
                 return {"ok": True, "balance": usdt_bal}
             except Exception as e:
                 msg = str(e)

@@ -172,11 +172,15 @@ class UserRealRegistry:
                 def connect(self): return True
                 def fetch_balance(self):
                     try:
-                        wallets = self._client.get_balances()
+                        # delta-rest-client requires asset_id (USDT = 5)
+                        wallets = self._client.get_balances(asset_id=5)
+                        if isinstance(wallets, dict):
+                            return float(wallets.get("available_balance", 0) or 0)
                         for w in (wallets or []):
                             if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
                                 return float(w.get("available_balance", 0) or 0)
-                    except: pass
+                    except Exception:
+                        pass
                     return 0
                 def get_ticker(self, symbol):
                     try:

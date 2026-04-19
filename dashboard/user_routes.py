@@ -361,13 +361,20 @@ class UserRouteHandler:
             try:
                 from delta_rest_client import DeltaRestClient
                 client = DeltaRestClient(base_url=resolved_base, api_key=api_key, api_secret=api_secret)
-                wallets = client.get_balances()
+                # delta-rest-client on this VM requires asset_id (USDT = 5).
+                # Response may be a single dict or a list of dicts depending on lib version.
+                wallets = client.get_balances(asset_id=5)
                 usdt_bal = 0.0
-                for w in (wallets or []):
-                    if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                        usdt_bal = float(w.get("available_balance", 0) or 0)
-                        break
-                return {"ok": True, "balance": usdt_bal, "wallet_count": len(wallets or [])}
+                if isinstance(wallets, dict):
+                    usdt_bal = float(wallets.get("available_balance", 0) or 0)
+                    wallet_count = 1
+                else:
+                    for w in (wallets or []):
+                        if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                            usdt_bal = float(w.get("available_balance", 0) or 0)
+                            break
+                    wallet_count = len(wallets or [])
+                return {"ok": True, "balance": usdt_bal, "wallet_count": wallet_count}
             except Exception as e:
                 msg = str(e)
                 lower = msg.lower()

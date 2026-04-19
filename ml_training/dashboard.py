@@ -733,6 +733,9 @@ class MLDashboard:
         self._app.router.add_get("/api/research/scanner-variants/active", self._handle_research_scanner_variants_active)
         self._app.router.add_post("/api/research/scanner-variants/approve", self._handle_research_scanner_variants_approve)
         self._app.router.add_post("/api/research/scanner-variants/remove", self._handle_research_scanner_variants_remove)
+        # Phase 4: Shadow observation + enforcement
+        self._app.router.add_get("/api/research/scanner-variants/observation", self._handle_research_scanner_observation)
+        self._app.router.add_post("/api/research/scanner-variants/enforce", self._handle_research_scanner_variants_enforce)
 
         # Serve static files
         static_dir = PROJECT_ROOT / "dashboard" / "static"
@@ -2661,6 +2664,77 @@ class MLDashboard:
         self._write_json_atomic(path, store)
         self._append_event("scanner_variant_removed", {"scanner": removed.get("scanner")})
         return web.json_response({"status": "ok", "removed": removed})
+
+    async def _handle_research_scanner_observation(self, request):
+        """GET /api/research/scanner-variants/observation — per-variant shadow
+        observation progress (days elapsed + events count vs readiness
+        criteria). Drives the UI's Enforce button state."""
+        from ml_training.research_center import shadow_observation_status
+        return web.json_response(shadow_observation_status(), dumps=_json_dumps)
+
+    async def _handle_research_scanner_variants_enforce(self, request):
+        """POST /api/research/scanner-variants/enforce — flip a variant's
+        mode from 'shadow' to 'enforce'. Rejected if the variant isn't ready
+        (hasn't accumulated enough shadow observation).
+
+        Body: {"index": N}  -- index into active_scanner_variants list
+        Optional: {"force": true}  -- override readiness check (use with care)
+
+        Bot picks up the change within 60s via mtime poll and starts
+        honoring the variant (e.g. adds scanner to allowed_scanners for
+        regime_whitelist variants).
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        idx = body.get("index")
+        if not isinstance(idx, int):
+            return web.json_response({"error": "index (int) required"}, status=400)
+        force = bool(body.get("force", False))
+
+        # Check readiness first
+        from ml_training.research_center import shadow_observation_status
+        status = shadow_observation_status()
+        variants = status.get("variants", [])
+        target = next((v for v in variants if v.get("index") == idx), None)
+        if target is None:
+            return web.json_response({"error": f"no variant at index {idx}"}, status=400)
+        if not target.get("ready_to_enforce") and not force:
+            return web.json_response({
+                "error": "not ready to enforce",
+                "status": target.get("status"),
+                "days_elapsed": target.get("days_elapsed"),
+                "relevant_events": target.get("relevant_events"),
+                "min_days": status.get("min_days"),
+                "min_events": status.get("min_events"),
+                "hint": "Wait until both days_elapsed and relevant_events meet thresholds, or pass force:true to override",
+            }, status=409)
+
+        path = self._research_file("scanner_variants.json")
+        store = self._read_json_or_default(path, {"variants": [], "last_updated": None})
+        if idx < 0 or idx >= len(store["variants"]):
+            return web.json_response({"error": "index out of range"}, status=400)
+
+        store["variants"][idx]["mode"] = "enforce"
+        store["variants"][idx]["enforced_at"] = datetime.now(timezone.utc).isoformat()
+        if force:
+            store["variants"][idx]["force_enforced"] = True
+        store["last_updated"] = datetime.now(timezone.utc).isoformat()
+        self._write_json_atomic(path, store)
+        self._append_event("scanner_variant_enforced", {
+            "scanner": store["variants"][idx].get("scanner"),
+            "variant_type": (store["variants"][idx].get("proposal") or {}).get("type"),
+            "force": force,
+            "status_before": target.get("status"),
+        })
+        return web.json_response({
+            "status": "ok",
+            "mode": "enforce",
+            "variant": store["variants"][idx],
+            "force": force,
+        })
 
     # -------------------------------------------------------------------
     #  Start server

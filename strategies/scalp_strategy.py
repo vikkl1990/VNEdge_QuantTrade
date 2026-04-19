@@ -411,6 +411,22 @@ class ScalpStrategy(BaseStrategy):
         self._funnel_last_emit: Dict[str, float] = {}       # symbol → epoch seconds
         self._funnel_emit_interval_sec: float = 60.0
 
+        # --- Phase 4 of scanner research: Scanner Variant Adapter (2026-04-17) ---
+        # Reads storage/research/scanner_variants.json (approved by user via
+        # /research UI) and applies per-scanner behavior modifications:
+        #   - regime_whitelist: include scanner in more regimes (MODE_0 fix)
+        #   - filter_exemption: bypass specific downstream filters (MODE_2 fix)
+        #   - threshold_relax / lookback_widen: metadata only (scanner code
+        #     doesn't currently honor these — proposed for future per-scanner hooks)
+        #
+        # SHADOW MODE (default): logs `would_*` events, no behavior change.
+        # ENFORCE MODE (explicit per-scanner flip by user after 7d+30-events
+        # observation): actually modifies scanner gating.
+        #
+        # Read-only mtime poll, fail-silent, never blocks trading.
+        self._research_scanner_variants: List[Dict[str, Any]] = []
+        self._research_scanner_variants_mtime: float = 0.0
+
         # --- Regime transition tracking (per-symbol) ---
         self._prev_regime: Dict[str, str] = {}       # symbol → previous regime
         self._regime_age: Dict[str, int] = {}         # symbol → bars held in current regime
@@ -669,6 +685,12 @@ class ScalpStrategy(BaseStrategy):
         # P5 (2026-04-16): SHADOW MODE — logs would_veto but doesn't block.
         # After 7d observation, convert would_veto → hard block if vetoed trades have WR < 65%.
         #
+        # Phase 4 (2026-04-17): filter_exemption variants can override this
+        # veto for approved scanners. Read from context["vwap_exempt_scanners"]
+        # set by downstream per-scanner emission. For now, the structural
+        # prefilter is symbol-level (before per-scanner scan), so exemption
+        # checks happen downstream when scanner result is evaluated.
+        #
         # Layered thresholds:
         #   < 0.12 ATR = deep noise     → confidence -25 + would_veto
         #   0.12-0.30 ATR = noise zone  → confidence -20 + would_veto
@@ -866,6 +888,170 @@ class ScalpStrategy(BaseStrategy):
             self._research_promotions_mtime = mtime
         except Exception:
             pass
+
+    def _refresh_research_scanner_variants(self) -> None:
+        """Read storage/research/scanner_variants.json if mtime changed.
+        Mirrors _refresh_research_vetoes / _refresh_research_promotions.
+        Read-only, fail-silent, ~1 poll per minute via prefilter throttle."""
+        import json
+        try:
+            path = Path(__file__).resolve().parent.parent / "storage" / "research" / "scanner_variants.json"
+            if not path.exists():
+                self._research_scanner_variants = []
+                return
+            mtime = path.stat().st_mtime
+            if mtime == self._research_scanner_variants_mtime:
+                return
+            with open(path) as fh:
+                data = json.load(fh) or {}
+            self._research_scanner_variants = data.get("variants", []) if isinstance(data, dict) else []
+            self._research_scanner_variants_mtime = mtime
+        except Exception:
+            pass
+
+    def _get_scanner_variants_for(self, scanner_name: str, variant_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return active variants matching scanner_name (and optionally type).
+        Safe: returns [] on any error or empty list."""
+        try:
+            vs = self._research_scanner_variants or []
+            out = []
+            for v in vs:
+                if v.get("scanner") != scanner_name:
+                    continue
+                if variant_type is not None:
+                    ptype = (v.get("proposal") or {}).get("type")
+                    if ptype != variant_type:
+                        continue
+                out.append(v)
+            return out
+        except Exception:
+            return []
+
+    def _emit_variant_event(self, kind: str, payload: Dict[str, Any]) -> None:
+        """Append a variant-related event (would_fire / would_exempt / enforced)
+        to the funnel log. Used for shadow-mode observation tracking by the
+        Research Center to determine when a variant is ready to enforce.
+
+        Rate-limited implicitly by the caller (only fires on actual scanner
+        events). Atomic single-write append, fail-silent.
+        """
+        import json as _json
+        try:
+            path = Path(__file__).resolve().parent.parent / "storage" / "research" / "scanner_funnel.jsonl"
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "kind": kind,
+                **payload,
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as fh:
+                fh.write(_json.dumps(record, default=str) + "\n")
+        except Exception:
+            pass
+
+    def _apply_regime_whitelist_variants(
+        self,
+        regime: str,
+        symbol: str,
+        current_allowed: List[Any],
+        scanner_method_map: Dict[str, Any],
+    ) -> List[Any]:
+        """Phase-4 activation hook: consult approved `regime_whitelist` variants
+        to potentially expand the allowed_scanners list for this regime.
+
+        Shadow mode: logs `variant_would_add_scanner` events, returns current_allowed unchanged.
+        Enforce mode: returns current_allowed PLUS the whitelisted scanner methods.
+
+        Bounded by the scanner_method_map — if variant requests a scanner not
+        in the map (old/renamed/unknown), it's silently skipped.
+
+        Additionally: emits shadow events for filter_exemption variants (for
+        observation tracking only — enforcement of filter bypass is deferred
+        to a separate commit once observation validates). This gives the
+        Research Center readiness data without any hot-path risk.
+        """
+        try:
+            variants = self._research_scanner_variants or []
+            if not variants:
+                return current_allowed
+            out = list(current_allowed)
+            already_names = {s.__name__.replace("_scan_", "") for s in out}
+            for v in variants:
+                proposal = v.get("proposal") or {}
+                ptype = proposal.get("type")
+                scn_name = v.get("scanner")
+                if not scn_name:
+                    continue
+                mode = v.get("mode") or "shadow"
+
+                # --- regime_whitelist: add scanner to allowed list ---
+                if ptype == "regime_whitelist":
+                    target_regimes = proposal.get("target_regimes") or []
+                    if regime not in target_regimes:
+                        continue
+                    if scn_name in already_names:
+                        continue
+                    scanner_fn = scanner_method_map.get(scn_name)
+                    if scanner_fn is None:
+                        continue
+                    if mode == "enforce":
+                        out.append(scanner_fn)
+                        already_names.add(scn_name)
+                        self._emit_variant_event("variant_enforced", {
+                            "variant_type": "regime_whitelist",
+                            "scanner": scn_name,
+                            "symbol": symbol,
+                            "regime": regime,
+                            "action": "added_to_allowed",
+                        })
+                    else:
+                        # Shadow: log what we WOULD do
+                        self._emit_variant_event("variant_would_fire", {
+                            "variant_type": "regime_whitelist",
+                            "scanner": scn_name,
+                            "symbol": symbol,
+                            "regime": regime,
+                            "mode": "shadow",
+                            "would_add": True,
+                        })
+
+                # --- filter_exemption: shadow-only observation this commit ---
+                elif ptype == "filter_exemption":
+                    # Log observation events whenever this scanner IS being
+                    # run in this regime — independent of whether it actually
+                    # triggers. Observation = "this opportunity exists."
+                    # Actual filter bypass deferred to follow-up after
+                    # shadow_observation validates the variant.
+                    if scn_name in already_names:
+                        self._emit_variant_event("variant_observed", {
+                            "variant_type": "filter_exemption",
+                            "scanner": scn_name,
+                            "symbol": symbol,
+                            "regime": regime,
+                            "mode": mode,
+                            "exempt_candidates": proposal.get("exempt_candidates", []),
+                        })
+
+                # --- threshold_relax / lookback_widen / generic_relax ---
+                elif ptype in ("threshold_relax", "lookback_widen", "generic_relax"):
+                    # Metadata-only for now: scanner code doesn't yet honor
+                    # these runtime parameter overrides. Observation event is
+                    # emitted so the Research Lab can track how often the
+                    # scanner was attempted and still failed — informing
+                    # whether tuning this specific scanner is worth building
+                    # a dedicated code hook for.
+                    if scn_name in already_names:
+                        self._emit_variant_event("variant_observed", {
+                            "variant_type": ptype,
+                            "scanner": scn_name,
+                            "symbol": symbol,
+                            "regime": regime,
+                            "mode": mode,
+                        })
+            return out
+        except Exception:
+            # Never break allowed_scanners computation on variant-logic error
+            return current_allowed
 
     def _emit_funnel_sample(
         self,
@@ -1604,6 +1790,43 @@ class ScalpStrategy(BaseStrategy):
 
         # Get allowed scanners for current regime
         allowed_scanners = REGIME_SCANNER_ROUTING.get(regime, [])
+
+        # --- Phase 4: Scanner Variant Adapter (regime_whitelist variants) ---
+        # Consult approved variants to potentially expand allowed_scanners.
+        # Shadow mode logs `variant_would_fire`; enforce mode adds scanners.
+        # Refreshed via mtime poll — cheap ~1x/min.
+        try:
+            self._refresh_research_scanner_variants()
+            if self._research_scanner_variants:
+                # Build full scanner method map once for variant lookup
+                _all_scanner_map = {
+                    "ema_momentum": self._scan_ema_momentum,
+                    "vwap_bounce": self._scan_vwap_bounce,
+                    "trend_continuation": self._scan_trend_continuation,
+                    "rsi_divergence": self._scan_rsi_divergence,
+                    "supertrend_flip": self._scan_supertrend_flip,
+                    "bb_squeeze": self._scan_bb_squeeze,
+                    "structure_bounce": self._scan_structure_bounce,
+                    "liquidity_sweep": self._scan_liquidity_sweep,
+                    "bos_choch": self._scan_bos_choch,
+                    "cvd_divergence": self._scan_cvd_divergence,
+                    "simple_bias": self._scan_simple_bias,
+                    "order_block_entry": self._scan_order_block_entry,
+                    "vwap_mean_revert": self._scan_vwap_mean_revert,
+                    "rsi_extreme": self._scan_rsi_extreme,
+                    "momentum_ride": self._scan_momentum_ride,
+                    "bb_band_walk": self._scan_bb_band_walk,
+                    "post_impulse": self._scan_post_impulse,
+                    "momentum_surge": self._scan_momentum_surge,
+                }
+                allowed_scanners = self._apply_regime_whitelist_variants(
+                    regime=regime,
+                    symbol=symbol,
+                    current_allowed=allowed_scanners,
+                    scanner_method_map=_all_scanner_map,
+                )
+        except Exception:
+            pass  # Never fail the scan loop on variant-adapter error
 
         # ── Indian Market Regime Override ──
         # During Indian flow hours, if regime is "quiet", override to allow

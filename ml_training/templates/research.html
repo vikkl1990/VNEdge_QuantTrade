@@ -798,26 +798,62 @@ async function loadScannerOffline() {
 async function loadScannerVariants() {
   const d = await fetchJSON(`${RESEARCH_ROOT}/scanner-variants`);
   const activeD = await fetchJSON(`${RESEARCH_ROOT}/scanner-variants/active`);
+  const obsD = await fetchJSON(`${RESEARCH_ROOT}/scanner-variants/observation`);
   const el = document.getElementById('scanner-variants-container');
   if (!d) { el.innerHTML = '<div class="empty">Variants unavailable</div>'; return; }
   const variants = d.variants || [];
   const active = (activeD && activeD.variants) || [];
+  const observations = (obsD && obsD.variants) || [];
+  const obsByIndex = {};
+  observations.forEach(o => { obsByIndex[o.index] = o; });
 
   let activeHtml = '';
   if (active.length) {
-    const activeRows = active.map((v, i) =>
-      `<tr>
+    const activeRows = active.map((v, i) => {
+      const obs = obsByIndex[i] || {};
+      const st = obs.status || 'observing';
+      const modeBadge = v.mode === 'enforce'
+        ? '<span class="badge badge-green">ENFORCING</span>'
+        : st === 'ready'
+          ? '<span class="badge badge-green">READY</span>'
+          : `<span class="badge badge-yellow">${esc(v.mode || 'shadow')}</span>`;
+      const daysPct = obs.days_progress_pct || 0;
+      const evPct = obs.events_progress_pct || 0;
+      const progressBar = `
+        <div style="display:flex;gap:8px;align-items:center;font-size:.65rem">
+          <div style="flex:1">
+            <div style="color:var(--text-muted)">days ${(obs.days_elapsed || 0).toFixed(1)}/${obsD && obsD.min_days || 7}</div>
+            <div style="background:rgba(255,255,255,.08);height:4px;border-radius:2px;overflow:hidden">
+              <div style="width:${daysPct}%;background:${daysPct>=100?'var(--green)':'var(--cyan)'};height:100%"></div>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div style="color:var(--text-muted)">events ${obs.relevant_events || 0}/${obsD && obsD.min_events || 30}</div>
+            <div style="background:rgba(255,255,255,.08);height:4px;border-radius:2px;overflow:hidden">
+              <div style="width:${evPct}%;background:${evPct>=100?'var(--green)':'var(--cyan)'};height:100%"></div>
+            </div>
+          </div>
+        </div>`;
+      const enforceBtn = v.mode === 'enforce'
+        ? '<span class="badge badge-green" style="font-size:.6rem">live</span>'
+        : obs.ready_to_enforce
+          ? `<button class="btn btn-sm" style="background:var(--green);color:#000" onclick="enforceScannerVariant(${i})">Enforce</button>`
+          : '<span style="color:var(--text-muted);font-size:.65rem">not ready</span>';
+      return `<tr>
         <td style="font-weight:700">${esc(v.scanner)}</td>
         <td>${esc(v.proposal && v.proposal.type || '?')}</td>
         <td style="color:var(--text-muted);font-size:.7rem">${esc(v.proposal && v.proposal.hypothesis || '')}</td>
-        <td><span class="badge badge-green">${esc(v.mode || 'shadow')}</span></td>
-        <td style="color:var(--text-muted);font-size:.65rem">since ${esc((v.created_at||'').slice(0,10))}</td>
+        <td>${modeBadge}</td>
+        <td style="min-width:220px">${progressBar}</td>
+        <td>${enforceBtn}</td>
         <td><button class="btn btn-sm btn-danger" onclick="removeScannerVariant(${i})">Remove</button></td>
-      </tr>`
-    ).join('');
-    activeHtml = `<div style="margin-bottom:10px"><b>Active variants (approved):</b></div>
+      </tr>`;
+    }).join('');
+    activeHtml = `<div style="margin-bottom:10px"><b>Active variants (approved):</b>
+      <span style="color:var(--text-muted);font-size:.7rem;margin-left:8px">
+      Shadow observation for ${obsD && obsD.min_days || 7}d + ${obsD && obsD.min_events || 30} events before Enforce unlocks</span></div>
       <table style="margin-bottom:14px"><thead><tr>
-        <th>Scanner</th><th>Type</th><th>Hypothesis</th><th>Mode</th><th>Since</th><th></th>
+        <th>Scanner</th><th>Type</th><th>Hypothesis</th><th>Mode</th><th>Observation</th><th>Enforce</th><th></th>
       </tr></thead><tbody>${activeRows}</tbody></table>`;
   }
 
@@ -944,6 +980,34 @@ async function removeScannerVariant(idx) {
     body: JSON.stringify({ index: idx }),
   });
   if (r.ok) { setTimeout(loadAll, 300); } else { alert('Remove failed'); }
+}
+
+async function enforceScannerVariant(idx) {
+  if (!confirm('ENFORCE this variant?\n\nBot will start honoring the variant in live trading (e.g. add scanner to allowed regimes, or bypass filter).\n\nOnly proceed if shadow observation shows clean would-fire pattern. You can revert by clicking Remove.')) return;
+  const r = await fetch(`${RESEARCH_ROOT}/scanner-variants/enforce`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ index: idx }),
+  });
+  if (r.ok) {
+    const body = await r.json();
+    alert(`Variant ENFORCED.\nBot picks up within 60s (mtime poll).\nScanner: ${body.variant.scanner}\nType: ${(body.variant.proposal||{}).type}`);
+    setTimeout(loadAll, 300);
+  } else {
+    const body = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      const override = confirm(`Not ready yet.\n\nstatus=${body.status}  days=${body.days_elapsed}/${body.min_days}  events=${body.relevant_events}/${body.min_events}\n\nFORCE enforce anyway? (not recommended — shadow observation protects edge)`);
+      if (override) {
+        const r2 = await fetch(`${RESEARCH_ROOT}/scanner-variants/enforce`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ index: idx, force: true }),
+        });
+        if (r2.ok) { alert('Force-enforced.'); setTimeout(loadAll, 300); }
+        else { alert('Force enforce failed'); }
+      }
+    } else {
+      alert(`Enforce failed: ${body.error || r.status}`);
+    }
+  }
 }
 
 // Main

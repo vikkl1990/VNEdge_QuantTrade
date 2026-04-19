@@ -948,6 +948,135 @@ def active_scanner_variants() -> Dict[str, Any]:
         return {"error": str(e), "variants": [], "count": 0}
 
 
+# ─────────────────────────────────────────────────────────────────
+# Phase 4: Shadow Observation Tracking + Enforcement Readiness
+# ─────────────────────────────────────────────────────────────────
+
+# Readiness criteria (tunable): how long + how many would-fire events
+# a variant must accumulate in shadow before it can be promoted to enforce.
+ENFORCE_MIN_SHADOW_DAYS = 7
+ENFORCE_MIN_WOULD_FIRE_EVENTS = 30
+
+
+def shadow_observation_status() -> Dict[str, Any]:
+    """For each active scanner variant, compute shadow observation progress:
+      - days_elapsed: time since variant was approved
+      - would_fire_events: count of `variant_would_fire` events in funnel log
+      - observed_events: count of `variant_observed` events (for non-regime types)
+      - enforced_events: count of `variant_enforced` events (if already enforcing)
+      - ready_to_enforce: bool (days >= min_days AND events >= min_events)
+      - status: "observing" / "ready" / "enforcing" / "insufficient_data"
+
+    This is the data that drives the UI's "Enforce" button state and the
+    per-variant progress bar.
+    """
+    try:
+        if not SCANNER_VARIANTS_FILE.exists():
+            return {"variants": [], "count": 0, "min_days": ENFORCE_MIN_SHADOW_DAYS,
+                    "min_events": ENFORCE_MIN_WOULD_FIRE_EVENTS}
+        with open(SCANNER_VARIANTS_FILE) as fh:
+            store = json.load(fh) or {}
+        active = store.get("variants", [])
+    except Exception as e:
+        return {"error": str(e), "variants": [], "count": 0}
+
+    if not active:
+        return {"variants": [], "count": 0, "min_days": ENFORCE_MIN_SHADOW_DAYS,
+                "min_events": ENFORCE_MIN_WOULD_FIRE_EVENTS}
+
+    # Index event counts by (scanner, variant_type) from funnel log
+    would_fire_counts: Dict[Tuple[str, str], int] = Counter()
+    observed_counts: Dict[Tuple[str, str], int] = Counter()
+    enforced_counts: Dict[Tuple[str, str], int] = Counter()
+    if SCANNER_FUNNEL_FILE.exists():
+        try:
+            with open(SCANNER_FUNNEL_FILE) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    kind = rec.get("kind")
+                    if kind not in ("variant_would_fire", "variant_observed", "variant_enforced"):
+                        continue
+                    scn = rec.get("scanner")
+                    vtype = rec.get("variant_type")
+                    if not (scn and vtype):
+                        continue
+                    key = (scn, vtype)
+                    if kind == "variant_would_fire":
+                        would_fire_counts[key] += 1
+                    elif kind == "variant_observed":
+                        observed_counts[key] += 1
+                    else:
+                        enforced_counts[key] += 1
+        except Exception:
+            pass
+
+    now = datetime.now(timezone.utc)
+    out_variants = []
+    for idx, v in enumerate(active):
+        created_ts = _parse_ts(v.get("created_at"))
+        days_elapsed = 0.0
+        if created_ts:
+            days_elapsed = round((now - created_ts).total_seconds() / 86400.0, 2)
+        scn = v.get("scanner")
+        vtype = (v.get("proposal") or {}).get("type")
+        mode = v.get("mode") or "shadow"
+        key = (scn, vtype)
+        n_would = would_fire_counts.get(key, 0)
+        n_obs = observed_counts.get(key, 0)
+        n_enforced = enforced_counts.get(key, 0)
+        # For most variant types, would_fire IS the relevant readiness signal.
+        # For filter_exemption/threshold_relax, use observed_counts as proxy.
+        relevant_events = n_would if vtype == "regime_whitelist" else (n_would + n_obs)
+
+        # Readiness
+        if mode == "enforce":
+            status = "enforcing"
+            ready = True
+        elif days_elapsed >= ENFORCE_MIN_SHADOW_DAYS and relevant_events >= ENFORCE_MIN_WOULD_FIRE_EVENTS:
+            status = "ready"
+            ready = True
+        elif relevant_events > 0 or days_elapsed > 0.1:
+            status = "observing"
+            ready = False
+        else:
+            status = "insufficient_data"
+            ready = False
+
+        days_pct = min(100.0, round(days_elapsed / ENFORCE_MIN_SHADOW_DAYS * 100.0, 1))
+        events_pct = min(100.0, round(relevant_events / ENFORCE_MIN_WOULD_FIRE_EVENTS * 100.0, 1))
+
+        out_variants.append({
+            "index": idx,
+            "scanner": scn,
+            "variant_type": vtype,
+            "mode": mode,
+            "created_at": v.get("created_at"),
+            "days_elapsed": days_elapsed,
+            "would_fire_events": n_would,
+            "observed_events": n_obs,
+            "enforced_events": n_enforced,
+            "relevant_events": relevant_events,
+            "days_progress_pct": days_pct,
+            "events_progress_pct": events_pct,
+            "status": status,
+            "ready_to_enforce": ready and mode != "enforce",
+        })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "variants": out_variants,
+        "count": len(out_variants),
+        "min_days": ENFORCE_MIN_SHADOW_DAYS,
+        "min_events": ENFORCE_MIN_WOULD_FIRE_EVENTS,
+    }
+
+
 def scan_suggestions() -> Dict[str, Any]:
     """Read pending suggestions for human review."""
     if not SUGGESTIONS_FILE.exists():
@@ -1055,6 +1184,10 @@ class ResearchCenter:
             self._set("scanner_variants", propose_scanner_variants(), 900)
         except Exception as e:
             logger.exception("scanner_variants refresh failed: %s", e)
+        try:
+            self._set("scanner_observation", shadow_observation_status(), 300)
+        except Exception as e:
+            logger.exception("scanner_observation refresh failed: %s", e)
         _emit_event("cache_refresh", {"keys": list(self._cache.keys())})
 
     async def start(self):
@@ -1075,7 +1208,8 @@ class ResearchCenter:
         """Simple tick-based scheduler. Each capability runs on its own cadence."""
         last_runs = {k: 0.0 for k in (
             "cohort_health", "weakspots", "policy_variants", "edge_trajectory",
-            "scanner_registry", "scanner_promotions", "scanner_funnel", "scanner_variants",
+            "scanner_registry", "scanner_promotions", "scanner_funnel",
+            "scanner_variants", "scanner_observation",
         )}
         intervals = {
             "cohort_health": 300,         # 5 min
@@ -1086,6 +1220,7 @@ class ResearchCenter:
             "scanner_promotions": 900,    # 15 min — expensive (baseline + cohort groupby)
             "scanner_funnel": 300,        # 5 min — funnel.jsonl grows over time
             "scanner_variants": 900,      # 15 min — depends on funnel
+            "scanner_observation": 120,   # 2 min — drives Enforce button state
         }
         runners: Dict[str, Callable] = {
             "cohort_health": lambda: analyze_cohort_health(),
@@ -1096,11 +1231,12 @@ class ResearchCenter:
             "scanner_promotions": lambda: propose_scanner_promotions(),
             "scanner_funnel": lambda: scanner_funnel_analysis(days=7),
             "scanner_variants": lambda: propose_scanner_variants(),
+            "scanner_observation": lambda: shadow_observation_status(),
         }
         ttls = {
             "cohort_health": 600, "weakspots": 3600, "policy_variants": 7200,
             "edge_trajectory": 1200, "scanner_registry": 120, "scanner_promotions": 1800,
-            "scanner_funnel": 600, "scanner_variants": 1800,
+            "scanner_funnel": 600, "scanner_variants": 1800, "scanner_observation": 240,
         }
 
         try:

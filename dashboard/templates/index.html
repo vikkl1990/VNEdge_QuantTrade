@@ -2269,9 +2269,12 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- Current Configuration Summary -->
+    <!-- Current Configuration Summary — dynamic per-user (2026-04-19) -->
+    <!-- Previously had hardcoded placeholder text ("Key: bauW...USj9 | Balance: $199.19")
+         that was fiction shown to every user. Now fetched live from
+         /api/user/profile + /api/user/api-keys + /api/user/connection-status. -->
     <div class="mb-4">
-      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Current Bot Configuration</div>
+      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Current Bot Configuration <span style="color:var(--text-muted);font-weight:500;text-transform:none;letter-spacing:0" id="myConfigUser">(your account)</span></div>
       <div class="grid-3" class="gap-2">
         <div class="metric-cell">
           <div class="metric-label">Exchange</div>
@@ -2280,39 +2283,136 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
         <div class="metric-cell">
           <div class="metric-label">Trading Pairs</div>
-          <div class="font-semibold text-success" id="admin-pairs-count">10 pairs</div>
-          <div class="text-xs text-muted">BTC ETH SOL XRP BNB DOGE LINK LTC ADA TAO</div>
+          <div class="font-semibold text-success" id="myPairsCount">loading…</div>
+          <div class="text-xs text-muted" id="myPairsList">—</div>
         </div>
         <div class="metric-cell">
           <div class="metric-label">Risk Limits</div>
-          <div style="font-weight:600;color:var(--yellow)">10x max leverage</div>
-          <div class="text-xs text-muted">$25/day loss limit | 5 consec loss pause</div>
+          <div style="font-weight:600;color:var(--yellow)" id="myRiskHeadline">loading…</div>
+          <div class="text-xs text-muted" id="myRiskSub">—</div>
         </div>
       </div>
     </div>
 
-    <!-- API Key Status -->
+    <!-- API Key Status — YOUR keys only -->
     <div>
-      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">API Key Status</div>
-      <div class="grid-2" class="gap-2">
-        <div style="padding:10px;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.15);border-radius:6px">
-          <div class="flex justify-between items-center">
-            <span class="font-semibold text-info">Demo (Testnet)</span>
-            <span style="color:var(--green);font-weight:600;font-size:.7rem">&#10003; Connected</span>
-          </div>
-          <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: bauW...USj9 | Balance: $199.19</div>
-        </div>
-        <div style="padding:10px;background:rgba(255,59,92,.04);border:1px solid rgba(255,59,92,.15);border-radius:6px">
-          <div class="flex justify-between items-center">
-            <span style="font-weight:600;color:var(--red)">Real (Production)</span>
-            <span style="color:var(--green);font-weight:600;font-size:.7rem">&#10003; Connected</span>
-          </div>
-          <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: 4Tgu...3Y | Balance: $117.42</div>
-        </div>
+      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">
+        Your API Keys
+        <a href="/profile" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:500;margin-left:8px;font-size:.7rem">manage in Profile →</a>
+      </div>
+      <div class="grid-2" class="gap-2" id="myKeysCards">
+        <div class="text-xs text-muted" style="grid-column:1/-1">loading your keys…</div>
       </div>
     </div>
   </div>
 </div>
+
+<script>
+// ── Per-user bot-config card: fetches actual user data, not hardcoded. ──
+(async function renderMyBotConfig() {
+  const fetchJSON = (u) => fetch(u, {credentials:'same-origin'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  // Helper: find an element in case it's missing from some deployments
+  const setEl = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+
+  // Only render when admin tab/panel is actually visible to user
+  const tryRender = async () => {
+    const panel = document.getElementById('myConfigUser');
+    if (!panel) return;  // card not on this page
+
+    // 1. Profile — pairs + leverage + daily-loss
+    const prof = await fetchJSON('/api/user/profile');
+    if (prof) {
+      if (prof.email) setEl('myConfigUser', `(${prof.email})`);
+      let pairs = prof.trading_pairs || [];
+      if (typeof pairs === 'string') { try { pairs = JSON.parse(pairs); } catch(e) { pairs = []; } }
+      if (!Array.isArray(pairs)) pairs = [];
+      setEl('myPairsCount', pairs.length ? `${pairs.length} pairs` : 'default');
+      setEl('myPairsList', pairs.length ? pairs.slice(0, 10).map(p => String(p).split('/')[0]).join(' ') : 'using system defaults');
+
+      const lev = prof.max_leverage || prof.preferred_leverage || '—';
+      setEl('myRiskHeadline', `${lev}x max leverage`);
+      const dailyLoss = prof.max_daily_loss_pct != null ? `${prof.max_daily_loss_pct}%/day` : '—';
+      const maxOpen = prof.max_open_positions || '—';
+      setEl('myRiskSub', `${dailyLoss} loss limit · max ${maxOpen} open`);
+    }
+
+    // 2. Keys — only YOUR keys, with live connection status
+    const keysWrap = document.getElementById('myKeysCards');
+    if (!keysWrap) return;
+
+    const keysResp = await fetchJSON('/api/user/api-keys');
+    const conn = await fetchJSON('/api/user/connection-status');
+    const keys = keysResp && Array.isArray(keysResp.keys) ? keysResp.keys : [];
+
+    if (!keys.length) {
+      keysWrap.innerHTML = `<div class="text-xs text-muted" style="grid-column:1/-1;padding:12px 0">
+        No API keys configured. Click <a href="/profile" style="color:var(--accent)">here</a> to add one.
+      </div>`;
+      return;
+    }
+
+    // Build card per label
+    const byLabel = {};
+    for (const k of keys) byLabel[k.label] = k;
+
+    const renderCard = (label) => {
+      const k = byLabel[label];
+      const isDemo = label === 'demo';
+      const bg = isDemo ? 'rgba(0,212,255,.04)' : 'rgba(255,59,92,.04)';
+      const border = isDemo ? 'rgba(0,212,255,.15)' : 'rgba(255,59,92,.15)';
+      const titleColor = isDemo ? 'var(--info)' : 'var(--red)';
+      const title = isDemo ? 'Demo (Testnet)' : 'Real (Production)';
+
+      if (!k) {
+        return `<div style="padding:10px;background:${bg};border:1px dashed ${border};border-radius:6px;opacity:.65">
+          <div class="flex justify-between items-center">
+            <span style="color:${titleColor};font-weight:600">${title}</span>
+            <span style="color:var(--text-muted);font-size:.7rem">Not configured</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">
+            <a href="/profile" style="color:var(--accent)">Add ${label} key →</a>
+          </div>
+        </div>`;
+      }
+
+      // Connection status only applies to the mode that matches current bot_mode
+      let statusBadge = `<span style="color:var(--text-muted);font-weight:600;font-size:.7rem">stored</span>`;
+      let balanceLine = `<div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: ${esc(k.api_key_masked)}</div>`;
+      if (conn && conn.bot_mode === label) {
+        if (conn.connected) {
+          statusBadge = `<span style="color:var(--green);font-weight:600;font-size:.7rem">✓ Connected</span>`;
+          const bal = conn.balance_usdt != null ? `$${Number(conn.balance_usdt).toFixed(2)}` : '—';
+          balanceLine = `<div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">Key: ${esc(k.api_key_masked)} · Balance: ${bal}</div>`;
+        } else if (conn.status === 'key_rejected') {
+          statusBadge = `<span style="color:var(--red);font-weight:600;font-size:.7rem">✕ Rejected</span>`;
+        } else if (conn.status === 'delta_unreachable') {
+          statusBadge = `<span style="color:var(--yellow);font-weight:600;font-size:.7rem">⚠ Unreachable</span>`;
+        }
+      } else if (k.is_active) {
+        statusBadge = `<span style="color:var(--text-muted);font-weight:600;font-size:.7rem">stored · inactive mode</span>`;
+      } else {
+        statusBadge = `<span style="color:var(--text-muted);font-weight:600;font-size:.7rem">disabled</span>`;
+      }
+
+      return `<div style="padding:10px;background:${bg};border:1px solid ${border};border-radius:6px">
+        <div class="flex justify-between items-center">
+          <span style="color:${titleColor};font-weight:600">${title}</span>
+          ${statusBadge}
+        </div>
+        ${balanceLine}
+      </div>`;
+    };
+
+    keysWrap.innerHTML = renderCard('demo') + renderCard('live');
+  };
+
+  // Render on load + when admin tab is clicked (if present)
+  tryRender();
+  setInterval(tryRender, 60000); // refresh every 60s
+})();
+</script>
 
 <!-- ═══ API KEY MODAL ═══════════════════════════════════════ -->
 <div id="apikey-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:10000;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">

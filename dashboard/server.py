@@ -1566,6 +1566,101 @@ class DashboardServer:
                 except Exception as exc:
                     logger.debug("per-user real-status lookup failed (%s) — falling back to global", exc)
 
+        # ── Paper-mode balance peek (2026-04-20) ─────────────────────
+        # Paper users don't have a UserRealManager (by design — paper is
+        # internal simulation, no exchange round-trip). But users still want
+        # to see their actual Delta balance as a vault-view reference.
+        # Run a lightweight read-only probe on their highest-priority active
+        # key (live > demo) and include balance as informational data.
+        # Cached 60s per user to avoid hammering Delta on every dashboard poll.
+        if user_id and self._db_pool:
+            import time as _time
+            now_sec = _time.time()
+            if not hasattr(self, '_balance_peek_cache'):
+                self._balance_peek_cache = {}  # user_id -> (ts, payload)
+            cached = self._balance_peek_cache.get(str(user_id))
+            if cached and (now_sec - cached[0]) < 60.0:
+                peek_payload = dict(cached[1])
+                peek_payload["cache_age_sec"] = int(now_sec - cached[0])
+                return web.json_response(peek_payload)
+
+            try:
+                async with self._db_pool.acquire() as conn:
+                    user_row = await conn.fetchrow(
+                        "SELECT bot_mode FROM users WHERE id = $1", user_id,
+                    )
+                    # Prefer live > demo for the peek
+                    key_row = await conn.fetchrow(
+                        """SELECT label, api_key_enc, api_secret_enc, base_url
+                           FROM user_api_keys
+                           WHERE user_id = $1 AND exchange = 'delta' AND is_active = TRUE
+                           ORDER BY CASE label WHEN 'live' THEN 1 WHEN 'demo' THEN 2 ELSE 3 END
+                           LIMIT 1""",
+                        user_id,
+                    )
+            except Exception:
+                user_row = None
+                key_row = None
+
+            if user_row and key_row:
+                label = key_row["label"]
+                try:
+                    from auth.crypto import decrypt_api_key
+                    api_key = decrypt_api_key(key_row["api_key_enc"], user_id=str(user_id))
+                    api_secret = decrypt_api_key(key_row["api_secret_enc"], user_id=str(user_id))
+                    base_url = key_row["base_url"] or (
+                        "https://cdn-ind.testnet.deltaex.org" if label == "demo"
+                        else "https://api.india.delta.exchange"
+                    )
+                except Exception:
+                    api_key = api_secret = base_url = None
+
+                probe_balance = None
+                if api_key and api_secret:
+                    import asyncio as _asyncio
+                    def _peek():
+                        try:
+                            from delta_rest_client import DeltaRestClient
+                            client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
+                            wallets = client.get_balances(asset_id=5)
+                            if isinstance(wallets, dict):
+                                return float(wallets.get("available_balance", 0) or 0)
+                            for w in (wallets or []):
+                                if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
+                                    return float(w.get("available_balance", 0) or 0)
+                            return 0.0
+                        except Exception:
+                            return None
+                    try:
+                        probe_balance = await _asyncio.to_thread(_peek)
+                    except Exception:
+                        probe_balance = None
+
+                peek_payload = {
+                    "enabled": False,
+                    "dry_run": True,
+                    "mode": user_row["bot_mode"] or "paper",
+                    "display_status": "STANDBY" if user_row["bot_mode"] == "paper" else "DISABLED",
+                    "balance": round(probe_balance, 2) if probe_balance is not None else 0.0,
+                    "balance_source": f"peek_{label}" if probe_balance is not None else "unreachable",
+                    "balance_peek": True,       # flag: not a live trading balance
+                    "trading_active": False,    # paper mode = no real orders
+                    "key_label": label,
+                    "circuit_breaker": {"daily_pnl": 0, "is_tripped": False},
+                    "open_positions": [], "open_count": 0,
+                    "closed_today": 0, "total_closed": 0,
+                    "recent_trades": [],
+                    "scope": "user_peek",
+                    "user_id": str(user_id),
+                    "note": (
+                        f"Paper mode active — showing read-only balance from your "
+                        f"{label} key. Switch bot_mode to {label} to actually trade."
+                    ),
+                    "cache_age_sec": 0,
+                }
+                self._balance_peek_cache[str(user_id)] = (now_sec, peek_payload)
+                return web.json_response(peek_payload)
+
         # ── Legacy global fallback (currently disabled path) ────────
         mgr = getattr(self, '_real_manager', None)
         if not mgr:

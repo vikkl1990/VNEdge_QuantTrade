@@ -1487,7 +1487,86 @@ class DashboardServer:
         )
 
     async def _handle_real_status(self, request: web.Request) -> web.Response:
-        """Return real trading manager status for dashboard."""
+        """Return real trading manager status for dashboard.
+
+        ROUTING (2026-04-20):
+        - If the caller has an authenticated session AND the orchestrator's
+          UserRealRegistry has a manager for them, return THEIR per-user
+          status (balance, positions, trades — all scoped to their Delta
+          account via their own keys).
+        - Otherwise fall back to the legacy global real_manager (currently
+          disabled — returns zeros).
+
+        Previously, every user hit the global /api/real/status and saw the
+        same numbers (zeros since legacy path disabled). Dashboard showed
+        "Deployable Capital: $0 no balance" to every user regardless of
+        their actual Delta testnet/prod balance. This proxy is transparent
+        to the frontend (no URL change, no JS rewrite needed) and the
+        per-user response shape matches the legacy shape.
+        """
+        # ── Per-user route (preferred) ──────────────────────────────
+        user_ctx = request.get("user") or {}
+        user_id = user_ctx.get("user_id")
+        if user_id:
+            orch = getattr(self, '_orchestrator', None)
+            user_registry = getattr(orch, '_user_registry', None) if orch else None
+            if user_registry:
+                try:
+                    # Try to find user_info in the cached active-users list
+                    user_info = None
+                    for u in (getattr(user_registry, '_active_users_cache', []) or []):
+                        if str(u.get("id")) == str(user_id):
+                            user_info = u
+                            break
+                    # If not in cache, refresh and retry
+                    if user_info is None:
+                        try:
+                            await user_registry._refresh_active_users()
+                            for u in (user_registry._active_users_cache or []):
+                                if str(u.get("id")) == str(user_id):
+                                    user_info = u
+                                    break
+                        except Exception:
+                            pass
+                    mgr = None
+                    if user_info is not None:
+                        mgr = await user_registry.get_or_create_manager(user_info)
+                    else:
+                        mgr = await user_registry.get_manager_for_user(str(user_id))
+                    if mgr:
+                        try:
+                            await mgr.refresh_balance()
+                        except Exception:
+                            pass
+                        _status = mgr.get_status() if hasattr(mgr, 'get_status') else {}
+                        # Display-status derivation (same heuristic as legacy)
+                        try:
+                            _bal = float(_status.get("balance", 0) or 0)
+                            _open = int(_status.get("open_count", 0) or 0)
+                            _today = int(_status.get("closed_today", 0) or 0)
+                            _total = int(_status.get("total_closed", 0) or 0)
+                            _cb_tripped = bool(_status.get("circuit_breaker", {}).get("is_tripped", False))
+                            _enabled = bool(_status.get("enabled", True))
+                            _min_bal = 5.0
+                            if not _enabled:
+                                _status["display_status"] = "DISABLED"
+                            elif _cb_tripped:
+                                _status["display_status"] = "HALTED"
+                            elif _bal < _min_bal:
+                                _status["display_status"] = "STANDBY"
+                            elif _total == 0 and _today == 0 and _open == 0:
+                                _status["display_status"] = "ARMED"
+                            else:
+                                _status["display_status"] = "LIVE"
+                        except Exception:
+                            _status["display_status"] = _status.get("mode", "UNKNOWN")
+                        _status["scope"] = "user"
+                        _status["user_id"] = str(user_id)
+                        return web.json_response(_status)
+                except Exception as exc:
+                    logger.debug("per-user real-status lookup failed (%s) — falling back to global", exc)
+
+        # ── Legacy global fallback (currently disabled path) ────────
         mgr = getattr(self, '_real_manager', None)
         if not mgr:
             orch = getattr(self, '_orchestrator', None)

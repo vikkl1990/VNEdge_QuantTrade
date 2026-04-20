@@ -1165,9 +1165,29 @@ class SignalTracker:
             sl_hit = (price <= ts.stop_loss) if is_long else (price >= ts.stop_loss)
             if sl_hit and not ts.sl_hit:
                 ts.sl_hit = True
-                ts.exit_price = price
+                # BUGFIX 2026-04-20: when BE has locked profit (SL moved into
+                # profit zone past entry), a fast reversal can tick the check
+                # AFTER price has already crossed the SL level. Using `price`
+                # here would exit at the post-crossing tick (a loss), defeating
+                # the locked-profit guarantee. Honor the SL price as the exit
+                # when the SL is in the profit zone — this matches what a
+                # proper stop order would fill at (bounded slippage at SL).
+                #
+                # Condition: BE is set AND SL is on the profit side of entry.
+                # For shorts, SL <= entry means the lock moved below entry.
+                # For longs, SL >= entry means the lock moved above entry.
+                # Otherwise (bare SL hit with no profit lock), exit at current
+                # price as before (existing loss-side behavior unchanged).
+                if ts.breakeven_set and (
+                    (is_long and ts.stop_loss >= ts.entry_price) or
+                    (not is_long and ts.stop_loss <= ts.entry_price)
+                ):
+                    exit_price_used = ts.stop_loss  # honor the locked level
+                else:
+                    exit_price_used = price
+                ts.exit_price = exit_price_used
                 ts.exit_time = now_iso
-                ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
+                ts.pnl_pct = self._calc_pnl(ts, exit_price_used, self._order_type)
                 overshoot = abs(price - ts.stop_loss)
                 ts.stop_overshoot_pct = round((overshoot / ts.entry_price) * 100, 4) if ts.entry_price > 0 else 0
 

@@ -156,6 +156,18 @@ class BotOrchestrator:
             self._log.warning("BotBrain init failed (continuing without): %s", exc)
             self._brain = None
 
+        # Correlation cooldown: prevent simultaneous same-side entries on
+        # highly-correlated majors (BTC/ETH/SOL). Loss-review 2026-04-20 showed
+        # multiple same-minute pair-cluster nukes (BTC-short + ETH-short at
+        # 01:32 both −0.8R, driven by the same macro move).
+        # key: frozenset({symbol, side}) → timestamp of last entry in that group
+        # For implementation simplicity we just store the last same-side entry
+        # time per major symbol, and check cross-symbol when a new major fires.
+        self._correlation_cluster = {"BTC/USDT", "ETH/USDT", "SOL/USDT"}
+        self._correlation_cooldown_sec = 60
+        self._correlation_last_fire: dict = {}   # (symbol, side) -> epoch seconds
+        self._correlation_skipped_count = 0       # for telemetry
+
         # UserRealRegistry — per-user real trading (multi-tenant)
         self._user_registry = None
         try:
@@ -1722,6 +1734,43 @@ class BotOrchestrator:
             _tracker_active_before = len(getattr(self._signal_tracker, '_active', {}) or {})
         except Exception:
             _tracker_active_before = -1  # disable orphan check on lookup failure
+
+        # ── Correlation cooldown: block same-side entries on correlated
+        # majors fired within the cooldown window (2026-04-20 loss-review
+        # finding: BTC/ETH/SOL same-side same-minute = correlated disaster).
+        # Check happens JUST before track_signal. Skipped signals are logged
+        # to the funnel so Research Lab can count/attribute them.
+        try:
+            _sym = sig_dict.get("symbol") or symbol
+            _side = str(sig_dict.get("side") or "").lower()
+            if _sym in self._correlation_cluster and _side in ("long", "short"):
+                import time as _time
+                now_sec = _time.time()
+                # Check each OTHER major in the cluster for a recent same-side fire
+                blocker = None
+                for other in self._correlation_cluster:
+                    if other == _sym:
+                        continue
+                    last = self._correlation_last_fire.get((other, _side), 0.0)
+                    age = now_sec - last
+                    if age < self._correlation_cooldown_sec:
+                        blocker = (other, int(self._correlation_cooldown_sec - age))
+                        break
+                if blocker:
+                    other_sym, remaining = blocker
+                    self._correlation_skipped_count += 1
+                    self._log.info(
+                        "CORRELATION COOLDOWN: skip %s %s (same-side %s fired %ds ago; %ds remaining)",
+                        _sym, _side, other_sym,
+                        int(self._correlation_cooldown_sec - remaining), remaining,
+                    )
+                    return  # drop this signal — don't track, don't broadcast
+                # Record this fire for the cooldown check on subsequent majors
+                self._correlation_last_fire[(_sym, _side)] = now_sec
+        except Exception as _exc:
+            # Cooldown gate must never break trading; fail-open on errors
+            self._log.debug("correlation cooldown check failed: %s", _exc)
+
         try:
             # Pass order_type so from_signal can compute fees correctly
             sig_dict["_order_type"] = getattr(self._signal_tracker, "_order_type", "maker")

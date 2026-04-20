@@ -511,25 +511,51 @@ async function api(path) {
 }
 
 async function setRealMode(mode) {
-    if (mode === "live" && !confirm("⚠️ ENABLE LIVE TRADING?\n\nThis will place REAL orders with REAL money on Delta Exchange.\n\nAre you absolutely sure?")) {
-        document.getElementById("real-mode-select").value = "dry_run";
+    // 2026-04-20: routed to per-user bot_mode system (legacy /api/real/toggle
+    // hit the shared-account real_manager which is permanently disabled since
+    // the security pass — toggling it briefly set enabled=True but the next
+    // status read snapped back to disabled because of config/state enforcement).
+    //
+    // New mapping:
+    //   "disabled" → bot_mode: paper  (internal simulation only)
+    //   "dry_run"  → bot_mode: demo   (real Delta testnet with your demo key)
+    //   "live"     → bot_mode: live   (Delta production with your live key)
+    const modeMap = {"disabled": "paper", "dry_run": "demo", "live": "live"};
+    const botMode = modeMap[mode] || "paper";
+
+    if (botMode === "live" && !confirm("⚠️ ENABLE LIVE TRADING?\n\nThis will place REAL orders with REAL money on Delta Exchange.\n\nAre you absolutely sure?")) {
+        const sel = document.getElementById("real-mode-select-live");
+        if (sel) sel.value = "dry_run";
         return;
     }
-    if (mode === "live" && !confirm("🔴 FINAL CONFIRMATION\n\nReal money will be at risk.\nCircuit breaker: $25/day loss limit.\n\nType OK to confirm.")) {
-        document.getElementById("real-mode-select").value = "dry_run";
+    if (botMode === "live" && !confirm("🔴 FINAL CONFIRMATION\n\nReal money will be at risk.\nCircuit breaker: $25/day loss limit.\n\nProceed?")) {
+        const sel = document.getElementById("real-mode-select-live");
+        if (sel) sel.value = "dry_run";
         return;
     }
-    const enabled = mode !== "disabled";
-    const dry_run = mode !== "live";
     try {
-        const r = await fetch("/api/real/toggle", {
+        const r = await fetch("/api/user/real/toggle", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             credentials: "same-origin",
-            body: JSON.stringify({enabled, dry_run})
+            body: JSON.stringify({bot_mode: botMode})
         });
         const d = await r.json();
-        if (d.error) alert("Error: " + d.error);
+        if (!r.ok) {
+            // Surface pre-flight errors (e.g., missing matching-label key)
+            alert("Mode change rejected: " + (d.error || r.statusText) +
+                  (d.hint ? "\n\n" + d.hint : ""));
+            // Revert the dropdown so the UI matches DB truth
+            try {
+                const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.json()).catch(()=>({}));
+                const cur = stat.mode || stat.bot_mode || "paper";
+                const inv = {"paper":"disabled","demo":"dry_run","live":"live"};
+                const sel = document.getElementById("real-mode-select-live");
+                if (sel) sel.value = inv[cur] || "disabled";
+            } catch(e) {}
+            return;
+        }
+        // Success — no-op, next status poll will reflect the new mode
     } catch (e) { alert("Mode change failed: " + e); }
 }
 // Legacy support
@@ -845,9 +871,18 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
 
     // Real Trading Panel — update BOTH analytics and live tab versions
     if (realStatus) {
-        const modeVal = !realStatus.enabled ? "disabled" : realStatus.dry_run ? "dry_run" : "live";
-        const modeLabel = !realStatus.enabled ? "DISABLED" : realStatus.dry_run ? "DRY RUN" : "LIVE";
-        const modeColor = !realStatus.enabled ? "var(--text-muted)" : realStatus.dry_run ? "var(--cyan)" : "var(--red)";
+        // 2026-04-20: prefer per-user bot_mode field (new path) over legacy
+        // enabled/dry_run bools (which stayed stuck at disabled even after
+        // toggles). When the peek/per-user path populates realStatus.mode,
+        // derive dropdown state from that canonical source. Fall back to
+        // legacy enabled/dry_run when mode field absent.
+        let modeVal;
+        if (realStatus.mode === "demo") modeVal = "dry_run";
+        else if (realStatus.mode === "live") modeVal = "live";
+        else if (realStatus.mode === "paper") modeVal = "disabled";
+        else modeVal = !realStatus.enabled ? "disabled" : realStatus.dry_run ? "dry_run" : "live";
+        const modeLabel = modeVal === "disabled" ? "DISABLED" : modeVal === "dry_run" ? "DRY RUN" : "LIVE";
+        const modeColor = modeVal === "disabled" ? "var(--text-muted)" : modeVal === "dry_run" ? "var(--cyan)" : "var(--red)";
 
         // ── MODE BANNER (persistent top strip) ──
         const mb = document.getElementById("mode-banner");

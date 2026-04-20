@@ -89,6 +89,25 @@ class AdminRouteHandler:
             return web.json_response({"error": "invalid tier"}, status=400)
         if "bot_mode" in updates and updates["bot_mode"] not in ("paper", "demo", "live"):
             return web.json_response({"error": "invalid bot_mode"}, status=400)
+        # CONSOLIDATION 2026-04-20: if admin is changing bot_mode to demo/live,
+        # require a matching-label active API key (parity with user-self toggle).
+        # Prevents stuck state where bot_mode=live but no live key → UserRealRegistry
+        # returns None forever, user looks enabled but nothing trades.
+        if updates.get("bot_mode") in ("demo", "live"):
+            required_label = updates["bot_mode"]
+            async with self.pool.acquire() as conn:
+                key_row = await conn.fetchrow(
+                    """SELECT id FROM user_api_keys
+                       WHERE user_id = $1 AND exchange = 'delta'
+                         AND label = $2 AND is_active = TRUE LIMIT 1""",
+                    user_id, required_label,
+                )
+            if not key_row:
+                return web.json_response({
+                    "error": f"cannot set bot_mode={required_label} — no active '{required_label}' API key on file",
+                    "hint": f"Upload a '{required_label}'-labeled API key via the user's Add Key flow first.",
+                    "current_mode_blocked": True,
+                }, status=400)
         if "max_leverage" in updates:
             updates["max_leverage"] = max(1, min(50, int(updates["max_leverage"])))
         if "max_daily_loss_pct" in updates:
@@ -115,6 +134,19 @@ class AdminRouteHandler:
 
         async with self.pool.acquire() as conn:
             await conn.execute(sql, *values)
+
+        # CONSOLIDATION 2026-04-20: if bot_mode changed, invalidate the cached
+        # UserRealManager so it rebuilds with the new mode on next broadcast.
+        # (Parity with force-mode and with user-self toggle.)
+        if "bot_mode" in updates:
+            try:
+                orch = request.app.get("orchestrator")
+                if orch and getattr(orch, "_user_registry", None):
+                    if user_id in orch._user_registry._managers:
+                        del orch._user_registry._managers[user_id]
+                    orch._user_registry._last_user_refresh = 0
+            except Exception:
+                pass
 
         logger.info("Admin updated user %s: %s", user_id, updates)
         return web.json_response({"ok": True})

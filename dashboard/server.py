@@ -1661,7 +1661,11 @@ class DashboardServer:
                 self._balance_peek_cache[str(user_id)] = (now_sec, peek_payload)
                 return web.json_response(peek_payload)
 
-        # ── Legacy global fallback (currently disabled path) ────────
+        # ── Legacy global fallback — retired 2026-04-20 ─────────────
+        # RealManager no longer instantiated (main.py sets real_manager=None).
+        # This block remains so any very old callers without a session still
+        # get a structurally-valid empty payload rather than an error. After
+        # one release cycle, the `if mgr:` branch can be deleted entirely.
         mgr = getattr(self, '_real_manager', None)
         if not mgr:
             orch = getattr(self, '_orchestrator', None)
@@ -1743,45 +1747,24 @@ class DashboardServer:
         })
 
     async def _handle_real_toggle(self, request: web.Request) -> web.Response:
-        """Toggle real trading on/off from dashboard."""
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        enabled = body.get("enabled")
-        dry_run = body.get("dry_run")
+        """RETIRED 2026-04-20 (Option-A consolidation).
 
-        orch = getattr(self, '_orchestrator', None)
-        mgr = None
-        if hasattr(self, '_real_manager') and self._real_manager:
-            mgr = self._real_manager
-        elif orch and hasattr(orch, '_real_manager') and orch._real_manager:
-            mgr = orch._real_manager
+        The legacy shared-account RealTradingManager is no longer the source
+        of truth. Mode changes go through /api/user/real/toggle which writes
+        users.bot_mode (PostgreSQL) per-user and validates that a matching
+        API key exists.
 
-        if not mgr:
-            return web.json_response({"error": "Real trading manager not initialized"}, status=400)
-
-        if enabled is not None:
-            mgr.enabled = bool(enabled)
-            logger.warning("REAL TRADING %s via dashboard", "ENABLED" if mgr.enabled else "DISABLED")
-        if dry_run is not None:
-            old_dry_run = mgr.dry_run
-            mgr.dry_run = bool(dry_run)
-            logger.warning("REAL TRADING dry_run=%s via dashboard", mgr.dry_run)
-            # Reset circuit breaker when switching modes (dry→live or live→dry)
-            if old_dry_run != mgr.dry_run:
-                mgr.circuit_breaker.daily_pnl = 0
-                mgr.circuit_breaker.total_pnl = 0
-                mgr.circuit_breaker.consecutive_losses = 0
-                mgr.circuit_breaker.is_tripped = False
-                mgr.circuit_breaker.trip_reason = ""
-                mgr.circuit_breaker.trade_count_today = 0
-                logger.warning("REAL TRADING: Circuit breaker RESET on mode switch (%s → %s)",
-                             "dry_run" if old_dry_run else "live",
-                             "dry_run" if mgr.dry_run else "live")
-
-        mgr._save_state()
-        return web.json_response(mgr.get_status())
+        Returning 410 Gone so any stale JS hitting this endpoint is forced
+        to fail loudly rather than silently write state the system ignores.
+        Front-end dropdown was re-wired in commit 2e5f6d5 to target the
+        per-user endpoint instead.
+        """
+        return web.json_response({
+            "error": "gone",
+            "reason": "Legacy shared-account toggle removed — trading mode is per-user now.",
+            "replacement": "POST /api/user/real/toggle with {bot_mode: 'paper'|'demo'|'live'}",
+            "hint": "Use /profile → Trading → Mode Readiness card, or admin force-mode.",
+        }, status=410)
 
     async def _handle_emergency_stop(self, request: web.Request) -> web.Response:
         """KILL SWITCH: Stop all trading immediately."""

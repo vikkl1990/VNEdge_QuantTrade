@@ -155,14 +155,18 @@ async def build_components(config, mode, symbols, logger):
         execution_engine = PaperExecutionEngine(config_dict)
         logger.info("Paper execution engine active - no real orders.")
 
-    # -- Real Trading Manager (mirrors paper trades to real exchange) --
-    # Always create so dashboard toggle works; starts disabled unless config says otherwise
-    real_manager = RealTradingManager(exchange, config_dict, risk_manager)
-    if real_manager.enabled:
-        mode_str = "DRY RUN" if real_manager.dry_run else "LIVE"
-        logger.warning("*** REAL TRADING MANAGER ACTIVE (%s) — mirrors paper trades ***", mode_str)
-    else:
-        logger.info("Real trading manager initialized (disabled — enable via dashboard or config)")
+    # -- Real Trading Manager — RETIRED (2026-04-20 Option-A consolidation) --
+    # The legacy shared-account RealTradingManager is no longer instantiated.
+    # All per-user real/demo trading is routed through UserRealRegistry
+    # (execution/user_registry.py) which uses each user's own encrypted keys
+    # and honors their users.bot_mode value in PostgreSQL.
+    # Set to None so any getattr-checks (orch, dashboard) degrade gracefully.
+    real_manager = None
+    logger.info(
+        "Legacy RealTradingManager is RETIRED — per-user trading via "
+        "UserRealRegistry + users.bot_mode (PostgreSQL). Users switch modes "
+        "via /profile → Trading → Mode Readiness or /admin → user detail."
+    )
 
     # -- Alerts --
     alert_manager = AlertManager(config_dict)

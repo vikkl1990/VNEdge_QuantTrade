@@ -6065,15 +6065,22 @@ async function loadRealOps() {
       if (e && color) e.style.background = color;
     };
 
-    // 1. Status badge
-    const mode = d.mode || 'UNKNOWN';
-    const modeColor = mode === 'LIVE' ? 'var(--red)'
-                    : mode === 'DRY RUN' ? 'var(--yellow)'
+    // 1. Status badge — derive from per-user bot_mode (canonical source)
+    // Legacy values: "LIVE" / "DRY RUN" / undefined
+    // New values:    "live" / "demo" / "paper"
+    const rawMode = (d.mode || 'unknown').toString().toLowerCase();
+    const modeDisplay = rawMode === 'live' ? 'LIVE'
+                      : rawMode === 'demo' || rawMode === 'dry_run' ? 'DEMO'
+                      : rawMode === 'paper' ? 'PAPER'
+                      : rawMode.toUpperCase();
+    const modeColor = rawMode === 'live' ? 'var(--red)'
+                    : rawMode === 'demo' || rawMode === 'dry_run' ? 'var(--cyan)'
+                    : rawMode === 'paper' ? 'var(--text-muted)'
                     : 'var(--text-muted)';
-    const modeBg = mode === 'LIVE' ? 'rgba(255,59,92,.18)'
-                 : mode === 'DRY RUN' ? 'rgba(255,215,0,.15)'
+    const modeBg = rawMode === 'live' ? 'rgba(255,59,92,.18)'
+                 : rawMode === 'demo' || rawMode === 'dry_run' ? 'rgba(0,212,255,.15)'
                  : 'rgba(128,128,128,.15)';
-    set('rops-status', mode, modeColor);
+    set('rops-status', modeDisplay, modeColor);
     bg('rops-status', modeBg);
 
     // 2. Balance
@@ -6145,26 +6152,35 @@ async function loadRealOps() {
 }
 
 async function toggleRealTrading() {
-  // Read current state to flip it
-  let currentEnabled = true;
+  // 2026-04-20: routed to per-user bot_mode system (Option-A consolidation).
+  // Old endpoint /api/real/toggle returns 410 Gone.
+  // Toggle semantics: paper ↔ demo (safer default than flipping to live).
+  // To switch into live, use /profile → Trading → Mode Readiness → Switch to Live.
+  let currentMode = 'paper';
   try {
-    const s = await fetch('/api/real/status').then(r => r.json());
-    currentEnabled = !!s.enabled;
+    const s = await fetch('/api/user/real/status', {credentials:'same-origin'}).then(r => r.json());
+    currentMode = (s.mode || s.bot_mode || 'paper').toLowerCase();
   } catch(e) {}
-  const newEnabled = !currentEnabled;
-  if (!confirm(`Flip real trading: ${currentEnabled ? 'ENABLED' : 'DISABLED'} → ${newEnabled ? 'ENABLED' : 'DISABLED'}?`)) return;
+  const newMode = currentMode === 'paper' ? 'demo' : 'paper';
+  if (!confirm(`Trading mode: ${currentMode.toUpperCase()} → ${newMode.toUpperCase()}?\n\n` +
+               (newMode === 'demo'
+                 ? 'Signals will mirror to Delta testnet with fake money.'
+                 : 'Signals will stop mirroring — simulation only.') +
+               '\n\nFor LIVE mode, use /profile → Trading → Switch to Live.')) return;
   try {
-    const r = await fetch('/api/real/toggle', {
+    const r = await fetch('/api/user/real/toggle', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled: newEnabled}),
+      body: JSON.stringify({bot_mode: newMode}),
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
-      alert('Real trading now: ' + (d.enabled ? 'ENABLED' : 'DISABLED'));
+      alert('Trading mode now: ' + (d.bot_mode || newMode).toUpperCase());
       loadRealOps();
     } else {
-      alert('Toggle failed: ' + JSON.stringify(d));
+      alert('Toggle rejected: ' + (d.error || 'unknown') +
+            (d.hint ? '\n\n' + d.hint : ''));
     }
   } catch(e) {
     alert('Toggle error: ' + e.message);

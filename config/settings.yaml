@@ -47,28 +47,17 @@ execution:
   retry_taker_on_reject: true
   max_entry_slip_bps: 30
   min_trail_hold_sec: 15
-real_trading:
-  enabled: true
-  dry_run: false
-  daily_loss_limit_usd: 15.0
-  max_consecutive_losses: 3
-  min_margin_per_trade: 20.0
-  max_margin_per_trade: 20.0
-  max_open_positions: 3
-  balance_reserve_pct: 15
-  min_balance_to_trade: 15.0
-  leverage_cap: 75
-  # Fix #1-5 knobs (MUST stay in sync with VM1)
-  use_limit_orders: true
-  max_slippage_bps: 15
-  real_ml_threshold_min: 0.65
-  real_allowed_regimes:
-  - trending_up
-  - trending_down
-  - breakout
-  real_tp1_r: 0.30
-  max_daily_trades: 15
-  max_portfolio_heat_pct: 500
+# real_trading: section REMOVED (2026-04-20 Option-A consolidation).
+# The legacy shared-account RealManager is retired. Per-user trading is
+# driven by users.bot_mode (PostgreSQL) + user_api_keys, routed through
+# UserRealRegistry. Risk caps (max_leverage, max_daily_loss_pct, etc.)
+# are now per-user in the users table, not global here. See
+# dashboard/user_trading_routes.py:handle_user_real_toggle.
+real_trading_deprecated:
+  # Kept as empty placeholder so any stray getattr(config, "real_trading", {}).get(...)
+  # returns None without crashing. Remove after one clean release cycle.
+  enabled: false
+  dry_run: true
 ml:
   shadow_mode: true
   veto_skip: true

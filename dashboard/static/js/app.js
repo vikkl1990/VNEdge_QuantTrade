@@ -540,23 +540,31 @@ async function setRealMode(mode) {
             credentials: "same-origin",
             body: JSON.stringify({bot_mode: botMode})
         });
-        const d = await r.json();
+        // Defensive JSON parse: some older code paths or middleware can
+        // return non-JSON bodies (stale caches, 410 Gone text, etc.).
+        // Don't let the JSON parse error eclipse the real HTTP status.
+        let d = {};
+        try { d = await r.json(); } catch (parseErr) {
+            try { const txt = await r.clone().text(); d = { error: txt.slice(0, 200) }; } catch(e) {}
+        }
         if (!r.ok) {
-            // Surface pre-flight errors (e.g., missing matching-label key)
-            alert("Mode change rejected: " + (d.error || r.statusText) +
+            alert("Mode change rejected (HTTP " + r.status + "): " +
+                  (d.error || r.statusText) +
                   (d.hint ? "\n\n" + d.hint : ""));
             // Revert the dropdown so the UI matches DB truth
             try {
-                const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.json()).catch(()=>({}));
-                const cur = stat.mode || stat.bot_mode || "paper";
+                const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.ok ? x.json() : {}).catch(()=>({}));
+                const cur = (stat.mode || stat.bot_mode || "paper").toLowerCase();
                 const inv = {"paper":"disabled","demo":"dry_run","live":"live"};
                 const sel = document.getElementById("real-mode-select-live");
                 if (sel) sel.value = inv[cur] || "disabled";
             } catch(e) {}
             return;
         }
-        // Success — no-op, next status poll will reflect the new mode
-    } catch (e) { alert("Mode change failed: " + e); }
+        // Success — next status poll updates all dashboard widgets
+    } catch (e) {
+        alert("Mode change failed: " + (e && e.message ? e.message : e));
+    }
 }
 // Legacy support
 // REMOVED: stale toggleRealTrading(enabled) — conflicts with robust version at line ~8224.
@@ -4435,14 +4443,24 @@ async function ccTogglePause() {
 }
 
 async function ccToggleReal() {
+    // 2026-04-20 Option-A: routed to per-user bot_mode (legacy /api/real/toggle → 410).
+    // Semantics: OFF = paper, ON = demo (safer default; live requires /profile switch).
     let label = document.getElementById("cc-real-label");
     let isOn = label.textContent !== "OFF";
+    const newMode = isOn ? "paper" : "demo";
     try {
-        await fetch("/api/real/toggle", {
+        const r = await fetch("/api/user/real/toggle", {
             method: "POST",
+            credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled: !isOn }),
+            body: JSON.stringify({ bot_mode: newMode }),
         });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            alert("Toggle rejected: " + (d.error || r.statusText) +
+                  (d.hint ? "\n\n" + d.hint : ""));
+            return;
+        }
         label.textContent = isOn ? "OFF" : "ON";
         label.parentElement.style.borderColor = isOn ? "rgba(255,59,92,.3)" : "rgba(0,255,157,.3)";
         label.parentElement.style.color = isOn ? "var(--red)" : "var(--green)";

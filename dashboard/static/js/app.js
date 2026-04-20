@@ -548,9 +548,15 @@ async function setRealMode(mode) {
             try { const txt = await r.clone().text(); d = { error: txt.slice(0, 200) }; } catch(e) {}
         }
         if (!r.ok) {
-            alert("Mode change rejected (HTTP " + r.status + "): " +
-                  (d.error || r.statusText) +
-                  (d.hint ? "\n\n" + d.hint : ""));
+            const urlHit = r.url || "(unknown)";
+            alert(
+                "Mode change rejected (HTTP " + r.status + "): " +
+                (d.error || r.statusText) +
+                (d.hint ? "\n\n" + d.hint : "") +
+                "\n\n[debug] URL: " + urlHit +
+                "\n[debug] If you see HTTP 404 here, your browser cached an old app.js. " +
+                "Hard-refresh (Cmd+Shift+R) or open in incognito to clear."
+            );
             // Revert the dropdown so the UI matches DB truth
             try {
                 const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.ok ? x.json() : {}).catch(()=>({}));

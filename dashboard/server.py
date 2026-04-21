@@ -657,13 +657,54 @@ class DashboardServer:
             register_profile_routes(self._app, self._auth_service, self._db_pool)
             logger.info("Multi-user routes registered (user profile, API keys, admin, self-service profile)")
 
-            # Per-user real trading routes
-            orch = getattr(self, '_orchestrator', None)
-            user_registry = getattr(orch, '_user_registry', None) if orch else None
-            if user_registry:
-                from dashboard.user_trading_routes import register_user_trading_routes
-                register_user_trading_routes(self._app, user_registry, self._db_pool)
-                logger.info("Per-user trading routes registered (8 endpoints)")
+            # Per-user real trading routes.
+            # BUGFIX 2026-04-21: routes were being skipped here because
+            # self._orchestrator hasn't been assigned yet at this point
+            # (main.py wires the orchestrator AFTER dashboard.start()).
+            # Authenticated browsers hitting /api/user/real/toggle then got
+            # 404 Not Found (middleware passes auth, router has no match).
+            # Fix: register routes UNCONDITIONALLY, using a lazy proxy that
+            # resolves user_registry at REQUEST time from self._orchestrator.
+            # If orchestrator is still None at request time, the proxy raises
+            # a clean RuntimeError that handlers can translate to 503.
+            class _LazyUserRegistry:
+                """Late-binding proxy — resolves the real UserRealRegistry
+                each time an attribute is accessed."""
+                def __init__(self, dashboard_ref):
+                    self._dash = dashboard_ref
+                def _resolve(self):
+                    orch = getattr(self._dash, '_orchestrator', None)
+                    return getattr(orch, '_user_registry', None) if orch else None
+                def __getattr__(self, name):
+                    target = self._resolve()
+                    if target is None:
+                        raise RuntimeError(
+                            "user_registry not yet initialized — orchestrator "
+                            "still booting. Retry in a few seconds."
+                        )
+                    return getattr(target, name)
+                def __bool__(self):
+                    return self._resolve() is not None
+                @property
+                def _managers(self):
+                    target = self._resolve()
+                    if target is None:
+                        return {}  # empty dict so `if user_id in _managers` is False
+                    return target._managers
+                @property
+                def _last_user_refresh(self):
+                    target = self._resolve()
+                    return getattr(target, '_last_user_refresh', 0) if target else 0
+                @_last_user_refresh.setter
+                def _last_user_refresh(self, value):
+                    target = self._resolve()
+                    if target:
+                        target._last_user_refresh = value
+
+            from dashboard.user_trading_routes import register_user_trading_routes
+            lazy_registry = _LazyUserRegistry(self)
+            register_user_trading_routes(self._app, lazy_registry, self._db_pool)
+            logger.info("Per-user trading routes registered (lazy-bound — resolves at request time)")
 
             # Replay + attribution routes
             try:

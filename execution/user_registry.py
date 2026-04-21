@@ -107,8 +107,15 @@ class UserRealRegistry:
 
         Lazy-loads: creates DeltaClient from user's encrypted API keys,
         configures risk limits from user's DB settings.
+
+        BUGFIX 2026-04-21: asyncpg returns `id` as a UUID object, not str.
+        All `user_id[:8]` slices on it raise TypeError, which propagated
+        up and made callers treat the create as a failure → UserRealManager
+        was orphaned in self._managers AND never returned. Normalise to
+        str at the top of the function so every log + dict key uses the
+        same representation.
         """
-        user_id = user_info["id"]
+        user_id = str(user_info["id"])
 
         # Return cached manager if exists
         if user_id in self._managers:

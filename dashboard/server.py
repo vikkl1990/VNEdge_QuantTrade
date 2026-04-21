@@ -1570,10 +1570,23 @@ class DashboardServer:
                         except Exception:
                             pass
                     mgr = None
-                    if user_info is not None:
-                        mgr = await user_registry.get_or_create_manager(user_info)
-                    else:
-                        mgr = await user_registry.get_manager_for_user(str(user_id))
+                    try:
+                        if user_info is not None:
+                            mgr = await user_registry.get_or_create_manager(user_info)
+                        else:
+                            mgr = await user_registry.get_manager_for_user(str(user_id))
+                    except Exception as mgr_err:
+                        # CRITICAL DIAG: don't silently swallow — log loud
+                        logger.warning(
+                            "real_status: get_or_create_manager raised for user %s: %s",
+                            str(user_id)[:8], mgr_err,
+                        )
+                        mgr = None
+                    if user_info is not None and mgr is None:
+                        logger.info(
+                            "real_status: user %s (bot_mode=%s) in active_cache but manager=None — check keys",
+                            str(user_id)[:8], user_info.get("bot_mode"),
+                        )
                     if mgr:
                         try:
                             await mgr.refresh_balance()
@@ -1611,9 +1624,22 @@ class DashboardServer:
         # Paper users don't have a UserRealManager (by design — paper is
         # internal simulation, no exchange round-trip). But users still want
         # to see their actual Delta balance as a vault-view reference.
-        # Run a lightweight read-only probe on their highest-priority active
-        # key (live > demo) and include balance as informational data.
-        # Cached 60s per user to avoid hammering Delta on every dashboard poll.
+        # Run a lightweight read-only probe using the key MATCHING the user's
+        # bot_mode preference (demo user → demo key; paper user → live key if
+        # present, else demo). Cached 60s per user to avoid hammering Delta.
+        #
+        # BUGFIX 2026-04-21: this peek block used to run for ANY user (even
+        # demo/live) when the per-user manager path returned None or errored.
+        # It picked live > demo by default, which meant a demo user with only
+        # a live key on file (or whose manager failed to create) would see
+        # their live balance in the dashboard — confusing.
+        #
+        # New behavior:
+        #   - For paper users: peek picks live > demo (vault view)
+        #   - For demo users:  peek picks demo first
+        #   - For live users:  peek picks live first
+        # If the user's preferred-for-mode key is missing, fall back to the
+        # other label rather than showing nothing.
         if user_id and self._db_pool:
             import time as _time
             now_sec = _time.time()
@@ -1630,13 +1656,19 @@ class DashboardServer:
                     user_row = await conn.fetchrow(
                         "SELECT bot_mode FROM users WHERE id = $1", user_id,
                     )
-                    # Prefer live > demo for the peek
+                    # Mode-aware priority: demo user → demo key first; live
+                    # user → live first; paper user → live first (vault view).
+                    cur_mode = (user_row["bot_mode"] if user_row else "paper") or "paper"
+                    if cur_mode == "demo":
+                        priority_sql = "ORDER BY CASE label WHEN 'demo' THEN 1 WHEN 'live' THEN 2 ELSE 3 END"
+                    else:
+                        priority_sql = "ORDER BY CASE label WHEN 'live' THEN 1 WHEN 'demo' THEN 2 ELSE 3 END"
                     key_row = await conn.fetchrow(
-                        """SELECT label, api_key_enc, api_secret_enc, base_url
-                           FROM user_api_keys
-                           WHERE user_id = $1 AND exchange = 'delta' AND is_active = TRUE
-                           ORDER BY CASE label WHEN 'live' THEN 1 WHEN 'demo' THEN 2 ELSE 3 END
-                           LIMIT 1""",
+                        f"""SELECT label, api_key_enc, api_secret_enc, base_url
+                            FROM user_api_keys
+                            WHERE user_id = $1 AND exchange = 'delta' AND is_active = TRUE
+                            {priority_sql}
+                            LIMIT 1""",
                         user_id,
                     )
             except Exception:
@@ -1671,15 +1703,28 @@ class DashboardServer:
                     except Exception:
                         probe_balance = None
 
+                # Derive display_status honestly:
+                #   paper mode → STANDBY (armed with key, not trading)
+                #   demo mode  → ARMED   (real trading eligible, zero activity yet)
+                #   live mode  → ARMED   (same — peek means manager wasn't available)
+                # "DISABLED" only when balance probe failed (key rejected / unreachable)
+                _bot_mode = user_row["bot_mode"] or "paper"
+                _bal_known = probe_balance is not None
+                if not _bal_known:
+                    _display_status = "DISABLED"
+                elif _bot_mode == "paper":
+                    _display_status = "STANDBY"
+                else:
+                    _display_status = "ARMED"
                 peek_payload = {
-                    "enabled": False,
-                    "dry_run": True,
-                    "mode": user_row["bot_mode"] or "paper",
-                    "display_status": "STANDBY" if user_row["bot_mode"] == "paper" else "DISABLED",
-                    "balance": round(probe_balance, 2) if probe_balance is not None else 0.0,
-                    "balance_source": f"peek_{label}" if probe_balance is not None else "unreachable",
-                    "balance_peek": True,       # flag: not a live trading balance
-                    "trading_active": False,    # paper mode = no real orders
+                    "enabled": _bot_mode != "paper",
+                    "dry_run": _bot_mode == "demo",
+                    "mode": _bot_mode,
+                    "display_status": _display_status,
+                    "balance": round(probe_balance, 2) if _bal_known else 0.0,
+                    "balance_source": f"peek_{label}" if _bal_known else "unreachable",
+                    "balance_peek": True,       # flag: not from a live UserRealManager
+                    "trading_active": _bot_mode != "paper",
                     "key_label": label,
                     "circuit_breaker": {"daily_pnl": 0, "is_tripped": False},
                     "open_positions": [], "open_count": 0,
@@ -1688,8 +1733,9 @@ class DashboardServer:
                     "scope": "user_peek",
                     "user_id": str(user_id),
                     "note": (
-                        f"Paper mode active — showing read-only balance from your "
-                        f"{label} key. Switch bot_mode to {label} to actually trade."
+                        f"Paper mode — read-only balance from {label} key."
+                        if _bot_mode == "paper"
+                        else f"Balance from {label} key. Manager will take over for trading signals."
                     ),
                     "cache_age_sec": 0,
                 }

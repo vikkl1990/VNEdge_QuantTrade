@@ -146,24 +146,13 @@ def register_user_trading_routes(app: web.Application, user_registry: Any, db_po
 
         def _probe():
             try:
-                from delta_rest_client import DeltaRestClient
-                client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
-                # delta-rest-client on this VM requires asset_id (USDT = 5).
-                wallets = client.get_balances(asset_id=5)
-                usdt_bal = 0.0
-                if isinstance(wallets, dict):
-                    usdt_bal = float(wallets.get("available_balance", 0) or 0)
-                else:
-                    for w in (wallets or []):
-                        if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                            usdt_bal = float(w.get("available_balance", 0) or 0)
-                            break
-                return {"ok": True, "balance": usdt_bal}
+                from exchange.delta_balance import fetch_usd_balance
+                bal = fetch_usd_balance(api_key, api_secret, base_url)
+                return {"ok": True, "balance": bal}
             except Exception as e:
                 msg = str(e)
-                # Heuristic: key problem vs network problem
                 lower = msg.lower()
-                if any(s in lower for s in ("unauthorized", "invalid", "forbidden", "signature", "ip_not_allowed", "api_key")):
+                if any(s in lower for s in ("unauthorized", "invalid", "forbidden", "signature", "ip_not_allowed", "ip_not_whitelisted", "api_key")):
                     return {"ok": False, "reason": "key_rejected", "error": msg[:200]}
                 return {"ok": False, "reason": "delta_unreachable", "error": msg[:200]}
 

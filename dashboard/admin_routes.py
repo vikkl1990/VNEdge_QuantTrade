@@ -493,25 +493,13 @@ class AdminRouteHandler:
         import asyncio
         def _probe():
             try:
-                from delta_rest_client import DeltaRestClient
+                from exchange.delta_balance import fetch_usd_balance
                 base_url = row["base_url"] or (
                     "https://cdn-ind.testnet.deltaex.org" if label == "demo"
                     else "https://api.india.delta.exchange"
                 )
-                client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
-                # delta-rest-client requires asset_id (USDT = 5)
-                wallets = client.get_balances(asset_id=5)
-                usdt_bal = 0.0
-                if isinstance(wallets, dict):
-                    usdt_bal = float(wallets.get("available_balance", 0) or 0)
-                    wallet_count = 1
-                else:
-                    for w in (wallets or []):
-                        if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                            usdt_bal = float(w.get("available_balance", 0) or 0)
-                            break
-                    wallet_count = len(wallets or [])
-                return {"ok": True, "balance_usdt": usdt_bal, "raw_wallets": wallet_count}
+                bal = fetch_usd_balance(api_key, api_secret, base_url)
+                return {"ok": True, "balance_usdt": bal, "raw_wallets": 1 if bal else 0}
             except Exception as e:
                 return {"ok": False, "error": str(e)[:200]}
         result = await asyncio.to_thread(_probe)

@@ -486,19 +486,9 @@ class ProfileRouteHandler:
 
         def _probe():
             try:
-                from delta_rest_client import DeltaRestClient
-                client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
-                # delta-rest-client requires asset_id (USDT = 5)
-                wallets = client.get_balances(asset_id=5)
-                usdt_bal = 0.0
-                if isinstance(wallets, dict):
-                    usdt_bal = float(wallets.get("available_balance", 0) or 0)
-                else:
-                    for w in (wallets or []):
-                        if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                            usdt_bal = float(w.get("available_balance", 0) or 0)
-                            break
-                return {"ok": True, "balance_usdt": round(usdt_bal, 2)}
+                from exchange.delta_balance import fetch_usd_balance
+                bal = fetch_usd_balance(api_key, api_secret, base_url)
+                return {"ok": True, "balance_usdt": round(bal, 2)}
             except Exception as e:
                 return {"ok": False, "error": str(e)[:200]}
 

@@ -171,17 +171,13 @@ class UserRealRegistry:
                     self._connected = True
                 def connect(self): return True
                 def fetch_balance(self):
+                    # Delta India uses asset_symbol='USD' (not USDT).
+                    # Fetch all wallets and pick the first USD-denominated.
                     try:
-                        # delta-rest-client requires asset_id (USDT = 5)
-                        wallets = self._client.get_balances(asset_id=5)
-                        if isinstance(wallets, dict):
-                            return float(wallets.get("available_balance", 0) or 0)
-                        for w in (wallets or []):
-                            if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                                return float(w.get("available_balance", 0) or 0)
+                        from exchange.delta_balance import fetch_usd_balance
+                        return fetch_usd_balance(api_key, api_secret, base_url)
                     except Exception:
-                        pass
-                    return 0
+                        return 0
                 def get_ticker(self, symbol):
                     try:
                         from exchange.delta_client import PRODUCT_MAP

@@ -1659,18 +1659,12 @@ class DashboardServer:
                 probe_balance = None
                 if api_key and api_secret:
                     import asyncio as _asyncio
+                    from exchange.delta_balance import fetch_usd_balance
                     def _peek():
                         try:
-                            from delta_rest_client import DeltaRestClient
-                            client = DeltaRestClient(base_url=base_url, api_key=api_key, api_secret=api_secret)
-                            wallets = client.get_balances(asset_id=5)
-                            if isinstance(wallets, dict):
-                                return float(wallets.get("available_balance", 0) or 0)
-                            for w in (wallets or []):
-                                if w.get("asset_symbol") == "USDT" or w.get("asset_id") == 5:
-                                    return float(w.get("available_balance", 0) or 0)
-                            return 0.0
-                        except Exception:
+                            return fetch_usd_balance(api_key, api_secret, base_url)
+                        except Exception as e:
+                            logger.debug("balance peek failed: %s", e)
                             return None
                     try:
                         probe_balance = await _asyncio.to_thread(_peek)

@@ -1,0 +1,161 @@
+## STAGE 1+2 CANDIDATE PATCH — Shadow Simulation Fidelity Upgrade
+## Date: 2026-04-26
+## Status: PROTOTYPE — NOT YET DEPLOYED
+## Gating: only fires when self._relaxed_shadow_simulation AND trade._is_shadow
+##
+## Stage 1 — remove Delta-API safety constraints from shadow trail logic:
+##   1a. Drop `age_sec > 15` gate (Delta API anti-race protection)
+##   1b. Bypass `_sl_stays_valid()` (Delta API immediate-execution rejection)
+##   1c. Use static `_min_lock_r=0.30` (matches paper, not dynamic fee_wall)
+##
+## Stage 2 — honor locked SL price as exit on shadow trail_profit/sl_hit
+##           (instead of L2 worst-case, which over-states slippage)
+##
+## Promotion path: ONLY shadow gets these fixes. Live trades MUST keep the
+## original guards because they actually call Delta API.
+
+# ── PATCH 1: __init__ flag (around line 270, after _relaxed_shadow_exits) ──
+
+        # 2026-04-26 Stage 1+2 CANDIDATE — shadow simulation fidelity.
+        # Removes Delta-API safety constraints from shadow trail logic
+        # (gates that exist for live execution but NOT for shadow):
+        #   - age_sec > 15 gate (anti-race for Delta API in-flight orders)
+        #   - _sl_stays_valid() guard (Delta rejects immediate-execution stops)
+        #   - dynamic _min_lock_r (live fee-wall accommodation)
+        # Also makes _close_shadow honor the locked SL price as the exit
+        # (instead of L2 worst-case which over-states slippage on stops).
+        # Gated by SAME flag as Stage 0 (relaxed_shadow_exits) for clean A/B.
+        self._relaxed_shadow_simulation = self._relaxed_shadow_exits
+        if self._relaxed_shadow_simulation:
+            logger.warning(
+                "RELAXED_SHADOW_SIMULATION: ENABLED for %s "
+                "(Stage 1+2: skip age_gate, skip sl_stays_valid, static min_lock_r=0.30, locked-SL exit)",
+                self.user_email,
+            )
+
+
+# ── PATCH 2: _monitor_trade BE+lock cascade (around line 2316-2370) ──
+
+# REPLACE BLOCK FROM line 2316 to 2370 with:
+
+                # Stage 1: shadow simulation fidelity — match paper's gates
+                _is_relaxed_sim = (
+                    getattr(self, "_relaxed_shadow_simulation", False)
+                    and getattr(trade, "_is_shadow", False)
+                )
+
+                if _is_relaxed_sim:
+                    # Shadow path: paper-aligned static thresholds, no API guards
+                    _min_lock_r = 0.30  # was: max(0.30, fee_wall_r * 1.30)
+                    _age_gate = 0       # was: 15 (Delta API anti-race)
+                    def _sl_check(proposed_sl):  # was: _sl_stays_valid (5 bps from market)
+                        return True
+                else:
+                    # Live/standard path: KEEP all existing guards
+                    _fee_wall_r = (2 * 0.00059 * entry) / risk if risk > 0 else 0.30
+                    _min_lock_r = max(0.30, _fee_wall_r * 1.30)
+                    _age_gate = 15
+                    _sl_check = _sl_stays_valid
+
+                # Track for diagnostic
+                if not hasattr(trade, "_min_lock_r_used"):
+                    trade._min_lock_r_used = _min_lock_r
+
+                if trade.peak_mfe_r >= _min_lock_r and age_sec > _age_gate:
+                    fee_buffer = entry * 0.004  # 0.4% cushion covers 2×0.05% fees + slippage
+                    if side == "long":
+                        be_sl = entry + fee_buffer
+                        if be_sl > trade.stop_loss and _sl_check(be_sl):
+                            trade.stop_loss = be_sl
+                            sl_changed = True
+                            trade._breakeven_set = True   # NEW: paper-style flag for Stage 2
+                    else:
+                        be_sl = entry - fee_buffer
+                        if be_sl < trade.stop_loss and _sl_check(be_sl):
+                            trade.stop_loss = be_sl
+                            sl_changed = True
+                            trade._breakeven_set = True   # NEW
+
+                    # Primary lock_pct (paper tiers — non-monotonic 0.3R=0.75 intentional)
+                    lock_pct = 0.0
+                    if   trade.peak_mfe_r >= 1.0: lock_pct = 0.55
+                    elif trade.peak_mfe_r >= 0.7: lock_pct = 0.50
+                    elif trade.peak_mfe_r >= 0.5: lock_pct = 0.45
+                    elif trade.peak_mfe_r >= 0.4: lock_pct = 0.40
+                    elif trade.peak_mfe_r >= 0.3: lock_pct = 0.75
+
+                    if lock_pct > 0:
+                        lock_dist = risk * trade.peak_mfe_r * lock_pct
+                        new_sl = entry + lock_dist if side == "long" else entry - lock_dist
+                        if ((side == "long" and new_sl > trade.stop_loss) or \
+                            (side != "long" and new_sl < trade.stop_loss)) and \
+                           _sl_check(new_sl):
+                            trade.stop_loss = new_sl
+                            sl_changed = True
+
+                    # Chandelier trail at 0.4R+
+                    if trade.peak_mfe_r >= 0.4:
+                        if   trade.peak_mfe_r >= 1.0: ch_lock = 0.85
+                        elif trade.peak_mfe_r >= 0.7: ch_lock = 0.80
+                        elif trade.peak_mfe_r >= 0.5: ch_lock = 0.70
+                        else:                          ch_lock = 0.60
+                        ch_dist = risk * trade.peak_mfe_r * ch_lock
+                        ch_sl = entry + ch_dist if side == "long" else entry - ch_dist
+                        if ((side == "long" and ch_sl > trade.stop_loss) or \
+                            (side != "long" and ch_sl < trade.stop_loss)) and \
+                           _sl_check(ch_sl):
+                            trade.stop_loss = ch_sl
+                            sl_changed = True
+
+
+# ── PATCH 3: _close_shadow honors locked SL (around line 2647-2655) ──
+
+# REPLACE the L2-worst-case derivation with:
+
+            # Derive shadow exit price.
+            # Stage 2 (2026-04-26): if SL is in profit zone AND reason is
+            # trail-related, exit AT the locked SL price (matches what a
+            # server-side stop on Delta/Bybit would actually fill at, ±1 tick).
+            # The L2-worst-case fallback over-states slippage on locked stops
+            # by 3-5 bps, which masked the bot's true edge in shadow data.
+            _is_relaxed_sim = (
+                getattr(self, "_relaxed_shadow_simulation", False)
+                and getattr(trade, "_breakeven_set", False)
+            )
+            _trail_close = reason in ("trail_profit", "sl_hit")
+            _sl_in_profit = (
+                (trade.side == "long"  and trade.stop_loss > trade.entry_price) or
+                (trade.side == "short" and trade.stop_loss < trade.entry_price)
+            )
+
+            if _is_relaxed_sim and _trail_close and _sl_in_profit:
+                # Honor the locked SL — stop order would fill at trigger price
+                actual_exit = float(trade.stop_loss)
+                logger.info(
+                    "SHADOW_LOCKED_SL_EXIT: %s %s @ %.5f (locked SL, was L2 worst-case)",
+                    self.user_email, trade.symbol, actual_exit,
+                )
+            elif book and book.get("bids") and book.get("asks"):
+                # Standard path: L2 top-of-book worst-case (taker fill simulation)
+                if trade.side == "long":
+                    actual_exit = float(book["bids"][0][0])  # sell hits bid
+                else:
+                    actual_exit = float(book["asks"][0][0])  # buy hits ask
+            else:
+                # No L2 cached → fall back to monitor's price argument
+                actual_exit = float(exit_price)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# DEPLOYMENT CHECKLIST (after FIX 1+2 verdict shows GREEN tomorrow 14:30 UTC):
+# 1. Apply patches 1, 2, 3 above to execution/user_real_manager.py
+# 2. python3 -m pytest tests/test_exit_guards.py  (47 tests must still pass)
+# 3. bash scripts/deploy_gatekeeper.sh execution/user_real_manager.py cryptobot
+# 4. Verify: sudo journalctl -u cryptobot --since '3 minutes ago' | grep RELAXED_SHADOW_SIMULATION
+#    Expected: ENABLED for niranjan_139@yahoo.co.in only, no admin
+# 5. Monitor for 12-24h. Niranjan delta_shadow PF target: jump from 0.09 → >2.0
+#    If PF >2.0 sustained AND no auto_revert fires: promote to admin
+#
+# ROLLBACK: standard via .rollback/user_real_manager.py.bak_TIMESTAMP
+#
+# NEVER PROMOTE STAGE 1+2 TO LIVE TRADES. They remove Delta API safety guards.

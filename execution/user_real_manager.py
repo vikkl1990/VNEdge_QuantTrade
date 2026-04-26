@@ -271,6 +271,24 @@ class UserRealManager:
                 self.user_email,
             )
 
+        # 2026-04-26 Stage 1+2 — shadow simulation fidelity upgrade.
+        # Removes Delta-API safety constraints from shadow trail logic
+        # (gates that exist for live execution but NOT for shadow):
+        #   - age_sec > 15 gate (anti-race for Delta API in-flight orders)
+        #   - _sl_stays_valid() guard (Delta rejects immediate-execution stops)
+        #   - dynamic _min_lock_r (live fee-wall accommodation)
+        # Also makes _close_shadow honor the locked SL price as the exit
+        # (instead of L2 worst-case which over-states slippage on stops).
+        # Gated by SAME flag as Stage 0 (relaxed_shadow_exits) for clean A/B.
+        # See: docs/AB_RELAXED_SHADOW_EXITS_20260426.md (extended Stage 1+2)
+        self._relaxed_shadow_simulation = self._relaxed_shadow_exits
+        if self._relaxed_shadow_simulation:
+            logger.warning(
+                "RELAXED_SHADOW_SIMULATION: ENABLED for %s "
+                "(Stage 1+2: skip age_gate, skip sl_stays_valid, static min_lock_r=0.30, locked-SL exit)",
+                self.user_email,
+            )
+
         # Phase 5.3 / T4.4 — live emergency halt cache (refreshed every 30s
         # via _is_live_halted). Single SQL UPDATE to users.live_emergency_halt
         # pauses all live trades within one refresh cycle.
@@ -2313,23 +2331,46 @@ class UserRealManager:
                 # On a TIGHT-SL trade (SOL 0.30 risk) → fee_wall_r = 0.34R
                 #   → min_lock_r = max(0.30, 0.44) = 0.44R (TIGHTER → wait for deeper peak)
                 # Self-tunes per trade without changing typical case.
-                _fee_wall_r = (2 * 0.00059 * entry) / risk if risk > 0 else 0.30
-                _min_lock_r = max(0.30, _fee_wall_r * 1.30)
+                # Stage 1 (2026-04-26): shadow simulation fidelity — match
+                # paper's gates by removing Delta-API safety constraints when
+                # running on shadow trades for users in the relaxed-sim A/B.
+                # Live/admin/control trades take the EXISTING guarded path.
+                _is_relaxed_sim = (
+                    getattr(self, "_relaxed_shadow_simulation", False)
+                    and getattr(trade, "_is_shadow", False)
+                )
+
+                if _is_relaxed_sim:
+                    # Shadow path: paper-aligned static thresholds, no API guards
+                    _min_lock_r = 0.30   # was: max(0.30, fee_wall_r * 1.30)
+                    _age_gate = 0        # was: 15 (Delta API anti-race)
+                    def _sl_check(proposed_sl):  # was: _sl_stays_valid (5 bps from market)
+                        return True
+                else:
+                    # Live/standard path: KEEP all existing guards (correct for live)
+                    _fee_wall_r = (2 * 0.00059 * entry) / risk if risk > 0 else 0.30
+                    _min_lock_r = max(0.30, _fee_wall_r * 1.30)
+                    _age_gate = 15
+                    _sl_check = _sl_stays_valid
+
                 # Track for diagnostic
                 if not hasattr(trade, "_min_lock_r_used"):
                     trade._min_lock_r_used = _min_lock_r
-                if trade.peak_mfe_r >= _min_lock_r and age_sec > 15:
+
+                if trade.peak_mfe_r >= _min_lock_r and age_sec > _age_gate:
                     fee_buffer = entry * 0.004  # 0.4% cushion covers 2×0.05% fees + slippage
                     if side == "long":
                         be_sl = entry + fee_buffer
-                        if be_sl > trade.stop_loss and _sl_stays_valid(be_sl):
+                        if be_sl > trade.stop_loss and _sl_check(be_sl):
                             trade.stop_loss = be_sl
                             sl_changed = True
+                            trade._breakeven_set = True   # Stage 2: paper-style flag
                     else:
                         be_sl = entry - fee_buffer
-                        if be_sl < trade.stop_loss and _sl_stays_valid(be_sl):
+                        if be_sl < trade.stop_loss and _sl_check(be_sl):
                             trade.stop_loss = be_sl
                             sl_changed = True
+                            trade._breakeven_set = True   # Stage 2: paper-style flag
 
                     # Primary lock_pct (paper tiers — note non-monotonic
                     # 0.3R=0.75 is intentional: aggressive early lock then
@@ -2348,7 +2389,7 @@ class UserRealManager:
                         new_sl = entry + lock_dist if side == "long" else entry - lock_dist
                         if ((side == "long" and new_sl > trade.stop_loss) or \
                             (side != "long" and new_sl < trade.stop_loss)) and \
-                           _sl_stays_valid(new_sl):
+                           _sl_check(new_sl):
                             trade.stop_loss = new_sl
                             sl_changed = True
 
@@ -2364,7 +2405,7 @@ class UserRealManager:
                         ch_sl = entry + ch_dist if side == "long" else entry - ch_dist
                         if ((side == "long" and ch_sl > trade.stop_loss) or \
                             (side != "long" and ch_sl < trade.stop_loss)) and \
-                           _sl_stays_valid(ch_sl):
+                           _sl_check(ch_sl):
                             trade.stop_loss = ch_sl
                             sl_changed = True
 
@@ -2644,8 +2685,32 @@ class UserRealManager:
             _dws = getattr(self._price_feed, "_delta_ws", None)
             book = _dws.l2_orderbook.get(trade.symbol) if _dws else None
 
-            # Derive shadow exit from L2 top-of-book (taker worst-case)
-            if book and book.get("bids") and book.get("asks"):
+            # Stage 2 (2026-04-26): if relaxed_shadow_simulation is on AND the
+            # trade has a paper-style breakeven_set flag (locked SL into profit
+            # zone) AND reason is trail-related AND SL is in profit zone:
+            # exit at locked SL price (matches what a server-side stop on
+            # Delta/Bybit would actually fill at, ±1 tick). The L2-worst-case
+            # fallback over-states slippage on locked stops by 3-5 bps,
+            # masking the bot's true edge in shadow data.
+            _is_relaxed_sim = (
+                getattr(self, "_relaxed_shadow_simulation", False)
+                and getattr(trade, "_breakeven_set", False)
+            )
+            _trail_close = reason in ("trail_profit", "sl_hit")
+            _sl_in_profit = (
+                (trade.side == "long"  and trade.stop_loss > trade.entry_price) or
+                (trade.side == "short" and trade.stop_loss < trade.entry_price)
+            )
+
+            if _is_relaxed_sim and _trail_close and _sl_in_profit:
+                # Honor the locked SL — server-side stop fills at trigger price
+                actual_exit = float(trade.stop_loss)
+                logger.info(
+                    "SHADOW_LOCKED_SL_EXIT: %s %s @ %.5f (locked SL, was L2 worst-case)",
+                    self.user_email, trade.symbol, actual_exit,
+                )
+            elif book and book.get("bids") and book.get("asks"):
+                # Standard path: L2 top-of-book worst-case (taker fill simulation)
                 if trade.side == "long":
                     actual_exit = float(book["bids"][0][0])  # sell hits bid
                 else:

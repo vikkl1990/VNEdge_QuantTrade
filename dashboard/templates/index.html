@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VN Edge — Trade With Precision</title>
+<meta name="color-scheme" content="dark">
+<title>VN Edge — Quantitative Trading Terminal</title>
 <link rel="icon" href="/static/logo-dark.jpg" type="image/jpeg">
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#00ff9d">
@@ -442,6 +443,13 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/design-system.css">
 <link rel="stylesheet" href="/static/css/components.css">
 <link rel="stylesheet" href="/static/css/layout.css">
+<link rel="stylesheet" href="/static/css/overview_strip.css">
+<link rel="stylesheet" href="/static/css/copilot.css">
+<link rel="stylesheet" href="/static/css/quant_heroes.css">
+<link rel="stylesheet" href="/static/css/exchange_compare.css">
+<link rel="stylesheet" href="/static/css/multi_exchange_badges.css">
+<link rel="stylesheet" href="/static/css/multi_exchange_overlay.css">
+<link rel="stylesheet" href="/static/css/v2_layout.css">
 </head>
 <body>
 <a href="#tab-live" class="skip-link">Skip to main content</a>
@@ -451,7 +459,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <div class="login-box">
     <img src="/static/logo-white.jpg" alt="VN Edge" class="login-logo">
     <div class="login-title">VN EDGE</div>
-    <div class="login-subtitle">Trade With Precision</div>
+    <div class="login-subtitle">Quantitative Trading Terminal</div>
     <form id="login-form" onsubmit="return handleLogin(event)">
       <input type="email" id="login-email" aria-label="Email address" class="login-input" placeholder="Email Address" autocomplete="email" autofocus>
       <input type="password" id="login-pass" aria-label="Password" class="login-input" placeholder="Password" autocomplete="current-password">
@@ -490,7 +498,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <img src="/static/logo-white.jpg" alt="VN Edge" class="header__logo-img">
     <div class="header-brand-text">
       <span class="header-brand-name">VN EDGE</span>
-      <span class="header-brand-tagline">TRADE WITH PRECISION</span>
+      <span class="header-brand-tagline">QUANTITATIVE TRADING TERMINAL</span>
     </div>
   </div>
   <div class="header-status">
@@ -515,8 +523,11 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══ TAB BAR ════════════════════════════════════════════ -->
 <nav class="tab-bar" role="navigation" role="tablist" aria-label="Dashboard tabs">
   <button class="tab-btn active" data-tab="live" role="tab" aria-controls="tab-live" aria-selected="true" role="tab" aria-controls="tab-live" aria-selected="false" data-action="switchTab" data-arg="live">Live Trading</button>
-  <button class="tab-btn" data-tab="latency" role="tab" aria-controls="tab-latency" aria-selected="false" style="display:none" data-action="switchTab" data-arg="latency" style="display:none">Latency Arb</button>
+  <!-- Latency Arb tab REMOVED 2026-04-26 — engine permanently disabled (orchestrator.py:324: 'negative edge, 2.4s latency, 0% tradeable'). Endpoints + handler kept for legacy data. -->
+  <!-- <button class="tab-btn" data-tab="latency" ...>Latency Arb</button> -->
+  <span data-purged="latency-arb-tab" style="display:none"></span>
   <button class="tab-btn" data-tab="analytics" role="tab" aria-controls="tab-analytics" aria-selected="false" data-action="switchTab" data-arg="analytics">Analytics</button>
+  <button class="tab-btn" data-tab="exchange-compare" role="tab" aria-controls="tab-exchange-compare" aria-selected="false" data-action="switchTab" data-arg="exchange-compare">Exchange Compare</button>
   <button class="tab-btn" data-tab="config" role="tab" aria-controls="tab-config" aria-selected="false" data-action="switchTab" data-arg="config">Config</button>
   <button class="tab-btn" data-tab="system" role="tab" aria-controls="tab-system" aria-selected="false" data-action="switchTab" data-arg="system">System</button>
   <button class="tab-btn" data-tab="agents" role="tab" aria-controls="tab-agents" aria-selected="false" data-action="switchTab" data-arg="agents">Agents</button>
@@ -642,6 +653,15 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <div class="tab-content active" id="tab-live" role="main">
 
   <!-- Trading Dashboard (replaces old Command Center) -->
+  <!-- Architect's Overview Strip — Agent 14 UX P0 #1 (B3, 2026-04-26) -->
+  <section id="overview-strip" class="overview-strip" aria-label="Live system overview"></section>
+
+  <!-- Co-pilot Sprint 1 MVP: Decisions Queued For You (2026-04-26) -->
+  <section id="copilot-panel" class="copilot-panel" aria-label="Decisions queued for architect"></section>
+
+  <!-- Phase 3 Quant Heroes — Sharpe/Sortino/PF/MaxDD (2026-04-26) -->
+  <section id="quant-heroes" class="quant-heroes" aria-label="Quant edge metrics"></section>
+
   <div class="glass-card live-span-2" id="cmd-panel">
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
 
@@ -659,9 +679,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
         <!-- Divider -->
         <div style="border-top:1px solid rgba(255,255,255,.06);margin:8px 0"></div>
-        <!-- Real -->
+        <!-- Real / Demo / Live (label updated dynamically by updateModeLabels()) -->
         <div class="text-center">
-          <div class="section-title-red">Real Trading</div>
+          <div id="cmd-real-label" class="section-title-red">Real Trading</div>
           <div id="cmd-real-pnl" class="stat-value" style=";color:var(--text-muted)">$--</div>
           <div class="flex-center-sm">
             <span>Bal: <b id="cmd-real-bal" class="text-warning">$--</b></span>
@@ -707,7 +727,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
         <div style="border-top:1px solid rgba(255,255,255,.06);margin:6px 0"></div>
         <div class="text-center">
-          <div class="section-title-red">Last Real</div>
+          <div id="cmd-last-real-label" class="section-title-red">Last Real</div>
           <div id="cmd-last-real-trade" class="text-secondary-base">--</div>
         </div>
       </div>
@@ -1015,13 +1035,70 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
 
 
-    <!-- Recent Closed Trades with Paper/Real toggle -->
+    <!-- Phase 5.17 — PPP / Maker Calibration panel (Quant ops view) -->
+    <div class="glass-card live-span-2">
+      <div class="flex justify-between items-center mb-2">
+        <div class="panel-title">PPP & Execution Calibration <span class="badge">advisory</span></div>
+        <button id="ppp-refresh" data-action="refreshPpp" style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.15);color:var(--cyan);border-radius:4px;cursor:pointer">⟲ refresh</button>
+      </div>
+      <div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+
+        <!-- Binary classifier -->
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
+          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">PPP Binary Classifier (5.9-A)</div>
+          <div id="ppp-binary-summary" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
+            <span class="text-muted">loading…</span>
+          </div>
+        </div>
+
+        <!-- Regressor -->
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
+          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">PPP Regressor (5.15)</div>
+          <div id="ppp-regressor-summary" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
+            <span class="text-muted">loading…</span>
+          </div>
+        </div>
+
+        <!-- Recent decisions -->
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
+          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Last 24h Decisions</div>
+          <div id="ppp-recent" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
+            <span class="text-muted">loading…</span>
+          </div>
+        </div>
+
+        <!-- Maker calibration -->
+        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
+          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Maker Fill Rate (7d real)</div>
+          <div id="ppp-maker" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
+            <span class="text-muted">loading…</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Counterfactual P&L -->
+      <div style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Counterfactual P&L (if PPP enforced on labeled cohort)</div>
+        <div id="ppp-counterfactual" style="font-family:var(--font-mono);font-size:.7rem">
+          <span class="text-muted">loading…</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Closed Trades — Paper / Demo / Live (Phase 4.2: 3-tab split) -->
     <div class="glass-card live-span-2">
       <div class="flex justify-between items-center mb-2">
         <div class="panel-title" class="m-0">Recent Closed Trades <span class="badge">last 10</span></div>
         <div class="flex gap-1">
-          <button id="rc-tab-paper" data-action="switchRecentClosed" data-arg="paper" style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.15);color:var(--cyan);border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
-          <button id="rc-tab-real" data-action="switchRecentClosed" data-arg="real" style="padding:3px 10px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">REAL</button>
+          <button id="rc-tab-paper" data-action="switchRecentClosed" data-arg="paper"
+            style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.15);color:var(--cyan);border-radius:4px;cursor:pointer;font-weight:600">PAPER</button>
+          <button id="rc-tab-demo" data-action="switchRecentClosed" data-arg="demo"
+            style="padding:3px 10px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">DEMO</button>
+          <button id="rc-tab-live" data-action="switchRecentClosed" data-arg="live"
+            style="padding:3px 10px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">LIVE</button>
+          <button id="rc-tab-shadow" data-action="switchRecentClosed" data-arg="shadow"
+            style="padding:3px 10px;font-size:.65rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:4px;cursor:pointer">🌓 SHADOW</button>
         </div>
       </div>
       <!-- Paper closed -->
@@ -1033,6 +1110,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
               <th>Symbol</th>
               <th>Side</th>
               <th>Type</th>
+              <th>Margin</th>
+              <th>Lev</th>
               <th>PnL $</th>
               <th>R</th>
               <th>Exit Reason</th>
@@ -1041,18 +1120,19 @@ textarea.contact-input{min-height:100px;resize:vertical}
             </tr>
           </thead>
           <tbody id="recent-closed-body">
-            <tr><td colspan="8" class="empty">No closed trades</td></tr>
+            <tr><td colspan="11" class="empty">No closed trades</td></tr>
           </tbody>
         </table>
       </div>
-      <!-- Real closed -->
-      <div id="rc-real-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto;display:none">
+      <!-- Demo (testnet) closed -->
+      <div id="rc-demo-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto;display:none">
         <table>
           <thead>
             <tr class="text-muted">
               <th>Date</th>
               <th>Symbol</th>
               <th>Side</th>
+              <th>Lev</th>
               <th>Entry</th>
               <th>Exit</th>
               <th>Slip</th>
@@ -1061,8 +1141,52 @@ textarea.contact-input{min-height:100px;resize:vertical}
               <th>Exit Reason</th>
             </tr>
           </thead>
-          <tbody id="recent-real-closed-body">
-            <tr><td colspan="9" class="empty">No real trades</td></tr>
+          <tbody id="recent-demo-closed-body">
+            <tr><td colspan="10" class="empty">No demo trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Live (real money) closed -->
+      <div id="rc-live-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto;display:none">
+        <table>
+          <thead>
+            <tr class="text-muted">
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Lev</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Slip</th>
+              <th>PnL $</th>
+              <th>Margin</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="recent-live-closed-body">
+            <tr><td colspan="10" class="empty">No live trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Shadow (shadow_live, no real fills) closed -->
+      <div id="rc-shadow-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto;display:none">
+        <table>
+          <thead>
+            <tr class="text-muted">
+              <th>Date</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Lev</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Slip</th>
+              <th>PnL $</th>
+              <th>Margin</th>
+              <th>Exit Reason</th>
+            </tr>
+          </thead>
+          <tbody id="recent-shadow-closed-body">
+            <tr><td colspan="10" class="empty">No shadow trades yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -1317,6 +1441,31 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 2: ANALYTICS                                       -->
 <!-- ═══════════════════════════════════════════════════════ -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TAB: EXCHANGE COMPARE (Delta India vs Bybit) — 2026-04-26  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="tab-content" role="tabpanel" id="tab-exchange-compare">
+  <section id="exchange-compare-panel" class="xc-panel" aria-label="Exchange comparison"></section>
+
+  <!-- Multi-exchange trade stream — clear visual differentiation per source -->
+  <section id="trade-stream-panel" class="tx-stream" aria-label="Trade stream"></section>
+
+  <!-- Helpful note about how the comparison is computed -->
+  <div style="margin-top:12px;padding:12px 16px;background:var(--bg-card-alt,#131a2c);border-radius:6px;font-size:0.72rem;color:var(--text-tertiary,#6b7794);line-height:1.5;font-family:var(--font-mono)">
+    <strong style="color:var(--text-secondary)">How this works:</strong>
+    Each Delta India shadow trade is mirrored to a Bybit shadow trade
+    using live Bybit WebSocket L2 (subscribed every 60s by
+    <code style="color:var(--accent)">scripts/bybit_shadow_simulator.py</code>).
+    Same maker logic + symbol-specific bp offsets are applied;
+    Bybit India fee schedule (0.01% maker + 0.06% taker × 1.18 GST) is used
+    for PnL recompute. Exit prices are sourced from Delta (assumes top-tier crypto
+    parity within seconds — acceptable for shadow comparison).
+    <br><br>
+    Wins are visually highlighted with a green left-border per metric.
+    The verdict line below the grid summarizes the lift in plain English.
+  </div>
+</div>
+
 <div class="tab-content" role="tabpanel" id="tab-analytics">
 
   <!-- ═══ SECTION 1: Paper + Real Portfolio Overview ═══ -->
@@ -1363,6 +1512,29 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <div id="an-real-trades" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--text-secondary)">0</div>
           <div class="text-xs text-muted">Trades</div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shadow account (shadow_live, last 24h) -->
+  <div style="border:1px solid rgba(167,139,250,.18);border-radius:8px;padding:14px;margin-bottom:12px">
+    <div style="font-size:.6rem;color:#a78bfa;text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:10px;text-align:center">🌓 Shadow (last 24h)</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+      <div class="text-center">
+        <div id="an-shadow-trades" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--text-secondary)">0</div>
+        <div class="text-xs text-muted">Trades</div>
+      </div>
+      <div class="text-center">
+        <div id="an-shadow-pnl" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:#a78bfa">$--</div>
+        <div class="text-xs text-muted">Net PnL</div>
+      </div>
+      <div class="text-center">
+        <div id="an-shadow-wr" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--cyan)">--%</div>
+        <div class="text-xs text-muted">Win Rate</div>
+      </div>
+      <div class="text-center">
+        <div id="an-shadow-avg" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--yellow)">$--</div>
+        <div class="text-xs text-muted">Avg / Trade</div>
       </div>
     </div>
   </div>
@@ -2908,7 +3080,7 @@ async function validateApiKeyInline() {
 
     <div class="footer-brand">
       <div class="footer-brand-name">VN EDGE</div>
-      <div class="footer-brand-tagline">AI-Powered Crypto Trading Engine</div>
+      <div class="footer-brand-tagline">QUANTITATIVE TRADING TERMINAL</div>
     </div>
 
     <div class="footer-grid">
@@ -2971,7 +3143,15 @@ async function validateApiKeyInline() {
 <!-- ═══ JAVASCRIPT (extracted to modules) ═══ -->
 <script src="/static/js/api.js"></script>
 <script src="/static/js/core.js"></script>
+<script src="/static/js/ux_utils.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/js/overview_strip.js"></script>
+<script src="/static/js/copilot.js"></script>
+<script src="/static/js/quant_heroes.js"></script>
+<script src="/static/js/exchange_compare.js"></script>
+<script src="/static/js/trade_stream.js"></script>
+<script src="/static/js/multi_exchange_overlay.js"></script>
+<script src="/static/js/v2_polish.js"></script>
 <script src="/static/js/admin.js"></script>
 <div id="trade-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)">

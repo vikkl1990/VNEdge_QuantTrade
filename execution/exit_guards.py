@@ -126,6 +126,26 @@ def grace_window_sec(trade_type: Optional[str], regime: Optional[str]) -> float:
     return base
 
 
+# 2026-04-26 — RELAXED_SHADOW mode multipliers (FIX 1 + FIX 2 from
+# "Delta Exit Logic Disaster" deep-dive review).
+# Rationale: shadow trades incur ~3 bps entry slippage + ~3 bps exit slippage
+# the standard guards weren't calibrated for. Result: defensive exits killed
+# trades on noise that paper would have survived (8/9 Delta exit categories
+# net negative, $47/$50 daily loss came from these guards firing on slippage
+# not on real adverse movement). When `relaxed_shadow=True`:
+#   - kill threshold widens from -0.10R → -0.16R (absorbs the 0.06R hole)
+#   - fee_floor required multiplied by 1.5× (raises bar; trades have more
+#     room to recover before being deemed "never made fees")
+#   - patience window stretched 1.5× (gives late-developing winners time)
+#   - stall current_r relaxed from -0.05R → -0.075R
+# Gating: enabled per-user via UserRealManager._relaxed_shadow_exits.
+# A/B test: niranjan = treatment, admin = control.
+_RELAXED_KILL_CURRENT_R = -0.16
+_RELAXED_PATIENCE_MULT  = 1.5
+_RELAXED_FEE_FLOOR_MULT = 1.5
+_RELAXED_STALL_CURRENT_R = -0.075
+
+
 def should_kill_dead_signal(
     age_sec: float,
     current_r: float,
@@ -135,6 +155,7 @@ def should_kill_dead_signal(
     sl: float,
     trade_type: Optional[str],
     regime: Optional[str],
+    relaxed_shadow: bool = False,
 ) -> Optional[str]:
     """Unified dead-signal guard.
 
@@ -155,6 +176,11 @@ def should_kill_dead_signal(
            middle-zone trades that survived #1+#2 but never developed.)
         4. Otherwise return None.
 
+    `relaxed_shadow=True` (FIX 1+2, 2026-04-26): widens kill threshold,
+    raises fee_floor bar, stretches patience, relaxes stall current_r.
+    Designed to compensate for shadow execution's ~6 bps slippage hole.
+    Gated per-user via UserRealManager flag (A/B test).
+
     All numeric inputs are coerced to float; non-numeric input returns None
     (do not kill — let the other guards handle it).
     """
@@ -168,6 +194,14 @@ def should_kill_dead_signal(
     floor = fee_floor_r(entry, sl)
     grace = grace_window_sec(trade_type, regime)
 
+    # Apply relaxed-shadow multipliers (slippage-absorbing)
+    kill_threshold = _UNIFIED_KILL_CURRENT_R
+    stall_current  = _STALL_CURRENT_R
+    if relaxed_shadow:
+        floor          = floor * _RELAXED_FEE_FLOOR_MULT
+        kill_threshold = _RELAXED_KILL_CURRENT_R
+        stall_current  = _RELAXED_STALL_CURRENT_R
+
     # Inside grace window — no time-based kill is allowed.
     if age_sec_f < grace:
         return None
@@ -175,12 +209,14 @@ def should_kill_dead_signal(
     g = (grade or "").upper()
     patience_mult = _PATIENCE_HIGHGRADE if g in ("A+", "A") else _PATIENCE_LOWGRADE
     patience_sec = grace * patience_mult
+    if relaxed_shadow:
+        patience_sec = patience_sec * _RELAXED_PATIENCE_MULT
 
     # Primary kill: past patience, never recovered fees, currently underwater.
     if (
         age_sec_f >= patience_sec
         and peak_mfe_r_f < floor
-        and current_r_f < _UNIFIED_KILL_CURRENT_R
+        and current_r_f < kill_threshold
     ):
         return EXIT_DEAD_SIGNAL_UNIFIED
 
@@ -188,7 +224,7 @@ def should_kill_dead_signal(
     if (
         age_sec_f >= _STALL_AGE_SEC
         and peak_mfe_r_f < _STALL_PEAK_R
-        and current_r_f < _STALL_CURRENT_R
+        and current_r_f < stall_current
     ):
         return EXIT_STALLED_AFTER_15MIN
 

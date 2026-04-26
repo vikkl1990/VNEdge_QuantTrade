@@ -70,9 +70,14 @@ class UserRealRegistry:
                 return
 
             # Fire to each active user in parallel
+            # BUGFIX 2026-04-21: asyncpg returns `id` as a UUID object, not a
+            # string. The previous f"user_trade_{user_id[:8]}" sliced that UUID
+            # and raised TypeError _before_ create_task wrapped the coroutine,
+            # leaking an un-awaited coro and killing the whole broadcast via
+            # the outer except. Normalise to str on every iteration.
             tasks = []
             for user_info in self._active_users_cache:
-                user_id = user_info["id"]
+                user_id = str(user_info["id"])
                 try:
                     mgr = await self.get_or_create_manager(user_info)
                     if mgr and mgr.enabled:
@@ -138,7 +143,21 @@ class UserRealRegistry:
         if bot_mode == "paper":
             return None  # Paper-only user, no real manager needed
 
-        key_label = "live" if bot_mode == "live" else "demo"
+        # Phase 5.20-FIX2 (2026-04-25) — shadow_live uses LIVE keys + PROD endpoint.
+        # Audit + user requirement: shadow_live's purpose is to simulate against
+        # the REAL prod market. Even though shadow path makes ZERO Delta REST
+        # calls (verified by safety audit), the wrapper still needs to be
+        # constructed with the correct key/endpoint for any read-only ops
+        # (balance fetch for sizing, ticker fallback). Routing to testnet
+        # would simulate against testnet prices — the bug we found earlier.
+        # Mapping:
+        #   bot_mode='demo'        → testnet keys + testnet endpoint
+        #   bot_mode='live'        → live keys + prod endpoint
+        #   bot_mode='shadow_live' → live keys + prod endpoint (READ-ONLY)
+        if bot_mode in ("live", "shadow_live"):
+            key_label = "live"
+        else:
+            key_label = "demo"
         key_data = None
         for k in api_keys:
             if k["label"] == key_label and k["is_active"]:
@@ -188,7 +207,10 @@ class UserRealRegistry:
                 def get_ticker(self, symbol):
                     try:
                         from exchange.delta_client import PRODUCT_MAP
-                        pid = PRODUCT_MAP.get(symbol)
+                        # PRODUCT_MAP entries are dicts — pick demo_id/prod_id
+                        # by this client's mode (same fix as UserRealManager).
+                        info = PRODUCT_MAP.get(symbol) or {}
+                        pid = info.get("demo_id" if self.mode == "demo" else "prod_id")
                         if pid:
                             return self._client.get_ticker(pid)
                     except: pass
@@ -199,18 +221,65 @@ class UserRealRegistry:
             logger.error("Registry: DeltaClient creation failed for user %s: %s", user_id[:8], e)
             return None
 
-        # Build user config from DB fields
+        # Build user config from DB fields.
+        # BUGFIX 2026-04-21: users.trading_pairs is a jsonb column; asyncpg
+        # hands it back as a RAW JSON STRING, not a Python list. The previous
+        # `user_info.get("trading_pairs") or []` left the str intact, which
+        # made UserRealManager.__init__'s `list(...)` explode it into single
+        # characters and then every symbol check (`"BTC/USDT" in ['[','"',...]`)
+        # returned False — the user_symbol_filter rejected every real signal.
+        raw_pairs = user_info.get("trading_pairs")
+        if isinstance(raw_pairs, str):
+            try:
+                import json as _json
+                parsed = _json.loads(raw_pairs)
+                pairs_list = parsed if isinstance(parsed, list) else []
+            except Exception:
+                pairs_list = []
+        elif isinstance(raw_pairs, list):
+            pairs_list = raw_pairs
+        else:
+            pairs_list = []
+
         user_config = {
             "max_leverage": user_info.get("max_leverage", 20),
             "max_daily_loss_usd": float(user_info.get("max_daily_loss_pct", 3.0)) * 100,  # pct → USD estimate
             "max_position_notional": 500,
-            "trading_pairs": user_info.get("trading_pairs") or [],
-            "min_confidence": 55,
-            "ml_threshold": 0.60,
+            "trading_pairs": pairs_list,
+            # Phase 5.3.2 (2026-04-23) — T2.2 replay found confidence gate
+            # was the #1 admission leak: 279 paper winners ($1,205) rejected
+            # in last 7 days, with 79% WR (IDENTICAL to current qualifying
+            # WR). Lower threshold captures volume without degrading edge.
+            # 55 → 45 is a midpoint; if results are clean after a 48h cohort
+            # we can drop further to 40.
+            "min_confidence": 45,
+            "ml_threshold": 0.55,  # Phase 4.5: lowered from 0.60 to catch B/C winners
             "size_multiplier": 1.0,
             "max_daily_trades": 15,
             "bot_mode": bot_mode,
+            # Phase 5.20-FIX (2026-04-25) — pass through new user fields
+            "maker_patience_mode": user_info.get("maker_patience_mode") or "standard",
+            # Phase 5.20.8 — per-user exit guard policy (Wave 4 A/B)
+            "exit_policy": user_info.get("exit_policy") or "current",
+            # Phase 6.C — Wave 6.C Lever 2: cohort filter on/off
+            "cohort_filter_enabled": bool(user_info.get("cohort_filter_enabled") or False),
+            # Phase 6.C — Wave 6.C Lever 1: shadow simulated balance override
+            # (re-added 2026-04-26 after audit found this dropped during a rollback;
+            # symptom was niranjan getting `ssb=None → using default100` in
+            # SIZE_BAL trace because user_config.get('shadow_simulated_balance')
+            # returned None even though DB value existed)
+            "shadow_simulated_balance": user_info.get("shadow_simulated_balance"),
+            # Phase 6.C — Lever 3 Fix #3: mark alignment (paper watermark)
+            "mark_alignment_enabled": bool(user_info.get("mark_alignment_enabled") or False),
+            # cohort pause is read directly from DB inside _refresh_cohort_blacklist,
+            # so no need to pass through here — but log it for visibility:
         }
+        _pause_until = user_info.get("cohort_blacklist_paused_until")
+        if _pause_until:
+            logger.info(
+                "Registry: user %s loaded with maker_patience_mode='%s' cohort_pause_until=%s",
+                user_id[:8], user_config["maker_patience_mode"], _pause_until,
+            )
 
         # Create manager
         from execution.user_real_manager import UserRealManager
@@ -224,7 +293,32 @@ class UserRealRegistry:
         mgr._price_feed = self._price_feed
 
         self._managers[user_id] = mgr
-        logger.info("Registry: created manager for user %s (%s)", user_id[:8], user_info.get("email", ""))
+
+        # Phase 4.2 — reconcile DB-open trades on first manager build
+        # (bot restart lost in-memory monitor state). Fire-and-forget.
+        # Phase 5.0.3 — ALSO reconcile from exchange-side (orphan positions
+        # that were live on Delta but never persisted to DB). Today's
+        # incident: 2 BTC longs orphaned during rapid restart cycle,
+        # closed manually at net -$0.87 after 17 min of unmonitored risk.
+        async def _recon_both():
+            try:
+                logger.warning("RECON_START: %s (%s) — calling reconcile_open_trades",
+                               user_id[:8], user_info.get("email", ""))
+                await mgr.reconcile_open_trades()      # DB side
+                logger.warning("RECON_DONE: %s (%s) — reconcile_open_trades returned",
+                               user_id[:8], user_info.get("email", ""))
+            except Exception as exc:
+                logger.warning("Registry: DB recon FAIL %s: %s", user_id[:8], exc)
+            try:
+                await mgr._reconcile_from_exchange()   # Exchange side
+            except Exception as exc:
+                logger.debug("Registry: exchange recon fail %s: %s", user_id[:8], exc)
+        try:
+            asyncio.create_task(_recon_both())
+        except Exception as exc:
+            logger.warning("Registry: reconcile task spawn FAIL for %s: %s", user_id[:8], exc)
+
+        logger.warning("Registry: created manager for user %s (%s)", user_id[:8], user_info.get("email", ""))
         return mgr
 
     async def get_manager_for_user(self, user_id: str):
@@ -239,10 +333,17 @@ class UserRealRegistry:
         """Load active users who have bot_mode != 'paper' from DB."""
         try:
             async with self._db_pool.acquire() as conn:
+                # Phase 5.20-FIX (2026-04-25) — pull maker_patience_mode and
+                # cohort_blacklist_paused_until so they reach UserRealManager.
+                # Bug found: multimode A/B/C silently NOT running because
+                # user_config dict didn't include these fields → manager
+                # defaulted to 'standard' regardless of DB setting.
                 rows = await conn.fetch("""
                     SELECT id, email, role, bot_mode, max_leverage, max_daily_loss_pct,
                            max_open_positions, trading_pairs, preferred_leverage,
-                           is_active
+                           is_active,
+                           maker_patience_mode,
+                           cohort_blacklist_paused_until
                     FROM users
                     WHERE is_active = TRUE AND bot_mode != 'paper'
                     ORDER BY created_at

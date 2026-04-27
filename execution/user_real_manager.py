@@ -251,43 +251,30 @@ class UserRealManager:
         self._is_shadow_live = (self._bot_mode == "shadow_live")
         self._live_balance_floor_usd = 20.0   # don't trade live if balance < $20
 
-        # 2026-04-26 A/B test — RELAXED SHADOW EXITS (FIX 1+2 from "Delta Exit
-        # Logic Disaster" review). Niranjan = treatment, admin = control.
-        # Today's data showed 8/9 Delta defensive-exit categories net-negative
-        # ($47/$50 daily loss came from guards firing on shadow execution slippage
-        # not on real adverse movement). The relaxed mode widens kill threshold
-        # -0.10R → -0.16R, raises fee_floor 1.5×, stretches patience 1.5×, and
-        # relaxes stall current_r -0.05R → -0.075R to absorb the ~6bps shadow-
-        # specific slippage hole.
-        # See: docs/EXIT_GUARD_REFACTOR_5_8.md and inline comments in exit_guards.py
-        self._relaxed_shadow_exits = (
-            self._is_shadow_live
-            and (self.user_email or "").lower() == "niranjan_139@yahoo.co.in"
-        )
-        if self._relaxed_shadow_exits:
+        # 2026-04-27 CLEAN A/B TEST setup — architect directive:
+        #   Paper - as is
+        #   Delta - admin shadow_live + niranjan shadow_live, MERGE ALL (same code)
+        #   open ALL signals as paper to delta (bypass qualify_signal filter)
+        #   Bybit - PAUSE (services stopped)
+        # → Both users on STANDARD exit guards (no niranjan treatment).
+        # → Both users get every paper signal mirrored to delta_shadow.
+        # → Compares paper PnL vs delta_shadow PnL for pure execution friction read.
+        # See docs/CLEAN_AB_TEST_20260427.md
+        self._relaxed_shadow_exits = False  # disabled for clean test
+        self._relaxed_shadow_simulation = False  # disabled for clean test
+        if self._is_shadow_live:
             logger.warning(
-                "RELAXED_SHADOW_EXITS: ENABLED for %s "
-                "(A/B treatment: kill_R=-0.16, patience×1.5, fee_floor×1.5, stall_R=-0.075)",
+                "CLEAN_AB_MODE: %s on STANDARD guards (relaxed disabled), "
+                "qualify_signal bypassed in shadow_live (every paper signal mirrors)",
                 self.user_email,
             )
 
-        # 2026-04-26 Stage 1+2 — shadow simulation fidelity upgrade.
-        # Removes Delta-API safety constraints from shadow trail logic
-        # (gates that exist for live execution but NOT for shadow):
-        #   - age_sec > 15 gate (anti-race for Delta API in-flight orders)
-        #   - _sl_stays_valid() guard (Delta rejects immediate-execution stops)
-        #   - dynamic _min_lock_r (live fee-wall accommodation)
-        # Also makes _close_shadow honor the locked SL price as the exit
-        # (instead of L2 worst-case which over-states slippage on stops).
-        # Gated by SAME flag as Stage 0 (relaxed_shadow_exits) for clean A/B.
-        # See: docs/AB_RELAXED_SHADOW_EXITS_20260426.md (extended Stage 1+2)
-        self._relaxed_shadow_simulation = self._relaxed_shadow_exits
-        if self._relaxed_shadow_simulation:
-            logger.warning(
-                "RELAXED_SHADOW_SIMULATION: ENABLED for %s "
-                "(Stage 1+2: skip age_gate, skip sl_stays_valid, static min_lock_r=0.30, locked-SL exit)",
-                self.user_email,
-            )
+        # 2026-04-27 CLEAN A/B TEST: Stage 1+2 (relaxed_shadow_simulation)
+        # ALSO disabled — both users now run the production exit-guard cascade
+        # unchanged. The relaxed-shadow code paths are still in the codebase
+        # (gated by self._relaxed_shadow_simulation = False) so we can re-enable
+        # them in a controlled re-test later. For now, clean baseline only.
+        # (No-op assignment; flag was set False above.)
 
         # Phase 5.3 / T4.4 — live emergency halt cache (refreshed every 30s
         # via _is_live_halted). Single SQL UPDATE to users.live_emergency_halt
@@ -1147,11 +1134,50 @@ class UserRealManager:
         # 1. Qualify (Phase 4.1: now async — cohort blacklist DB check)
         # Phase 5.0.2 — upgrade to info-level so rejections are VISIBLE in
         # journald (were silent at debug, hiding why signals don't fill).
-        qualified, reason = await self.qualify_signal(signal)
+        # Bug 3d (2026-04-27): info-level was STILL invisible at our WARNING
+        # log root level, so rejection histograms were impossible. Promote
+        # to warning + write JSONL row to storage/qualify_rejections.jsonl
+        # for offline analysis. Today's data showed 31% paper→shadow
+        # conversion (85/123 rejected silently in 24h).
+        #
+        # 2026-04-27 CLEAN A/B TEST: bypass qualify_signal entirely for
+        # shadow_live mode — every paper signal becomes a delta_shadow trade.
+        # Reason: pure paper-vs-shadow execution-friction comparison without
+        # the qualify gates muddying the signal pool. Live trades still
+        # qualify normally (when bot_mode='live').
+        if getattr(self, "_is_shadow_live", False):
+            qualified, reason = True, "shadow_clean_test_bypass"
+        else:
+            qualified, reason = await self.qualify_signal(signal)
         if not qualified:
-            logger.info("USER %s SKIP: %s %s — %s",
-                        self.user_id[:8], symbol,
-                        str(signal.get("side", "?")).lower(), reason)
+            logger.warning("QUALIFY_REJECT user=%s sym=%s side=%s reason=%s",
+                           self.user_email or self.user_id[:8], symbol,
+                           str(signal.get("side", "?")).lower(), reason)
+            # Append to JSONL (best-effort; never block trading on log fail)
+            try:
+                import json as _json
+                import datetime as _dt
+                import pathlib as _pl
+                _rec = {
+                    "ts": _dt.datetime.utcnow().isoformat() + "Z",
+                    "user_email": self.user_email or "",
+                    "user_id": self.user_id[:8],
+                    "symbol": symbol,
+                    "side": str(signal.get("side", "")).lower(),
+                    "grade": str((signal.get("metadata") or {}).get("grade", "")),
+                    "scanner": str((signal.get("metadata") or {}).get("scanner", "")),
+                    "regime": str((signal.get("metadata") or {}).get("regime", "")),
+                    "ml_prob": float((signal.get("metadata") or {}).get("ml_probability", 0) or 0),
+                    "conf": float(signal.get("confidence", 0) or 0),
+                    "reason": reason,
+                    "reason_class": (reason.split(":")[0] if ":" in reason else reason),
+                }
+                _path = _pl.Path("/home/opc/crypto-trading-bot/storage/qualify_rejections.jsonl")
+                _path.parent.mkdir(parents=True, exist_ok=True)
+                with _path.open("a") as _f:
+                    _f.write(_json.dumps(_rec) + "\n")
+            except Exception:
+                pass  # never block on log write failure
             return None
 
         # 2. Size

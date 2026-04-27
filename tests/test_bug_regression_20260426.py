@@ -329,14 +329,24 @@ class TestStage12ShadowSimulationFidelity:
     """Pin the Stage 1+2 patches in user_real_manager.py."""
 
     def test_relaxed_shadow_simulation_flag_set(self):
+        """As of 2026-04-27 CLEAN A/B test:
+        - flag _relaxed_shadow_simulation MUST still exist in code (so we
+          can re-enable later)
+        - but it MUST be disabled (=False) so both users run STANDARD guards
+        """
         import pathlib
         src = pathlib.Path(__file__).parent.parent / "execution" / "user_real_manager.py"
         text = src.read_text()
         assert "_relaxed_shadow_simulation" in text, (
-            "Stage 1+2 regression: _relaxed_shadow_simulation flag missing"
+            "Stage 1+2 regression: _relaxed_shadow_simulation flag REMOVED — "
+            "should remain in code (just gated False) so we can re-enable later"
         )
-        assert "RELAXED_SHADOW_SIMULATION: ENABLED" in text, (
-            "Stage 1+2 regression: ENABLED log line missing"
+        # Either the original ENABLED log OR the clean-A/B disabled state must be present
+        clean_ab_mode_present = "CLEAN_AB_MODE" in text
+        relaxed_log_present = "RELAXED_SHADOW_SIMULATION: ENABLED" in text
+        assert clean_ab_mode_present or relaxed_log_present, (
+            "Stage 1+2 regression: neither RELAXED_SHADOW_SIMULATION ENABLED log "
+            "nor CLEAN_AB_MODE log present — sizing-related logs gone"
         )
 
     def test_age_gate_conditional_on_relaxed_sim(self):

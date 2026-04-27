@@ -37,7 +37,10 @@ CAPS = {
     "P2_force_close":     20,
     "P3_monitor_restart": 5,
 }
-WHITELIST_SERVICES = ["cryptobot", "bybit-shadow-daemon", "bybit-shadow-monitor"]
+# 2026-04-27 CLEAN A/B TEST: bybit services intentionally PAUSED. Removed from
+# auto-restart whitelist so Agent 9-A doesn't resurrect them every 5 min.
+# Re-add when test concludes.
+WHITELIST_SERVICES = ["cryptobot"]  # bybit-shadow-daemon + bybit-shadow-monitor PAUSED
 
 
 def run(cmd, timeout=15):

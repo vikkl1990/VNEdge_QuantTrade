@@ -662,7 +662,51 @@ class UserRealManager:
                                     trade._exit_config = _cfg
                                     break
 
+                    # 2026-04-27 — RACE-FREE PRE-EMPTIVE TIME-DECAY CLOSE.
+                    # 19 monitor tasks spawned at the same instant by reconcile
+                    # caused an asyncio scheduling race: ~8 won (closed via
+                    # time_decay on first tick), ~11 lost (drifted until
+                    # Agent 9-A scoop'd them at 60min as auto_responder_stuck_60m
+                    # / PnL=$0). Race-free fix: SYNCHRONOUSLY close any trade
+                    # that's already past its max_age BEFORE spawning a monitor.
+                    # Determine effective max_age: P2 cfg if set, else SHADOW
+                    # default (600s for all shadow trade_types). For non-P2
+                    # shadow this matches the in-monitor logic 1:1.
                     self.open_trades[trade.trade_id] = trade
+                    _age_at_recon = max(
+                        0.0,
+                        time.time() - float(trade.opened_at or time.time()),
+                    )
+                    if _is_p2v and getattr(trade, "_exit_config", None):
+                        _eff_max = int(trade._exit_config.get("max_age_sec") or 600)
+                    else:
+                        _eff_max = 600  # shadow default cap
+                    if _age_at_recon > _eff_max:
+                        # Skip monitor — close immediately at entry price
+                        # (PnL≈0; no live price → use entry as worst-case neutral).
+                        # Single fixed exit_reason so the filter list stays
+                        # simple. Age is recorded in metadata.recon_age_min
+                        # via _close_shadow's standard close_meta path
+                        # (peak_mfe_r/funding/etc). Filter alongside
+                        # auto_responder_stuck_60m + restart_orphan_cleanup.
+                        try:
+                            await self._close_shadow(
+                                trade,
+                                trade.entry_price,
+                                "reconcile_overaged_close",
+                            )
+                            logger.warning(
+                                "RECON_PREEMPTIVE_CLOSE: %s %s %s | age=%.1fm > max=%ds (skipped monitor race)",
+                                self.user_email, sym, side, _age_at_recon/60, _eff_max,
+                            )
+                            continue  # next row, don't spawn monitor
+                        except Exception as _ce:
+                            logger.warning(
+                                "RECON_PREEMPTIVE_CLOSE_FAIL: %s %s — %s (falling back to monitor)",
+                                self.user_email, sym, _ce,
+                            )
+                            # Fall through to spawn monitor anyway
+
                     asyncio.create_task(self._monitor_trade(trade.trade_id))
                     _p2_tag = ""
                     if _is_p2v:

@@ -1149,7 +1149,7 @@ class DashboardServer:
                        WHERE closed_at >= NOW() - INTERVAL '24 hours'
                          {_edge_type_filter}
                          AND COALESCE(metadata::jsonb->>'exit_reason', '')
-                                NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                          AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                 != 'true'""",
                     *_edge_params,
@@ -1467,7 +1467,7 @@ class DashboardServer:
             if clean:
                 clean_filter = (
                     "AND COALESCE(metadata::jsonb->>'exit_reason', '') "
-                    "        NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
+                    "        NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
                     "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                     "        != 'true' "
                 )
@@ -1490,7 +1490,7 @@ class DashboardServer:
                                AND pnl_usd IS NOT NULL
                                {mode_filter}
                                AND (COALESCE(metadata::jsonb->>'exit_reason', '')
-                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                                     OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                        = 'true')""",
                         *params,
@@ -1926,7 +1926,7 @@ class DashboardServer:
                 if clean:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
+                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
                         "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                         "    != 'true' "
                     )
@@ -1951,7 +1951,7 @@ class DashboardServer:
                                AND closed_at >= NOW() - INTERVAL '{days} days'
                                {sym_clause}
                                AND (COALESCE(metadata::jsonb->>'exit_reason','')
-                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                                     OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                        = 'true')""",
                         *params,
@@ -1984,7 +1984,7 @@ class DashboardServer:
                 if clean:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
+                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
                         "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                         "    != 'true' "
                     )
@@ -2056,23 +2056,23 @@ class DashboardServer:
                                 'restart_orphan_cleanup')) AS n_admin_closed,
                     SUM(CASE WHEN closed_at IS NOT NULL
                               AND COALESCE(metadata::jsonb->>'exit_reason','')
-                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                              THEN pnl_usd END)::float AS net,
                     SUM(CASE WHEN pnl_usd > 0
                               AND COALESCE(metadata::jsonb->>'exit_reason','')
-                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                              THEN 1 ELSE 0 END) AS wins,
                     SUM(CASE WHEN pnl_usd > 0
                               AND COALESCE(metadata::jsonb->>'exit_reason','')
-                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                              THEN pnl_usd ELSE 0 END)::float AS gross_w,
                     SUM(CASE WHEN pnl_usd < 0
                               AND COALESCE(metadata::jsonb->>'exit_reason','')
-                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                              THEN -pnl_usd ELSE 0 END)::float AS gross_l,
                     AVG(CASE WHEN closed_at IS NOT NULL
                               AND COALESCE(metadata::jsonb->>'exit_reason','')
-                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
                              THEN pnl_usd END)::float AS avg_pnl,
                     MAX(metadata::jsonb->>'exit_config_summary') AS summary
                 FROM user_trades

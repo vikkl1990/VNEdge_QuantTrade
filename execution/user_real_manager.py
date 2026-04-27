@@ -2420,7 +2420,18 @@ class UserRealManager:
                 if _ph2_cfg_t is not None and _ph2_cfg_t.get("max_age_sec"):
                     max_age = int(_ph2_cfg_t["max_age_sec"])
                 else:
-                    max_age = 600 if (trade.trade_type or "").upper() == "SCALP" else 3600
+                    # 2026-04-27 fix — earlier today saw 6 trades stuck at
+                    # 60min hitting Agent 9-A force-close. Root cause: those
+                    # were INTRADAY/RUNNER trade_type which had max_age=3600s
+                    # (1h). For SHADOW trades specifically, tighten ALL
+                    # trade_types to the same 600s cap as SCALP — strategy
+                    # ceiling per peak_mfe_r distribution is ~0.5R regardless
+                    # of trade_type label, so longer holds just accumulate
+                    # losses via dead_signal_unified. Live trades unchanged.
+                    if getattr(trade, "_is_shadow", False):
+                        max_age = 600  # all shadow trade_types
+                    else:
+                        max_age = 600 if (trade.trade_type or "").upper() == "SCALP" else 3600
                 if age_sec > max_age:
                     await self._close_trade(trade, price, f"time_decay_{int(age_sec/60)}m")
                     break
@@ -3390,7 +3401,7 @@ class UserRealManager:
             import json as _json
             # Phase 4.2 — include all fields needed to rebuild a
             # UserTradeRecord on restart reconciliation.
-            open_meta = _json.dumps({
+            _open_meta_dict = {
                 "scanner": trade.scanner,
                 "grade": trade.grade,
                 "leverage": trade.leverage,
@@ -3418,7 +3429,28 @@ class UserRealManager:
                 "entry_exec_mode": getattr(trade, "entry_exec_mode", "") or "",
                 "maker_mode_used": getattr(trade, "maker_mode_used", "") or "",
                 "maker_mode_id": int(getattr(trade, "maker_mode_id", -1) or -1),
-            })
+            }
+            # Phase 2 — Shadow-of-Shadow attribution (2026-04-27 fix)
+            # _record_trade_db was building open_meta from a hardcoded field
+            # list that ignored the Phase 2 fan-out's mutated meta dict.
+            # Result: 10 fan-out shadow trades created at 07:06:35 UTC with
+            # ZERO is_phase2_virtual / exit_config_id metadata → leaderboard
+            # SQL `WHERE metadata->>'is_phase2_virtual'='true'` matched 0
+            # rows, blocking Phase 2 verdict. Read attribution off the
+            # trade attribute set by _execute_shadow at fan-out time.
+            if getattr(trade, "_is_phase2_virtual", False):
+                _open_meta_dict["is_phase2_virtual"] = True
+                _ec = getattr(trade, "_exit_config", None) or {}
+                if _ec.get("id"):
+                    _open_meta_dict["exit_config_id"] = _ec["id"]
+                    _open_meta_dict["exit_config_summary"] = (
+                        f"max_age={_ec.get('max_age_sec', '?')}s "
+                        f"trail={_ec.get('trail_trigger', '?')}R/"
+                        f"{_ec.get('trail_lock', 0):.0%} "
+                        f"dead_kill={_ec.get('dead_kill_R')} "
+                        f"tp_R={_ec.get('tp_R')}"
+                    )
+            open_meta = _json.dumps(_open_meta_dict)
             # Phase 5.12 (2026-04-24) — Persist funding accounting for Sharpe/backtest.
             # Funding was already computed (lines ~2510-2542) but only lived in-memory
             # on UserTradeRecord. Persisting enables correct risk-adjusted return

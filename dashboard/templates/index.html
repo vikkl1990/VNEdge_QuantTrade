@@ -1520,9 +1520,18 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- Shadow account (shadow_live, last 24h) -->
+  <!-- Shadow account (window selectable; analytics_shadow.js drives values) -->
   <div style="border:1px solid rgba(167,139,250,.18);border-radius:8px;padding:14px;margin-bottom:12px">
-    <div style="font-size:.6rem;color:#a78bfa;text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:10px;text-align:center">🌓 Shadow (last 24h)</div>
+    <div style="font-size:.6rem;color:#a78bfa;text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:10px;text-align:center;display:flex;justify-content:center;align-items:center;gap:10px">
+      <span>🌓 Shadow (last <span id="an-shadow-window-lbl">24h</span>)</span>
+      <select id="an-shadow-window-sel"
+              style="background:rgba(167,139,250,.10);color:#a78bfa;border:1px solid rgba(167,139,250,.3);padding:2px 6px;border-radius:3px;font-family:var(--font-mono);font-size:.6rem;text-transform:uppercase;letter-spacing:1px;cursor:pointer">
+        <option value="1">1d</option>
+        <option value="7">7d</option>
+        <option value="30" selected>30d</option>
+        <option value="90">90d</option>
+      </select>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
       <div class="text-center">
         <div id="an-shadow-trades" style="font-size:1.2rem;font-weight:900;font-family:var(--font-mono);color:var(--text-secondary)">0</div>

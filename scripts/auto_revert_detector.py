@@ -103,7 +103,7 @@ async def fetch_recent_metrics(conn, n: int = 30):
               ('kill_switch_close_open', 'force_flat', 'restart_reconcile_flat',
                'execution_refactor_v2_FORCE_FLAT', 'auto_responder_stuck_60m',
                'restart_orphan_cleanup', 'reconcile_overaged_close')
-          AND COALESCE(metadata::jsonb->>'is_phase2_virtual', 'false') != 'true'
+          AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
         ORDER BY closed_at DESC
         LIMIT {int(n)}
     """)

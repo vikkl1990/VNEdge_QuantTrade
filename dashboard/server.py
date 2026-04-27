@@ -1468,8 +1468,9 @@ class DashboardServer:
                 clean_filter = (
                     "AND COALESCE(metadata::jsonb->>'exit_reason', '') "
                     "        NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                    "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "        != 'true' "
+                    "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' OR "
+                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
                 )
             sql = f"""SELECT pnl_usd::float AS pnl, opened_at, closed_at
                        FROM user_trades
@@ -1491,8 +1492,8 @@ class DashboardServer:
                                {mode_filter}
                                AND (COALESCE(metadata::jsonb->>'exit_reason', '')
                                        IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                                    OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                       = 'true')""",
+                                    OR (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true'
+                                        AND COALESCE(metadata::jsonb->>'exit_config_id','') != 'primary'))""",
                         *params,
                     )
                     out["excluded_n"] = int(excl or 0)
@@ -1578,8 +1579,9 @@ class DashboardServer:
                     "    NOT IN ('auto_responder_stuck_60m', "
                     "            'restart_orphan_cleanup', "
                     "            'reconcile_overaged_close') "
-                    "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "    != 'true' "
+                    "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' OR "
+                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
                 )
 
                 # Paper trades (no exchange concept — separate aggregate)
@@ -1907,8 +1909,9 @@ class DashboardServer:
                 clean_clause = ""
                 if clean:
                     clean_clause = (
-                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                        "    != 'true' "
+                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' OR "
+                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
                     )
                 rows = await con.fetch(
                     f"""SELECT * FROM user_trades
@@ -1970,8 +1973,9 @@ class DashboardServer:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
                         "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                        "    != 'true' "
+                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' OR "
+                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
                     )
                 rows = await con.fetch(
                     f"""SELECT * FROM user_trades
@@ -1995,8 +1999,8 @@ class DashboardServer:
                                {sym_clause}
                                AND (COALESCE(metadata::jsonb->>'exit_reason','')
                                        IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                                    OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                       = 'true')""",
+                                    OR (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true'
+                                        AND COALESCE(metadata::jsonb->>'exit_config_id','') != 'primary'))""",
                         *params,
                     )
                     out["excluded_n"] = int(excl or 0)
@@ -2028,8 +2032,9 @@ class DashboardServer:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
                         "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                        "    != 'true' "
+                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' OR "
+                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
                     )
                 rows = await con.fetch(
                     f"""SELECT * FROM user_trades
@@ -2214,7 +2219,7 @@ class DashboardServer:
                            NULLIF(metadata::jsonb->>'last_price','')::float  AS last_price
                       FROM user_trades
                      WHERE closed_at IS NULL
-                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
                      ORDER BY opened_at DESC LIMIT 200
                 """)
                 for r in rows:
@@ -2252,7 +2257,7 @@ class DashboardServer:
                        -- 2026-04-27 clean filter
                        AND COALESCE(metadata::jsonb->>'exit_reason','')
                            NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
                      ORDER BY exchange, trade_type, closed_at DESC
                 """)
                 for r in last_rows:
@@ -2279,7 +2284,7 @@ class DashboardServer:
                        AND closed_at IS NOT NULL
                        AND COALESCE(metadata::jsonb->>'exit_reason','')
                            NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
                      GROUP BY exchange, trade_type
                 """)
                 for r in tod_rows:
@@ -2360,7 +2365,8 @@ class DashboardServer:
                         "NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')"
                     )
                     where.append(
-                        "COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'"
+                        "(COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' "
+                        " OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')"
                     )
                 sql = (f"SELECT * FROM user_trades WHERE " + " AND ".join(where)
                        + f" ORDER BY closed_at DESC LIMIT {limit}")
@@ -2380,7 +2386,7 @@ class DashboardServer:
                     excl_where.append(
                         "(COALESCE(metadata::jsonb->>'exit_reason','') "
                         " IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        " OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true')"
+                        " OR (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true' AND COALESCE(metadata::jsonb->>'exit_config_id','') != 'primary'))"
                     )
                     excl_sql = "SELECT COUNT(*)::int FROM user_trades WHERE " + " AND ".join(excl_where)
                     out["excluded_n"] = int(await con.fetchval(excl_sql, *excl_params) or 0)

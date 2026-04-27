@@ -91,7 +91,9 @@
 
   async function refresh() {
     try {
-      const r = await fetch('/api/agents/status', { cache: 'no-store' });
+      // 2026-04-27 — renamed from /status to /team (status was taken by
+      // the legacy ML-models endpoint that returns a different shape).
+      const r = await fetch('/api/agents/team', { cache: 'no-store' });
       if (!r.ok) throw new Error('http ' + r.status);
       const d = await r.json();
       render(d);

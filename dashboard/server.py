@@ -811,9 +811,11 @@ class DashboardServer:
         # config A/B/C/D/E. Aggregates per exit_config_id over the window.
         app.router.add_get("/api/phase2/leaderboard", self._handle_phase2_leaderboard)
 
-        # Agents status (2026-04-27) — live fire times + last output for the
-        # 14-agent operational team + Tier A/B workers + specialty crons.
-        app.router.add_get("/api/agents/status", self._handle_agents_status)
+        # Agents TEAM status (2026-04-27) — live fire times + last output
+        # for the 14-agent operational team + Tier A/B workers + specialty
+        # crons. Renamed to /team because /api/agents/status was already
+        # taken by the ML-models legacy endpoint at line ~3776.
+        app.router.add_get("/api/agents/team", self._handle_agents_team)
 
         # Signal tracker stats
         app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
@@ -2171,17 +2173,21 @@ class DashboardServer:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
 
-    async def _handle_agents_status(self, request: web.Request) -> web.Response:
-        """Agents status — live fire times for the 14-agent team + Tier A/B
-        + specialty crons. Reads file mtimes from storage/ subdirs (cheap,
-        no DB hit, no journalctl perms required). Each agent is mapped to
-        a primary output file or directory; mtime → last_fire_at. Status
-        derived from cadence_min and time-since-last-fire:
+    async def _handle_agents_team(self, request: web.Request) -> web.Response:
+        """Agents TEAM status — live fire times for the 14-agent team +
+        Tier A/B + specialty crons. Reads file mtimes from storage/ subdirs
+        (cheap, no DB hit, no journalctl perms required). Each agent is
+        mapped to a primary output file or directory; mtime → last_fire_at.
+        Status derived from cadence_min and time-since-last-fire:
             green:  age <= 1.5 × cadence
             yellow: age <= 3.0 × cadence
             red:    age >  3.0 × cadence (or file missing)
         Cadence_min = 0 means event-driven (no expected schedule); status
         is always neutral.
+
+        Renamed from /api/agents/status to /api/agents/team because
+        /api/agents/status is taken by the ML-models legacy endpoint
+        (returns ml_models[], qa_results[], etc.).
         """
         import os, glob
         from pathlib import Path

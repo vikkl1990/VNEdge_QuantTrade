@@ -807,6 +807,10 @@ class DashboardServer:
         app.router.add_get("/api/shadow/closed",  self._handle_shadow_closed)
         app.router.add_get("/api/shadow/stats",   self._handle_shadow_stats)
 
+        # Phase 2 Shadow-of-Shadow leaderboard (2026-04-27) — fan-out exit
+        # config A/B/C/D/E. Aggregates per exit_config_id over the window.
+        app.router.add_get("/api/phase2/leaderboard", self._handle_phase2_leaderboard)
+
         # Signal tracker stats
         app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
         app.router.add_get("/api/tracker/active", self._handle_tracker_active)
@@ -2001,6 +2005,87 @@ class DashboardServer:
             for t in trades:
                 per_sym[t["symbol"]].append(t)
             out["by_symbol"] = {sym: self._aggregate_stats(ts) for sym, ts in per_sym.items()}
+        except Exception as e:
+            out["error"] = str(e)[:200]
+        return web.json_response(out, dumps=_safe_dumps)
+
+    async def _handle_phase2_leaderboard(self, request: web.Request) -> web.Response:
+        """Phase 2 Shadow-of-Shadow leaderboard endpoint.
+
+        Aggregates per exit_config_id over the requested window. Returns
+        rows sorted by net PnL desc, plus the winner. Frontend widget
+        polls this every 60s for the live A/B/C/D/E verdict.
+
+        Query: ?hours=N (default 24, min 1, max 168)
+
+        Note: only CLOSED phase2_virtual trades are aggregated. Open
+        trades are returned in `n_open` so the operator can see how
+        much sample is still pending.
+        """
+        try:
+            hours = max(1, min(168, int(request.query.get("hours", "24"))))
+        except Exception:
+            hours = 24
+        out = {
+            "hours": hours, "configs": [], "winner": None,
+            "n_total_open": 0, "n_total_closed": 0,
+            "ts": datetime.utcnow().isoformat() + "Z",
+        }
+        if not self._db_pool:
+            out["error"] = "db_pool_not_ready"
+            return web.json_response(out, dumps=_safe_dumps)
+        try:
+            sql = f"""
+                SELECT
+                    metadata::jsonb->>'exit_config_id' AS cfg,
+                    COUNT(*) AS n_total,
+                    COUNT(closed_at) AS n_closed,
+                    COUNT(*) FILTER (WHERE closed_at IS NULL) AS n_open,
+                    SUM(CASE WHEN closed_at IS NOT NULL THEN pnl_usd END)::float AS net,
+                    SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END)::float AS gross_w,
+                    SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END)::float AS gross_l,
+                    AVG(CASE WHEN closed_at IS NOT NULL THEN pnl_usd END)::float AS avg_pnl,
+                    MAX(metadata::jsonb->>'exit_config_summary') AS summary
+                FROM user_trades
+                WHERE COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true'
+                  AND opened_at >= NOW() - INTERVAL '{hours} hours'
+                  AND metadata::jsonb->>'exit_config_id' IS NOT NULL
+                GROUP BY metadata::jsonb->>'exit_config_id'
+            """
+            async with self._db_pool.acquire() as con:
+                rows = await con.fetch(sql)
+            configs = []
+            for r in rows:
+                n_closed = int(r["n_closed"] or 0)
+                wins = int(r["wins"] or 0)
+                gross_w = float(r["gross_w"] or 0)
+                gross_l = float(r["gross_l"] or 0)
+                wr = (wins / n_closed * 100.0) if n_closed > 0 else None
+                pf = (gross_w / gross_l) if gross_l > 0 else (None if gross_w == 0 else float("inf"))
+                configs.append({
+                    "id": r["cfg"],
+                    "n_total": int(r["n_total"] or 0),
+                    "n_closed": n_closed,
+                    "n_open": int(r["n_open"] or 0),
+                    "wins": wins,
+                    "wr_pct": wr,
+                    "net": float(r["net"] or 0),
+                    "avg_pnl": float(r["avg_pnl"] or 0) if r["avg_pnl"] is not None else None,
+                    "pf": pf if pf != float("inf") else None,
+                    "pf_inf": pf == float("inf"),
+                    "summary": r["summary"] or "",
+                })
+                out["n_total_open"] += int(r["n_open"] or 0)
+                out["n_total_closed"] += n_closed
+            # Sort by net desc; winner = first non-empty row by net
+            configs.sort(key=lambda c: -(c["net"] or 0))
+            out["configs"] = configs
+            # Winner only if at least 5 closed trades AND positive net
+            for c in configs:
+                if c["n_closed"] >= 5 and (c["net"] or 0) > 0:
+                    out["winner"] = c["id"]
+                    break
         except Exception as e:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)

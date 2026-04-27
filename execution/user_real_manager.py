@@ -917,9 +917,11 @@ class UserRealManager:
             return False, f"multi_scanner_dedup:{_dedup_key.split('|')[2]}"
         self._recent_signal_keys[_dedup_key] = _now_ts
 
-        # 8. Max open positions
-        if len(self.open_trades) >= 3:
-            return False, f"user_max_open:{len(self.open_trades)}"
+        # 8. Max open positions (raised 3 → 5 on 2026-04-27 per architect
+        # directive — clean A/B test allows higher concurrency to capture
+        # more samples per hour without ladder-decay penalty)
+        if len(self.open_trades) >= 5:
+            return False, f"user_max_open:{len(self.open_trades)}/5"
 
         # 9. Duplicate symbol — Phase 5.3 / T2.3, raised to 3 in Phase 5.3.1.
         # Paper logs 5-10 concurrent same-symbol trail_profits on strong
@@ -1145,8 +1147,14 @@ class UserRealManager:
         # Reason: pure paper-vs-shadow execution-friction comparison without
         # the qualify gates muddying the signal pool. Live trades still
         # qualify normally (when bot_mode='live').
+        # 2026-04-27 update: max_open=5 cap STILL enforced in bypass mode
+        # (safety guard — prevents unbounded concurrency from confounding
+        # the test with sizing/risk side-effects).
         if getattr(self, "_is_shadow_live", False):
-            qualified, reason = True, "shadow_clean_test_bypass"
+            if len(self.open_trades) >= 5:
+                qualified, reason = False, f"user_max_open:{len(self.open_trades)}/5"
+            else:
+                qualified, reason = True, "shadow_clean_test_bypass"
         else:
             qualified, reason = await self.qualify_signal(signal)
         if not qualified:

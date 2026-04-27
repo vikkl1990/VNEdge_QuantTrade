@@ -636,11 +636,40 @@ class UserRealManager:
                         entry_fee_usd=float(meta.get("entry_fee_usd") or 0),
                     )
                     trade._is_shadow = True   # critical — routes _monitor_trade → _close_shadow
+
+                    # 2026-04-27 — Phase 2 fan-out attribute restoration on
+                    # restart reconcile. The fan-out path sets
+                    # trade._exit_config + trade._is_phase2_virtual as Python
+                    # attributes only — the DB only stores
+                    # metadata.exit_config_id + is_phase2_virtual. Without
+                    # this rebuild, reloaded P2 trades fall back to the
+                    # default 600s shadow max_age and get force-closed by
+                    # Agent 9-A at 60min as auto_responder_stuck_60m
+                    # (PnL=$0), which contaminates the leaderboard and
+                    # makes Phase 2 forward DIVERGE from Phase 3 historical.
+                    # Discovered when v1_5min_tight (5min cap) had 4 trades
+                    # closing at 60min stuck after 4 restarts on 04-27.
+                    _is_p2v = (
+                        meta.get("is_phase2_virtual") is True
+                        or str(meta.get("is_phase2_virtual", "")).lower() == "true"
+                    )
+                    if _is_p2v:
+                        trade._is_phase2_virtual = True
+                        cfg_id = str(meta.get("exit_config_id") or "")
+                        if cfg_id:
+                            for _cfg in PHASE2_EXIT_CONFIGS:
+                                if _cfg["id"] == cfg_id:
+                                    trade._exit_config = _cfg
+                                    break
+
                     self.open_trades[trade.trade_id] = trade
                     asyncio.create_task(self._monitor_trade(trade.trade_id))
+                    _p2_tag = ""
+                    if _is_p2v:
+                        _p2_tag = f" [P2:{cfg_id}{'' if getattr(trade, '_exit_config', None) else ' MISS'}]"
                     logger.warning(
-                        "USER SHADOW RECONCILED: %s %s %s | entry=%.4f sl=%.4f qty=%d (resuming monitor)",
-                        self.user_email, sym, side, entry, sl, abs(qty),
+                        "USER SHADOW RECONCILED: %s %s %s | entry=%.4f sl=%.4f qty=%d (resuming monitor)%s",
+                        self.user_email, sym, side, entry, sl, abs(qty), _p2_tag,
                     )
                 except Exception as e:
                     logger.error("USER %s: shadow reconcile rebuild failed for %s: %s",

@@ -2035,17 +2035,45 @@ class DashboardServer:
             out["error"] = "db_pool_not_ready"
             return web.json_response(out, dumps=_safe_dumps)
         try:
+            # 2026-04-27 — exclude admin force-closes from per-config
+            # aggregates so the leaderboard reflects ACTUAL strategy
+            # performance under each config, not Agent 9-A's restart
+            # cleanup. auto_responder_stuck_60m + restart_orphan_cleanup
+            # are both PnL=$0 admin events, not exits the config triggered.
+            # Counts of these admin closes are surfaced separately so the
+            # operator sees attribution loss.
             sql = f"""
                 SELECT
                     metadata::jsonb->>'exit_config_id' AS cfg,
                     COUNT(*) AS n_total,
-                    COUNT(closed_at) AS n_closed,
+                    COUNT(*) FILTER (WHERE closed_at IS NOT NULL
+                        AND COALESCE(metadata::jsonb->>'exit_reason','')
+                            NOT IN ('auto_responder_stuck_60m',
+                                    'restart_orphan_cleanup')) AS n_closed,
                     COUNT(*) FILTER (WHERE closed_at IS NULL) AS n_open,
-                    SUM(CASE WHEN closed_at IS NOT NULL THEN pnl_usd END)::float AS net,
-                    SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-                    SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END)::float AS gross_w,
-                    SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END)::float AS gross_l,
-                    AVG(CASE WHEN closed_at IS NOT NULL THEN pnl_usd END)::float AS avg_pnl,
+                    COUNT(*) FILTER (WHERE COALESCE(metadata::jsonb->>'exit_reason','')
+                            IN ('auto_responder_stuck_60m',
+                                'restart_orphan_cleanup')) AS n_admin_closed,
+                    SUM(CASE WHEN closed_at IS NOT NULL
+                              AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                             THEN pnl_usd END)::float AS net,
+                    SUM(CASE WHEN pnl_usd > 0
+                              AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                             THEN 1 ELSE 0 END) AS wins,
+                    SUM(CASE WHEN pnl_usd > 0
+                              AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                             THEN pnl_usd ELSE 0 END)::float AS gross_w,
+                    SUM(CASE WHEN pnl_usd < 0
+                              AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                             THEN -pnl_usd ELSE 0 END)::float AS gross_l,
+                    AVG(CASE WHEN closed_at IS NOT NULL
+                              AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                  NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
+                             THEN pnl_usd END)::float AS avg_pnl,
                     MAX(metadata::jsonb->>'exit_config_summary') AS summary
                 FROM user_trades
                 WHERE COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true'
@@ -2068,6 +2096,7 @@ class DashboardServer:
                     "n_total": int(r["n_total"] or 0),
                     "n_closed": n_closed,
                     "n_open": int(r["n_open"] or 0),
+                    "n_admin_closed": int(r["n_admin_closed"] or 0),
                     "wins": wins,
                     "wr_pct": wr,
                     "net": float(r["net"] or 0),

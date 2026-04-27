@@ -1543,9 +1543,21 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- Analytics context label -->
-  <div style="text-align:center;font-size:.6rem;color:var(--text-muted);margin-bottom:8px;padding:6px;background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.1);border-radius:6px">
-    <span style="color:var(--cyan);font-weight:600">PAPER ANALYTICS</span> — Equity curve, metrics & charts based on paper trades (1000 trades, $1K start) &nbsp;|&nbsp; Real performance shown in overview above
+  <!-- 2026-04-27 Analytics SHADOW/PAPER toggle.
+       Defaults to SHADOW (the canonical edge tracker now that the
+       max_age fix + clean filters are live). PAPER analytics still
+       available for comparison via the toggle. Same equity curve,
+       Sharpe, MaxDD, daily P&L — just swaps the trade data source. -->
+  <div style="display:flex;justify-content:center;gap:6px;margin-bottom:8px">
+    <button id="an-mode-shadow"
+            style="background:rgba(167,139,250,.18);color:#a78bfa;border:1px solid rgba(167,139,250,.4);padding:5px 14px;border-radius:5px;font-family:var(--font-mono);font-size:.7rem;font-weight:600;cursor:pointer;letter-spacing:1px">SHADOW</button>
+    <button id="an-mode-paper"
+            style="background:transparent;color:var(--text-muted);border:1px solid rgba(255,255,255,.08);padding:5px 14px;border-radius:5px;font-family:var(--font-mono);font-size:.7rem;font-weight:600;cursor:pointer;letter-spacing:1px">PAPER</button>
+  </div>
+
+  <!-- Analytics context label (text swapped by analytics_shadow.js on toggle) -->
+  <div id="an-mode-label" style="text-align:center;font-size:.6rem;color:var(--text-muted);margin-bottom:8px;padding:6px;background:rgba(167,139,250,.05);border:1px solid rgba(167,139,250,.15);border-radius:6px">
+    <span style="color:#a78bfa;font-weight:600">🌓 SHADOW ANALYTICS</span> — Equity curve, metrics &amp; charts from real shadow execution (last 30d, clean filter applied)
   </div>
 
   <!-- ═══ SECTION 2: Equity Curve ═══ -->
@@ -3153,6 +3165,7 @@ async function validateApiKeyInline() {
 <script src="/static/js/copilot.js"></script>
 <script src="/static/js/quant_heroes.js"></script>
 <script src="/static/js/phase2_leaderboard.js"></script>
+<script src="/static/js/analytics_shadow.js"></script>
 <script src="/static/js/exchange_compare.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/multi_exchange_overlay.js"></script>

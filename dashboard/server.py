@@ -2200,7 +2200,9 @@ class DashboardServer:
 
         try:
             async with self._db_pool.acquire() as con:
-                # 1. ACTIVE — currently open, all exchanges
+                # 1. ACTIVE — currently open, all exchanges.
+                # 2026-04-27 — clean filter excludes is_phase2_virtual
+                # so ~30 fan-out trades don't drown the active list.
                 rows = await con.fetch("""
                     SELECT id::text, exchange, trade_type, symbol, side,
                            entry_price, quantity, opened_at,
@@ -2212,6 +2214,7 @@ class DashboardServer:
                            NULLIF(metadata::jsonb->>'last_price','')::float  AS last_price
                       FROM user_trades
                      WHERE closed_at IS NULL
+                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
                      ORDER BY opened_at DESC LIMIT 200
                 """)
                 for r in rows:
@@ -2246,6 +2249,10 @@ class DashboardServer:
                            COALESCE(metadata::jsonb->>'fee_type','') AS fee_type
                       FROM user_trades
                      WHERE closed_at IS NOT NULL
+                       -- 2026-04-27 clean filter
+                       AND COALESCE(metadata::jsonb->>'exit_reason','')
+                           NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
+                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
                      ORDER BY exchange, trade_type, closed_at DESC
                 """)
                 for r in last_rows:
@@ -2260,6 +2267,7 @@ class DashboardServer:
                     }
 
                 # 3. TODAY (last 24h) per-bucket aggregates
+                # 2026-04-27 clean filter — same as ACTIVE/LAST blocks above.
                 tod_rows = await con.fetch("""
                     SELECT exchange, trade_type,
                            COUNT(*) AS n,
@@ -2269,6 +2277,9 @@ class DashboardServer:
                       FROM user_trades
                      WHERE closed_at >= NOW() - INTERVAL '24 hours'
                        AND closed_at IS NOT NULL
+                       AND COALESCE(metadata::jsonb->>'exit_reason','')
+                           NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
+                       AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
                      GROUP BY exchange, trade_type
                 """)
                 for r in tod_rows:
@@ -2323,6 +2334,15 @@ class DashboardServer:
             out["error"] = "db_pool_not_ready"
             return web.json_response(out, dumps=_safe_dumps)
 
+        # 2026-04-27 — clean filter wired into the multi-exchange Trade
+        # History tab (last unfiltered API). Was contaminating the
+        # DELTA · SHADOW tab with 105 auto_responder_stuck_60m + 52
+        # reconcile_overaged_close + 25 restart_orphan_cleanup + 70+
+        # is_phase2_virtual fan-out trades, ballooning n=152→406 and
+        # net=-$12.86→-$86.31. Default clean=true; pass clean=false
+        # to see raw audit trail.
+        clean = request.query.get("clean", "true").lower() == "true"
+        out["filters"]["clean"] = clean
         try:
             async with self._db_pool.acquire() as con:
                 params = [trade_type]
@@ -2334,6 +2354,14 @@ class DashboardServer:
                 if symbol:
                     params.append(symbol)
                     where.append(f"symbol = ${len(params)}")
+                if clean:
+                    where.append(
+                        "COALESCE(metadata::jsonb->>'exit_reason','') "
+                        "NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')"
+                    )
+                    where.append(
+                        "COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'"
+                    )
                 sql = (f"SELECT * FROM user_trades WHERE " + " AND ".join(where)
                        + f" ORDER BY closed_at DESC LIMIT {limit}")
                 rows = await con.fetch(sql, *params)
@@ -2342,6 +2370,20 @@ class DashboardServer:
                 # Aggregate quick stats so the UI can show header summary
                 if out["trades"]:
                     out["agg"] = self._aggregate_stats(out["trades"])
+                # Surface excluded count for the UI footnote
+                if clean:
+                    excl_params = list(params)
+                    excl_where = ["trade_type = $1", "closed_at IS NOT NULL",
+                                  f"closed_at >= NOW() - INTERVAL '{days} days'"]
+                    if exchange is not None: excl_where.append(f"exchange = $2")
+                    if symbol:               excl_where.append(f"symbol = ${len(excl_params)}")
+                    excl_where.append(
+                        "(COALESCE(metadata::jsonb->>'exit_reason','') "
+                        " IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
+                        " OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true')"
+                    )
+                    excl_sql = "SELECT COUNT(*)::int FROM user_trades WHERE " + " AND ".join(excl_where)
+                    out["excluded_n"] = int(await con.fetchval(excl_sql, *excl_params) or 0)
         except Exception as e:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)

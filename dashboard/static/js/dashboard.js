@@ -2028,8 +2028,8 @@
             const u = data.upgrade;
             el("vm-upgrade-status").textContent = u.status || "not_started";
             el("vm-upgrade-attempts").textContent = u.attempts != null ? u.attempts + " / " + (u.max_attempts || "--") : "--";
-            el("vm-upgrade-last").textContent = u.last_attempt ? new Date(u.last_attempt).toLocaleString() : "--";
-            el("vm-upgrade-started").textContent = u.started_at ? new Date(u.started_at).toLocaleString() : "--";
+            el("vm-upgrade-last").textContent = u.last_attempt ? new Date(u.last_attempt).toLocaleString("en-IN", {timeZone: "Asia/Kolkata"}) : "--";
+            el("vm-upgrade-started").textContent = u.started_at ? new Date(u.started_at).toLocaleString("en-IN", {timeZone: "Asia/Kolkata"}) : "--";
 
             if (u.target_ocpus && u.target_memory_gb) {
                 el("vm-target-shape").textContent = "A1.Flex (" + u.target_ocpus + " OCPU / " + u.target_memory_gb + "GB)";

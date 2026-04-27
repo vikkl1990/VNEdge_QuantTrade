@@ -1149,7 +1149,7 @@ class DashboardServer:
                        WHERE closed_at >= NOW() - INTERVAL '24 hours'
                          {_edge_type_filter}
                          AND COALESCE(metadata::jsonb->>'exit_reason', '')
-                                != 'auto_responder_stuck_60m'
+                                NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
                          AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                 != 'true'""",
                     *_edge_params,
@@ -1467,7 +1467,7 @@ class DashboardServer:
             if clean:
                 clean_filter = (
                     "AND COALESCE(metadata::jsonb->>'exit_reason', '') "
-                    "        != 'auto_responder_stuck_60m' "
+                    "        NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
                     "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                     "        != 'true' "
                 )
@@ -1490,7 +1490,7 @@ class DashboardServer:
                                AND pnl_usd IS NOT NULL
                                {mode_filter}
                                AND (COALESCE(metadata::jsonb->>'exit_reason', '')
-                                       = 'auto_responder_stuck_60m'
+                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
                                     OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                        = 'true')""",
                         *params,
@@ -1926,7 +1926,7 @@ class DashboardServer:
                 if clean:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    != 'auto_responder_stuck_60m' "
+                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
                         "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                         "    != 'true' "
                     )
@@ -1951,7 +1951,7 @@ class DashboardServer:
                                AND closed_at >= NOW() - INTERVAL '{days} days'
                                {sym_clause}
                                AND (COALESCE(metadata::jsonb->>'exit_reason','')
-                                       = 'auto_responder_stuck_60m'
+                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup')
                                     OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
                                        = 'true')""",
                         *params,
@@ -1984,7 +1984,7 @@ class DashboardServer:
                 if clean:
                     clean_clause = (
                         "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    != 'auto_responder_stuck_60m' "
+                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup') "
                         "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
                         "    != 'true' "
                     )

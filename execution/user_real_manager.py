@@ -239,6 +239,16 @@ class UserRealManager:
         self.open_trades: Dict[str, UserTradeRecord] = {}
         self.closed_trades: List[Dict] = []
         self._cached_balance: float = 0.0
+        # 2026-04-27 — keep strong references to monitor tasks to prevent
+        # asyncio garbage-collecting them before they run (Python GC bug
+        # asyncio.create_task() doesn't store its own reference; tasks
+        # without external refs may be collected mid-flight). Symptom:
+        # monitor_trade fires for some new trades but not others →
+        # those drift until Agent 9-A's 60min sweep as auto_responder_stuck_60m
+        # / PnL=$0. Particularly visible on Phase 2 fan-out where 5
+        # tasks spawn within microseconds. Cleared on close_trade.
+        # See https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+        self._monitor_tasks: Dict[str, "asyncio.Task"] = {}
         # Phase 5.20-A2 (2026-04-25) — atomic mutex on open_trades.
         # Audit found concurrent qualify_signal + monitor + close paths
         # mutate this dict without locking. Race scenarios:
@@ -425,7 +435,11 @@ class UserRealManager:
                     "🚨 EXCHANGE RECON: user=%s %s %s @ %.4f size=%d — orphan found, monitor resumed (SL=%.4f)",
                     self.user_email, sym, side, entry, abs(size), sl,
                 )
-                asyncio.create_task(self._monitor_trade(trade_id))
+                # 2026-04-27 — retain task ref to prevent GC-induced orphaning
+                self._monitor_tasks[trade_id] = asyncio.create_task(self._monitor_trade(trade_id))
+                self._monitor_tasks[trade_id].add_done_callback(
+                    lambda _t, _tid=trade_id: self._monitor_tasks.pop(_tid, None)
+                )
 
     async def reconcile_open_trades(self):
         """Phase 4.2 — on manager init, restore in-memory state for any
@@ -546,7 +560,11 @@ class UserRealManager:
                     entry_fee_usd=float(meta.get("entry_fee_usd") or 0),
                 )
                 self.open_trades[trade.trade_id] = trade
-                asyncio.create_task(self._monitor_trade(trade.trade_id))
+                # 2026-04-27 — retain task ref to prevent GC-induced orphaning
+                self._monitor_tasks[trade.trade_id] = asyncio.create_task(self._monitor_trade(trade.trade_id))
+                self._monitor_tasks[trade.trade_id].add_done_callback(
+                    lambda _t, _tid=trade.trade_id: self._monitor_tasks.pop(_tid, None)
+                )
                 logger.warning(
                     "USER REAL RECONCILED: %s %s %s | entry=%.4f sl=%.4f lots=%d (resuming monitor)",
                     self.user_email, sym, side, entry, sl, abs(on_exch_size),
@@ -707,7 +725,11 @@ class UserRealManager:
                             )
                             # Fall through to spawn monitor anyway
 
-                    asyncio.create_task(self._monitor_trade(trade.trade_id))
+                    # 2026-04-27 — retain task ref to prevent GC-induced orphaning
+                    self._monitor_tasks[trade.trade_id] = asyncio.create_task(self._monitor_trade(trade.trade_id))
+                    self._monitor_tasks[trade.trade_id].add_done_callback(
+                        lambda _t, _tid=trade.trade_id: self._monitor_tasks.pop(_tid, None)
+                    )
                     _p2_tag = ""
                     if _is_p2v:
                         _p2_tag = f" [P2:{cfg_id}{'' if getattr(trade, '_exit_config', None) else ' MISS'}]"
@@ -1959,7 +1981,11 @@ class UserRealManager:
                     logger.error("USER %s: DB record failed: %s", self.user_id[:8], e)
 
             # 8. Start independent monitoring
-            asyncio.create_task(self._monitor_trade(trade_id))
+            # 2026-04-27 — retain task ref to prevent GC-induced orphaning
+            self._monitor_tasks[trade_id] = asyncio.create_task(self._monitor_trade(trade_id))
+            self._monitor_tasks[trade_id].add_done_callback(
+                lambda _t, _tid=trade_id: self._monitor_tasks.pop(_tid, None)
+            )
 
             return {"trade_id": trade_id, "fill_price": fill_price,
                     "symbol": symbol, "exec_mode": entry_exec_mode}
@@ -2105,7 +2131,11 @@ class UserRealManager:
 
         # Spawn monitor — existing _monitor_trade logic handles shadow naturally
         # (server_stop_id=None means no Delta SL updates; _close_trade branches on _is_shadow)
-        asyncio.create_task(self._monitor_trade(trade_id))
+        # 2026-04-27 — retain task ref to prevent GC-induced orphaning
+        self._monitor_tasks[trade_id] = asyncio.create_task(self._monitor_trade(trade_id))
+        self._monitor_tasks[trade_id].add_done_callback(
+            lambda _t, _tid=trade_id: self._monitor_tasks.pop(_tid, None)
+        )
 
         return {
             "trade_id": trade_id,

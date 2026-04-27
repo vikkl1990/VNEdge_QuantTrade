@@ -116,6 +116,52 @@ class TestBug3SizingShadowSimulatedBalance:
         for key in ('"exit_policy"', '"cohort_filter_enabled"', '"mark_alignment_enabled"'):
             assert key in text, f"Bug 3b regression: {key} pass-through missing"
 
+    def test_user_registry_select_includes_all_passthrough_columns(self):
+        """Bug 3c (2026-04-27): the user_config dict referenced 4 columns
+        (shadow_simulated_balance, exit_policy, cohort_filter_enabled,
+        mark_alignment_enabled) but the _refresh_active_users SELECT did NOT
+        include them. user_info.get(...) silently returned None for all four,
+        so admin's shadow_sim_balance never reached compute_size, fell back
+        to _cached_balance ($0.68), got margin floored at $10. This made
+        admin look 5-7x SMALLER than niranjan and inflated the A/B's
+        "niranjan delta_shadow win" by sizing rather than exit logic.
+        Test pins that the SELECT statement covers all dict-referenced cols.
+        """
+        import pathlib, re
+        src = pathlib.Path(__file__).parent.parent / "execution" / "user_registry.py"
+        text = src.read_text()
+        # Find the actual function definition (not a call site)
+        m_def = re.search(r'async\s+def\s+_refresh_active_users\b', text)
+        assert m_def is not None, (
+            "Bug 3c diagnostic: _refresh_active_users function definition not found"
+        )
+        # Slice from definition forward — should encompass the SELECT statement
+        section = text[m_def.start():m_def.start() + 4000]
+        # Find any SELECT ... FROM users block in this section
+        select_match = re.search(
+            r'SELECT\s+(.+?)\s+FROM\s+users',
+            section, re.DOTALL | re.IGNORECASE,
+        )
+        assert select_match is not None, (
+            "Bug 3c diagnostic: no `SELECT ... FROM users` block found in "
+            "_refresh_active_users — has the structure changed?"
+        )
+        select_cols = select_match.group(1)
+        # The 4 cols MUST be present in the SELECT column list
+        for col in (
+            "shadow_simulated_balance",
+            "exit_policy",
+            "cohort_filter_enabled",
+            "mark_alignment_enabled",
+        ):
+            assert col in select_cols, (
+                f"Bug 3c regression: SELECT in _refresh_active_users is "
+                f"MISSING the `{col}` column. user_config dict reads "
+                f"`user_info.get('{col}')` which will silently return None, "
+                f"breaking the per-user feature gate that depends on it. "
+                f"This is the bug pattern that confounded today's A/B."
+            )
+
     def test_compute_size_balance_resolution_paths(self):
         """Verify compute_size has the 3 balance-source branches."""
         import pathlib

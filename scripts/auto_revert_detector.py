@@ -101,7 +101,7 @@ async def fetch_recent_metrics(conn, n: int = 30):
           AND COALESCE(status, '') NOT LIKE 'force_closed%'
           AND COALESCE(metadata::jsonb->>'exit_reason', '') NOT IN
               ('kill_switch_close_open', 'force_flat', 'restart_reconcile_flat',
-               'execution_refactor_v2_FORCE_FLAT', 'auto_responder_stuck_60m')
+               'execution_refactor_v2_FORCE_FLAT', 'auto_responder_stuck_60m', 'restart_orphan_cleanup')
           AND COALESCE(metadata::jsonb->>'is_phase2_virtual', 'false') != 'true'
         ORDER BY closed_at DESC
         LIMIT {int(n)}

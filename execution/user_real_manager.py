@@ -26,6 +26,37 @@ from typing import Any, Dict, List, Optional, Tuple
 # docs/EXIT_GUARD_REFACTOR_5_8.md for the full design.
 from execution.exit_guards import should_kill_dead_signal
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 2 — Shadow-of-Shadow forward test exit configurations.
+# When PHASE2_SOS_ENABLED env var is true AND user is in shadow_live mode,
+# every paper signal spawns N virtual trades — one per config — each with
+# its own _monitor_trade task. PnL per config emerges from REAL price
+# evolution (no approximation). After 24-48h, leaderboard via
+# scripts/phase2_leaderboard.py reveals which exit profile preserves
+# the most paper edge.
+# See: docs/PHASE2_SHADOW_OF_SHADOW_DESIGN.md
+# Each config dict:
+#   id            — unique identifier (string)
+#   max_age_sec   — hard time-decay close threshold
+#   trail_trigger — peak_mfe_r required to engage BE+lock
+#   trail_lock    — fraction of peak to lock as new SL
+#   dead_kill_R   — UNIFIED_KILL_CURRENT_R override (None = disabled)
+#   stall_kill_R  — STALL_CURRENT_R override (None = disabled)
+#   tp_R          — exit at +N×R if peak reaches it (None = no TP)
+PHASE2_EXIT_CONFIGS = [
+    {"id": "primary",          "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": None},
+    {"id": "v1_5min_tight",    "max_age_sec":  300, "trail_trigger": 0.5, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R":  None, "tp_R": None},
+    {"id": "v2_10min_no_kill", "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
+     "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": None},
+    {"id": "v3_30min_paper",   "max_age_sec": 1800, "trail_trigger": 0.3, "trail_lock": 0.50,
+     "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": None},
+    {"id": "v4_60min_unrest",  "max_age_sec": 3600, "trail_trigger": 0.7, "trail_lock": 0.80,
+     "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": 2.0},
+]
+
 logger = logging.getLogger("execution.user_real")
 
 
@@ -275,6 +306,24 @@ class UserRealManager:
         # (gated by self._relaxed_shadow_simulation = False) so we can re-enable
         # them in a controlled re-test later. For now, clean baseline only.
         # (No-op assignment; flag was set False above.)
+
+        # Phase 2 — Shadow-of-Shadow forward test (env-controlled)
+        # Set PHASE2_SOS_ENABLED=true on the cryptobot service to spawn 5
+        # virtual trades per paper signal (one per EXIT_CONFIG). DB write
+        # load: ~100 trades/h vs current ~20 — bounded. Disable by unsetting
+        # the env var + restart.
+        import os as _os
+        self._phase2_sos_enabled = (
+            _os.getenv("PHASE2_SOS_ENABLED", "false").lower() == "true"
+            and self._is_shadow_live
+        )
+        if self._phase2_sos_enabled:
+            logger.warning(
+                "PHASE2_SOS: ENABLED for %s — every paper signal spawns "
+                "%d virtual trades (configs=%s)",
+                self.user_email, len(PHASE2_EXIT_CONFIGS),
+                ",".join(c["id"] for c in PHASE2_EXIT_CONFIGS),
+            )
 
         # Phase 5.3 / T4.4 — live emergency halt cache (refreshed every 30s
         # via _is_live_halted). Single SQL UPDATE to users.live_emergency_halt
@@ -1257,6 +1306,19 @@ class UserRealManager:
             # (qualify → size → monitor → exit) runs; no real orders.
             # This is the mandatory validation gate before bot_mode='live'.
             if self._is_shadow_live:
+                # Phase 2 — Shadow-of-Shadow forward test
+                if getattr(self, "_phase2_sos_enabled", False):
+                    results = []
+                    for cfg in PHASE2_EXIT_CONFIGS:
+                        r = await self._execute_shadow(
+                            signal, symbol, side_str, order_side,
+                            entry_price, sl, tp, margin, leverage, lots,
+                            product_id, tick_size, trade_contract_size, meta,
+                            exit_config=cfg,
+                        )
+                        if r:
+                            results.append(r)
+                    return results[0] if results else None
                 return await self._execute_shadow(
                     signal, symbol, side_str, order_side,
                     entry_price, sl, tp, margin, leverage, lots,
@@ -1839,7 +1901,8 @@ class UserRealManager:
 
     async def _execute_shadow(self, signal, symbol, side_str, order_side,
                               entry_price, sl, tp, margin, leverage, lots,
-                              product_id, tick_size, trade_contract_size, meta):
+                              product_id, tick_size, trade_contract_size, meta,
+                              exit_config=None):
         """T4.3 Shadow-live execution — NO Delta calls.
 
         Simulates a taker fill from current production L2 top-of-book:
@@ -1849,6 +1912,10 @@ class UserRealManager:
         Creates a UserTradeRecord flagged _is_shadow=True so monitor and
         _close_trade skip all Delta interactions.
         Writes to user_trades with trade_type='shadow'.
+
+        Phase 2 (2026-04-27): if `exit_config` is supplied, attaches it to
+        trade._exit_config for the monitor loop to consult, and persists
+        the config_id + summary to metadata for later leaderboard analysis.
         """
         # Read production L2 from WS cache
         _dws = getattr(self._price_feed, "_delta_ws", None)
@@ -1886,8 +1953,12 @@ class UserRealManager:
         except Exception:
             pass
 
-        # Build trade record
-        trade_id = f"shadow_{self.user_id[:8]}_{int(time.time() * 1000)}"
+        # Build trade record. Include exit_config_id in trade_id when
+        # phase2 sweep is active so 5 simultaneous virtual trades for the
+        # same signal get unique IDs (otherwise time.time()*1000 collisions
+        # can occur within the same ms).
+        _cfg_suffix = f"_{exit_config['id']}" if exit_config else ""
+        trade_id = f"shadow_{self.user_id[:8]}_{int(time.time() * 1000)}{_cfg_suffix}"
         initial_risk = abs(shadow_fill - sl) if sl > 0 else shadow_fill * 0.01
         trade = UserTradeRecord(
             trade_id=trade_id,
@@ -1918,9 +1989,30 @@ class UserRealManager:
         trade._is_shadow = True
         trade.server_stop_id = None  # no Delta safety net needed
 
+        # Phase 2 — attach exit config for monitor loop to consult
+        if exit_config is not None:
+            trade._exit_config = exit_config
+            trade._is_phase2_virtual = True
+
         self.open_trades[trade_id] = trade
 
-        # Persist to DB with trade_type='shadow'
+        # Persist to DB with trade_type='shadow'.
+        # Phase 2: stamp config metadata so leaderboard SQL can group by it.
+        if exit_config is not None:
+            try:
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta["exit_config_id"] = exit_config["id"]
+                meta["exit_config_summary"] = (
+                    f"max_age={exit_config['max_age_sec']}s "
+                    f"trail={exit_config['trail_trigger']}R/{exit_config['trail_lock']:.0%} "
+                    f"dead_kill={exit_config['dead_kill_R']} "
+                    f"tp_R={exit_config['tp_R']}"
+                )
+                meta["is_phase2_virtual"] = True
+            except Exception:
+                pass
+
         await self._record_trade_db(
             trade, status="open", reason="",
             exit_price=0.0, pnl_usd=0.0, fees_usd=0.0, gross_pnl=0.0,
@@ -2166,21 +2258,34 @@ class UserRealManager:
                 # past patience if peak<fee_floor AND current<-0.10R, OR if
                 # the trade has stalled for 15+ minutes with peak<0.20R.
                 # See docs/EXIT_GUARD_REFACTOR_5_8.md for design + math.
-                _kill_reason = should_kill_dead_signal(
-                    age_sec=age_sec,
-                    current_r=current_r,
-                    peak_mfe_r=trade.peak_mfe_r,
-                    grade=trade.grade,
-                    entry=trade.entry_price,
-                    sl=trade.stop_loss,
-                    trade_type=trade.trade_type,
-                    regime=trade.regime,
-                    # FIX 1+2 (2026-04-26): per-user A/B for relaxed shadow exits
-                    relaxed_shadow=getattr(self, "_relaxed_shadow_exits", False),
-                )
-                if _kill_reason is not None:
-                    await self._close_trade(trade, price, _kill_reason)
-                    break
+                # Phase 2 — config-aware dead-kill bypass.
+                # If this is a phase2 virtual trade AND the config says
+                # dead_kill_R is None (e.g. v2/v3/v4), SKIP the unified guard.
+                _ph2_cfg = getattr(trade, "_exit_config", None)
+                _ph2_skip_kill = _ph2_cfg is not None and _ph2_cfg.get("dead_kill_R") is None
+
+                if not _ph2_skip_kill:
+                    _kill_reason = should_kill_dead_signal(
+                        age_sec=age_sec,
+                        current_r=current_r,
+                        peak_mfe_r=trade.peak_mfe_r,
+                        grade=trade.grade,
+                        entry=trade.entry_price,
+                        sl=trade.stop_loss,
+                        trade_type=trade.trade_type,
+                        regime=trade.regime,
+                        # FIX 1+2 (2026-04-26): per-user A/B for relaxed shadow exits
+                        relaxed_shadow=getattr(self, "_relaxed_shadow_exits", False),
+                    )
+                    if _kill_reason is not None:
+                        await self._close_trade(trade, price, _kill_reason)
+                        break
+
+                # Phase 2 — TP target by R-multiple (only fires if config has tp_R)
+                if _ph2_cfg is not None and _ph2_cfg.get("tp_R") is not None:
+                    if trade.peak_mfe_r >= _ph2_cfg["tp_R"]:
+                        await self._close_trade(trade, price, f"phase2_tp_hit_{_ph2_cfg['tp_R']}R")
+                        break
 
                 # 1. SL hit. Label as trail_profit when SL is above (long) or
                 #    below (short) entry — that means BE/trail has moved it
@@ -2310,7 +2415,12 @@ class UserRealManager:
                 # while preserving winners that peak at 5-10min (12 trades in
                 # 24h peaked at 0.3-0.5R — keeping room for those).
                 # See storage/exit_sweep/sweep_*.md for full data.
-                max_age = 600 if (trade.trade_type or "").upper() == "SCALP" else 3600
+                # Phase 2 — config-aware max_age override
+                _ph2_cfg_t = getattr(trade, "_exit_config", None)
+                if _ph2_cfg_t is not None and _ph2_cfg_t.get("max_age_sec"):
+                    max_age = int(_ph2_cfg_t["max_age_sec"])
+                else:
+                    max_age = 600 if (trade.trade_type or "").upper() == "SCALP" else 3600
                 if age_sec > max_age:
                     await self._close_trade(trade, price, f"time_decay_{int(age_sec/60)}m")
                     break

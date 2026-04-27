@@ -654,6 +654,9 @@ class UserRealManager:
                         entry_fee_usd=float(meta.get("entry_fee_usd") or 0),
                     )
                     trade._is_shadow = True   # critical — routes _monitor_trade → _close_shadow
+                    # 2026-04-27 — for reconciled trades the in-memory trade_id
+                    # IS the DB UUID, so use it directly for the fast close path.
+                    trade._db_id = trade.trade_id
 
                     # 2026-04-27 — Phase 2 fan-out attribute restoration on
                     # restart reconcile. The fan-out path sets
@@ -3614,32 +3617,78 @@ class UserRealManager:
 
             async with self._db_pool.acquire() as conn:
                 if status == "open":
-                    await conn.execute("""
+                    # 2026-04-27 — capture the DB-generated UUID via RETURNING id
+                    # and stamp it onto trade._db_id. Without this, the close
+                    # path's UPDATE has no way to identify the SPECIFIC row,
+                    # falls back to a (user_id, symbol, latest opened_at)
+                    # subquery, and silently mis-attributes (or misses) closes
+                    # for Phase 2 fan-out where 10 trades share the same
+                    # (user_id, symbol, opened_at) tuple. Symptom: SHADOW EXIT
+                    # log fires correctly but DB rows stay status='open' until
+                    # Agent 9-A's 60min sweep marks them auto_responder_stuck_60m.
+                    row = await conn.fetchrow("""
                         INSERT INTO user_trades (id, user_id, trade_type, symbol, side,
                             entry_price, quantity, status, signal_data, metadata)
                         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'open',
                             $7::jsonb, $8::jsonb)
+                        RETURNING id::text
                     """, self.user_id, _trade_type, trade.symbol, trade.side,
                         trade.entry_price, float(trade.position_size),
                         _signal_data, open_meta)
+                    if row and row.get("id"):
+                        trade._db_id = row["id"]
                 else:
-                    # Phase 4.6 — also persist fees_usd at top level for analytics.
-                    await conn.execute("""
-                        UPDATE user_trades SET
-                            status='closed',
-                            exit_price=$1,
-                            pnl_usd=$2,
-                            fees_usd=$3,
-                            closed_at=NOW(),
-                            metadata=metadata || $4::jsonb
-                        WHERE id = (
-                            SELECT id FROM user_trades
-                            WHERE user_id=$5 AND symbol=$6 AND status='open'
-                            ORDER BY opened_at DESC
-                            LIMIT 1
+                    # 2026-04-27 — close by trade._db_id (set on INSERT or by
+                    # reconcile rebuild). Falls back to legacy subquery only
+                    # when _db_id is missing (pre-fix trades from before this
+                    # patch shipped + reconciled trades that didn't capture
+                    # the id properly). Logs which path was used so we can
+                    # see if the fallback is still firing in production.
+                    _db_id = getattr(trade, "_db_id", None)
+                    if _db_id:
+                        result = await conn.execute("""
+                            UPDATE user_trades SET
+                                status='closed',
+                                exit_price=$1,
+                                pnl_usd=$2,
+                                fees_usd=$3,
+                                closed_at=NOW(),
+                                metadata=metadata || $4::jsonb
+                            WHERE id = $5::uuid
+                        """, exit_price, pnl_usd, float(fees_usd), close_meta,
+                            _db_id)
+                        # asyncpg execute returns 'UPDATE 1' or 'UPDATE 0'
+                        if result and result.endswith(" 0"):
+                            logger.warning(
+                                "USER %s: close UPDATE matched 0 rows for trade_id=%s db_id=%s — row likely already closed",
+                                self.user_id[:8], trade.trade_id, _db_id,
+                            )
+                    else:
+                        # Legacy fallback — kept for backwards compat. Phase 2
+                        # fan-out trades created BEFORE this fix don't have
+                        # _db_id set; this path is misattribution-prone but
+                        # better than silently dropping the close. Log loudly.
+                        logger.warning(
+                            "USER %s: close FALLBACK (no _db_id) for trade_id=%s symbol=%s — "
+                            "subquery may mis-attribute on Phase 2 fan-out",
+                            self.user_id[:8], trade.trade_id, trade.symbol,
                         )
-                    """, exit_price, pnl_usd, float(fees_usd), close_meta,
-                        self.user_id, trade.symbol)
+                        await conn.execute("""
+                            UPDATE user_trades SET
+                                status='closed',
+                                exit_price=$1,
+                                pnl_usd=$2,
+                                fees_usd=$3,
+                                closed_at=NOW(),
+                                metadata=metadata || $4::jsonb
+                            WHERE id = (
+                                SELECT id FROM user_trades
+                                WHERE user_id=$5 AND symbol=$6 AND status='open'
+                                ORDER BY opened_at DESC
+                                LIMIT 1
+                            )
+                        """, exit_price, pnl_usd, float(fees_usd), close_meta,
+                            self.user_id, trade.symbol)
         except Exception as e:
             logger.error("USER %s: DB error: %s", self.user_id[:8], e)
 

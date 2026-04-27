@@ -817,6 +817,11 @@ class DashboardServer:
         # taken by the ML-models legacy endpoint at line ~3776.
         app.router.add_get("/api/agents/team", self._handle_agents_team)
 
+        # Maker counterfactual analytics (2026-04-27 Path A) — what would
+        # shadow PnL look like if patient-mode maker fills worked? Reads
+        # cf_maker_savings_* fields stamped into close_meta by _close_shadow.
+        app.router.add_get("/api/maker/counterfactual", self._handle_maker_counterfactual)
+
         # Signal tracker stats
         app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
         app.router.add_get("/api/tracker/active", self._handle_tracker_active)
@@ -2270,6 +2275,84 @@ class DashboardServer:
         # Sort: red → yellow → neutral → green; then by tier
         STATUS_ORDER = {"red": 0, "yellow": 1, "neutral": 2, "green": 3}
         out["agents"].sort(key=lambda x: (STATUS_ORDER.get(x["status"], 9), x["tier"], x["name"]))
+        return web.json_response(out, dumps=_safe_dumps)
+
+    async def _handle_maker_counterfactual(self, request: web.Request) -> web.Response:
+        """Path A — maker counterfactual for shadow trades.
+
+        Reads cf_maker_savings_* fields stamped into close_meta by
+        _close_shadow on every shadow trade. Aggregates per window:
+            - Actual shadow PnL (100% taker)
+            - Counterfactual @ 50% maker fill (patient mode estimate)
+            - Counterfactual @ 100% maker fill (theoretical max)
+
+        Lets the operator see "if patient maker were working at X%, the
+        edge would be Y" without requiring the actual maker code to fire.
+        Calibrates against Path B real pilot when that lands.
+
+        Query: ?days=N (default 1, max 30) ?clean=true (default)
+        """
+        try:
+            days = max(1, min(30, int(request.query.get("days", "1"))))
+        except Exception:
+            days = 1
+        clean = request.query.get("clean", "true").lower() == "true"
+        out = {
+            "days": days, "clean": clean,
+            "n": 0,
+            "actual_net": 0.0,
+            "cf_50pct_savings": 0.0, "cf_50pct_net": 0.0,
+            "cf_100pct_savings": 0.0, "cf_100pct_net": 0.0,
+            "uplift_50pct_pct": None,
+            "uplift_100pct_pct": None,
+            "ts": datetime.utcnow().isoformat() + "Z",
+        }
+        if not self._db_pool:
+            out["error"] = "db_pool_not_ready"
+            return web.json_response(out, dumps=_safe_dumps)
+        try:
+            clean_clause = ""
+            if clean:
+                clean_clause = (
+                    "AND COALESCE(metadata::jsonb->>'exit_reason','') "
+                    "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
+                    "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' "
+                    "     OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
+                )
+            sql = f"""
+                SELECT
+                    COUNT(*) AS n,
+                    SUM(pnl_usd)::float AS actual_net,
+                    SUM(NULLIF(metadata::jsonb->>'cf_maker_savings_50pct','')::float)::float
+                        AS cf_50_savings,
+                    SUM(NULLIF(metadata::jsonb->>'cf_maker_savings_100pct','')::float)::float
+                        AS cf_100_savings
+                FROM user_trades
+                WHERE trade_type='shadow'
+                  AND closed_at >= NOW() - INTERVAL '{days} days'
+                  AND closed_at IS NOT NULL
+                  {clean_clause}
+            """
+            async with self._db_pool.acquire() as con:
+                row = await con.fetchrow(sql)
+            n = int(row["n"] or 0)
+            actual = float(row["actual_net"] or 0)
+            cf50_save = float(row["cf_50_savings"] or 0)
+            cf100_save = float(row["cf_100_savings"] or 0)
+            cf50_net = actual + cf50_save
+            cf100_net = actual + cf100_save
+            out.update({
+                "n": n,
+                "actual_net": round(actual, 2),
+                "cf_50pct_savings": round(cf50_save, 2),
+                "cf_50pct_net": round(cf50_net, 2),
+                "cf_100pct_savings": round(cf100_save, 2),
+                "cf_100pct_net": round(cf100_net, 2),
+                "uplift_50pct_pct":  round((cf50_save / abs(actual)) * 100, 1) if actual != 0 else None,
+                "uplift_100pct_pct": round((cf100_save / abs(actual)) * 100, 1) if actual != 0 else None,
+            })
+        except Exception as e:
+            out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
 
     # ══════════════════════════════════════════════════════════════

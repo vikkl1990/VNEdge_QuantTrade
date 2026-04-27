@@ -2435,6 +2435,33 @@ class DashboardServer:
             )
         exchange, trade_type = BUCKET_MAP[bucket]
 
+        # 2026-04-27 PAPER FIX — paper signals live in closed_signals.json
+        # (file-based by design), NOT in user_trades. The DB query for
+        # trade_type='paper' returned 0 rows → TRADE HISTORY widget's
+        # PAPER tab showed empty even though 90+ paper signals close
+        # daily. Route bucket=paper to the same JSON-backed source as
+        # /api/paper/closed for consistency.
+        if bucket == "paper":
+            paper_signals = self._load_paper_signals("closed")
+            if symbol:
+                paper_signals = [s for s in paper_signals if s.get("symbol") == symbol]
+            if days > 0:
+                cutoff = datetime.utcnow() - timedelta(days=days)
+                paper_signals = [s for s in paper_signals
+                                 if s.get("exit_time") and self._parse_iso_safe(s["exit_time"]) >= cutoff]
+            paper_signals = paper_signals[-limit:]
+            paper_trades = [self._normalize_paper_trade(s) for s in paper_signals]
+            paper_out = {
+                "trades": paper_trades, "n": len(paper_trades),
+                "filters": {"bucket": "paper", "exchange": None, "trade_type": "paper",
+                            "limit": limit, "days": days, "symbol": symbol or None,
+                            "source": "closed_signals.json"},
+                "ts": datetime.utcnow().isoformat() + "Z",
+            }
+            if paper_trades:
+                paper_out["agg"] = self._aggregate_stats(paper_trades)
+            return web.json_response(paper_out, dumps=_safe_dumps)
+
         out = {"trades": [], "n": 0,
                "filters": {"bucket": bucket, "exchange": exchange,
                            "trade_type": trade_type, "limit": limit, "days": days,

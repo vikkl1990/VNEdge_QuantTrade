@@ -1998,7 +1998,11 @@ class UserRealManager:
                     # the BOOK doesn't grow unbounded.
                     age_sec = max(0, time.time() - float(trade.opened_at or 0))
                     _t_type = (getattr(trade, "trade_type", "SCALP") or "SCALP").upper()
-                    _max_age_for_type = 1800 if _t_type == "SCALP" else 3600
+                    # 2026-04-27 — matched to primary max_age tightening
+                    # (see line ~2296 comment). Failsafe fires at 2× max_age
+                    # = 1200s (20min) for SCALP when no price for 60s+ —
+                    # gives some buffer beyond the primary 10min cap.
+                    _max_age_for_type = 600 if _t_type == "SCALP" else 3600
                     if (_no_price_streak > 60 and age_sec > _max_age_for_type * 2):
                         logger.warning(
                             "MONITOR_FORCE_CLOSE: %s %s — no price for %ds, age=%dm, "
@@ -2293,7 +2297,20 @@ class UserRealManager:
                         pass  # missing candles → no exhaustion check, fall through
 
                 # 6. Time decay
-                max_age = 1800 if (trade.trade_type or "").upper() == "SCALP" else 3600
+                # 2026-04-27 — SCALP max_age tightened 1800s → 600s based on
+                # counterfactual_exit_sweep.py findings on 39 trades:
+                #   max_age 30min (was): -$10.07 net, baseline
+                #   max_age 15min:       -$9.61 net (Δ +$0.46)
+                #   max_age 10min:       -$7.81 net (Δ +$2.26) ← chosen
+                #   max_age  5min:       -$5.10 net (Δ +$4.97) — best but riskier
+                # Strategy ceiling per peak_mfe_r distribution: ~0.5R; no 1R+
+                # peaks observed in 24h. So holding past ~10min mostly accumulates
+                # losses via dead_signal_unified + stalled_after_15min.
+                # Chose 600s (10min) as middle ground: most of the gain (+$2.26)
+                # while preserving winners that peak at 5-10min (12 trades in
+                # 24h peaked at 0.3-0.5R — keeping room for those).
+                # See storage/exit_sweep/sweep_*.md for full data.
+                max_age = 600 if (trade.trade_type or "").upper() == "SCALP" else 3600
                 if age_sec > max_age:
                     await self._close_trade(trade, price, f"time_decay_{int(age_sec/60)}m")
                     break

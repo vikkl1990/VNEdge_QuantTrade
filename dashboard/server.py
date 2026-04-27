@@ -2921,7 +2921,15 @@ class DashboardServer:
                                            FROM user_trades
                                            WHERE user_id=$1 AND trade_type='real'
                                              AND status='closed'
-                                             AND COALESCE(metadata->>'exit_reason','') != 'orphan_reconciled'
+                                             -- 2026-04-27 clean filter: drop admin/orphan/reconcile
+                                             -- closes (legacy 'orphan_reconciled' kept for compat).
+                                             AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                                 NOT IN ('orphan_reconciled',
+                                                         'auto_responder_stuck_60m',
+                                                         'restart_orphan_cleanup',
+                                                         'reconcile_overaged_close')
+                                             AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                                 != 'true'
                                            ORDER BY closed_at DESC
                                            LIMIT 50""",
                                         user_id,
@@ -3073,6 +3081,15 @@ class DashboardServer:
                                                FROM user_trades
                                                WHERE user_id=$1 AND trade_type='shadow'
                                                  AND status='closed'
+                                                 -- 2026-04-27 clean filter: drop admin/orphan/reconcile
+                                                 -- closes + Phase 2 fan-out so RECENT CLOSED TRADES
+                                                 -- shows real strategy exits only.
+                                                 AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                                     NOT IN ('auto_responder_stuck_60m',
+                                                             'restart_orphan_cleanup',
+                                                             'reconcile_overaged_close')
+                                                 AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                                     != 'true'
                                                ORDER BY closed_at DESC
                                                LIMIT 10""",
                                             user_id,
@@ -3086,7 +3103,13 @@ class DashboardServer:
                                                FROM user_trades
                                                WHERE user_id=$1 AND trade_type='shadow'
                                                  AND status='closed'
-                                                 AND closed_at >= NOW() - INTERVAL '24 hours'""",
+                                                 AND closed_at >= NOW() - INTERVAL '24 hours'
+                                                 AND COALESCE(metadata::jsonb->>'exit_reason','')
+                                                     NOT IN ('auto_responder_stuck_60m',
+                                                             'restart_orphan_cleanup',
+                                                             'reconcile_overaged_close')
+                                                 AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                                     != 'true'""",
                                             user_id,
                                         )
                                     _shadow_list = []

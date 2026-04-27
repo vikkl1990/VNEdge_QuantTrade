@@ -1150,8 +1150,8 @@ class DashboardServer:
                          {_edge_type_filter}
                          AND COALESCE(metadata::jsonb->>'exit_reason', '')
                                 NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                         AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                != 'true'""",
+                         AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                                     OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')""",
                     *_edge_params,
                 )
                 if ed and ed["n"]:
@@ -3019,8 +3019,8 @@ class DashboardServer:
                                                          'auto_responder_stuck_60m',
                                                          'restart_orphan_cleanup',
                                                          'reconcile_overaged_close')
-                                             AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                                 != 'true'
+                                             AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                                                      OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
                                            ORDER BY closed_at DESC
                                            LIMIT 50""",
                                         user_id,
@@ -3179,8 +3179,8 @@ class DashboardServer:
                                                      NOT IN ('auto_responder_stuck_60m',
                                                              'restart_orphan_cleanup',
                                                              'reconcile_overaged_close')
-                                                 AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                                     != 'true'
+                                                 AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                                                          OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
                                                ORDER BY closed_at DESC
                                                LIMIT 10""",
                                             user_id,
@@ -3199,8 +3199,8 @@ class DashboardServer:
                                                      NOT IN ('auto_responder_stuck_60m',
                                                              'restart_orphan_cleanup',
                                                              'reconcile_overaged_close')
-                                                 AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                                     != 'true'""",
+                                                 AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true'
+                                                          OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')""",
                                             user_id,
                                         )
                                     _shadow_list = []

@@ -1,0 +1,129 @@
+/* Quant Heroes Panel — Phase 3
+ * Sharpe / Sortino / PF / Win-Rate / Expectancy / MaxDD heroes.
+ * Replaces fitness-app dollar-amount cards.
+ * Spec: docs/UX_DESIGN_SYSTEM_v2_PRODUCTION.md (Phase 3)
+ */
+.quant-heroes {
+  background: var(--bg-card, #0f1524);
+  border: 1px solid var(--border, rgba(255,255,255,0.06));
+  border-radius: 6px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.qh-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding-bottom: 8px;
+}
+.qh-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--text-secondary, #9ca8be);
+}
+.qh-controls { display: flex; gap: 8px; }
+.qh-sel {
+  background: var(--bg-input, #060912);
+  color: var(--text-primary, #e8eef9);
+  border: 1px solid var(--border, rgba(255,255,255,0.10));
+  font-family: var(--font-mono, monospace);
+  font-size: 0.62rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.qh-sel:focus {
+  outline: none;
+  border-color: var(--accent, #00d4a8);
+}
+
+.qh-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.qh-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  border-left: 1px solid rgba(255,255,255,0.04);
+  padding-left: 14px;
+}
+.qh-cell:first-child { border-left: none; padding-left: 0; }
+
+.qh-label {
+  font-size: 0.55rem;
+  color: var(--text-tertiary, #6b7794);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+}
+.qh-val {
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--text-primary, #e8eef9);
+  line-height: 1;
+}
+.qh-val--ok      { color: var(--success, #22c55e); }
+.qh-val--neutral { color: var(--text-primary, #e8eef9); }
+.qh-val--danger  { color: var(--danger,  #ef4444); }
+.qh-meta {
+  font-size: 0.6rem;
+  color: var(--text-tertiary, #6b7794);
+  margin-top: 1px;
+}
+
+.qh-footer {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  font-size: 0.7rem;
+  color: var(--text-secondary, #9ca8be);
+}
+.qh-footer strong {
+  color: var(--text-primary, #e8eef9);
+  font-weight: 600;
+  margin: 0 4px;
+}
+.qh-excluded {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 184, 64, 0.08);
+  color: #ffb840;
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  cursor: help;
+  border: 1px solid rgba(255, 184, 64, 0.18);
+}
+.qh-excluded:hover { background: rgba(255, 184, 64, 0.14); }
+
+.qh-empty {
+  color: var(--text-tertiary, #6b7794);
+  font-size: 0.78rem;
+  font-style: italic;
+  padding: 12px 0;
+  text-align: center;
+}
+
+@media (max-width: 1200px) {
+  .qh-grid { grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .qh-cell:nth-child(4) { border-left: none; padding-left: 0; }
+}
+@media (max-width: 768px) {
+  .qh-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .qh-cell { border-left: none !important; padding-left: 0 !important; }
+}

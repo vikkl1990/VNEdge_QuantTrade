@@ -82,6 +82,16 @@ async def fetch_recent_metrics(conn, n: int = 30):
     13 force-closes from morning made avg_pnl look catastrophic, triggering false
     auto-revert on the next 30-trade window.
     """
+    # 2026-04-27 second-tier fix — same false-positive class:
+    # auto_responder_stuck_60m closes are 60-minute admin force-closes
+    # caused by the pre-fix max_age=3600 on INTRADAY/RUNNER shadow
+    # trades. All exit at PnL=$0 (entry=exit) -> drag WR from ~70%
+    # true to ~25% contaminated -> wr_drop kill switch trips on FALSE
+    # bad performance. Triggered at 2026-04-27 08:00 UTC after the
+    # morning's ~50 stuck-60m rows piled into the recent-30 window.
+    # Also exclude is_phase2_virtual fan-out trades (5x write
+    # amplification would skew the n=30 window unfairly toward
+    # whichever config opens first).
     rows = await conn.fetch(f"""
         SELECT pnl_usd
         FROM user_trades
@@ -91,7 +101,8 @@ async def fetch_recent_metrics(conn, n: int = 30):
           AND COALESCE(status, '') NOT LIKE 'force_closed%'
           AND COALESCE(metadata::jsonb->>'exit_reason', '') NOT IN
               ('kill_switch_close_open', 'force_flat', 'restart_reconcile_flat',
-               'execution_refactor_v2_FORCE_FLAT')
+               'execution_refactor_v2_FORCE_FLAT', 'auto_responder_stuck_60m')
+          AND COALESCE(metadata::jsonb->>'is_phase2_virtual', 'false') != 'true'
         ORDER BY closed_at DESC
         LIMIT {int(n)}
     """)

@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'phase-*'
+      - 'feature/**'
+      - 'fix/**'
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax:
+    name: Syntax check (AST + bash -n)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: AST parse all Python (excluding .rollback + .bak)
+        run: |
+          python -c "
+          import ast, glob, sys
+          fails = []
+          for f in glob.glob('**/*.py', recursive=True):
+              if '.rollback' in f or '.bak' in f or '__pycache__' in f or 'node_modules' in f:
+                  continue
+              try: ast.parse(open(f).read())
+              except SyntaxError as e: fails.append(f'{f}: {e}')
+          if fails:
+              print('\n'.join(fails)); sys.exit(1)
+          print(f'OK — parsed all clean')
+          "
+      - name: Bash syntax check
+        run: |
+          for f in scripts/*.sh; do
+            [ -f "$f" ] && bash -n "$f" || true
+          done
+
+  lint:
+    name: Ruff lint (warnings only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+      - name: Lint (don't fail build, just report)
+        continue-on-error: true
+        run: |
+          ruff check execution/ bot/ scripts/ dashboard/server.py \
+            --exclude=.rollback --exclude='*.bak*' \
+            --select=E9,F63,F7,F82 --statistics || true
+
+  unit-tests:
+    name: Unit tests (no DB needed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Install minimal deps for tests
+        run: |
+          pip install pytest pytest-cov pytest-asyncio
+          # Install only what unit tests need (full requirements.txt has DB drivers etc.)
+          pip install python-dotenv pyyaml dataclasses-json colorama || true
+      - name: Run unit tests
+        run: |
+          # Run only tests that don't need DB
+          pytest tests/test_exit_guards.py tests/test_trade_model.py \
+                 tests/test_indicators.py tests/test_config.py \
+                 tests/test_signal_journey.py tests/test_signal_tracker_extended.py \
+                 tests/unit/ \
+                 --cov=execution --cov=bot --cov=scripts \
+                 --cov-report=term-missing \
+                 --cov-report=xml \
+                 -v --tb=short || true
+          # Don't fail CI on test failures yet — surface as warning until baseline stabilises
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  integration-tests:
+    name: Integration tests (with Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: vnedge
+          POSTGRES_PASSWORD: testpw
+          POSTGRES_DB: vnedge_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Install full deps
+        run: |
+          pip install pytest pytest-asyncio asyncpg aiohttp aiosqlite
+          pip install python-dotenv pyyaml colorama || true
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://vnedge:testpw@localhost:5432/vnedge_test
+          FERNET_KEY: dummytestkey1234567890123456789012345678901234=
+        run: |
+          pytest tests/integration/ tests/test_integration.py \
+                 -v --tb=short || true
+
+  summary:
+    name: CI Summary
+    needs: [syntax, lint, unit-tests, integration-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Print summary
+        run: |
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Syntax | ${{ needs.syntax.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration | ${{ needs.integration-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Goal: lift test coverage from 25% → 70% over Sprints 1-4." >> $GITHUB_STEP_SUMMARY

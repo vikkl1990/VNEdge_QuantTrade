@@ -1060,7 +1060,11 @@ class DashboardServer:
                     out["state"] = "trading"
                     out["mode"] = "live+"
                 elif mode_summary.get("shadow_live", 0) > 0:
-                    out["state"] = "paused"
+                    # 2026-04-27 — was 'paused' (semantically true: no live money)
+                    # but visually misleading: shadow trading IS happening, fills
+                    # are simulated against real L2. Surface as 'shadow' so the
+                    # operator sees activity is live, just not on real capital.
+                    out["state"] = "shadow"
                     out["mode"] = "shadow_live"
                 else:
                     out["state"] = "trading"
@@ -1115,15 +1119,36 @@ class DashboardServer:
                     out["book"]["open"] += r["n"]
                     out["book"]["cap_deployed"] += r["cap"]
 
-                # 4. EDGE — 24h aggregate (all users, all modes)
+                # 4. EDGE — 24h aggregate, scoped to the OPERATOR-RELEVANT cohort.
+                # 2026-04-27: was an "all trade types mixed" headline that hid the
+                # real story (shadow profitable, real bleeding, demo flat). Now
+                # follow the bot_mode of the active user(s):
+                #   live+        → real     (the money number)
+                #   shadow_live  → shadow   (the canonical edge tracker)
+                #   paper        → paper proxy (closed_signals.json — n/a here)
+                # Plus the same clean filter as /api/quant-metrics: excludes
+                # auto_responder_stuck_60m + is_phase2_virtual rows.
+                _edge_type = "real" if mode_summary.get("live", 0) > 0 \
+                    else ("shadow" if mode_summary.get("shadow_live", 0) > 0 else None)
+                _edge_type_filter = ""
+                _edge_params = []
+                if _edge_type:
+                    _edge_type_filter = "AND trade_type = $1"
+                    _edge_params.append(_edge_type)
                 ed = await con.fetchrow(
-                    """SELECT COUNT(*) AS n,
+                    f"""SELECT COUNT(*) AS n,
                               SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
                               SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END) AS gross_w,
                               SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END) AS gross_l,
                               SUM(pnl_usd)::float AS pnl_total
                        FROM user_trades
-                       WHERE closed_at >= NOW() - INTERVAL '24 hours'"""
+                       WHERE closed_at >= NOW() - INTERVAL '24 hours'
+                         {_edge_type_filter}
+                         AND COALESCE(metadata::jsonb->>'exit_reason', '')
+                                != 'auto_responder_stuck_60m'
+                         AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                != 'true'""",
+                    *_edge_params,
                 )
                 if ed and ed["n"]:
                     wr = (float(ed["wins"]) / float(ed["n"])) * 100.0 if ed["n"] else None
@@ -1402,12 +1427,20 @@ class DashboardServer:
         the fitness-app dollar cards.
 
         Query: ?days=N (default 30) ?mode=paper|real|shadow|all (default all)
+               ?clean=true|false (default true) — when true, excludes the
+               legacy `auto_responder_stuck_60m` zero-PnL force-closes that
+               accumulated before the 2026-04-27 max_age fix (06:41 UTC).
+               These are administrative cleanup rows, not real exits, and
+               they massively distort WR/Sharpe/PF for shadow.
+               Also excludes phase2_virtual fan-out trades from the
+               aggregate (they're tracked separately via leaderboard).
         """
         import math
         days = max(1, min(365, int(request.query.get("days", "30"))))
         mode = request.query.get("mode", "all").lower()
+        clean = request.query.get("clean", "true").lower() == "true"
         out = {
-            "days": days, "mode": mode, "n": 0,
+            "days": days, "mode": mode, "clean": clean, "n": 0, "excluded_n": 0,
             "sharpe": None, "sortino": None,
             "pf": None, "win_rate": None,
             "avg_win": None, "avg_loss": None, "expectancy": None,
@@ -1423,15 +1456,42 @@ class DashboardServer:
             if mode != "all":
                 mode_filter = "AND trade_type = $1"
                 params.append(mode)
+            # 2026-04-27 — clean filter: drop legacy stuck-60m force-closes
+            # + any phase2_virtual fan-out rows. Both contaminate aggregate
+            # metrics for the operator-facing edge view.
+            clean_filter = ""
+            if clean:
+                clean_filter = (
+                    "AND COALESCE(metadata::jsonb->>'exit_reason', '') "
+                    "        != 'auto_responder_stuck_60m' "
+                    "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "        != 'true' "
+                )
             sql = f"""SELECT pnl_usd::float AS pnl, opened_at, closed_at
                        FROM user_trades
                        WHERE closed_at >= NOW() - INTERVAL '{days} days'
                          AND closed_at IS NOT NULL
                          AND pnl_usd IS NOT NULL
                          {mode_filter}
+                         {clean_filter}
                        ORDER BY closed_at"""
             async with self._db_pool.acquire() as con:
                 rows = await con.fetch(sql, *params)
+                # Count what we excluded so the UI can footnote it.
+                if clean:
+                    excl = await con.fetchval(
+                        f"""SELECT COUNT(*)::int FROM user_trades
+                             WHERE closed_at >= NOW() - INTERVAL '{days} days'
+                               AND closed_at IS NOT NULL
+                               AND pnl_usd IS NOT NULL
+                               {mode_filter}
+                               AND (COALESCE(metadata::jsonb->>'exit_reason', '')
+                                       = 'auto_responder_stuck_60m'
+                                    OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                       = 'true')""",
+                        *params,
+                    )
+                    out["excluded_n"] = int(excl or 0)
             pnls = [float(r["pnl"]) for r in rows]
             n = len(pnls)
             out["n"] = n
@@ -1828,7 +1888,15 @@ class DashboardServer:
         return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_shadow_closed(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/closed?exchange=delta_india&limit=N&days=N&symbol=BTC/USDT"""
+        """GET /api/shadow/closed?exchange=delta_india&limit=N&days=N&symbol=BTC/USDT
+                              &clean=true|false (default true)
+
+        clean=true (default) excludes:
+          - `auto_responder_stuck_60m` legacy force-closes (zero-PnL admin
+            cleanup before 2026-04-27 06:41 UTC max_age fix)
+          - `is_phase2_virtual` fan-out rows (tracked via leaderboard)
+        Pass clean=false to inspect raw audit trail.
+        """
         exchange = request.query.get("exchange", "delta_india")
         try:
             limit = max(1, min(2000, int(request.query.get("limit", "100"))))
@@ -1836,9 +1904,10 @@ class DashboardServer:
         except Exception:
             limit, days = 100, 7
         symbol = request.query.get("symbol", "")
-        out = {"trades": [], "n": 0,
+        clean = request.query.get("clean", "true").lower() == "true"
+        out = {"trades": [], "n": 0, "excluded_n": 0, "clean": clean,
                "filters": {"exchange": exchange, "limit": limit, "days": days,
-                           "symbol": symbol or None},
+                           "symbol": symbol or None, "clean": clean},
                "ts": datetime.utcnow().isoformat() + "Z"}
         if not self._db_pool:
             return web.json_response(out, dumps=_safe_dumps)
@@ -1849,6 +1918,14 @@ class DashboardServer:
                 if symbol:
                     params.append(symbol)
                     sym_clause = "AND symbol = $2 "
+                clean_clause = ""
+                if clean:
+                    clean_clause = (
+                        "AND COALESCE(metadata::jsonb->>'exit_reason','') "
+                        "    != 'auto_responder_stuck_60m' "
+                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                        "    != 'true' "
+                    )
                 rows = await con.fetch(
                     f"""SELECT * FROM user_trades
                          WHERE trade_type = 'shadow'
@@ -1856,35 +1933,64 @@ class DashboardServer:
                            AND closed_at IS NOT NULL
                            AND closed_at >= NOW() - INTERVAL '{days} days'
                            {sym_clause}
+                           {clean_clause}
                          ORDER BY closed_at DESC LIMIT {limit}""",
                     *params
                 )
                 out["trades"] = [self._row_to_trade(r) for r in rows]
                 out["n"] = len(out["trades"])
+                if clean:
+                    excl = await con.fetchval(
+                        f"""SELECT COUNT(*)::int FROM user_trades
+                             WHERE trade_type='shadow' AND exchange=$1
+                               AND closed_at IS NOT NULL
+                               AND closed_at >= NOW() - INTERVAL '{days} days'
+                               {sym_clause}
+                               AND (COALESCE(metadata::jsonb->>'exit_reason','')
+                                       = 'auto_responder_stuck_60m'
+                                    OR COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                       = 'true')""",
+                        *params,
+                    )
+                    out["excluded_n"] = int(excl or 0)
         except Exception as e:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_shadow_stats(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/stats?exchange=delta_india&days=N → aggregate metrics."""
+        """GET /api/shadow/stats?exchange=delta_india&days=N&clean=true → aggregate metrics.
+
+        clean=true (default) excludes auto_responder_stuck_60m + phase2_virtual rows.
+        See _handle_shadow_closed for rationale.
+        """
         exchange = request.query.get("exchange", "delta_india")
         try:
             days = max(1, min(365, int(request.query.get("days", "7"))))
         except Exception:
             days = 7
-        out = {"trade_type": "shadow", "exchange": exchange, "days": days,
+        clean = request.query.get("clean", "true").lower() == "true"
+        out = {"trade_type": "shadow", "exchange": exchange, "days": days, "clean": clean,
                "ts": datetime.utcnow().isoformat() + "Z"}
         if not self._db_pool:
             out["error"] = "db_pool_not_ready"
             return web.json_response(out, dumps=_safe_dumps)
         try:
             async with self._db_pool.acquire() as con:
+                clean_clause = ""
+                if clean:
+                    clean_clause = (
+                        "AND COALESCE(metadata::jsonb->>'exit_reason','') "
+                        "    != 'auto_responder_stuck_60m' "
+                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                        "    != 'true' "
+                    )
                 rows = await con.fetch(
                     f"""SELECT * FROM user_trades
                          WHERE trade_type = 'shadow'
                            AND exchange = $1
                            AND closed_at IS NOT NULL
-                           AND closed_at >= NOW() - INTERVAL '{days} days'""",
+                           AND closed_at >= NOW() - INTERVAL '{days} days'
+                           {clean_clause}""",
                     exchange
                 )
                 trades = [self._row_to_trade(r) for r in rows]

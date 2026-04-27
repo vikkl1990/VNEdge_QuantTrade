@@ -343,7 +343,20 @@ class UserRealRegistry:
                            max_open_positions, trading_pairs, preferred_leverage,
                            is_active,
                            maker_patience_mode,
-                           cohort_blacklist_paused_until
+                           cohort_blacklist_paused_until,
+                           -- Bug 3c (2026-04-27): the 4 columns below were
+                           -- referenced in user_config dict pass-through but
+                           -- NOT in this SELECT, so user_info.get(...) always
+                           -- returned None → shadow_simulated_balance silently
+                           -- ignored → admin sized off $100 default → floored
+                           -- at $10 → niranjan looked 5-7x larger by accident.
+                           -- A/B's 7.5x niranjan win on delta_shadow was
+                           -- inflated by this; real treatment effect TBD after
+                           -- this fix lands.
+                           exit_policy,
+                           cohort_filter_enabled,
+                           shadow_simulated_balance,
+                           mark_alignment_enabled
                     FROM users
                     WHERE is_active = TRUE AND bot_mode != 'paper'
                     ORDER BY created_at

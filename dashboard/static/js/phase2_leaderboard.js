@@ -74,7 +74,12 @@
     const rowsHtml = cfgs.map(c => {
       const isWinner = c.id === winner;
       const rowCls = isWinner ? 'p2-row p2-row--winner' : 'p2-row';
-      const nText = c.n_closed + (c.n_open > 0 ? ` <span class="p2-pending">(+${c.n_open} open)</span>` : '');
+      // n_closed = ACTUAL config exits; n_admin_closed = Agent 9-A
+      // restart sweeps + auto_responder_stuck_60m (excluded from
+      // strategy aggregates, surfaced separately as attribution loss).
+      let nText = c.n_closed;
+      if (c.n_open > 0) nText += ` <span class="p2-pending">(+${c.n_open} open)</span>`;
+      if (c.n_admin_closed > 0) nText += ` <span class="p2-admin" title="${c.n_admin_closed} admin force-closes (Agent 9-A) — excluded from PF/Net">[${c.n_admin_closed} admin]</span>`;
       const wrText = c.wr_pct != null ? c.wr_pct.toFixed(0) + '%' : '—';
       const pfText = c.pf_inf ? '∞' : (c.pf != null ? c.pf.toFixed(2) : '—');
       return `<tr class="${rowCls}" title="${escHtml(c.summary || '')}">

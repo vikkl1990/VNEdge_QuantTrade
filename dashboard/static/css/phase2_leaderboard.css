@@ -71,6 +71,16 @@
   color: var(--text-muted, #6b7794);
   font-style: italic;
 }
+.p2-admin {
+  font-size: 0.58rem;
+  color: var(--warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 3px;
+  cursor: help;
+  font-style: italic;
+}
 .p2-net--ok      { color: var(--success, #22c55e); font-weight: 600; }
 .p2-net--bad     { color: var(--danger,  #ef4444); font-weight: 600; }
 .p2-net--neutral { color: var(--text-secondary, #9ca8be); }

@@ -448,6 +448,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/quant_heroes.css">
 <link rel="stylesheet" href="/static/css/phase2_leaderboard.css">
 <link rel="stylesheet" href="/static/css/agents_status.css">
+<link rel="stylesheet" href="/static/css/maker_counterfactual.css">
 <link rel="stylesheet" href="/static/css/exchange_compare.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_badges.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_overlay.css">
@@ -1451,6 +1452,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <!-- Phase 2 Shadow-of-Shadow leaderboard — live A/B/C/D/E exit-config verdict -->
   <section id="phase2-leaderboard" aria-label="Phase 2 exit config leaderboard"></section>
+
+  <!-- 🎯 Maker counterfactual — Path A: what if patient maker filled? -->
+  <section id="maker-counterfactual-panel" aria-label="Maker counterfactual"></section>
 
   <!-- Multi-exchange trade stream — clear visual differentiation per source -->
   <section id="trade-stream-panel" class="tx-stream" aria-label="Trade stream"></section>
@@ -3186,6 +3190,7 @@ async function validateApiKeyInline() {
 <script src="/static/js/phase2_leaderboard.js"></script>
 <script src="/static/js/analytics_shadow.js"></script>
 <script src="/static/js/agents_status.js"></script>
+<script src="/static/js/maker_counterfactual.js"></script>
 <script src="/static/js/exchange_compare.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/multi_exchange_overlay.js"></script>

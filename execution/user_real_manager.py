@@ -3007,6 +3007,44 @@ class UserRealManager:
             exit_fee_usd = actual_exit * trade.position_size * _cs * 0.00059
             total_fees = float(trade.entry_fee_usd or 0) + exit_fee_usd
 
+            # 2026-04-27 Path A — MAKER COUNTERFACTUAL.
+            # Shadow always simulates as taker (by design: no L2 walk to
+            # determine if a post_only would have rested + filled). But the
+            # operator needs to know: "if patient maker mode WERE working,
+            # what would PnL look like?" — to validate that the maker fix
+            # is worth the engineering effort + to calibrate Phase 2
+            # leaderboard's predictive power for live execution.
+            #
+            # Computation: Delta India fee schedule
+            #   taker = 0.059% per side (used above)
+            #   maker = 0.024% per side (Delta INR maker rate)
+            # Counterfactual savings PER trade if BOTH sides filled as
+            # maker = (taker_fee - maker_fee) × 2 sides ≈ 0.07% of notional.
+            # On $30 margin × 20× leverage = $600 notional → $0.42/trade.
+            # Computed over a representative fill rate: 50% (patient
+            # mode estimate). Realized only when Path B real pilot
+            # measures the actual rate — then this calibrates.
+            try:
+                _maker_rate = 0.00024     # Delta India maker
+                _taker_rate = 0.00059     # Delta India taker (used above)
+                _entry_notional = trade.entry_price * trade.position_size * _cs
+                _exit_notional  = actual_exit * trade.position_size * _cs
+                # Per-side savings if filled as maker instead of taker
+                _entry_save = _entry_notional * (_taker_rate - _maker_rate)
+                _exit_save  = _exit_notional  * (_taker_rate - _maker_rate)
+                # Counterfactual @ 100% maker fill (both sides)
+                _cf_maker_savings_100pct = _entry_save + _exit_save
+                # Counterfactual @ 50% blended fill rate (patient mode est)
+                _cf_maker_savings_50pct  = _cf_maker_savings_100pct * 0.5
+                # Annotate trade for the close meta block to persist.
+                trade._cf_maker_savings_100pct = round(_cf_maker_savings_100pct, 4)
+                trade._cf_maker_savings_50pct  = round(_cf_maker_savings_50pct,  4)
+                trade._cf_net_at_50pct_maker   = round(net_pnl + _cf_maker_savings_50pct, 4) \
+                                                 if 'net_pnl' in dir() else None
+            except Exception:
+                trade._cf_maker_savings_100pct = 0.0
+                trade._cf_maker_savings_50pct  = 0.0
+
             # Funding cost (typically zero on testnet; will matter on real prod)
             funding_usd = 0.0
             try:
@@ -3596,6 +3634,23 @@ class UserRealManager:
                 ),
                 # Total cost (fees + funding) — what paper doesn't see
                 "total_cost_usd": round(float(fees_usd) + _funding_usd, 4),
+                # 2026-04-27 Path A — maker counterfactual.
+                # cf_maker_savings_*: $ saved per trade if maker filled.
+                # cf_net_at_50pct_maker = pnl + 50% × counterfactual savings.
+                # Use the LAST set values from _close_shadow's calculation
+                # block (set on the trade obj). Real fills compute these to
+                # 0 since taker→maker isn't applicable for live (live tracks
+                # actual fee_type per side).
+                "cf_maker_savings_100pct": float(
+                    getattr(trade, "_cf_maker_savings_100pct", 0.0) or 0.0
+                ),
+                "cf_maker_savings_50pct": float(
+                    getattr(trade, "_cf_maker_savings_50pct", 0.0) or 0.0
+                ),
+                "cf_net_at_50pct_maker": (
+                    None if getattr(trade, "_cf_net_at_50pct_maker", None) is None
+                    else float(trade._cf_net_at_50pct_maker)
+                ),
             })
 
             # Phase 5.6-B — shadow trades tagged trade_type='shadow' so dashboards

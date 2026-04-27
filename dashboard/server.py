@@ -1567,6 +1567,21 @@ class DashboardServer:
             return web.json_response(out, dumps=_safe_dumps)
         try:
             async with self._db_pool.acquire() as con:
+                # 2026-04-27 — clean filter: drop admin/orphan/reconcile
+                # closes (PnL=$0 force-cleanups by Agent 9-A or restart
+                # reconciler) + Phase 2 fan-out fan-out trades. Without
+                # this, Exchange Compare tab over-states paper baseline,
+                # under-states delta_india edge, and shows phantom bybit
+                # numbers from before the bybit dispatcher pause.
+                _CLEAN_NOT_IN = (
+                    "AND COALESCE(metadata::jsonb->>'exit_reason','') "
+                    "    NOT IN ('auto_responder_stuck_60m', "
+                    "            'restart_orphan_cleanup', "
+                    "            'reconcile_overaged_close') "
+                    "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                    "    != 'true' "
+                )
+
                 # Paper trades (no exchange concept — separate aggregate)
                 paper = await con.fetchrow(
                     f"""SELECT COUNT(*) AS n,
@@ -1578,7 +1593,8 @@ class DashboardServer:
                          FROM user_trades
                         WHERE trade_type = 'paper'
                           AND closed_at >= NOW() - INTERVAL '{days} days'
-                          AND closed_at IS NOT NULL"""
+                          AND closed_at IS NOT NULL
+                          {_CLEAN_NOT_IN}"""
                 )
                 if paper and paper["n"]:
                     n = int(paper["n"]); wins = int(paper["wins"] or 0)
@@ -1591,7 +1607,7 @@ class DashboardServer:
                         "avg": float(paper["avg"] or 0),
                     }
 
-                # Per-exchange shadow + real
+                # Per-exchange shadow + real (clean filter applied)
                 exch_rows = await con.fetch(
                     f"""SELECT exchange,
                               COUNT(*) AS n,
@@ -1608,6 +1624,7 @@ class DashboardServer:
                           AND closed_at >= NOW() - INTERVAL '{days} days'
                           AND closed_at IS NOT NULL
                           AND pnl_usd IS NOT NULL
+                          {_CLEAN_NOT_IN}
                         GROUP BY exchange
                         ORDER BY exchange"""
                 )
@@ -1870,23 +1887,49 @@ class DashboardServer:
         return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_shadow_active(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/active?exchange=delta_india|bybit"""
+        """GET /api/shadow/active?exchange=delta_india|bybit&clean=true|false
+
+        clean=true (default) hides Phase 2 fan-out virtual trades from the
+        active list — they have their own dedicated leaderboard widget
+        (/api/phase2/leaderboard). 41 phase2_virtual trades open at any
+        given moment otherwise drown the operator's "current real positions"
+        view.
+        """
         exchange = request.query.get("exchange", "delta_india")
-        out = {"trades": [], "n": 0, "filters": {"exchange": exchange},
+        clean = request.query.get("clean", "true").lower() == "true"
+        out = {"trades": [], "n": 0, "excluded_n": 0, "clean": clean,
+               "filters": {"exchange": exchange, "clean": clean},
                "ts": datetime.utcnow().isoformat() + "Z"}
         if not self._db_pool:
             return web.json_response(out, dumps=_safe_dumps)
         try:
             async with self._db_pool.acquire() as con:
+                clean_clause = ""
+                if clean:
+                    clean_clause = (
+                        "AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
+                        "    != 'true' "
+                    )
                 rows = await con.fetch(
-                    """SELECT * FROM user_trades
+                    f"""SELECT * FROM user_trades
                         WHERE trade_type = 'shadow'
                           AND exchange = $1
                           AND closed_at IS NULL
+                          {clean_clause}
                         ORDER BY opened_at DESC LIMIT 200""", exchange
                 )
                 out["trades"] = [self._row_to_trade(r) for r in rows]
                 out["n"] = len(out["trades"])
+                if clean:
+                    excl = await con.fetchval(
+                        """SELECT COUNT(*)::int FROM user_trades
+                            WHERE trade_type='shadow' AND exchange=$1
+                              AND closed_at IS NULL
+                              AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                  = 'true'""",
+                        exchange,
+                    )
+                    out["excluded_n"] = int(excl or 0)
         except Exception as e:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)

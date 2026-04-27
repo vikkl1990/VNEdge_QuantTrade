@@ -447,6 +447,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/copilot.css">
 <link rel="stylesheet" href="/static/css/quant_heroes.css">
 <link rel="stylesheet" href="/static/css/phase2_leaderboard.css">
+<link rel="stylesheet" href="/static/css/agents_status.css">
 <link rel="stylesheet" href="/static/css/exchange_compare.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_badges.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_overlay.css">
@@ -2732,6 +2733,9 @@ async function validateApiKeyInline() {
 <!-- ═══ AGENTS TAB ═══════════════════════════════════════ -->
 <div class="tab-content" role="tabpanel" id="tab-agents">
 
+  <!-- 🛰 Agents Status — 14-agent team + Tier A/B + specialty crons (2026-04-27) -->
+  <section id="agents-status-panel" aria-label="Agents status table"></section>
+
   <!-- Phase 0: Pipeline Funnel + Heartbeat row -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
 
@@ -3181,6 +3185,7 @@ async function validateApiKeyInline() {
 <script src="/static/js/quant_heroes.js"></script>
 <script src="/static/js/phase2_leaderboard.js"></script>
 <script src="/static/js/analytics_shadow.js"></script>
+<script src="/static/js/agents_status.js"></script>
 <script src="/static/js/exchange_compare.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/multi_exchange_overlay.js"></script>

@@ -1432,7 +1432,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div id="la-simulation"><div class="empty">Waiting for resolved spikes...</div></div>
     </div>
     <div class="glass-card">
-      <div class="panel-title">🕐 Net Edge by Pair × Session (UTC Hour) <span class="badge">LAYER 5</span></div>
+      <div class="panel-title">🕐 Net Edge by Pair × Session (IST Hour) <span class="badge">LAYER 5</span></div>
       <div id="la-session-heatmap"><div class="empty">Collecting 24h data...</div></div>
     </div>
   </div>
@@ -2267,6 +2267,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <input type="tel" id="prof-phone" class="login-input" placeholder="Phone Number">
           <label class="profile-label">Timezone</label>
           <select id="prof-timezone" class="login-input">
+            <option value="Asia/Kolkata" selected>India (IST)</option>
             <option value="UTC">UTC</option>
             <option value="America/New_York">Eastern (ET)</option>
             <option value="America/Chicago">Central (CT)</option>
@@ -2956,7 +2957,7 @@ async function validateApiKeyInline() {
 
     <!-- Hourly Performance Heatmap -->
     <div class="glass-card">
-      <div class="card-title">Hourly Performance (UTC)</div>
+      <div class="card-title">Hourly Performance (IST)</div>
       <div id="brain-hourly-grid" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px"></div>
       <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:10px;color:#666">
         <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:00</span>
@@ -2985,7 +2986,7 @@ async function validateApiKeyInline() {
   <div class="glass-card">
     <div class="card-title">Daily Session History</div>
     <div id="brain-sessions-container" class="max-h-300">
-      <div class="empty-state-pad">Session summaries appear after daily rollover (00:00 UTC).</div>
+      <div class="empty-state-pad">Session summaries appear after daily rollover (05:30 IST = 00:00 UTC).</div>
     </div>
   </div>
 

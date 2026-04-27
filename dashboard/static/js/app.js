@@ -549,14 +549,14 @@ async function setRealMode(mode) {
         }
         if (!r.ok) {
             const urlHit = r.url || "(unknown)";
-            alert(
+            // Batch A #19: blocking alert() → non-blocking toast
+            (window._notify || alert)(
                 "Mode change rejected (HTTP " + r.status + "): " +
                 (d.error || r.statusText) +
                 (d.hint ? "\n\n" + d.hint : "") +
-                "\n\n[debug] URL: " + urlHit +
-                "\n[debug] If you see HTTP 404 here, your browser cached an old app.js. " +
-                "Hard-refresh (Cmd+Shift+R) or open in incognito to clear."
-            );
+                "\n[debug] URL: " + urlHit +
+                "\n[debug] HTTP 404 here = stale app.js cache. Hard-refresh (Cmd+Shift+R)."
+            , 'error', 10000);
             // Revert the dropdown so the UI matches DB truth
             try {
                 const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.ok ? x.json() : {}).catch(()=>({}));
@@ -569,10 +569,12 @@ async function setRealMode(mode) {
         }
         // Success — next status poll updates all dashboard widgets
     } catch (e) {
-        alert("Mode change failed: " + (e && e.message ? e.message : e));
+        // Batch A #19: blocking alert() → non-blocking toast
+        (window._notify || alert)("Mode change failed: " + (e && e.message ? e.message : e), 'error', 8000);
     }
 }
 // Legacy support
+// (removed alert blocks above; below preserves remaining functions)
 // REMOVED: stale toggleRealTrading(enabled) — conflicts with robust version at line ~8224.
 // The robust version reads current state from API, confirms, and flips.
 
@@ -1057,9 +1059,13 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
             } else {
                 posTable.style.display = "none";
             }
-            // Update real closed trades tab
+            // Update real closed trades tab (large analytics panel)
             _lastRealStatus = realStatus;  // cache for tab switching
             updateRealClosedTrades(realStatus);
+            // Phase 4.2 — also update the small sidebar "RECENT CLOSED
+            // TRADES › REAL" tab which writes to recent-real-closed-body
+            // (different element from real-closed-body above).
+            try { updateRecentRealClosed(realStatus); } catch(e) { console.error(e); }
         }
     }
 
@@ -1661,13 +1667,16 @@ function updateRecentClosed(closed) {
     const body = document.getElementById("recent-closed-body");
     if (!body) return;
     if (!closed || !Array.isArray(closed) || closed.length === 0) {
-        body.innerHTML = '<tr><td colspan="9" class="empty">No closed trades</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="empty">No closed trades</td></tr>';
         return;
     }
     const sorted = [...closed].sort((a, b) => new Date(b.closed_at || b.exit_time || 0) - new Date(a.closed_at || a.exit_time || 0));
     body.innerHTML = sorted.slice(0, 10).map(t => {
         const pnlUsd = Number(t.pnl_usd || 0);
         const r = Number(t.exit_r || t.r_multiple || t.r || 0);
+        // Paper trades store margin as `paper_stake`; demo/live use `margin` or `margin_usd`.
+        const margin = Number(t.paper_stake || t.margin || t.margin_usd || (t.metadata && (t.metadata.margin || t.metadata.margin_usd || t.metadata.paper_stake)) || 0);
+        const lev = Number(t.leverage || (t.metadata && t.metadata.leverage) || 0);
         const tradeType = t.trade_type || (t.metadata && t.metadata.trade_type) || '';
         const typeColors = {SCALP:'#f59e0b', INTRADAY:'#6366f1', RUNNER:'#10b981'};
         let dur = "--";
@@ -1685,6 +1694,8 @@ function updateRecentClosed(closed) {
             <td class="font-semibold">${esc(t.symbol || "--")}</td>
             <td><span class="sig-side ${(t.side||"LONG").toUpperCase()}">${(t.side||"--").toUpperCase()}</span></td>
             <td>${tradeType ? `<span style="color:${typeColors[tradeType]||'var(--text-muted)'};font-weight:600;font-size:.72rem">${tradeType}</span>` : '--'}</td>
+            <td class="font-mono">${margin > 0 ? '$'+margin.toFixed(2) : '--'}</td>
+            <td class="font-mono text-muted">${lev > 0 ? lev+'x' : '--'}</td>
             <td class="${pnlUsd >= 0 ? 'pnl-pos' : 'pnl-neg'}">${pnlUsd >= 0 ? "+$" : "-$"}${Math.abs(pnlUsd).toFixed(2)}</td>
             <td class="${r >= 0 ? 'pnl-pos' : 'pnl-neg'}">${r >= 0 ? "+" : ""}${r.toFixed(2)}R</td>
             <td>${esc(t.exit_reason || "--")}</td>
@@ -1746,6 +1757,26 @@ async function refreshAnalytics() {
             }
             let art = document.getElementById("an-real-trades");
             if(art) art.textContent = rs.total_closed||0;
+        }
+        // Shadow account aggregates (last 24h, populated by /api/real/status)
+        const sh = (rs && rs.shadow_stats_24h) || {};
+        const shN   = Number(sh.n || 0);
+        const shPnl = Number(sh.net_pnl || 0);
+        const shAvg = Number(sh.avg_pnl || 0);
+        const shWr  = Number(sh.win_rate || 0);
+        let asht = document.getElementById("an-shadow-trades");
+        if (asht) asht.textContent = shN;
+        let ashp = document.getElementById("an-shadow-pnl");
+        if (ashp) {
+            ashp.textContent = (shPnl >= 0 ? "+$" : "-$") + Math.abs(shPnl).toFixed(2);
+            ashp.style.color = shPnl >= 0 ? "var(--green)" : "var(--red)";
+        }
+        let ashw = document.getElementById("an-shadow-wr");
+        if (ashw) ashw.textContent = (shN > 0 ? shWr.toFixed(1) : "--") + "%";
+        let asha = document.getElementById("an-shadow-avg");
+        if (asha) {
+            asha.textContent = (shN > 0 ? ((shAvg >= 0 ? "+$" : "-$") + Math.abs(shAvg).toFixed(2)) : "$--");
+            asha.style.color = shN === 0 ? "var(--yellow)" : (shAvg >= 0 ? "var(--green)" : "var(--red)");
         }
     } catch(e){}
 
@@ -2125,6 +2156,71 @@ function switchClosedTab(tab) {
     if (_lastRealStatus && (tab === "demo" || tab === "real")) {
         updateRealClosedTrades(_lastRealStatus);
     }
+}
+
+// Phase 4.2 — writer for the small "Recent Closed Trades" sidebar panel.
+// Populates BOTH demo and live tbody elements independently so whichever
+// tab is open has the correct data. 9-col schema matches template:
+// Date | Symbol | Side | Entry | Exit | Slip | PnL $ | Margin | Exit Reason.
+function _renderTradesRow(t) {
+    const pnl = Number(t.pnl_usd || 0);
+    const margin = Number(t.margin || t.margin_usd || (t.metadata && (t.metadata.margin || t.metadata.margin_usd)) || 0);
+    const lev = Number(t.leverage || (t.metadata && t.metadata.leverage) || 0);
+    const slip = Number(t.slippage_bps || 0);
+    const dec = (t.symbol || "").includes("BTC") ? 2 : 4;
+    const sideColor = (t.side||"").toLowerCase()==="long" ? "var(--green)" : "var(--red)";
+    const pnlColor = pnl > 0 ? "var(--green)" : pnl < 0 ? "var(--red)" : "var(--text-muted)";
+    const slipColor = slip <= 1.5 ? "var(--green)" : slip <= 3 ? "var(--yellow)" : "var(--red)";
+    return `<tr>
+        <td style="font-size:.7rem">${formatTime(t.timestamp || t.closed_at)}</td>
+        <td class="font-semibold">${esc(t.symbol || "?")}</td>
+        <td style="color:${sideColor};font-weight:600;text-transform:uppercase">${esc(t.side || "?")}</td>
+        <td class="font-mono text-muted">${lev > 0 ? lev+'x' : '--'}</td>
+        <td class="font-mono">${Number(t.entry_price || 0).toFixed(dec)}</td>
+        <td class="font-mono">${Number(t.exit_price || 0).toFixed(dec)}</td>
+        <td style="color:${slipColor};font-family:var(--font-mono);font-size:.7rem">${slip > 0 ? slip.toFixed(1)+'bp' : '--'}</td>
+        <td style="color:${pnlColor};font-weight:600;font-family:var(--font-mono)">${pnl >= 0 ? "+$" : "-$"}${Math.abs(pnl).toFixed(2)}</td>
+        <td class="font-mono">$${margin.toFixed(2)}</td>
+        <td style="font-size:.7rem">${esc(t.reason || t.exit_reason || "--")}</td>
+    </tr>`;
+}
+
+function _renderTradesBody(bodyId, trades, emptyLabel) {
+    const body = document.getElementById(bodyId);
+    if (!body) return;
+    if (!Array.isArray(trades) || trades.length === 0) {
+        body.innerHTML = `<tr><td colspan="10" class="empty">${emptyLabel}</td></tr>`;
+        return;
+    }
+    const sorted = [...trades].sort((a,b) =>
+        new Date(b.timestamp || b.closed_at || b.exit_time || 0) -
+        new Date(a.timestamp || a.closed_at || a.exit_time || 0)
+    ).slice(0, 10);
+    body.innerHTML = sorted.map(_renderTradesRow).join("");
+}
+
+function updateRecentRealClosed(realStatus) {
+    const demoTrades   = (realStatus && realStatus.demo_trades)   || [];
+    const liveTrades   = (realStatus && realStatus.live_trades)   || [];
+    const shadowTrades = (realStatus && realStatus.shadow_trades) || [];
+
+    // Back-compat: if no mode-specific list is populated but recent_trades is,
+    // dump it into whichever matches the user's current bot_mode.
+    let demoList   = demoTrades;
+    let liveList   = liveTrades;
+    let shadowList = shadowTrades;
+    if (demoList.length === 0 && liveList.length === 0 && shadowList.length === 0 &&
+        realStatus && Array.isArray(realStatus.recent_trades) &&
+        realStatus.recent_trades.length > 0) {
+        const mode = (realStatus.mode || realStatus.bot_mode || "demo").toLowerCase();
+        if (mode === "live") liveList = realStatus.recent_trades;
+        else if (mode === "shadow_live" || mode === "shadow") shadowList = realStatus.recent_trades;
+        else demoList = realStatus.recent_trades;
+    }
+
+    _renderTradesBody("recent-demo-closed-body",   demoList,   "No demo trades yet");
+    _renderTradesBody("recent-live-closed-body",   liveList,   "No live trades yet");
+    _renderTradesBody("recent-shadow-closed-body", shadowList, "No shadow trades yet");
 }
 
 function updateRealClosedTrades(realStatus) {
@@ -4125,7 +4221,7 @@ async function loadPipelineTrace() {
             let passRate = total > 0 ? (batch.passed / total * 100) : 0;
             let barColor = passRate >= 60 ? "var(--green)" : passRate >= 30 ? "var(--yellow)" : "var(--red)";
             let ts = new Date(batch.ts * 1000);
-            let timeStr = ts.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+            let timeStr = ts.toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata"});
 
             // Compact signal icons
             let sigIcons = (batch.signals || []).slice(0, 8).map(function(s) {
@@ -4260,13 +4356,18 @@ function updateResolutionClock(thesis, prices) {
         color: wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)",
     });
 
-    // Session timing
-    let hour = new Date().getUTCHours();
-    let isActiveSession = (hour >= 3 && hour < 21);
+    // Session timing — 2026-04-27 architect directive: show IST on the
+    // dashboard, not UTC. Active-session window 03:00–21:00 UTC =
+    // 08:30–02:30 IST (next day) which spans most of Asian + EU sessions.
+    // Display in IST for the operator's time reference.
+    let nowD = new Date();
+    let utcHour = nowD.getUTCHours();
+    let isActiveSession = (utcHour >= 3 && utcHour < 21);
+    let istHourStr = nowD.toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata"});
     questions.push({
         question: "Active session?",
         pressure: isActiveSession ? 80 : 20,
-        status: isActiveSession ? "YES (UTC " + hour + ":00)" : "low volume (UTC " + hour + ":00)",
+        status: isActiveSession ? ("YES (IST " + istHourStr + ")") : ("low volume (IST " + istHourStr + ")"),
         color: isActiveSession ? "var(--green)" : "var(--text-muted)",
     });
 
@@ -5104,15 +5205,128 @@ function updateDashboardHeader(trkStats, closed, decision) {
 // ═══ BLOCK 3 (original lines 7449-7768) ═══
 // Dashboard header auto-update (clean rewrite)
 
+// Phase 5.17 — PPP & Maker Calibration panel
+async function refreshPpp() {
+    const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerHTML = txt; };
+    try {
+        const r = await fetch("/api/ppp", { credentials: "same-origin" });
+        if (!r.ok) {
+            setText("ppp-binary-summary", `<span style="color:var(--red)">api ${r.status}</span>`);
+            return;
+        }
+        const d = await r.json();
+
+        // Binary classifier
+        const b = (d.models || {}).binary || {};
+        if (b.loaded) {
+            setText("ppp-binary-summary",
+                `n=${b.n_samples||0} pos=${b.n_positives||0}<br>` +
+                `prec=${(b.oof_precision||0).toFixed(3)} rec=${(b.oof_recall||0).toFixed(3)}<br>` +
+                `AUC=${(b.oof_roc_auc||0).toFixed(3)} thresh=${(b.threshold||0).toFixed(3)}<br>` +
+                `<span class="text-muted">p95 lat: ${(b.p95_latency_ms||0).toFixed(1)}ms</span>`
+            );
+        } else {
+            setText("ppp-binary-summary", '<span class="text-muted">not loaded</span>');
+        }
+
+        // Regressor
+        const reg = (d.models || {}).regressor || {};
+        if (reg.loaded) {
+            const sp = reg.spearman || 0;
+            const lo = reg.spearman_ci_low || 0;
+            const hi = reg.spearman_ci_high || 0;
+            const sigOk = (lo > 0 || hi < 0) ? '✓' : '✗ CI straddles 0';
+            setText("ppp-regressor-summary",
+                `n=${reg.n_samples||0} thresh=${(reg.threshold_r||0).toFixed(2)}R<br>` +
+                `Spearman=${sp.toFixed(3)} ${sigOk}<br>` +
+                `CI [${lo.toFixed(2)}, ${hi.toFixed(2)}]<br>` +
+                `MAE=${(reg.mae_r||0).toFixed(3)}R lift=${(reg.decile_lift_r||0).toFixed(3)}R`
+            );
+        } else {
+            setText("ppp-regressor-summary", '<span class="text-muted">not loaded</span>');
+        }
+
+        // Recent decisions
+        const rec = d.recent_24h || {};
+        const bin24 = rec.binary || {};
+        const reg24 = rec.regressor || {};
+        setText("ppp-recent",
+            `total signals: ${rec.total_signals||0}<br>` +
+            `<span style="color:var(--cyan)">Binary</span> admit=${bin24.admit||0} reject=${bin24.reject||0} fail-open=${bin24.failopen||0}<br>` +
+            `<span style="color:var(--yellow)">Regressor</span> admit=${reg24.admit||0} reject=${reg24.reject||0}<br>` +
+            `avg score: bin=${(bin24.avg_score||0).toFixed(3)} reg=${(reg24.avg_score_r||0).toFixed(2)}R`
+        );
+
+        // Maker calibration
+        const m = d.maker_calibration_7d || {};
+        const rateColor = m.maker_fill_rate_pct >= 30 ? "var(--green)" :
+                          m.maker_fill_rate_pct >= 10 ? "var(--yellow)" : "var(--red)";
+        setText("ppp-maker",
+            `total: ${m.total_real_trades||0} trades<br>` +
+            `maker: ${m.maker_fills||0} (<span style="color:${rateColor};font-weight:600">${(m.maker_fill_rate_pct||0).toFixed(1)}%</span>)<br>` +
+            `taker: ${m.taker_fills||0}<br>` +
+            `other: ${m.other||0}`
+        );
+
+        // Counterfactual
+        const c = d.counterfactual || {};
+        const cb = c.binary || {};
+        const cr = c.regressor || {};
+        setText("ppp-counterfactual",
+            `Sample: ${c.sample_size||0} labeled trades<br>` +
+            `<span style="color:var(--cyan)">Binary if enforced:</span> kept $${(cb.admit_cohort_pnl||0).toFixed(2)} | rejected $${(cb.reject_cohort_pnl||0).toFixed(2)} | savings $${(cb.savings_if_enforced||0).toFixed(2)}<br>` +
+            `<span style="color:var(--yellow)">Regressor if enforced:</span> kept $${(cr.admit_cohort_pnl||0).toFixed(2)} | rejected $${(cr.reject_cohort_pnl||0).toFixed(2)} | savings $${(cr.savings_if_enforced||0).toFixed(2)}`
+        );
+    } catch (e) {
+        console.error("ppp refresh:", e);
+        setText("ppp-binary-summary", `<span style="color:var(--red)">err: ${e.message}</span>`);
+    }
+}
+
+// Auto-refresh on page load + every 60s
+if (typeof window !== "undefined") {
+    window.refreshPpp = refreshPpp;
+    setTimeout(() => { try { refreshPpp(); } catch(e) {} }, 1500);
+    setInterval(() => { try { refreshPpp(); } catch(e) {} }, 60000);
+}
+
 function switchRecentClosed(tab) {
-    document.getElementById("rc-paper-wrap").style.display = tab === "paper" ? "" : "none";
-    document.getElementById("rc-real-wrap").style.display = tab === "real" ? "" : "none";
-    document.getElementById("rc-tab-paper").style.background = tab === "paper" ? "rgba(0,212,255,.15)" : "transparent";
-    document.getElementById("rc-tab-paper").style.color = tab === "paper" ? "var(--cyan)" : "var(--text-muted)";
-    document.getElementById("rc-tab-paper").style.borderColor = tab === "paper" ? "rgba(0,212,255,.3)" : "var(--border)";
-    document.getElementById("rc-tab-real").style.background = tab === "real" ? "rgba(255,59,92,.15)" : "transparent";
-    document.getElementById("rc-tab-real").style.color = tab === "real" ? "var(--red)" : "var(--text-muted)";
-    document.getElementById("rc-tab-real").style.borderColor = tab === "real" ? "rgba(255,59,92,.3)" : "var(--border)";
+    // Phase 4.2 — 4-tab switch (paper / demo / live / shadow). Legacy "real"
+    // arg aliases to "demo" for backward compatibility with cached HTML/JS
+    // during the rollout.
+    if (tab === "real") tab = "demo";
+    const wraps = {
+        paper:  "rc-paper-wrap",
+        demo:   "rc-demo-wrap",
+        live:   "rc-live-wrap",
+        shadow: "rc-shadow-wrap",
+    };
+    // Show only the selected wrap
+    for (const [k, id] of Object.entries(wraps)) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = (tab === k) ? "" : "none";
+    }
+    // Tab colour: cyan=paper, yellow=demo (testnet), red=live (real money),
+    // violet=shadow (shadow_live, no real fills)
+    const styles = {
+        paper:  { on: { bg: "rgba(0,212,255,.15)",  c: "var(--cyan)",   b: "rgba(0,212,255,.3)" } },
+        demo:   { on: { bg: "rgba(245,158,11,.15)", c: "var(--yellow)", b: "rgba(245,158,11,.3)" } },
+        live:   { on: { bg: "rgba(255,59,92,.15)",  c: "var(--red)",    b: "rgba(255,59,92,.3)" } },
+        shadow: { on: { bg: "rgba(167,139,250,.18)", c: "#a78bfa",      b: "rgba(167,139,250,.4)" } },
+    };
+    const off = { bg: "transparent", c: "var(--text-muted)", b: "var(--border)" };
+    for (const k of Object.keys(styles)) {
+        const btn = document.getElementById("rc-tab-" + k);
+        if (!btn) continue;
+        const s = (tab === k) ? styles[k].on : off;
+        btn.style.background = s.bg;
+        btn.style.color = s.c;
+        btn.style.borderColor = s.b;
+    }
+    // Re-render with the latest cached status (no API call — cheap)
+    if (typeof _lastRealStatus !== "undefined" && _lastRealStatus) {
+        try { updateRecentRealClosed(_lastRealStatus); } catch(e) { console.error(e); }
+    }
 }
 
 
@@ -5243,15 +5457,60 @@ async function dashUpdate() {
     let e3 =document.getElementById("cmd-today-trades");if(e3)e3.textContent=td.trades||0;
     let e4 =document.getElementById("cmd-today-fees");if(e4)e4.textContent="$"+(td.fees||0).toFixed(0);
 
-    // 2. Real trading performance
+    // 2. Real trading performance — Phase 5.0.2 (2026-04-22)
+    // DB-BACKED counters (was: cb.trade_count_today / cb.total_pnl which
+    // reset on every bot restart — showed 0/$0 despite 12 closed trades).
+    // Server now injects DB truth into cb + exposes closed_today/net_today
+    // at top level. Prefer those; fall back to cb for robustness.
     let cb = real.circuit_breaker || {};
-    let rpnl = cb.daily_pnl || 0;
+    let rpnl = (real.net_today != null) ? real.net_today : (cb.daily_pnl || 0);
     let rpe = document.getElementById("cmd-real-pnl");
     if(rpe){rpe.textContent=(rpnl<0?"-":rpnl>0?"+":"")+"$"+Math.abs(rpnl).toFixed(2);rpe.style.color=rpnl>=0?"var(--green)":"var(--red)";}
     let rbe =document.getElementById("cmd-real-bal");if(rbe)rbe.textContent="$"+(real.balance||0).toFixed(2);
-    let rte =document.getElementById("cmd-real-trades");if(rte)rte.textContent=cb.trade_count_today||0;
+    let _trades_today = (real.closed_today != null) ? real.closed_today : (cb.trade_count_today || 0);
+    let rte =document.getElementById("cmd-real-trades");if(rte)rte.textContent=_trades_today;
     let rle =document.getElementById("cmd-real-total");
-    if(rle){var tp=cb.total_pnl||0;rle.textContent=(tp<0?"-":"+")+"$"+Math.abs(tp).toFixed(2);rle.style.color=tp>=0?"var(--green)":"var(--red)";}
+    if(rle){var tp=(real.net_today != null)?real.net_today:(cb.total_pnl||0);rle.textContent=(tp<0?"-":tp>0?"+":"")+"$"+Math.abs(tp).toFixed(2);rle.style.color=tp>=0?"var(--green)":"var(--red)";}
+
+    // 2a. "Last Demo/Live" card — Phase 5.0.2 uses server-emitted last_trade
+    // (DB-backed) instead of in-memory closed_trades which also resets.
+    try {
+        const _lt = real.last_trade;
+        const _lastEl = document.getElementById("cmd-last-real-trade");
+        if (_lastEl && _lt && _lt.symbol) {
+            const _pnl = Number(_lt.pnl_usd || 0);
+            const _col = _pnl > 0 ? "var(--green)" : _pnl < 0 ? "var(--red)" : "var(--text-muted)";
+            const _ago = _lt.timestamp ? (new Date() - new Date(_lt.timestamp)) : 0;
+            const _agoMin = Math.round(_ago / 60000);
+            const _agoStr = _agoMin < 60 ? _agoMin + "m" : (_agoMin < 1440 ? Math.round(_agoMin/60) + "h" : Math.round(_agoMin/1440) + "d");
+            _lastEl.innerHTML = `<span style="color:${_col};font-weight:600">${_pnl >= 0 ? "+$" : "-$"}${Math.abs(_pnl).toFixed(2)}</span> `
+                + `<span>${esc(_lt.symbol || "")} ${esc(_lt.side || "")}</span> · `
+                + `<span style="color:var(--text-muted);font-size:.65rem">${esc(_lt.reason || "")} · ${_agoStr} ago</span>`;
+        }
+    } catch(e) { /* no-op */ }
+
+    // 2b. Phase 4.4 — dynamic mode labels.
+    // "Real Trading" / "Last Real" mislabel when the user is actually on
+    // demo/testnet. Relabel to match bot_mode so the dashboard reflects
+    // where the $$ is actually going.
+    //   bot_mode = "demo"  → DEMO TRADING / LAST DEMO   (yellow)
+    //   bot_mode = "live"  → LIVE TRADING / LAST LIVE    (red — real money)
+    //   bot_mode = "paper" → REAL TRADING / LAST REAL    (fallback — peek view)
+    let _userMode = (real.mode || real.bot_mode || "paper").toLowerCase();
+    let _labelMap = {
+        demo: { main: "Demo Trading", last: "Last Demo", color: "var(--yellow)" },
+        live: { main: "Live Trading", last: "Last Live", color: "var(--red)" },
+    };
+    let _lbl = _labelMap[_userMode];
+    let _lblMain = document.getElementById("cmd-real-label");
+    let _lblLast = document.getElementById("cmd-last-real-label");
+    if (_lbl) {
+        if (_lblMain) { _lblMain.textContent = _lbl.main.toUpperCase(); _lblMain.style.color = _lbl.color; }
+        if (_lblLast) { _lblLast.textContent = _lbl.last.toUpperCase(); _lblLast.style.color = _lbl.color; }
+    } else {
+        if (_lblMain) { _lblMain.textContent = "Real Trading".toUpperCase(); _lblMain.style.color = "var(--red)"; }
+        if (_lblLast) { _lblLast.textContent = "Last Real".toUpperCase(); _lblLast.style.color = "var(--red)"; }
+    }
 
     // 3. Header bar updates
     let ppMini = document.getElementById("paper-bal-mini");
@@ -5302,9 +5561,14 @@ async function dashUpdate() {
         le.innerHTML='<span style="font-weight:700;color:'+c+'">$'+(lp>=0?"+":"")+lp.toFixed(2)+'</span> '+sym+' '+(lt.side||"?")+'<br><span class="text-xs-muted">'+(lt.exit_reason||"?")+(ds?' \u00B7 held '+ds:'')+(ago?' \u00B7 '+ago:'')+'</span>';
       }
     }
-    // 7. Last real trade
-    if(real&&real.recent_trades&&real.recent_trades.length>0){
-      let rt =real.recent_trades[real.recent_trades.length-1];
+    // 7. Last real trade — Phase 5.0.2 FIX.
+    // BUG: used recent_trades[length-1] which is the OLDEST element of a
+    // DESC-sorted array (we sort by closed_at DESC on server). That's how
+    // the UI was showing "ETH short -$0.35 22h ago" despite newer wins.
+    // Fix: use recent_trades[0] (newest). Also prefer real.last_trade
+    // (server-emitted, authoritative) and fall through to the array.
+    if(real&&((real.last_trade&&real.last_trade.symbol)||(real.recent_trades&&real.recent_trades.length>0))){
+      let rt = real.last_trade && real.last_trade.symbol ? real.last_trade : real.recent_trades[0];
       let rp =rt.pnl_usd||0;
       let rle2 =document.getElementById("cmd-last-real-trade");
       if(rle2){
@@ -6200,14 +6464,15 @@ async function toggleRealTrading() {
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
-      alert('Trading mode now: ' + (d.bot_mode || newMode).toUpperCase());
+      // Batch A #19: blocking alert() → non-blocking toast
+      (window._notify || alert)('Trading mode now: ' + (d.bot_mode || newMode).toUpperCase(), 'ok', 4000);
       loadRealOps();
     } else {
-      alert('Toggle rejected: ' + (d.error || 'unknown') +
-            (d.hint ? '\n\n' + d.hint : ''));
+      (window._notify || alert)('Toggle rejected: ' + (d.error || 'unknown') +
+            (d.hint ? '\n' + d.hint : ''), 'error', 8000);
     }
   } catch(e) {
-    alert('Toggle error: ' + e.message);
+    (window._notify || alert)('Toggle error: ' + e.message, 'error', 8000);
   }
 }
 

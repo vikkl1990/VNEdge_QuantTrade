@@ -90,7 +90,7 @@ async function refreshAdmin() {
                             '<div class="bg-card-soft"><div class="metric-tiny-label">Max Positions</div><div style="font-weight:700;font-family:monospace;color:#00d4ff">' + (u.max_open_positions||3) + '</div></div>' +
                             '<div class="bg-card-soft"><div class="metric-tiny-label">Pref Leverage</div><div style="font-weight:700;font-family:monospace;color:#ffd700">' + (u.preferred_leverage||5) + 'x</div></div>' +
                             '<div class="bg-card-soft"><div class="metric-tiny-label">Risk/Trade</div><div style="font-weight:700;font-family:monospace;color:#f97316">' + (u.risk_per_trade_pct||1) + '%</div></div>' +
-                            '<div class="bg-card-soft"><div class="metric-tiny-label">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"UTC") + '</div></div>' +
+                            '<div class="bg-card-soft"><div class="metric-tiny-label">Timezone</div><div style="font-weight:600;color:#9ba3b5;font-size:11px">' + (u.timezone||"Asia/Kolkata") + '</div></div>' +
                         '</div>' +
                         // API Keys section
                         '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:8px">' +

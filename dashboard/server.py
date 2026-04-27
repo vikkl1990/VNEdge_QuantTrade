@@ -1060,7 +1060,11 @@ class DashboardServer:
                     out["state"] = "trading"
                     out["mode"] = "live+"
                 elif mode_summary.get("shadow_live", 0) > 0:
-                    out["state"] = "paused"
+                    # 2026-04-27 — was 'paused' (semantically true: no live money)
+                    # but visually misleading: shadow trading IS happening, fills
+                    # are simulated against real L2. Surface as 'shadow' so the
+                    # operator sees activity is live, just not on real capital.
+                    out["state"] = "shadow"
                     out["mode"] = "shadow_live"
                 else:
                     out["state"] = "trading"
@@ -1115,15 +1119,36 @@ class DashboardServer:
                     out["book"]["open"] += r["n"]
                     out["book"]["cap_deployed"] += r["cap"]
 
-                # 4. EDGE — 24h aggregate (all users, all modes)
+                # 4. EDGE — 24h aggregate, scoped to the OPERATOR-RELEVANT cohort.
+                # 2026-04-27: was an "all trade types mixed" headline that hid the
+                # real story (shadow profitable, real bleeding, demo flat). Now
+                # follow the bot_mode of the active user(s):
+                #   live+        → real     (the money number)
+                #   shadow_live  → shadow   (the canonical edge tracker)
+                #   paper        → paper proxy (closed_signals.json — n/a here)
+                # Plus the same clean filter as /api/quant-metrics: excludes
+                # auto_responder_stuck_60m + is_phase2_virtual rows.
+                _edge_type = "real" if mode_summary.get("live", 0) > 0 \
+                    else ("shadow" if mode_summary.get("shadow_live", 0) > 0 else None)
+                _edge_type_filter = ""
+                _edge_params = []
+                if _edge_type:
+                    _edge_type_filter = "AND trade_type = $1"
+                    _edge_params.append(_edge_type)
                 ed = await con.fetchrow(
-                    """SELECT COUNT(*) AS n,
+                    f"""SELECT COUNT(*) AS n,
                               SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
                               SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END) AS gross_w,
                               SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END) AS gross_l,
                               SUM(pnl_usd)::float AS pnl_total
                        FROM user_trades
-                       WHERE closed_at >= NOW() - INTERVAL '24 hours'"""
+                       WHERE closed_at >= NOW() - INTERVAL '24 hours'
+                         {_edge_type_filter}
+                         AND COALESCE(metadata::jsonb->>'exit_reason', '')
+                                != 'auto_responder_stuck_60m'
+                         AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
+                                != 'true'""",
+                    *_edge_params,
                 )
                 if ed and ed["n"]:
                     wr = (float(ed["wins"]) / float(ed["n"])) * 100.0 if ed["n"] else None

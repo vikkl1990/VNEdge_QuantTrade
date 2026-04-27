@@ -811,6 +811,10 @@ class DashboardServer:
         # config A/B/C/D/E. Aggregates per exit_config_id over the window.
         app.router.add_get("/api/phase2/leaderboard", self._handle_phase2_leaderboard)
 
+        # Agents status (2026-04-27) — live fire times + last output for the
+        # 14-agent operational team + Tier A/B workers + specialty crons.
+        app.router.add_get("/api/agents/status", self._handle_agents_status)
+
         # Signal tracker stats
         app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
         app.router.add_get("/api/tracker/active", self._handle_tracker_active)
@@ -2165,6 +2169,101 @@ class DashboardServer:
                     break
         except Exception as e:
             out["error"] = str(e)[:200]
+        return web.json_response(out, dumps=_safe_dumps)
+
+    async def _handle_agents_status(self, request: web.Request) -> web.Response:
+        """Agents status — live fire times for the 14-agent team + Tier A/B
+        + specialty crons. Reads file mtimes from storage/ subdirs (cheap,
+        no DB hit, no journalctl perms required). Each agent is mapped to
+        a primary output file or directory; mtime → last_fire_at. Status
+        derived from cadence_min and time-since-last-fire:
+            green:  age <= 1.5 × cadence
+            yellow: age <= 3.0 × cadence
+            red:    age >  3.0 × cadence (or file missing)
+        Cadence_min = 0 means event-driven (no expected schedule); status
+        is always neutral.
+        """
+        import os, glob
+        from pathlib import Path
+
+        STORAGE = Path("/home/opc/crypto-trading-bot/storage")
+        AGENTS = [
+            # Tier 3 specialist agents
+            {"id": "edge_validator",     "name": "Edge Validator (auto-revert)",     "tier": "T3 Research", "cadence_min": 30,    "globs": ["auto_responder/actions.log"], "log_tag": "auto_revert"},
+            {"id": "deploy_gatekeeper",  "name": "Deploy Gatekeeper",                "tier": "T3 Engrg",    "cadence_min": 0,     "globs": ["../scripts/deploy_gatekeeper.sh"]},
+            {"id": "code_review",        "name": "Code Review (rollback diff)",      "tier": "T3 Engrg",    "cadence_min": 1440,  "globs": ["code_review/*.md"]},
+            {"id": "silent_failure",     "name": "Silent Failure Hunter",            "tier": "T3 Ops",      "cadence_min": 60,    "globs": ["incidents/*.md"]},
+            {"id": "sync_reconciler",    "name": "Sync Reconciler (in-process)",     "tier": "T3 Ops",      "cadence_min": 0,     "globs": ["../execution/user_real_manager.py"]},
+            {"id": "risk_monitor",       "name": "Risk Monitor (Tier A)",            "tier": "T3 Ops",      "cadence_min": 5,     "globs": ["heartbeat/alerts.log"]},
+            {"id": "compliance",         "name": "Compliance Auditor",               "tier": "T3 Ops",      "cadence_min": 43200, "globs": ["compliance/*.md"]},
+            {"id": "incident_responder", "name": "Incident Responder",               "tier": "T3 Ops",      "cadence_min": 5,     "globs": ["incidents/*.md", "auto_responder/actions.log"]},
+            {"id": "data_integrity",     "name": "Data Integrity Engineer",          "tier": "T3 Engrg",    "cadence_min": 1440,  "globs": ["qa_reports/*"]},
+            {"id": "ux_audit",           "name": "UI/UX Designer (audit)",           "tier": "T3 Cross",    "cadence_min": 10080, "globs": ["ux_audit/*"]},
+            {"id": "daily_briefing",     "name": "Architect Briefing",               "tier": "T3 Cross",    "cadence_min": 1440,  "globs": ["daily_briefing/*"]},
+            {"id": "backtest_engineer",  "name": "Backtest Engineer",                "tier": "T3 Research", "cadence_min": 43200, "globs": ["backtest_engineer/*.md"]},
+            {"id": "ml_pipeline",        "name": "ML Pipeline Operator",             "tier": "T3 Cross",    "cadence_min": 15,    "globs": ["ml_models/*"]},
+            # Phase 2 add-ons
+            {"id": "venue_perf",         "name": "Venue Performance Watcher",        "tier": "Phase 2",     "cadence_min": 360,   "globs": ["venue_perf/*.md"]},
+            {"id": "process_heartbeat",  "name": "Process Heartbeat Watcher",        "tier": "Phase 2",     "cadence_min": 10,    "globs": ["heartbeat/alerts.log"]},
+            {"id": "cohort_pause",       "name": "Cohort Pause Surfacer",            "tier": "Phase 2",     "cadence_min": 1440,  "globs": ["cohort_pause/*.md"]},
+            # Tier A — deterministic auto-fix
+            {"id": "incident_auto_a",    "name": "Incident Auto-Responder (Tier A)", "tier": "Tier A",      "cadence_min": 5,     "globs": ["auto_responder/actions.log"]},
+            {"id": "ux_patcher_a",       "name": "UX Auto-Patcher (Tier A)",         "tier": "Tier A",      "cadence_min": 10080, "globs": ["ux_audit/*"]},
+            # Specialty crons
+            {"id": "lever_verdict",      "name": "Lever Verdict Author",             "tier": "Specialty",   "cadence_min": 1440,  "globs": ["verdicts/lever_verdict_*"]},
+            {"id": "maker_verdict",      "name": "Maker Mode Verdict",               "tier": "Specialty",   "cadence_min": 360,   "globs": ["verdicts/maker_verdict_*.md"]},
+            {"id": "strategy_decay",     "name": "Strategy Decay Monitor",           "tier": "Specialty",   "cadence_min": 60,    "globs": ["decay/latest.txt"]},
+            {"id": "eod_reconcile",      "name": "EOD Reconcile",                    "tier": "Specialty",   "cadence_min": 1440,  "globs": ["recon/eod_*.txt"]},
+            {"id": "phase2_leaderboard", "name": "Phase 2 Leaderboard (manual)",     "tier": "Specialty",   "cadence_min": 0,     "globs": ["phase2/leaderboard_*.md"]},
+            {"id": "phase3_sweep",       "name": "Phase 3 Historical Sweep (manual)","tier": "Specialty",   "cadence_min": 0,     "globs": ["phase3/historical_sweep_*.md"]},
+        ]
+
+        import time as _time
+        now = _time.time()
+        out = {"agents": [], "ts": datetime.utcnow().isoformat() + "Z",
+               "summary": {"green": 0, "yellow": 0, "red": 0, "neutral": 0}}
+        for a in AGENTS:
+            latest_mtime = 0.0
+            latest_file = ""
+            for g in a["globs"]:
+                p = STORAGE / g
+                # Glob expansion: STORAGE / "verdicts/maker_verdict_*.md"
+                matches = list(STORAGE.parent.glob(str(p.relative_to(STORAGE.parent)))) if "*" in g else ([p] if p.exists() else [])
+                for m in matches:
+                    try:
+                        mt = m.stat().st_mtime
+                        if mt > latest_mtime:
+                            latest_mtime = mt
+                            latest_file = m.name
+                    except Exception:
+                        pass
+            age_min = (now - latest_mtime) / 60.0 if latest_mtime > 0 else None
+            cad = a["cadence_min"]
+            if cad <= 0:
+                # event-driven: neutral status, just show last fire if any
+                status = "neutral"
+            elif latest_mtime == 0:
+                status = "red"
+            elif age_min <= cad * 1.5:
+                status = "green"
+            elif age_min <= cad * 3.0:
+                status = "yellow"
+            else:
+                status = "red"
+            out["summary"][status] = out["summary"].get(status, 0) + 1
+            out["agents"].append({
+                "id":            a["id"],
+                "name":          a["name"],
+                "tier":          a["tier"],
+                "cadence_min":   cad,
+                "last_file":     latest_file,
+                "last_mtime_s":  int(latest_mtime) if latest_mtime > 0 else None,
+                "age_min":       round(age_min, 1) if age_min is not None else None,
+                "status":        status,
+            })
+        # Sort: red → yellow → neutral → green; then by tier
+        STATUS_ORDER = {"red": 0, "yellow": 1, "neutral": 2, "green": 3}
+        out["agents"].sort(key=lambda x: (STATUS_ORDER.get(x["status"], 9), x["tier"], x["name"]))
         return web.json_response(out, dumps=_safe_dumps)
 
     # ══════════════════════════════════════════════════════════════

@@ -2221,6 +2221,7 @@ class DashboardServer:
             {"id": "incident_auto_a",    "name": "Incident Auto-Responder (Tier A)", "tier": "Tier A",      "cadence_min": 5,     "globs": ["auto_responder/actions.log"]},
             {"id": "ux_patcher_a",       "name": "UX Auto-Patcher (Tier A)",         "tier": "Tier A",      "cadence_min": 10080, "globs": ["ux_audit/*"]},
             # Specialty crons
+            {"id": "paper_shadow_gap",   "name": "Paper-vs-Shadow Gap Monitor",      "tier": "Phase 2",     "cadence_min": 30,    "globs": ["paper_shadow_gap/gap_*.md"]},
             {"id": "lever_verdict",      "name": "Lever Verdict Author",             "tier": "Specialty",   "cadence_min": 1440,  "globs": ["verdicts/lever_verdict_*"]},
             {"id": "maker_verdict",      "name": "Maker Mode Verdict",               "tier": "Specialty",   "cadence_min": 360,   "globs": ["verdicts/maker_verdict_*.md"]},
             {"id": "strategy_decay",     "name": "Strategy Decay Monitor",           "tier": "Specialty",   "cadence_min": 60,    "globs": ["decay/latest.txt"]},

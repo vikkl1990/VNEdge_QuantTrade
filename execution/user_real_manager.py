@@ -64,6 +64,18 @@ PHASE2_EXIT_CONFIGS = [
     # reverse past peak. Same kill/trail config as primary; only TP cap differs.
     {"id": "v6_tp_15R",        "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
      "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": 1.5},
+    # 2026-04-28 — v7_scratch_02R: SCRATCH-PROFIT variant.
+    # Empirical loss audit (last 6h, 18 losing primary trades): peak_mfe_r
+    # distribution = 0.00–0.25R for every single losing trade. None reached
+    # the 0.5R trail engagement. Pattern: enter → small adverse → drift back
+    # near entry → time-out at -$1.50 (mostly fees) at 10min cap.
+    # Hypothesis: lower trail_trigger to 0.20R (catches the 0.20-0.25R peaks
+    # before they retrace) AND keep trail_lock 0.80 (lock 0.16R = small
+    # scratch profit ≈ +$0.10-0.30 net after fees). Captures the regime
+    # backtest engine doesn't model well but loss-attribution clearly shows.
+    # If forward Phase 2 leaderboard ranks v7 above primary, promote.
+    {"id": "v7_scratch_02R",   "max_age_sec":  600, "trail_trigger": 0.2, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": None},
 ]
 
 logger = logging.getLogger("execution.user_real")

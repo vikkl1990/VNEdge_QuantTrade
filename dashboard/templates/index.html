@@ -449,6 +449,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/phase2_leaderboard.css">
 <link rel="stylesheet" href="/static/css/agents_status.css">
 <link rel="stylesheet" href="/static/css/maker_counterfactual.css">
+<link rel="stylesheet" href="/static/css/chief_quant_briefing.css">
 <link rel="stylesheet" href="/static/css/exchange_compare.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_badges.css">
 <link rel="stylesheet" href="/static/css/multi_exchange_overlay.css">
@@ -654,6 +655,9 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- TAB 1: LIVE TRADING                                    -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content active" id="tab-live" role="main">
+
+  <!-- 🧠 Chief Quant Continuous Briefing — meta-agent that aggregates all agents (2026-04-28) -->
+  <section id="chief-quant-panel" aria-label="Chief Quant continuous briefing"></section>
 
   <!-- Trading Dashboard (replaces old Command Center) -->
   <!-- Architect's Overview Strip — Agent 14 UX P0 #1 (B3, 2026-04-26) -->
@@ -3191,6 +3195,7 @@ async function validateApiKeyInline() {
 <script src="/static/js/analytics_shadow.js"></script>
 <script src="/static/js/agents_status.js"></script>
 <script src="/static/js/maker_counterfactual.js"></script>
+<script src="/static/js/chief_quant_briefing.js"></script>
 <script src="/static/js/exchange_compare.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/multi_exchange_overlay.js"></script>

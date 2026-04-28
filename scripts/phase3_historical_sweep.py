@@ -58,6 +58,9 @@ PHASE2_EXIT_CONFIGS = [
     # 2026-04-28 Path 2 — v6_tp_15R from exit_variant_backtest (5.2% Pareto-better).
     {"id": "v6_tp_15R",        "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
      "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": 1.5},
+    # 2026-04-28 — v7_scratch_02R: trail at 0.2R for low-volatility regimes.
+    {"id": "v7_scratch_02R",   "max_age_sec":  600, "trail_trigger": 0.2, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": None},
 ]
 
 

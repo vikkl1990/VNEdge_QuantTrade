@@ -822,6 +822,11 @@ class DashboardServer:
         # cf_maker_savings_* fields stamped into close_meta by _close_shadow.
         app.router.add_get("/api/maker/counterfactual", self._handle_maker_counterfactual)
 
+        # Chief Quant continuous briefing (2026-04-28) — meta-agent that
+        # aggregates all other agents into one decision-grade markdown
+        # every 30 min. Endpoint serves the latest.md as plain text.
+        app.router.add_get("/api/chief-quant/latest", self._handle_chief_quant_latest)
+
         # Signal tracker stats
         app.router.add_get("/api/tracker/stats", self._handle_tracker_stats)
         app.router.add_get("/api/tracker/active", self._handle_tracker_active)
@@ -2221,6 +2226,7 @@ class DashboardServer:
             {"id": "incident_auto_a",    "name": "Incident Auto-Responder (Tier A)", "tier": "Tier A",      "cadence_min": 5,     "globs": ["auto_responder/actions.log"]},
             {"id": "ux_patcher_a",       "name": "UX Auto-Patcher (Tier A)",         "tier": "Tier A",      "cadence_min": 10080, "globs": ["ux_audit/*"]},
             # Specialty crons
+            {"id": "chief_quant",        "name": "🧠 Chief Quant Continuous Briefing","tier": "Meta-Agent",  "cadence_min": 30,    "globs": ["chief_quant/briefing_*.md"]},
             {"id": "paper_shadow_gap",   "name": "Paper-vs-Shadow Gap Monitor",      "tier": "Phase 2",     "cadence_min": 30,    "globs": ["paper_shadow_gap/gap_*.md"]},
             {"id": "lever_verdict",      "name": "Lever Verdict Author",             "tier": "Specialty",   "cadence_min": 1440,  "globs": ["verdicts/lever_verdict_*"]},
             {"id": "maker_verdict",      "name": "Maker Mode Verdict",               "tier": "Specialty",   "cadence_min": 360,   "globs": ["verdicts/maker_verdict_*.md"]},
@@ -2277,6 +2283,20 @@ class DashboardServer:
         STATUS_ORDER = {"red": 0, "yellow": 1, "neutral": 2, "green": 3}
         out["agents"].sort(key=lambda x: (STATUS_ORDER.get(x["status"], 9), x["tier"], x["name"]))
         return web.json_response(out, dumps=_safe_dumps)
+
+    async def _handle_chief_quant_latest(self, request: web.Request) -> web.Response:
+        """Serve the latest Chief Quant briefing markdown as plain text.
+        Dashboard widget renders this directly. Cron writes
+        storage/chief_quant/latest.md every 30 min.
+        """
+        from pathlib import Path
+        path = Path("/home/opc/crypto-trading-bot/storage/chief_quant/latest.md")
+        if not path.exists():
+            return web.Response(text="# Chief Quant briefing not yet generated\n\nFirst cron fires within 30 min.", content_type="text/markdown")
+        try:
+            return web.Response(text=path.read_text(), content_type="text/markdown")
+        except Exception as e:
+            return web.Response(text=f"# Error reading briefing\n\n{e}", content_type="text/markdown")
 
     async def _handle_maker_counterfactual(self, request: web.Request) -> web.Response:
         """Path A — maker counterfactual for shadow trades.

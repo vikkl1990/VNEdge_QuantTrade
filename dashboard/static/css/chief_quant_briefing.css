@@ -1,0 +1,41 @@
+/* Chief Quant Briefing widget — 2026-04-28 */
+#chief-quant-panel {
+  background: linear-gradient(180deg, rgba(167,139,250,.05), var(--bg-card, #0f1f3d));
+  border: 1px solid rgba(167,139,250,.2);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin: 10px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-primary, #e6edf7);
+  max-height: 720px;
+  overflow-y: auto;
+}
+.cq-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 14px; padding-bottom: 8px;
+  border-bottom: 1px solid rgba(167,139,250,.15);
+  flex-wrap: wrap; gap: 8px;
+}
+.cq-title {
+  font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1.2px;
+  color: #a78bfa; font-weight: 700;
+}
+.cq-meta { font-size: 0.6rem; color: var(--text-muted, #6b7794); font-style: italic; }
+
+.cq-body { font-size: 0.7rem; line-height: 1.6; }
+.cq-body h1 { display: none; }  /* title in header already */
+.cq-body h2 { font-size: .82rem; text-transform: uppercase; letter-spacing: 1px; color: #a78bfa; margin: 14px 0 6px; padding-top: 8px; border-top: 1px dashed rgba(167,139,250,.1); }
+.cq-body h3 { font-size: .72rem; color: var(--text-secondary, #9ca8be); margin: 8px 0 4px; }
+.cq-body h4 { font-size: .68rem; color: var(--text-muted, #6b7794); margin: 6px 0 4px; }
+.cq-body p { margin: 4px 0; }
+.cq-body ul, .cq-body ol { margin: 4px 0; padding-left: 20px; }
+.cq-body li { margin: 2px 0; }
+.cq-body code { background: rgba(255,255,255,.05); padding: 1px 5px; border-radius: 3px; font-size: 0.65rem; color: var(--text-secondary); }
+.cq-body strong { color: var(--text-primary); font-weight: 700; }
+.cq-body hr { border: 0; border-top: 1px dashed rgba(255,255,255,.05); margin: 10px 0; }
+
+.cq-table { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font-size: 0.66rem; }
+.cq-table th { text-align: left; font-weight: 600; color: var(--text-muted, #6b7794); padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.1); text-transform: uppercase; font-size: 0.58rem; letter-spacing: .5px; }
+.cq-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
+
+.cq-empty { color: var(--text-muted); font-style: italic; padding: 12px; text-align: center; }

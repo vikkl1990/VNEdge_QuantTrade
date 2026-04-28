@@ -55,6 +55,9 @@ PHASE2_EXIT_CONFIGS = [
      "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": None},
     {"id": "v4_60min_unrest",  "max_age_sec": 3600, "trail_trigger": 0.7, "trail_lock": 0.80,
      "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": 2.0},
+    # 2026-04-28 Path 2 — v6_tp_15R from exit_variant_backtest (5.2% Pareto-better).
+    {"id": "v6_tp_15R",        "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": 1.5},
 ]
 
 

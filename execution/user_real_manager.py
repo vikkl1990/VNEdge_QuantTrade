@@ -55,6 +55,15 @@ PHASE2_EXIT_CONFIGS = [
      "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": None},
     {"id": "v4_60min_unrest",  "max_age_sec": 3600, "trail_trigger": 0.7, "trail_lock": 0.80,
      "dead_kill_R":  None, "stall_kill_R":  None, "tp_R": 2.0},
+    # 2026-04-28 Path 2 — `v6_tp_15R` from exit_variant_backtest.
+    # Backtest signal: hard TP at +1.5R produced +5.2% Net uplift vs primary
+    # (1101 vs 1047 over 714 historical signals) AND better PF (1.79 vs 1.75)
+    # AND better MaxDD (-$23 vs -$25). Strict ship rule was ≥10%, but variant
+    # is strictly Pareto-better on PF + MaxDD with positive Net delta — worth
+    # forward-validating. tp_R=1.5 caps the ~52 trades that would otherwise
+    # reverse past peak. Same kill/trail config as primary; only TP cap differs.
+    {"id": "v6_tp_15R",        "max_age_sec":  600, "trail_trigger": 0.5, "trail_lock": 0.80,
+     "dead_kill_R": -0.10, "stall_kill_R": -0.05, "tp_R": 1.5},
 ]
 
 logger = logging.getLogger("execution.user_real")

@@ -1044,11 +1044,25 @@ class SignalTracker:
                 # (2026-09-09 journal: +3.26% reported vs +0.96% from fills).
                 # signal_price keeps the intended level for slippage analytics.
                 if ts.fill_price > 0 and ts.fill_price != ts.entry_price:
+                    _old_entry = ts.entry_price
+                    _old_risk = abs(_old_entry - ts.stop_loss) if ts.stop_loss > 0 else 0.0
+                    _is_long = ts.side == "long"
                     ts.entry_price = ts.fill_price
-                    ts.highest_price = max(ts.highest_price, ts.fill_price) if ts.side == "long" else ts.fill_price
-                    ts.lowest_price = min(ts.lowest_price, ts.fill_price) if ts.side != "long" else ts.fill_price
+                    ts.highest_price = max(ts.highest_price, ts.fill_price) if _is_long else ts.fill_price
+                    ts.lowest_price = min(ts.lowest_price, ts.fill_price) if not _is_long else ts.fill_price
+                    # The stop stays on the scanner's structure; risk is
+                    # re-measured from the real entry. Targets were absolute
+                    # prices frozen from the level-based entry — re-derive them
+                    # at the same R multiples from the new risk so TP1 is still
+                    # (for example) 0.8R from where we actually got in.
                     if ts.stop_loss > 0:
                         ts.initial_risk = abs(ts.fill_price - ts.stop_loss)
+                        if _old_risk > 0 and ts.initial_risk > 0:
+                            for _tp in ("tp1", "tp2", "tp3"):
+                                _v = getattr(ts, _tp, 0) or 0
+                                if _v > 0:
+                                    _rr = abs(_v - _old_entry) / _old_risk
+                                    setattr(ts, _tp, ts.fill_price + (_rr * ts.initial_risk if _is_long else -_rr * ts.initial_risk))
 
             # Update high/low watermarks
             if price > ts.highest_price:
@@ -1104,7 +1118,7 @@ class SignalTracker:
             # -- DYNAMIC TRAILING PROFIT PROTECTION --
             # Continuously trails stop based on MFE. No more waiting for
             # fixed thresholds — every tick of profit is partially locked.
-            if ts.symbol == "BTC/USDT" and ts.trade_id[:8] == "fd7833bb":
+            if ts.symbol == "BTC/USDT" and False:
                 logger.info("BTC_DEBUG: price=%.2f entry=%.2f sl=%.2f ir=%.2f mfe_r=%.2f peak=%.2f",
                            price, ts.entry_price, ts.stop_loss, ts.initial_risk, ts.mfe_r, ts.peak_mfe_r)
             #
@@ -1130,7 +1144,7 @@ class SignalTracker:
                 # trail_floor stays None → this block never triggers exit.
                 pass
 
-                if ts.symbol == "BTC/USDT" and ts.trade_id[:8] == "fd7833bb":
+                if ts.symbol == "BTC/USDT" and False:
                     logger.info("BTC_TRAIL: cur_r=%.3f trail_floor=%s mfe_r=%.3f protect=%s",
                                current_r, trail_floor, ts.mfe_r, trail_floor is not None and current_r <= trail_floor)
                 if trail_floor is not None and current_r <= trail_floor:
@@ -1274,9 +1288,13 @@ class SignalTracker:
                 if _chand_result:
                     ts.exit_reason = _chand_result.get("reason", "chandelier_trail")
                     ts.exit_reason_detailed = _chand_result.get("detail", "chandelier_exit")
-                    ts.status = "trail_win" if ts.breakeven_set else "stopped"
                     ts.exit_price = price
-                    ts.pnl_pct = ((price - ts.entry_price) / ts.entry_price * 100) if is_long else ((ts.entry_price - price) / ts.entry_price * 100)
+                    # Route through _calc_pnl so fees / pnl_usd / exit_r are
+                    # populated like every other exit, and label by NET sign —
+                    # this path used to record gross PnL and call any
+                    # breakeven-armed exit a "trail_win" even when net-negative.
+                    ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
+                    ts.status = "trail_win" if ts.pnl_pct > 0 else "stopped"
                     to_close.append(tid)
                     events.append({"type": "chandelier_exit", "signal": ts.to_dict(), "message": f"CHANDELIER EXIT: {ts.symbol} {ts.side} @ {price:.2f} | peak={ts.peak_mfe_r:.2f}R"})
                     continue
@@ -1546,7 +1564,9 @@ class SignalTracker:
 
                     ts.atr_trail_active = True
                     ts.atr_trail_price = trail_sl
-                    ts.stop_loss = trail_sl
+                    # Ratchet only: never loosen a stop already tightened by
+                    # breakeven / MFE-lock / profit-defender.
+                    ts.stop_loss = max(ts.stop_loss, trail_sl) if is_long else min(ts.stop_loss, trail_sl)
 
                     events.append({
                         "type": "tp1_hit",
@@ -1586,7 +1606,8 @@ class SignalTracker:
                     else:
                         ts.atr_trail_price = price + atr_trail_dist
                         ts.atr_trail_price = min(ts.atr_trail_price, ts.tp1)
-                    ts.stop_loss = ts.atr_trail_price
+                    # Ratchet only (see TP1)
+                    ts.stop_loss = max(ts.stop_loss, ts.atr_trail_price) if is_long else min(ts.stop_loss, ts.atr_trail_price)
                     events.append({
                         "type": "tp2_hit",
                         "signal": ts.to_dict(),

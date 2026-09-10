@@ -635,13 +635,21 @@ class ScalpStrategy(BaseStrategy):
                 confirm_atr = 0.0
 
         atr_ratio = 1.0
-        if confirm_atr > 0 and len(df) >= 50:
+        # Like-for-like: current ATR vs the 50-bar mean of the SAME series.
+        # Previously the 5m confirm ATR was divided by the mean of the 1m ATR
+        # (primary frame), which is structurally ~2-5x and made the "extreme
+        # volatility" block fire on most symbols most of the time.
+        _ratio_series = None
+        if getattr(self, "_confirm_atr_series", None) is not None and len(self._confirm_atr_series) >= 50:
+            _ratio_series = self._confirm_atr_series
+        elif "atr" in df.columns and len(df) >= 50:
+            _ratio_series = df["atr"]
+            confirm_atr = float(df["atr"].iloc[-1]) if confirm_atr <= 0 else float(df["atr"].iloc[-1])
+        if confirm_atr > 0 and _ratio_series is not None:
             try:
-                atr_col = df["atr"] if "atr" in df.columns else None
-                if atr_col is not None:
-                    atr_sma50 = float(atr_col.rolling(50).mean().iloc[-1])
-                    if atr_sma50 > 0:
-                        atr_ratio = confirm_atr / atr_sma50
+                atr_sma50 = float(_ratio_series.rolling(50).mean().iloc[-1])
+                if atr_sma50 > 0:
+                    atr_ratio = float(_ratio_series.iloc[-1]) / atr_sma50
             except Exception:
                 atr_ratio = 1.0
 
@@ -658,11 +666,14 @@ class ScalpStrategy(BaseStrategy):
             reasons.append(f"ATR low ({atr_ratio:.2f})")
             context["atr_regime"] = "low"
         # Adaptive ATR threshold: higher for high-beta coins
-        atr_extreme_threshold = 3.5
+        # Thresholds re-based for the like-for-like ratio (same-series ATR vs
+        # its 50-bar mean, centred on ~1.0). The old 3.5/5.0/6.0 values were
+        # compensating for the 5m-vs-1m mismatch.
+        atr_extreme_threshold = 2.5
         if symbol in ("AVAX/USDT", "DOGE/USDT", "LINK/USDT", "LTC/USDT", "ADA/USDT", "DOT/USDT", "TAO/USDT", "XRP/USDT"):
-            atr_extreme_threshold = 6.0  # alt-coins have naturally higher ATR ratios
+            atr_extreme_threshold = 3.0  # alt-coins have naturally higher ATR ratios
         elif symbol in ("SOL/USDT",):
-            atr_extreme_threshold = 5.0  # SOL is more volatile than BTC/ETH
+            atr_extreme_threshold = 2.8  # SOL is more volatile than BTC/ETH
 
         if atr_ratio > atr_extreme_threshold:
             # Extreme volatility — hard block
@@ -1293,6 +1304,7 @@ class ScalpStrategy(BaseStrategy):
                 else:
                     confirm_atr_series = calc_atr(confirm_df, self.atr_period)
                 self._confirm_atr = float(confirm_atr_series.iloc[-1])
+                self._confirm_atr_series = confirm_atr_series  # for like-for-like ATR ratio
             except Exception:
                 pass
 
@@ -3648,6 +3660,13 @@ class ScalpStrategy(BaseStrategy):
             fib_data=fib_data, choch_data=choch_data,
             primary_df=primary_df, regime=regime,
         )
+        if signal is None:
+            # _build_signal declines (liquidation buffer / R:R floor). Without
+            # this guard the metadata writes below raised AttributeError and
+            # aborted the whole scan for the symbol.
+            self._funnel["rejected"] = self._funnel.get("rejected", 0) + 1
+            self.last_scan_status[symbol] = {"signal": False, "reason": "SIGNAL BUILD: R:R / liquidation buffer floor", "funnel": dict(self._funnel)}
+            return []
 
         # Tag signal with tier and scanner weight info
         if signal.metadata is None:
@@ -5510,9 +5529,16 @@ class ScalpStrategy(BaseStrategy):
 
         
         # --- MSS Confirmation Gate (Upgrade 3) ---
-        # Confirming candle: body >= 55% of range, close in trade direction
+        # Confirming candle: body >= 55% of range, close in trade direction.
+        # (These names were never defined in this scope — every call raised
+        # NameError inside the scanner loop's try/except, so bos_choch never
+        # fired. Evaluate on the confirmation bar the scanner already chose.)
+        close = entry_close
+        open_ = float(entry_bar["open"])
+        high = entry_high
+        low = entry_low
         _mss_body = abs(close - open_)
-        _mss_range = high - low if 'high' in dir() else float(last.get("high",0)) - float(last.get("low",0))
+        _mss_range = high - low
         if _mss_range > 0 and (_mss_body / _mss_range) < 0.55:
             return None  # Weak candle — not MSS confirmation
         if side == OrderSide.LONG and close <= open_:

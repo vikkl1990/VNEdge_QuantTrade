@@ -13,6 +13,8 @@ import os
 import time
 import traceback
 from datetime import datetime, timezone
+
+import pandas as pd
 from typing import Any, Dict, List, Optional
 
 from bot.decision_engine import DecisionEngine
@@ -28,6 +30,34 @@ try:
     _HAS_DELTA_WS = True
 except ImportError:
     _HAS_DELTA_WS = False
+
+
+_TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+          "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "6h": 21_600_000, "1d": 86_400_000}
+
+
+def _completed_bars_only(df, tf: str, now_ms: int):
+    """Drop the still-forming last bar(s) of a candle frame.
+
+    A bar whose open time + timeframe is still in the future has not closed.
+    Indicators computed on it (body, wick ratio, volume ratio, ATR) are
+    meaningless and were the source of false "low liquidity" / "no volume"
+    / "weak candle" vetoes and of scanners firing on half-built wicks.
+    """
+    try:
+        tf_ms = _TF_MS.get(tf)
+        if not tf_ms or "timestamp" not in df.columns or len(df) == 0:
+            return df
+        ts = pd.to_datetime(df["timestamp"], utc=True)
+        epoch = pd.Timestamp("1970-01-01", tz="UTC")
+        open_ms = (ts - epoch) // pd.Timedelta(milliseconds=1)
+        mask = (open_ms + tf_ms) <= now_ms
+        if mask.all():
+            return df
+        out = df[mask]
+        return out if len(out) > 0 else df
+    except Exception:
+        return df
 
 
 class BotOrchestrator:
@@ -1547,11 +1577,21 @@ class BotOrchestrator:
                 v for v in (tf_cfg if isinstance(tf_cfg, dict) else {}).values()
                 if isinstance(v, str)
             )) or [timeframe]
+
+            # Analyse once per PRIMARY-timeframe close (config timeframes.primary,
+            # default 5m). The feed emits candle_closed for every subscribed
+            # frame; running the scanners on each 1m close re-scanned the same
+            # 5m setup five times and did so against bars that had just opened.
+            _analysis_tf = (tf_cfg.get("primary", "5m") if isinstance(tf_cfg, dict) else "5m")
+            if timeframe != _analysis_tf:
+                return
+
+            _now_ms = int(_t.time() * 1000)
             candles_dict = {}
             for tf in timeframes_list:
                 df = self._data_manager.get_candles(symbol, tf)
                 if df is not None and len(df) > 0:
-                    candles_dict[tf] = df
+                    candles_dict[tf] = _completed_bars_only(df, tf, _now_ms)
 
             # 3. Run strategy analysis (sync method)
             # Upgrade 2: feed candles to signal tracker for Chandelier Exit

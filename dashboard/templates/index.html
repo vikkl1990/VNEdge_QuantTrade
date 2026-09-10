@@ -444,6 +444,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/components.css">
 <link rel="stylesheet" href="/static/css/layout.css">
 <link rel="stylesheet" href="/static/css/v2_layout.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/css/terminal.css">
 </head>
 <body>
 <a href="#tab-live" class="skip-link">Skip to main content</a>
@@ -486,52 +490,30 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 </div>
 
-<!-- ═══ HEADER ═════════════════════════════════════════════ -->
-<header class="header" role="banner">
-  <div class="header-brand">
-    <img src="/static/logo-white.jpg" alt="VN Edge" class="header__logo-img">
-    <div class="header-brand-text">
-      <span class="header-brand-name">VN EDGE</span>
-      <span class="header-brand-tagline">QUANTITATIVE TRADING TERMINAL</span>
-    </div>
+
+<!-- ═══ TOP BAR ═══ -->
+<header class="tbar" role="banner">
+  <div class="wordmark">VN EDGE<small>Quantitative Trading Terminal</small></div>
+  <nav class="tab-bar" role="tablist" aria-label="Sections">
+    <button class="tab-btn active" data-tab="live" role="tab" aria-controls="tab-live" aria-selected="true" data-action="switchTab" data-arg="live">Live</button>
+    <button class="tab-btn" data-tab="analytics" role="tab" aria-controls="tab-analytics" aria-selected="false" data-action="switchTab" data-arg="analytics">Analytics</button>
+    <button class="tab-btn" data-tab="config" role="tab" aria-controls="tab-config" aria-selected="false" data-action="switchTab" data-arg="config">Config</button>
+    <button class="tab-btn" data-tab="system" role="tab" aria-controls="tab-system" aria-selected="false" data-action="switchTab" data-arg="system">System</button>
+    <button class="tab-btn" data-tab="agents" role="tab" aria-controls="tab-agents" aria-selected="false" data-action="switchTab" data-arg="agents">Agents</button>
+    <button class="tab-btn" data-tab="brain" role="tab" aria-controls="tab-brain" aria-selected="false" data-action="switchTab" data-arg="brain">Brain</button>
+  </nav>
+  <div class="health" id="tb-health" aria-live="polite"></div>
+  <div class="health" style="margin-left:0;flex:none">
+    <a href="/ml-lab" target="_blank" class="chip link" title="Open the ML training lab">ML Lab</a>
+    <button data-action="emergencyStop" id="emergency-btn" aria-label="Emergency stop" type="button" class="chip stop">Stop</button>
+    <span class="chip user" id="session-info" aria-live="polite"></span>
+    <button class="chip link" id="logout-btn" data-action="handleLogout" style="display:none">Log out</button>
   </div>
-  <div class="header-status">
-    <div class="status-pill" id="hdr-pill">
-      <span class="dot on" id="hdr-dot"></span>
-      <span id="hdr-status" aria-live="polite" class="font-semibold text-sm">Connecting</span>
-    </div>
-    <span class="header-version">v2.1</span>
-    <a href="/ml-lab" target="_blank" class="btn btn--purple btn--sm">ML Lab</a>
-    <button data-action="emergencyStop" id="emergency-btn" aria-label="Emergency Stop" type="button" class="btn btn--danger btn--sm font-bold tracking-wide">STOP</button>
-    <span class="session-info" id="session-info" aria-live="polite"></span>
-    <button class="btn btn--ghost btn--sm" id="logout-btn" data-action="handleLogout" style="display:none">LOGOUT</button>
-  </div>
+  <span id="hdr-status" style="display:none"></span><span id="hdr-dot" style="display:none"></span><span id="hdr-pill" style="display:none"></span>
 </header>
 
-<!-- ═══ MODE BANNER ════════════════════════════════════════ -->
-<div id="mode-banner" class="mode-banner">
-  <span id="mode-label" aria-live="polite">LOADING...</span>
-  <span id="mode-stats" aria-live="polite" class="font-medium text-sm"></span>
-</div>
 
-<!-- ═══ TAB BAR ════════════════════════════════════════════ -->
-<nav class="tab-bar" role="navigation" role="tablist" aria-label="Dashboard tabs">
-  <button class="tab-btn active" data-tab="live" role="tab" aria-controls="tab-live" aria-selected="true" role="tab" aria-controls="tab-live" aria-selected="false" data-action="switchTab" data-arg="live">Live Trading</button>
-  <button class="tab-btn" data-tab="analytics" role="tab" aria-controls="tab-analytics" aria-selected="false" data-action="switchTab" data-arg="analytics">Analytics</button>
-  <button class="tab-btn" data-tab="config" role="tab" aria-controls="tab-config" aria-selected="false" data-action="switchTab" data-arg="config">Config</button>
-  <button class="tab-btn" data-tab="system" role="tab" aria-controls="tab-system" aria-selected="false" data-action="switchTab" data-arg="system">System</button>
-  <button class="tab-btn" data-tab="agents" role="tab" aria-controls="tab-agents" aria-selected="false" data-action="switchTab" data-arg="agents">Agents</button>
-  <button class="tab-btn tab-btn--brain" data-tab="brain" role="tab" aria-controls="tab-brain" aria-selected="false" data-action="switchTab" data-arg="brain">Brain</button>
-</nav>
 
-<!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
-<div class="ticker" id="price-ticker">
-  <div id="ticker-symbols" aria-live="polite" class="flex gap-6 flex-wrap"></div>
-  <span id="price-bal" style="display:none">--</span>
-  <div class="flex items-center gap-3">
-    <span class="text-muted text-xs" id="price-update-time">--</span>
-  </div>
-</div>
 
 <!-- ═══ ALERT BANNER ═══════════════════════════════════════ -->
 <div class="alert-banner" id="alert-banner">
@@ -539,505 +521,45 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <span id="alert-text" aria-live="polite"></span>
 </div>
 
-<!-- ═══ INFO BAR ═══════════════════════════════════════════ -->
-<div class="info-bar">
-  <div class="info-group">
-    <span class="info-badge learning" id="mode-badge">PAPER · LIVE DATA</span>
-    <span class="text-muted">Exchange: <span id="exchange-bal" class="font-semibold font-mono text-warning">$--</span></span>
-    <span class="text-muted">Paper: <span id="paper-bal-mini" class="font-semibold font-mono text-success">$1,000.00</span></span>
-  </div>
-  <div class="info-group">
-    <span class="text-muted">Signals: <span id="signals-mini-count" style="font-weight:600;font-family:var(--font-mono)">0</span></span>
-    <span class="text-muted">Latency: <span id="latency-ms" aria-live="polite" style="font-weight:600;color:var(--green);font-family:var(--font-mono)">--</span></span>
-  </div>
-</div>
 
-<!-- ═══ R-DRIFT / WR ALERT STRIP (Phase 2D + 3.14) ══════════ -->
-<div id="rdrift-strip" class="strip-bar strip-bar--success" class="section-strip">
-  <span class="strip-label">EDGE</span>
-  <!-- Phase 3.14: Rolling window selector -->
-  <div style="display:flex;gap:2px" id="rd-window-buttons">
-    <button data-action="setRdWindow" data-arg="1" data-h="1" class="win-btn">1H</button>
-    <button data-action="setRdWindow" data-arg="4" data-h="4" class="win-btn">4H</button>
-    <button data-action="setRdWindow" data-arg="24" data-h="24" class="win-btn active">24H</button>
-    <button data-action="setRdWindow" data-arg="168" data-h="168" class="win-btn">7D</button>
-    <button data-action="setRdWindow" data-arg="0" data-h="0" class="win-btn">ALL</button>
-  </div>
-  <span><span class="text-muted">Paper WR </span><span id="rd-paper-wr" class="text-success font-bold">--</span></span>
-  <span class="text-dim">|</span>
-  <span><span class="text-muted">Paper R </span><span id="rd-paper-r" class="text-success font-bold">--</span></span>
-  <span class="text-dim">|</span>
-  <span><span class="text-muted">Supervisor </span><span id="rd-sup-indicator" class="font-bold text-muted">--</span></span>
-  <span id="rd-alerts" aria-live="polite" class="text-warning font-bold ml-auto"></span>
-</div>
 
-<!-- ═══ ML OPS STRIP (Track C — ML health + edge verdict summary) ═══ -->
-<div id="ml-ops-strip" class="strip-bar strip-bar--purple" class="section-strip">
-  <span class="strip-label text-purple">ML OPS</span>
-  <span><span class="text-muted">Health </span><span id="mlops-health" class="font-bold text-muted">--</span></span>
-  <span class="text-dim">|</span>
-  <!-- Global verdict tally -->
-  <span><span class="text-muted">HOLDS </span><span id="mlops-holds" class="text-success font-bold">--</span></span>
-  <span><span class="text-muted">WEAK </span><span id="mlops-weak" class="text-warning font-bold">--</span></span>
-  <span><span class="text-muted">UNCLEAR </span><span id="mlops-unclear" style="color:var(--orange);font-weight:700">--</span></span>
-  <span><span class="text-muted">NO_EDGE </span><span id="mlops-noedge" class="text-danger font-bold">--</span></span>
-  <span class="text-dim">|</span>
-  <!-- Live calibration -->
-  <span><span class="text-muted">Live N </span><span id="mlops-live-n" class="text-info font-bold">--</span></span>
-  <span><span class="text-muted">Pred </span><span id="mlops-live-pred" class="font-bold">--</span></span>
-  <span><span class="text-muted">Cal Err </span><span id="mlops-live-err" class="font-bold">--</span></span>
-  <span class="text-dim">|</span>
-  <span id="mlops-alerts" class="text-warning font-bold ml-auto"></span>
-</div>
 
-<!-- ═══ CURRENT ACTION BANNER (Phase 2.5 B2) ════════════════ -->
-<div id="current-action-banner" class="strip-bar strip-bar--info" class="section-strip">
-  <span class="strip-label" style="color:#818cf8;min-width:56px">NOW</span>
-  <span id="ca-pulse" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#818cf8;box-shadow:0 0 6px #818cf8;animation:pulse 1.5s ease-in-out infinite"></span>
-  <span id="ca-action" aria-live="polite" class="text-dim font-bold">--</span>
-  <span id="ca-symbol" aria-live="polite" class="text-success font-bold"></span>
-  <span id="ca-detail" class="text-muted"></span>
-  <span id="ca-age" style="color:var(--text-muted);margin-left:auto">--</span>
-</div>
-<!-- pulse keyframe moved to design-system.css -->
+<div style="display:none"><span id="paper-bal-mini"></span><span id="signals-mini-count"></span><span id="latency-ms"></span><span id="exchange-bal"></span><span id="mode-badge"></span><span id="mode-label"></span><span id="mode-stats"></span></div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 1: LIVE TRADING                                    -->
 <!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content active" id="tab-live" role="main">
-
-  <!-- Trading Dashboard (replaces old Command Center) -->
-  <!-- Architect's Overview Strip — Agent 14 UX P0 #1 (B3, 2026-04-26) -->
-
-  <!-- Co-pilot Sprint 1 MVP: Decisions Queued For You (2026-04-26) -->
-
-  <!-- Phase 3 Quant Heroes — Sharpe/Sortino/PF/MaxDD (2026-04-26) -->
-
-  <div class="glass-card live-span-2" id="cmd-panel">
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
-
-      <!-- Today's Performance: Paper + Real -->
-      <div class="bg-card-soft p-3 rounded-lg">
-        <!-- Paper -->
-        <div style="text-align:center;margin-bottom:10px">
-          <div class="section-title-cyan">Paper Trading</div>
-          <div id="cmd-today-pnl" class="stat-value stat-value--hero" style=";color:var(--green)">$0.00</div>
-          <div class="flex-center-sm">
-            <span>WR: <b id="cmd-today-wr" class="text-info">--%</b></span>
-            <span>Trades: <b id="cmd-today-trades" class="text-secondary">0</b></span>
-            <span>Fees: <b id="cmd-today-fees" class="text-warning">$0</b></span>
-          </div>
-        </div>
-        <!-- Divider -->
-        <div style="border-top:1px solid rgba(255,255,255,.06);margin:8px 0"></div>
+  <div class="term">
+    <section class="kpis" id="lv-kpis" aria-label="Key figures"><div class="kpi"><span class="eyebrow">Loading</span><span class="v sm">&nbsp;</span></div></section>
+    <section class="now">
+      <div class="col">
+        <div class="sec-h"><h2>Open position</h2><span class="eyebrow" id="lv-pos-count"></span></div>
+        <div id="lv-position"><div class="empty">Loading&hellip;</div></div>
       </div>
-
-      <!-- Market Status + Trade Diagnostic -->
-      <div class="bg-card-soft p-3 rounded-lg">
-        <div class="flex justify-between items-center mb-2">
-          <div style="font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:2px;font-weight:600">Market & Trade Status</div>
-        </div>
-        <!-- Market info row -->
-        <div style="display:flex;justify-content:center;gap:16px;font-size:.72rem;margin-bottom:8px">
-          <span class="text-muted">4H Bias: <b id="cmd-macro-bias" class="text-secondary">--</b></span>
-          <span class="text-muted">Session: <b id="cmd-session" class="text-info">--</b></span>
-        </div>
-        <!-- Trade Diagnostic -->
-        <div style="border-top:1px solid rgba(255,255,255,.06);padding-top:8px">
-          <div style="font-size:.55rem;color:var(--yellow);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Why No Trades?</div>
-          <div id="trade-diagnostic" style="font-size:.68rem;color:var(--text-muted);text-align:center">Analyzing...</div>
-        </div>
-        <!-- style="display:none" elements -->
-        <span id="cmd-regime" style="display:none">--</span>
-        <span id="cmd-regime-btc" style="display:none">--</span>
-        <span id="cmd-regime-eth" style="display:none">--</span>
-        <span id="cmd-regime-sol" style="display:none">--</span>
-        <span id="cmd-regime-xrp" style="display:none">--</span>
+      <div class="col">
+        <div class="sec-h"><h2>Signal queue</h2><span class="eyebrow" id="lv-sig-sub"></span></div>
+        <div class="tblwrap"><table id="lv-signals"></table></div>
       </div>
-
-      <!-- Last Trade: Paper + Real -->
-      <div class="bg-card-soft p-3 rounded-lg">
-        <div style="text-align:center;margin-bottom:8px">
-          <div class="section-title-cyan">Last Paper</div>
-          <div id="cmd-last-trade" class="text-secondary-base">--</div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Command Center 2.0: Quick Actions (Item #10) -->
-    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;padding:6px 12px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid rgba(255,255,255,.06)">
-      <button id="cc-pause-btn" data-paused="false" data-action="ccTogglePause" style="padding:4px 10px;font-size:.62rem;font-weight:700;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.1);color:var(--yellow);border-radius:4px;cursor:pointer">&#x23F8; Pause</button>
-      <div style="margin-left:auto;display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.72rem">
-        <span class="text-muted">Today PnL:</span>
-        <span id="cc-live-pnl" style="font-weight:900;font-size:1rem;color:var(--green)">$0.00</span>
-      </div>
-    </div>
-
-    <!-- Market Highlight Bar -->
-    <div style="margin-top:8px;padding:8px 12px;background:rgba(255,255,255,.02);border-radius:6px;display:flex;justify-content:space-between;align-items:center;font-size:.7rem">
-      <span class="text-muted">Paper: <b id="mh-paper-bal" class="text-success">$--</b></span>
-      <span class="text-muted">Peak: <b id="mh-peak" class="text-info">$--</b></span>
-      <span class="text-muted">DD: <b id="mh-dd" class="text-danger">--%</b></span>
-      <span class="text-muted">PF: <b id="mh-pf" class="text-warning">--</b></span>
-      <span class="text-muted">Avg R: <b id="mh-avgr" class="text-secondary">--</b></span>
-    </div>
-  </div>
-
-  <!-- ═══ VISION TIER 1: Attention Rail + KPIs + Signal Radar ═══ -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
-
-    <!-- Attention Rail -->
-    <div class="glass-card" style="border-left:3px solid #f59e0b;grid-row:span 2">
-      <div class="panel-title" class="flex justify-between items-center">
-        <span>Attention Rail</span>
-        <span style="font-size:.55rem;padding:2px 6px;border-radius:3px;background:rgba(245,158,11,.1);color:#f59e0b;border:1px solid rgba(245,158,11,.2)" id="attn-count">0 items</span>
-      </div>
-      <div id="attention-rail" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto">
-        <div class="empty">Scanning...</div>
-      </div>
-    </div>
-
-    
-    <!-- Paper Edge (last 20 closes) -->
-    <div class="glass-card" style="border-left:3px solid var(--cyan);grid-column:span 2">
-      <div class="grid-1-1-lg">
-        <!-- Paper Edge -->
-        <div>
-          <div class="metric-label">Paper Edge <span class="text-info">(last 20)</span></div>
-          <div class="flex-baseline">
-            <span id="kpi-edge" class="stat-value" style=";color:var(--cyan)">--R</span>
-          </div>
-          <div class="grid-1-1-mt">
-            <div><div class="text-xs text-muted">Win Rate</div><div id="kpi-edge-wr" class="stat-value--xs font-mono" style=";color:var(--green)">--%</div></div>
-            <div><div class="text-xs text-muted">Expectancy</div><div id="kpi-edge-ev" class="stat-value--xs font-mono" style="">$--</div></div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
-            <div><div class="text-xs text-muted">Avg Win</div><div id="kpi-avg-win" class="metric-value text-sm" style=";color:var(--green)">$--</div></div>
-            <div><div class="text-xs text-muted">Avg Loss</div><div id="kpi-avg-loss" class="metric-value text-sm" style=";color:var(--red)">$--</div></div>
-          </div>
-          <div style="margin-top:4px;font-size:.55rem;color:var(--text-muted)">Trades: <span id="kpi-paper-count" class="text-info">--</span></div>
-        </div>
-              </div>
-    </div>
-
-    <!-- Signal Radar -->
-    <div class="glass-card" style="border-left:3px solid var(--purple);grid-column:span 2">
-      <div class="panel-title">Signal Radar <span class="text-xs text-muted">· conviction × probability</span></div>
-      <div style="display:flex;gap:12px;align-items:center">
-        <div style="width:180px;height:180px;position:relative">
-          <canvas id="signal-radar-chart" width="180" height="180"></canvas>
-          <div id="radar-lock-label" style="position:absolute;bottom:4px;left:50%;transform:translateX(-50%);font-size:.6rem;font-family:var(--font-mono);color:var(--text-muted)">RADAR LOCK: --</div>
-        </div>
-        <div id="radar-legend" style="flex:1;display:flex;flex-direction:column;gap:3px;font-size:.62rem">
-          <div class="empty">No active signals</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ VISION TIER 2+3: Thesis + Agent Pipeline + Research + Pipeline Trace ═══ -->
-
-  <!-- ROW: Thesis Tracker + Agent Pipeline -->
-  <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px">
-
-    <!-- Thesis Tracker -->
-    <div class="glass-card" style="border-left:3px solid #8b5cf6">
-      <div class="panel-title">Thesis <span id="thesis-regime-badge" class="badge" style="font-size:.55rem;background:var(--text-muted)">--</span></div>
-      <div id="thesis-content" style="font-size:.72rem;line-height:1.5">
-        <div class="empty">Loading thesis...</div>
-      </div>
-    </div>
-
-    <!-- Multi-Agent Pipeline -->
-    <div class="glass-card" class="glass-card--accent-info">
-      <div class="panel-title">Agent Pipeline <span class="text-xs text-muted">· live status</span></div>
-      <div id="agent-pipeline" style="display:flex;gap:6px;align-items:stretch;overflow-x:auto;padding-bottom:4px">
-        <div class="empty">Loading agents...</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ROW: Pipeline Trace + Research Correlations -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-
-    <!-- Pipeline Trace (per-run drilldown) -->
-    <div class="glass-card" class="glass-card--accent-success">
-      <div class="panel-title">Pipeline Trace <span class="text-xs text-muted">· per-batch drilldown</span></div>
-      <div id="pipeline-trace" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto">
-        <div class="empty">Loading trace...</div>
-      </div>
-    </div>
-
-    <!-- Research: Correlations + Regime Transitions -->
-    <div class="glass-card" style="border-left:3px solid #f97316">
-      <div class="panel-title">Research Engine <span class="text-xs text-muted">· correlations + transitions</span></div>
-      <div id="research-content" class="flex-col-gap-2">
-        <div class="empty">Loading research data...</div>
-      </div>
-    </div>
-  </div>
-
-  
-  <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
-  <div class="glass-card" id="symbol-scanner-status" class="mb-2">
-    <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
-    <div id="scanner-status-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">
-    </div>
-  </div>
-
-  <!-- ═══ PIPELINE OBSERVABILITY (restored from yesterday's layout) ═══ -->
-  <div class="glass-card" id="pipeline-obs-live" style="margin-bottom:8px;border-left:3px solid var(--cyan)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <div class="panel-title" class="m-0">Pipeline Observability</div>
-      <div id="po-timestamp" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono)">--</div>
-    </div>
-    <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px">
-      <!-- Col 1: Stage-Loss Map (TODAY) -->
-      <div style="padding:10px;border:1px solid rgba(0,212,255,.15);border-radius:6px">
-        <div style="font-size:.6rem;color:var(--cyan);letter-spacing:1.5px;font-weight:700;margin-bottom:8px">STAGE-LOSS MAP (TODAY)</div>
-        <div id="po-stage-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.7">
-          <div class="text-muted text-sm">Loading...</div>
-        </div>
-      </div>
-      <!-- Col 2: Rejection Leaderboard -->
-      <div style="padding:10px;border:1px solid rgba(255,59,92,.15);border-radius:6px;display:flex;flex-direction:column">
-        <div style="font-size:.6rem;color:var(--red);letter-spacing:1.5px;font-weight:700;margin-bottom:6px">REJECTION LEADERBOARD</div>
-        <div id="po-reject-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.6;flex:0 0 auto;max-height:80px;overflow-y:auto">
-          <div class="text-muted text-sm">Loading...</div>
-        </div>
-                              </div>
-          </div>
-  </div>
-
-  <!-- ═══ PHASE 3.3: LOSS TAXONOMY ════════════════════════ -->
-  <div class="glass-card" id="loss-taxonomy-panel" style="margin-bottom:8px;border-left:3px solid var(--red)">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px">
-      <div class="panel-title" class="m-0">Loss Taxonomy <span id="lt-window-label" class="text-xs text-muted">· last 24h</span></div>
-      <div class="flex items-center gap-2">
-        <div class="flex gap-1" id="lt-window-buttons">
-          <button data-action="setLtWindow" data-arg="1" data-h="1" class="lt-win-btn" class="win-btn">1H</button>
-          <button data-action="setLtWindow" data-arg="4" data-h="4" class="lt-win-btn" class="win-btn">4H</button>
-          <button data-action="setLtWindow" data-arg="24" data-h="24" class="lt-win-btn lt-win-active" style="padding:2px 8px;font-size:.6rem;border:1px solid rgba(255,59,92,.3);background:rgba(255,59,92,.08);color:var(--red);border-radius:3px;cursor:pointer;font-weight:700">24H</button>
-          <button data-action="setLtWindow" data-arg="168" data-h="168" class="lt-win-btn" class="win-btn">7D</button>
-        </div>
-        <div id="lt-summary" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono);min-width:130px;text-align:right">--</div>
-      </div>
-    </div>
-    <div id="lt-rows" class="flex-col-gap-1">
-      <div class="text-sm text-muted text-center p-3">Loading loss taxonomy...</div>
-    </div>
-  </div>
-
-  <div class="live-grid">
-
-
-
-    <!-- Active Trades (paper) -->
-    <div class="glass-card live-span-2">
-      <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span></div>
-      <div style="display:grid;grid-template-columns:1fr;gap:12px">
-        <!-- Paper trades -->
-        <div style="border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:8px">
-          <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Paper Trades</div>
-          <div id="active-trades-paper">
-            <div id="active-trades-cards" class="flex-col-gap-2">
-              <div class="empty" class="text-sm">No paper trades</div>
-            </div>
-          </div>
-        </div>
-              </div>
-    </div>
-
-    <!-- Signal Feed + Funnel (merged) -->
-    <div class="glass-card live-span-2">
-      <div class="flex-between-mb">
-        <div class="panel-title" class="m-0">Signal Feed <span class="badge">last 10</span></div>
-        <div style="display:flex;gap:14px;font-size:.7rem;font-family:var(--font-mono)">
-          <span class="text-muted">Scanned: <b id="fn-scanned2" class="text-info">0</b></span>
-          <span class="text-muted">Passed: <b id="fn-strong2" class="text-success">0</b></span>
-          <span class="text-muted">Blocked: <b id="fn-blocked2" class="text-danger">0</b></span>
-        </div>
-      </div>
-      <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">
-        <button class="filter-btn active" data-action="filterSignals" data-arg="ALL" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:var(--accent-dim);color:var(--accent);border-radius:3px;cursor:pointer">ALL</button>
-        <button class="filter-btn" data-action="filterSignals" data-arg="BTC" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">BTC</button>
-        <button class="filter-btn" data-action="filterSignals" data-arg="ETH" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">ETH</button>
-        <button class="filter-btn" data-action="filterSignals" data-arg="SOL" style="padding:2px 8px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">SOL</button>
-      </div>
-      <div id="signal-feed"><div class="empty">No signals</div></div>
-      <div style="margin-top:6px;padding:6px 0;border-top:1px solid rgba(255,255,255,.04);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-size:.58rem;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:600">Blockers:</span>
-        <span id="veto-stats-body2" class="text-xs text-muted">--</span>
-      </div>
-    </div>
-
-
-
-
-
-
-
-
-    <!-- Recent Closed Trades — Paper / Demo / Live (Phase 4.2: 3-tab split) -->
-    <div class="glass-card live-span-2">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">Recent Closed Trades <span class="badge">last 10</span></div>
-      </div>
-      <!-- Paper closed -->
-      <div id="rc-paper-wrap" class="tbl-wrap" style="max-height:320px;overflow-y:auto">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Symbol</th>
-              <th>Side</th>
-              <th>Type</th>
-              <th>Margin</th>
-              <th>Lev</th>
-              <th>PnL $</th>
-              <th>R</th>
-              <th>Exit Reason</th>
-              <th>Duration</th>
-              <th>Journey</th>
-            </tr>
-          </thead>
-          <tbody id="recent-closed-body">
-            <tr><td colspan="11" class="empty">No closed trades</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- ═══ Track C: ML VERDICT MATRIX (3 families × 7 scanners) ═══ -->
-    <div class="glass-card live-span-2" id="ml-verdict-panel">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">ML Edge Verdict Matrix <span class="badge">walk-forward OOS</span></div>
-        <div class="text-xs text-muted font-mono">
-          <span id="mlvm-last-update">--</span>
-        </div>
-      </div>
-      <div id="mlvm-tbl-wrap" class="tbl-wrap" style="max-height:360px;overflow-y:auto">
-        <table style="font-size:.72rem;font-family:var(--font-mono)">
-          <thead>
-            <tr>
-              <th class="text-left">Scanner</th>
-              <th class="text-center">liquid_majors</th>
-              <th class="text-center">secondary</th>
-              <th class="text-center">high_beta</th>
-              <th class="text-center">scanner</th>
-            </tr>
-          </thead>
-          <tbody id="ml-verdict-matrix-body">
-            <tr><td colspan="5" class="empty">Loading verdict matrix…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div style="display:flex;gap:12px;margin-top:8px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted);flex-wrap:wrap">
-        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(0,255,157,.25);border:1px solid var(--green);border-radius:2px;margin-right:4px"></span>HOLDS — walk-forward edge</span>
-        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,215,0,.18);border:1px solid var(--yellow);border-radius:2px;margin-right:4px"></span>WEAK — soft blend only</span>
-        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(249,115,22,.18);border:1px solid var(--orange);border-radius:2px;margin-right:4px"></span>UNCLEAR — noisy</span>
-        <span><span style="display:inline-block;width:10px;height:10px;background:rgba(255,59,92,.18);border:1px solid var(--red);border-radius:2px;margin-right:4px"></span>NO_EDGE — blocked</span>
-      </div>
-    </div>
-
-    <!-- ═══ Track C: ML LIVE CALIBRATION (by_verdict rollup) ═══ -->
-    <div class="glass-card live-span-2" id="ml-calibration-panel">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">ML Live Calibration <span class="badge">last 500 trades</span></div>
-        <div class="text-xs text-muted font-mono">
-          <span id="mlcal-overall">n=-- pred=-- wr=-- err=--</span>
-        </div>
-      </div>
-      <div id="mlcal-tbl-wrap" class="tbl-wrap" style="max-height:260px;overflow-y:auto">
-        <table style="font-size:.72rem;font-family:var(--font-mono)">
-          <thead>
-            <tr>
-              <th class="text-left">Edge Verdict</th>
-              <th class="text-right">N</th>
-              <th class="text-right">Avg Pred</th>
-              <th class="text-right">Realized WR</th>
-              <th class="text-right">Cal Err</th>
-              <th class="text-right">Avg Exit R</th>
-              <th class="text-center">Status</th>
-            </tr>
-          </thead>
-          <tbody id="ml-calibration-body">
-            <tr><td colspan="7" class="empty">Loading calibration…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="mt-2 text-xs text-muted font-mono">
-        Cal Err = |avg_predicted − realized_mfe_wr|.
-        <span class="text-success">&lt;0.08 HEALTHY</span> ·
-        <span class="text-warning">0.08-0.15 DRIFTING</span> ·
-        <span class="text-danger">&gt;0.15 NEEDS RETRAIN</span>
-      </div>
-    </div>
-
-    <!-- EQUITY CURVE (paper) -->
-    <div class="glass-card live-span-2" id="equity-curve-panel">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">Equity Curve <span class="badge">cumulative PnL</span></div>
-        <div style="display:flex;gap:4px;align-items:center;font-size:.65rem;font-family:var(--font-mono)">
-          <span class="text-info">● Paper</span>
-                    <span style="margin-left:12px;color:var(--text-muted)">last:</span>
-          <button data-action="setEqRange" data-arg="100" data-eq="100" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">100t</button>
-          <button data-action="setEqRange" data-arg="300" data-eq="300" class="eq-btn eq-active" style="padding:1px 6px;font-size:.55rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.08);color:var(--cyan);border-radius:3px;cursor:pointer;font-weight:700">300t</button>
-          <button data-action="setEqRange" data-arg="1000" data-eq="1000" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">1000t</button>
-          <button data-action="setEqRange" data-arg="0" data-eq="0" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">ALL</button>
-        </div>
-      </div>
-      <div style="position:relative;height:240px">
-        <canvas id="equity-curve-canvas"></canvas>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:8px;font-size:.68rem;font-family:var(--font-mono)">
-        <div style="padding:6px 10px;background:rgba(0,212,255,.05);border-left:3px solid var(--cyan);border-radius:4px">
-          <div style="color:var(--cyan);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.55rem">Paper</div>
-          <div style="display:flex;gap:10px;margin-top:2px;color:var(--text-muted)">
-            <span>Trades: <b id="eq-paper-n" class="text-primary">--</b></span>
-            <span>WR: <b id="eq-paper-wr" class="text-success">--</b></span>
-            <span>Net: <b id="eq-paper-net" class="text-success">$--</b></span>
-            <span>Peak DD: <b id="eq-paper-dd" class="text-warning">$--</b></span>
-          </div>
-        </div>
-              </div>
-    </div>
-
-    <!-- R-MULTIPLE HISTOGRAM (paper) -->
-    <div class="glass-card live-span-2" id="r-histogram-panel">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">R-Multiple Distribution <span class="badge">paper</span></div>
-        <div style="font-size:.65rem;font-family:var(--font-mono)">
-          <span class="text-info">● Paper</span>
-                  </div>
-      </div>
-      <div style="position:relative;height:220px">
-        <canvas id="r-hist-canvas"></canvas>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:6px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted)">
-        <div>Paper avg R: <b id="rh-paper-avg" class="text-info">--</b> · median: <b id="rh-paper-med" class="text-info">--</b></div>
-              </div>
-    </div>
-
-    <!-- ═══ Track B: PAPER↔REAL DIVERGENCE + LOSS ANALYSIS (side-by-side) ═══ -->
-    <div class="glass-card live-span-2" id="divergence-loss-panel">
-      <div>
-        <!-- RIGHT: Loss Analysis recommendations -->
-        <div>
-          <div class="panel-title" style="margin:0 0 8px 0">Loss Analysis <span class="badge">24h buckets</span></div>
-          <div id="loss-analysis-body" style="font-size:.68rem;font-family:var(--font-mono);max-height:200px;overflow-y:auto">
-            <div class="empty">Loading loss taxonomy…</div>
-          </div>
-          <div class="mt-2 text-xs text-muted font-mono" id="loss-analysis-summary">--</div>
-        </div>
-      </div>
-    </div>
-
+    </section>
+    <section class="diag" aria-label="Diagnostics">
+      <details open>
+        <summary><h3>Closed today</h3><div class="peek" id="lv-closed-peek"></div><span class="chev">&rsaquo;</span></summary>
+        <div class="dbody one"><div class="tblwrap"><table id="lv-closed"></table></div></div>
+      </details>
+      <details>
+        <summary><h3>Signal funnel &middot; today</h3><div class="peek" id="lv-funnel-peek"></div><span class="chev">&rsaquo;</span></summary>
+        <div class="dbody"><div id="lv-funnel"></div><div id="lv-losses"></div></div>
+      </details>
+      <details>
+        <summary><h3>Scanner edge</h3><div class="peek" id="lv-scan-peek"></div><span class="chev">&rsaquo;</span></summary>
+        <div class="dbody one"><div class="tblwrap"><table id="lv-scanners"></table></div></div>
+      </details>
+    </section>
+    <footer class="foot" id="lv-foot"></footer>
   </div>
 </div>
 
-<!-- ═══════════════════════════════════════════════════════ -->
 <div class="tab-content" role="tabpanel" id="tab-analytics">
 
 
@@ -1424,11 +946,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  </div>
-
-<!-- ═══════════════════════════════════════════════════════ -->
-  <!-- ═══ Infra Health: Proxy CB + Cron Sync + OB Cache ═══ -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
+<!-- ═══ Infra Health: Proxy CB + Cron Sync + OB Cache ═══ -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
 
     <!-- ML Proxy Health -->
     <div class="glass-card" class="glass-card--accent-info">
@@ -1841,71 +1360,7 @@ async function validateApiKeyInline() {
 <!-- ═══════════════════════════════════════════════════════ -->
 
 <!-- ═══ STATUS FOOTER (compact, kept for JS) ═════════════ -->
-<footer class="dash-footer">
-  <span id="last-restart">Last Restart: --</span>
-  <span id="uptime-badge">Uptime: --</span>
-  <a href="https://t.me/vnedgebot" target="_blank" rel="noopener">View in Telegram</a>
-  <span>VN Edge v2.0</span>
-</footer>
 
-<!-- ═══ BRANDED FOOTER ═══════════════════════════════════ -->
-<footer class="site-footer">
-  <div class="footer-inner">
-
-    <div class="footer-brand">
-      <div class="footer-brand-name">VN EDGE</div>
-      <div class="footer-brand-tagline">QUANTITATIVE TRADING TERMINAL</div>
-    </div>
-
-    <div class="footer-grid">
-      <div class="footer-col">
-        <h4>Quick Links</h4>
-        <a href="#tab-live" data-action="switchTab" data-arg="live">Dashboard</a>
-        <a href="#tab-analytics" data-action="switchTab" data-arg="analytics">Analytics</a>
-        <a href="https://t.me/vnedgebot" target="_blank" rel="noopener">Telegram Bot</a>
-      </div>
-      <div class="footer-col">
-        <h4>System</h4>
-        <a href="#tab-system" data-action="switchTab" data-arg="system">System Status</a>
-      </div>
-      <div class="footer-col">
-        <h4>Resources</h4>
-        <a href="https://t.me/vnedgebot" target="_blank" rel="noopener">Telegram Alerts</a>
-        <a href="#tab-analytics" data-action="switchTab" data-arg="analytics">Trade History</a>
-      </div>
-    </div>
-
-    <div class="footer-social">
-      <!-- Telegram -->
-      <a href="https://t.me/vnedgebot" target="_blank" rel="noopener" title="Telegram">
-        <svg viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.96 6.504-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
-      </a>
-      <!-- X / Twitter -->
-      <a href="#" title="X / Twitter">
-        <svg viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-      </a>
-      <!-- Discord -->
-      <a href="#" title="Discord">
-        <svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.947 2.418-2.157 2.418z"/></svg>
-      </a>
-      <!-- GitHub -->
-      <a href="#" title="GitHub">
-        <svg viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
-      </a>
-    </div>
-
-    <div class="footer-disclaimer">
-      <strong>Risk Disclaimer:</strong> Trading cryptocurrencies involves significant risk of loss. Past performance does not guarantee future results. VN Edge is an experimental trading tool &mdash; use at your own risk. Never trade with money you cannot afford to lose.
-    </div>
-
-    <div class="footer-bottom">
-      <span>Version 2.0</span>
-      <span>Last Updated: March 24, 2026</span>
-      <span>Built with Claude AI</span>
-    </div>
-
-  </div>
-</footer>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- JAVASCRIPT                                             -->
@@ -1915,6 +1370,7 @@ async function validateApiKeyInline() {
 <script src="/static/js/core.js"></script>
 <script src="/static/js/ux_utils.js"></script>
 <script src="/static/js/app.js"></script>
+<script src="/static/js/live.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/v2_polish.js"></script>
 <div id="trade-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
@@ -1926,9 +1382,6 @@ async function validateApiKeyInline() {
     <div id="tm-body" style="font-size:.8rem"></div>
   </div>
 </div>
-<footer style="text-align:center;padding:12px;font-size:.6rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,.03);margin-top:20px">
-  VN Edge v2.1 | <span id="footer-uptime">--</span> uptime | Last restart: <span id="footer-restart">--</span> | <a href="/ml-lab" target="_blank" style="color:var(--purple);text-decoration:none">ML Training Lab</a>
-</footer>
 
   <!-- Toast notification -->
   <div id="vn-toast" style="display:none;position:fixed;bottom:20px;right:20px;padding:12px 20px;border-radius:8px;font-size:.8rem;z-index:10000;font-weight:600"></div>

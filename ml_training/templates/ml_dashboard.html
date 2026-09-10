@@ -92,6 +92,51 @@ tr:hover{background:var(--accent-dim)}
 #equity-sparkline{max-height:200px}
 @media(max-width:900px){.grid-2,.grid-3,.grid-4{grid-template-columns:1fr}}
 </style>
+<!-- terminal-tokens:start -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* VN Edge terminal tokens (shared with the main dashboard's terminal.css) */
+:root{--ground:#0B1019;--surface:#121927;--raised:#1A2334;--line:#232E42;--line-strong:#33415A;--text:#E7ECF5;--text-2:#A9B4C8;--muted:#77839A;
+--profit:#3FC48F;--profit-bg:rgba(63,196,143,.12);--loss:#EE5F73;--loss-bg:rgba(238,95,115,.12);--warn:#E1AC45;--warn-bg:rgba(225,172,69,.14);--acc:#7AA6FF;--acc-bg:rgba(122,166,255,.14);
+--f-sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;--f-cond:"IBM Plex Sans Condensed","IBM Plex Sans",sans-serif;
+--bg:var(--ground);--bg-card:var(--surface);--border:var(--line);--border-active:var(--line-strong);--accent:var(--acc);--accent-dim:var(--acc-bg);
+--green:var(--profit);--red:var(--loss);--yellow:var(--warn);--cyan:var(--acc);--purple:#A88BFA;--orange:var(--warn);
+--text-dim:var(--text-2);--text-muted:var(--muted);--radius:8px;--font-mono:var(--f-mono);--font-sans:var(--f-sans);--neon-glow:none}
+body{font-family:var(--f-sans)!important;font-size:13px!important;background-image:none!important;line-height:1.45}
+.header{background:var(--surface)!important;border-bottom:1px solid var(--line)!important;box-shadow:none!important;height:56px!important}
+.header-brand img{display:none}
+.header-brand-name{font:600 14px/1 var(--f-cond)!important;letter-spacing:.12em!important;color:var(--text)!important}
+.header-brand-tagline{font:500 10px/1 var(--f-cond)!important;letter-spacing:.14em!important;color:var(--muted)!important;text-shadow:none!important;margin-top:3px}
+.phase-pill{border-radius:999px!important;font:500 12px/1 var(--f-sans)!important;text-transform:none!important;letter-spacing:0!important;animation:none!important}
+.tabs{background:var(--surface)!important;border-bottom:1px solid var(--line)!important;top:56px!important;padding:0 12px;gap:2px!important}
+.tab{font:500 13px/1 var(--f-sans)!important;letter-spacing:0!important;padding:10px 12px!important;border-bottom:0!important;border-radius:6px;margin:6px 0}
+.tab:hover{background:var(--raised)!important;color:var(--text)!important}
+.tab.active{background:var(--acc-bg)!important;color:var(--acc)!important;border-bottom:0!important}
+.card{background:var(--surface)!important;border:1px solid var(--line)!important;border-radius:8px!important;backdrop-filter:none!important;box-shadow:none!important}
+.card h3{font:600 11px/1.2 var(--f-cond)!important;letter-spacing:.08em!important;text-transform:uppercase!important;color:var(--muted)!important}
+.metric .label{color:var(--muted)}.metric .value{font-family:var(--f-mono);font-variant-numeric:tabular-nums;font-weight:500}
+table{font-size:13px!important}
+th{font:600 11px/1 var(--f-cond)!important;letter-spacing:.08em!important;text-transform:uppercase!important;color:var(--muted)!important;border-bottom:1px solid var(--line-strong)!important;padding:6px 8px 8px!important}
+td{padding:8px!important;border-bottom:1px solid var(--line)!important;font-variant-numeric:tabular-nums}
+tr:hover{background:var(--raised)!important}
+.badge{border-radius:4px!important;border:0!important;font:500 11px/1.4 var(--f-sans)!important}
+.badge-valid,.badge-useful,.badge-green{background:var(--profit-bg)!important;color:var(--profit)!important}
+.badge-invalid,.badge-block,.badge-red{background:var(--loss-bg)!important;color:var(--loss)!important}
+.badge-marginal,.badge-warn,.badge-yellow{background:var(--warn-bg)!important;color:var(--warn)!important}
+.btn{border-radius:6px!important;border:1px solid var(--line-strong)!important;background:transparent!important;color:var(--text-2)!important;font:500 12px/1 var(--f-sans)!important;padding:7px 14px!important}
+.btn:hover{border-color:var(--acc)!important;color:var(--acc)!important;background:var(--acc-bg)!important}
+.feature-fill{background:var(--acc)!important;opacity:.85}
+.flow-step{border:1px solid var(--line)!important;background:var(--surface)!important;border-radius:6px!important;box-shadow:none!important}
+.flow-step.active-step{border-color:var(--acc)!important;color:var(--acc)!important;box-shadow:none!important}
+.flow-arrow{color:var(--muted)!important}
+.bucket-bar-actual{background:var(--acc)!important}
+::-webkit-scrollbar-thumb{background:var(--line-strong)!important}
+::selection{background:var(--acc-bg)!important}
+[style*="text-shadow"]{text-shadow:none!important}
+</style>
+<!-- terminal-tokens:end -->
 </head>
 <body>
 

@@ -15,8 +15,6 @@ async function checkSession() {
             if (d.auth_enabled) {
                 document.getElementById("session-info").textContent = d.user;
             }
-            // Kick off the Delta connection-status check (non-blocking)
-            showConnectionStatusPopup(false);
             return true;
         }
     } catch (e) {}
@@ -30,87 +28,7 @@ async function checkSession() {
 // Non-blocking: fires in the background and only shows UI when there's
 // something worth saying. For "paper_only" mode it only shows a small
 // info banner and auto-dismisses after 3s.
-async function showConnectionStatusPopup(force) {
-    try {
-        const url = force ? "/api/user/connection-status?force=1" : "/api/user/connection-status";
-        const r = await fetch(url, {credentials: "same-origin"});
-        if (!r.ok) return;
-        const d = await r.json();
-        _renderConnectionModal(d);
-    } catch (e) {
-        // Silent — connection probe failures must not break the dashboard
-    }
-}
 
-function _renderConnectionModal(d) {
-    // Remove any existing popup
-    const old = document.getElementById("delta-conn-popup");
-    if (old) old.remove();
-
-    const severity = d.severity || "info";
-    const colorMap = {
-        ok:       { bg: "rgba(0,255,157,.08)",  border: "#00ff9d", icon: "✓", iconColor: "#00ff9d" },
-        warning:  { bg: "rgba(255,215,0,.08)",  border: "#ffd700", icon: "⚠", iconColor: "#ffd700" },
-        critical: { bg: "rgba(255,59,92,.08)",  border: "#ff3b5c", icon: "✕", iconColor: "#ff3b5c" },
-        info:     { bg: "rgba(0,212,255,.06)",  border: "#00d4ff", icon: "ℹ", iconColor: "#00d4ff" },
-    };
-    const c = colorMap[severity] || colorMap.info;
-
-    const actions = [];
-    if (d.status === "no_key") {
-        actions.push(`<a href="/admin" style="color:#a78bfa;text-decoration:underline;font-weight:600">Add API key</a>`);
-    }
-    if (d.status === "key_rejected") {
-        actions.push(`<a href="/admin" style="color:#ff3b5c;text-decoration:underline;font-weight:600">Fix in admin</a>`);
-    }
-    if (d.status === "paper_only") {
-        // no action needed, just info
-    }
-    actions.push(`<a href="#" onclick="document.getElementById('delta-conn-popup').remove();return false" style="color:#5a7090;text-decoration:none;margin-left:auto">Dismiss</a>`);
-
-    const balanceLine = (d.balance_usdt != null)
-        ? `<div style="font-family:'SF Mono',monospace;font-size:.72rem;color:#9ba3b5;margin-top:4px">USDT balance: <b style="color:#e8ecf4">$${d.balance_usdt.toFixed(2)}</b></div>`
-        : "";
-
-    const popup = document.createElement("div");
-    popup.id = "delta-conn-popup";
-    popup.style.cssText = `
-        position: fixed; top: 72px; right: 24px; z-index: 9999;
-        background: #0f1a33; border: 1px solid ${c.border};
-        border-left: 4px solid ${c.border};
-        border-radius: 10px; padding: 14px 18px;
-        max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,.5);
-        font-family: -apple-system, 'Inter', sans-serif; color: #e8ecf4;
-        font-size: .78rem; line-height: 1.4;
-        animation: connSlide .3s ease-out;
-    `;
-    popup.innerHTML = `
-        <style>@keyframes connSlide{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}</style>
-        <div style="display:flex;align-items:flex-start;gap:10px">
-            <span style="font-size:1.2rem;color:${c.iconColor};line-height:1;margin-top:1px">${c.icon}</span>
-            <div style="flex:1">
-                <div style="font-weight:700;text-transform:uppercase;letter-spacing:1px;font-size:.62rem;color:${c.iconColor};margin-bottom:4px">
-                    Delta Connection — ${(d.bot_mode||'?').toUpperCase()}
-                </div>
-                <div style="color:#e8ecf4">${_escapeHTML(d.message || "")}</div>
-                ${balanceLine}
-                ${d.error_detail ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:#5a7090;font-size:.65rem">Details</summary><div style="font-family:'SF Mono',monospace;font-size:.62rem;color:#9ba3b5;margin-top:4px;max-width:380px;word-break:break-all">${_escapeHTML(d.error_detail)}</div></details>` : ''}
-                <div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,.06);display:flex;gap:14px;align-items:center;font-size:.7rem">
-                    ${actions.join('')}
-                </div>
-            </div>
-        </div>
-    `;
-    document.body.appendChild(popup);
-
-    // Auto-dismiss OK / paper-info after a few seconds; keep warnings visible
-    if (severity === "ok" || d.status === "paper_only") {
-        setTimeout(() => {
-            const p = document.getElementById("delta-conn-popup");
-            if (p) p.remove();
-        }, 5000);
-    }
-}
 
 function _escapeHTML(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g,
@@ -134,8 +52,6 @@ async function handleLogin(e) {
             document.getElementById("login-overlay").classList.add("hidden");
             document.getElementById("logout-btn").style.display = "";
             document.getElementById("session-info").textContent = email;
-            // Show Delta connection status popup right after login
-            showConnectionStatusPopup(true);
             return false;
         }
         errEl.textContent = "Invalid credentials";
@@ -1057,31 +973,28 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
 
     // Vision Tier 1: Attention Rail + KPIs + Signal Radar
     try { updateAttentionRail(status, decision, active, realStatus, funnel); } catch (e) {}
-    try { updateDeployableCapital(realStatus); } catch (e) {}
     try { updateLiveEdge(closed); } catch (e) {}
-    try { updateRealEdge(realStatus); } catch (e) {}
     try { updateSignalRadar(signals, status); } catch (e) {}
 
-    // Execution Quality metrics (slippage tracking)
+    // Execution Quality metrics (slippage tracking). Both cards are labelled
+    // in bps, so feed them bps — the old code wrote tick counts into them.
     if (closed && Array.isArray(closed) && closed.length > 0) {
         const recent50 = closed.slice(-50);
-        const slips = recent50.map(t => t.slippage_bps || 0);
-        const slipTicks = recent50.map(t => t.slippage_ticks || 0);
-        const slipR = recent50.map(t => t.slippage_impact_r || 0);
+        const slips = recent50.map(t => Number(t.slippage_bps || 0));
+        const slipR = recent50.map(t => Number(t.slippage_impact_r || 0));
         const avgSlipBps = slips.reduce((a,b)=>a+b,0) / slips.length;
-        const avgSlipTicks = slipTicks.reduce((a,b)=>a+b,0) / slipTicks.length;
         const dragR = slipR.reduce((a,b)=>a+b,0);
-        const maxSlip = Math.max(...slipTicks);
+        const maxSlipBps = Math.max(...slips);
         const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-        el("eq-avg-slip", avgSlipTicks.toFixed(2));
+        el("eq-avg-slip", avgSlipBps.toFixed(1));
         el("eq-avg-bps", avgSlipBps.toFixed(1));
         el("eq-drag-r", dragR.toFixed(4) + "R");
-        el("eq-max-slip", maxSlip.toFixed(1));
+        el("eq-max-slip", maxSlipBps.toFixed(1));
         el("eq-fill-rate", "100%");
-        // Color coding
+        // Color coding — entry cap is 30 bps (execution.max_entry_slip_bps)
         const setColor = (id, val, g, y) => { const e = document.getElementById(id); if (e) e.style.color = val <= g ? "var(--green)" : val <= y ? "var(--yellow)" : "var(--red)"; };
-        setColor("eq-avg-slip", avgSlipTicks, 1.5, 3.0);
-        setColor("eq-max-slip", maxSlip, 3.0, 5.0);
+        setColor("eq-avg-slip", avgSlipBps, 10, 20);
+        setColor("eq-max-slip", maxSlipBps, 20, 30);
     }
 
     // Paper figures — single writer
@@ -1541,8 +1454,8 @@ function updateSetupLifecycle(status, closed) {
             '</div>' +
             '<div style="font-size:.75rem;font-family:var(--font-mono);color:var(--text-secondary);margin-bottom:4px">$' + price.toFixed(dec) + '</div>' +
             '<div style="display:flex;justify-content:center;gap:10px;font-size:.62rem">' +
-            '<span style="color:' + wrColor + ';font-weight:700">WR: ' + (symTotal > 0 ? symWR + "%" : "--") + '</span>' +
-            '<span class="text-muted">' + symTotal + ' trades</span>' +
+            '<span style="color:' + wrColor + ';font-weight:700" title="Today (UTC) only">WR: ' + (symTotal > 0 ? symWR + "%" : "--") + '</span>' +
+            '<span class="text-muted">' + symTotal + ' today</span>' +
             '</div>' +
             '</div>';
     }).join("");
@@ -1901,8 +1814,9 @@ async function refreshPaperSummary() {
     // header mini bar
     set("paper-bal-mini", money(s.balance));
     set("signals-mini-count", String(s.closed || 0));
-    // command centre: today
+    // command centre: today (the Pause bar shows the same today figure)
     set("cmd-today-pnl", money(s.today_pnl_usd, true), col(s.today_pnl_usd));
+    set("cc-live-pnl", money(s.today_pnl_usd, true), col(s.today_pnl_usd));
     set("cmd-today-wr", (s.today_win_rate || 0).toFixed(0) + "%");
     set("cmd-today-trades", String(s.trades_today || 0));
     set("cmd-today-fees", "$" + (s.today_fees_usd || 0).toFixed(2));
@@ -2186,85 +2100,28 @@ async function refreshSystem() {
     try { status = await fetch("/api/status").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
     try { ml4 = await fetch("/api/ml/health").then(function(r){return r.json();}).catch(function(){return null;}); } catch(e){}
 
-    try { updateVMHealth(infra, ml4); } catch(e) { console.error("updateVMHealth:", e); }
     try { updateExchangeStatus(status); } catch(e) { console.error("updateExchangeStatus:", e); }
     try { updateBotEngine(status); } catch(e) { console.error("updateBotEngine:", e); }
     try { updateConfigSnapshot(status); } catch(e) { console.error("updateConfigSnapshot:", e); }
-    try { await refreshGridBot(); } catch(e) {}
     try { await refreshBrainTab(); } catch(e) { console.error("brainTab:", e); }
     try { await refreshInfraHealth(); } catch(e) { console.error("infraHealth:", e); }
 }
 
 // Track B.8: VM1 (bot host) + VM4 (ML server) side-by-side health cards.
-function updateVMHealth(infra, ml4) {
-    const wrap = document.getElementById("vm-health");
-    if (!infra && !ml4) { wrap.innerHTML = '<div class="empty">No infra data</div>'; return; }
-    const cpuPct = (infra && (infra.cpu?.percent || infra.cpu_percent)) || 0;
-    const memPct = (infra && (infra.memory?.percent || infra.memory_percent)) || 0;
-    const memUsed = (infra && infra.memory?.used_mb) || 0;
-    const memTotal = (infra && infra.memory?.total_mb) || 0;
-    const swapUsed = (infra && infra.memory?.swap_used_mb) || 0;
-    const swapTotal = (infra && infra.memory?.swap_total_mb) || 0;
-    const swapPct = swapTotal > 0 ? (swapUsed / swapTotal * 100) : 0;
-    const diskPct = (infra && (infra.disk?.percent || infra.disk_percent)) || 0;
-    const diskUsed = (infra && infra.disk?.used_gb) || 0;
-    const diskTotal = (infra && infra.disk?.total_gb) || 0;
-    const uptime = (infra && (infra.os_uptime || infra.uptime)) || "--";
-    const shape = (infra && infra.shape) || "--";
-
-    // VM1 — bot host
-    let vm1 = '<div style="border-left:3px solid var(--green);padding:6px 8px;margin-bottom:8px">';
-    vm1 += '<div class="flex-between-label"><span class="text-success">🟢 VM1 · bot host</span><span class="text-muted-mono-xs">150.230.171.48</span></div>';
-    vm1 += makeHealthRow("CPU", cpuPct, "%", 100);
-    vm1 += makeHealthRow("Memory", memPct, `% (${memUsed}/${memTotal} MB)`, 100);
-    if (swapTotal > 0) vm1 += makeHealthRow("Swap", swapPct, `% (${swapUsed}/${swapTotal} MB)`, 100);
-    vm1 += makeHealthRow("Disk", diskPct, `% (${diskUsed}/${diskTotal} GB)`, 100);
-    vm1 += makeKV("Uptime", uptime);
-    vm1 += makeKV("Shape", shape);
-    vm1 += '</div>';
-
-    // VM4 — ML server
-    let vm4 = '';
-    if (ml4 && (ml4.ok || ml4.status === "ok" || ml4.healthy)) {
-        const ml_uptime = ml4.uptime_sec ? (Math.floor(ml4.uptime_sec / 60) + "m") : (ml4.uptime || "--");
-        const ml_mem = ml4.memory_mb || ml4.mem_mb || "--";
-        const ml_cpu = ml4.cpu_percent || ml4.cpu || "--";
-        const ml_models = ml4.models_loaded || ml4.model_count || "--";
-        const ml_latency = ml4.avg_score_latency_ms || ml4.latency_ms || "--";
-        vm4 = '<div style="border-left:3px solid var(--purple);padding:6px 8px">';
-        vm4 += '<div class="flex-between-label"><span class="text-purple">🟢 VM4 · ML server</span><span class="text-muted-mono-xs">10.0.2.4:8081</span></div>';
-        if (typeof ml_cpu === "number") vm4 += makeHealthRow("CPU", ml_cpu, "%", 100);
-        if (typeof ml_mem === "number") vm4 += makeKV("Memory", ml_mem + " MB");
-        vm4 += makeKV("Models Loaded", ml_models);
-        vm4 += makeKV("Avg Score Latency", typeof ml_latency === "number" ? ml_latency.toFixed(1) + " ms" : ml_latency);
-        vm4 += makeKV("Uptime", ml_uptime);
-        vm4 += '</div>';
-    } else {
-        vm4 = '<div style="border-left:3px solid var(--red);padding:6px 8px">';
-        vm4 += '<div class="flex-between-label"><span class="text-danger">🔴 VM4 · ML server</span><span class="text-muted-mono-xs">10.0.2.4:8081</span></div>';
-        vm4 += '<div style="font-size:.65rem;color:var(--text-muted);padding:6px 0">Proxy unreachable — check /api/ml/health from bot host</div>';
-        vm4 += '</div>';
-    }
-
-    wrap.innerHTML = vm1 + vm4;
-}
 
 function updateExchangeStatus(status) {
     const wrap = document.getElementById("exchange-status");
     if (!status) { wrap.innerHTML = '<div class="empty">No status data</div>'; return; }
     const connected = status.exchange_status === "connected";
     const fees = status.fees || {};
-    const makerPct = fees.maker != null ? (fees.maker * 100).toFixed(2) + "%" : "--";
-    const takerPct = fees.taker != null ? (fees.taker * 100).toFixed(2) + "%" : "--";
-    const settlePct = fees.settlement != null ? (fees.settlement * 100).toFixed(2) + "%" : "--";
+    const pct = v => (v != null ? (v * 100).toFixed(4).replace(/0+$/, "").replace(/\.$/, "") + "%" : "--");
     let html = "";
     html += makeKV("Connection", connected ? "Connected" : "Disconnected", connected ? "var(--green)" : "var(--red)");
-    html += makeKV("Balance", "$" + (typeof realStatus !== "undefined" && realStatus && realStatus.balance ? realStatus.balance.toFixed(2) : "--"), "var(--green)");
-    html += makeKV("Maker Fee", makerPct);
-    html += makeKV("Taker Fee", takerPct);
-    html += makeKV("Settlement Fee", settlePct);
-    html += makeKV("Total Round-Trip", fees.taker && fees.settlement ? ((fees.taker + fees.taker + fees.settlement) * 100).toFixed(2) + "%" : "--");
-    html += makeKV("Latency", (status.exchange_latency_ms || 0) + " ms");
+    html += makeKV("Exchange", "Delta Exchange India (production data)");
+    html += makeKV("Maker Fee (incl. GST)", pct(fees.maker));
+    html += makeKV("Taker Fee (incl. GST)", pct(fees.taker));
+    html += makeKV("Round-Trip Taker", pct(fees.round_trip_taker));
+    html += makeKV("Round-Trip Maker Entry", pct(fees.round_trip_maker_entry));
     html += makeKV("Last Data", status.last_data_update || "--");
     wrap.innerHTML = html;
 }
@@ -2277,7 +2134,7 @@ function updateBotEngine(status) {
     html += makeKV("Strategy", status.active_strategy || status.strategy || "--");
     html += makeKV("Symbols", Array.isArray(status.symbols) ? status.symbols.join(", ") : (status.symbols || "--"));
     html += makeKV("Uptime", status.uptime || "--");
-    html += makeKV("Memory", (status.memory_mb || status.memory || "--") + " MB");
+    html += makeKV("Memory", (status.memory_mb != null ? Number(status.memory_mb).toFixed(0) : "--") + " MB");
     html += makeKV("Bot Status", status.bot_status || "--", status.bot_status === "running" ? "var(--green)" : "var(--red)");
     html += makeKV("Paused", status.paused ? "YES" : "No", status.paused ? "var(--red)" : "var(--green)");
     wrap.innerHTML = html;
@@ -2498,85 +2355,133 @@ function filterSignals(sym) {
 
 // ── EMERGENCY STOP ───────────────────────────────────────
 function populateConfigTab() {
-    // Trade Type Config table
-    const cfg = {
-        "SL ATR Mult":       ["0.9", "1.15", "1.5"],
-        "TP1 R:R":           ["0.8", "1.2", "1.5"],
-        "TP2 R:R":           ["1.2", "2.0", "3.0"],
-        "TP3 R:R":           ["none", "3.0", "5.0"],
-        "Time Stop (bars)":  ["3 (hard)", "8 (soft)", "none"],
-        "Early Kill":        ["120s / 0.10R", "300s / 0.15R", "disabled"],
-        "Trail ATR Mult":    ["0.6", "1.0", "1.5"],
-        "Max Age":           ["15 min", "60 min", "8 hours"],
-    };
+    // Everything on this tab is read from /api/config/effective, which
+    // serialises the constants and config the running bot actually uses.
+    fetch("/api/config/effective", {credentials: "same-origin"})
+        .then(r => r.ok ? r.json() : null)
+        .then(c => { if (c) renderEffectiveConfig(c); })
+        .catch(() => {});
+}
+
+function renderEffectiveConfig(c) {
+    const $ = id => document.getElementById(id);
+    const row = (k, v, color) => "<div style='display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)'>" +
+        "<span style='color:var(--text-secondary)'>" + esc(k) + "</span>" +
+        "<span style='font-weight:600;font-family:var(--font-mono);color:" + (color || "var(--text)") + "'>" + esc(String(v)) + "</span></div>";
+    const mins = s => s == null ? "--" : s === 0 ? "none" : s >= 3600 ? (s / 3600).toFixed(s % 3600 ? 1 : 0) + " h" : (s / 60).toFixed(s % 60 ? 1 : 0) + " min";
+    const secs = s => s == null ? "--" : s === 0 ? "disabled" : s + " s";
+    const pct = v => v == null ? "--" : (v * 100).toFixed(4).replace(/0+$/, "").replace(/\.$/, "") + "%";
+    const tsEl = $("config-effective-ts");
+    if (tsEl && c.ts) tsEl.textContent = "as of " + formatTime(c.ts);
+
+    // 1. Trade-type parameters (bot/signal_tracker.py TRADE_TYPE_CONFIG)
+    const tt = c.trade_types || {};
+    const order = ["SCALP", "INTRADAY", "RUNNER"];
+    const params = [
+        ["SL ATR mult", t => t.sl_atr_mult],
+        ["TP1 R:R", t => t.tp1_rr],
+        ["TP2 R:R", t => t.tp2_rr],
+        ["TP3 R:R", t => t.tp3_rr ? t.tp3_rr : "none"],
+        ["Early kill", t => t.early_kill_sec ? secs(t.early_kill_sec) + " / " + t.early_kill_mfe + "R" : "disabled"],
+        ["Max age", t => mins(t.max_age_sec)],
+        ["Extended age (MFE ≥ " + (tt.SCALP ? tt.SCALP.extension_trigger_r : 0.15) + "R)", t => mins(t.extended_age_sec)],
+        ["Full extension (MFE ≥ " + (tt.SCALP ? tt.SCALP.full_extend_r : 0.3) + "R)", t => mins(t.full_extended_age_sec)],
+        ["Chandelier mult ranging / trending", t => t.chandelier_mult_ranging + " / " + t.chandelier_mult_trending],
+    ];
+    const colors = ["var(--cyan)", "var(--yellow)", "var(--purple)"];
     let html = "";
-    for (const [param, vals] of Object.entries(cfg)) {
-        html += "<tr><td style='color:var(--text-secondary)'>" + param + "</td>";
-        html += "<td style='text-align:center;color:var(--cyan);font-weight:600'>" + vals[0] + "</td>";
-        html += "<td style='text-align:center;color:var(--yellow);font-weight:600'>" + vals[1] + "</td>";
-        html += "<td style='text-align:center;color:var(--purple);font-weight:600'>" + vals[2] + "</td></tr>";
+    for (const [label, fn] of params) {
+        html += "<tr><td style='color:var(--text-secondary)'>" + esc(label) + "</td>";
+        order.forEach((k, i) => {
+            const t = tt[k] || {};
+            let v; try { v = fn(t); } catch (e) { v = "--"; }
+            html += "<td style='text-align:center;color:" + colors[i] + ";font-weight:600'>" + esc(String(v == null ? "--" : v)) + "</td>";
+        });
+        html += "</tr>";
     }
-    document.getElementById("config-table").innerHTML = html;
+    if ($("config-table")) $("config-table").innerHTML = html || "<tr><td colspan='4' class='empty'>No trade-type config</td></tr>";
 
-    // Scanner tiers
-    const tiers = {
-        "structure_bounce": {mult: "1.0", status: "ACTIVE"},
-        "bos_choch": {mult: "0.8", status: "ACTIVE"},
-        "liquidity_sweep": {mult: "0.8", status: "ACTIVE"},
-        "order_block_entry": {mult: "0.8", status: "ACTIVE"},
-        "ema_momentum": {mult: "0.0", status: "ML ONLY"},
-        "trend_continuation": {mult: "0.0", status: "ML ONLY"},
-        "vwap_mean_revert": {mult: "0.0", status: "ML ONLY"},
-        "rsi_divergence": {mult: "0.0", status: "ML ONLY"},
-    };
+    // 2. Exit system (shared across trade types)
+    const risk = c.risk || {};
+    const trail = risk.trailing || {};
+    const ex = c.execution || {};
+    if ($("exit-system-body")) {
+        $("exit-system-body").innerHTML =
+            row("Stop type", (risk.stop_loss && risk.stop_loss.type) || "--") +
+            row("Trailing", trail.enabled ? "on · activates at " + trail.activation_rr + "R" : "off") +
+            row("Breakeven after TP1", trail.break_even_after_tp1 ? "yes" : "no") +
+            row("Min trail hold", secs(ex.min_trail_hold_sec)) +
+            row("Hard backstop age", "4 h") +
+            row("Chandelier trail", "ATR-based, per trade type (table left)");
+    }
+
+    // 3. Scanners: regime routing + weight-manager state
+    const sc = c.scanners || {};
+    const routing = sc.regime_routing || {};
+    const byScanner = {};
+    Object.entries(routing).forEach(([regime, names]) => (names || []).forEach(n => { (byScanner[n] = byScanner[n] || []).push(regime); }));
+    const states = {};
+    (sc.states || []).forEach(s => { states[s.scanner] = s; });
+    const forced = sc.forced || {};
+    const names = Object.keys(byScanner).sort((a, b) => byScanner[b].length - byScanner[a].length || a.localeCompare(b));
     let thtml = "";
-    for (const [sc, info] of Object.entries(tiers)) {
-        const statusCls = info.status === "ACTIVE" ? "color:var(--green)" : "color:var(--text-muted)";
-        thtml += "<tr><td>" + sc + "</td><td style='text-align:center;font-weight:600'>" + info.mult + "</td>";
-        thtml += "<td style='text-align:center;" + statusCls + ";font-weight:600'>" + info.status + "</td></tr>";
+    for (const n of names) {
+        const st = states[n];
+        const status = forced[n] ? "forced " + forced[n] : st ? st.status + (st.reason ? " · " + st.reason : "") : "no trades yet";
+        const color = forced[n] ? "var(--red)" : !st ? "var(--text-muted)" : st.status === "active" ? "var(--green)" : st.status === "reduced" ? "var(--yellow)" : "var(--red)";
+        const regimes = byScanner[n].map(r => r.replace(/_/g, " ")).join(", ");
+        thtml += "<tr><td style='font-weight:600'>" + esc(n) + "</td>" +
+            "<td style='text-align:center;font-size:.65rem;color:var(--text-muted)' title='" + esc(regimes) + "'>" + byScanner[n].length + " of " + Object.keys(routing).length + "</td>" +
+            "<td style='text-align:center;font-family:var(--font-mono)'>" + (st ? Number(st.weight).toFixed(1) + "x" : "1.0x") + "</td>" +
+            "<td style='text-align:center;color:" + color + ";font-weight:600;font-size:.68rem'>" + esc(status) + "</td></tr>";
     }
-    document.getElementById("scanner-tiers-table").innerHTML = thtml;
+    if ($("scanner-tiers-table")) $("scanner-tiers-table").innerHTML = thtml || "<tr><td colspan='4' class='empty'>Routing table not available until the first scan</td></tr>";
 
-    // Risk params
-    const rp = [
-        ["Account Size", "$1,000 (paper)"],
-        ["Risk Per Trade", "0.75% ($7.50)"],
-        ["Max Margin", "$100/trade"],
-        ["Leverage Cap (paper)", "75x (conf 90+)"],
-        ["Leverage Cap (real)", "10x"],
-        ["Min Setup Strength", "65/100"],
-        ["Hard Loss Cap", "-1.2R"],
-        ["Circuit Breaker", "$25/day or 5 consec losses"],
-        ["Symbol Cooling", "30 min after 3 consec losses"],
-        ["VWAP Noise Zone", "< 0.12 ATR from VWAP"],
-    ];
-    let rphtml = "";
-    for (const [k, v] of rp) {
-        rphtml += "<div style='display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border)'>";
-        rphtml += "<span style='color:var(--text-secondary)'>" + k + "</span>";
-        rphtml += "<span style='font-weight:600;font-family:var(--font-mono)'>" + v + "</span></div>";
+    // 4. Risk & safety gates (config/settings.yaml risk:)
+    const paper = c.paper || {};
+    const safety = risk.safety || {};
+    const filters = c.filters || {};
+    if ($("risk-params")) {
+        $("risk-params").innerHTML =
+            row("Account", "$" + Number(paper.start_balance || paper.initial_balance || 0).toLocaleString() + " (paper)") +
+            row("Risk per trade", risk.risk_per_trade_pct + "%") +
+            row("Paper stake per trade", "$" + Number(paper.stake_per_trade_usd || 0).toFixed(0)) +
+            row("Max position", "$" + risk.max_position_size_usd) +
+            row("Max open positions", risk.max_open_positions) +
+            row("Leverage default / cap", risk.default_leverage + "x / " + risk.max_leverage + "x") +
+            row("Max daily loss", risk.max_daily_loss_pct + "%") +
+            row("Consecutive-loss breaker", safety.circuit_breaker_losses + " losses → " + mins(safety.circuit_breaker_cooldown) + " pause") +
+            row("Cool-off after stop", secs(safety.cooloff_after_sl)) +
+            row("Volatility kill switch", safety.volatility_kill_switch ? "on (ATR > " + safety.volatility_kill_atr_multiplier + "x)" : "off");
     }
-    document.getElementById("risk-params").innerHTML = rphtml;
+    if ($("protections-body")) {
+        $("protections-body").innerHTML =
+            "<div style='font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px'>Signal filters</div>" +
+            row("Min confidence", filters.min_confidence != null ? filters.min_confidence + "+" : "--") +
+            row("Min grade", filters.min_grade || "--") +
+            row("Max spread", filters.spread_max_pct != null ? filters.spread_max_pct + "%" : "--") +
+            row("Signal cooldown", secs(filters.cooldown_seconds)) +
+            row("Max signals / hour", filters.max_signals_per_hour != null ? filters.max_signals_per_hour : "--") +
+            row("Duplicate prevention", filters.duplicate_prevention ? "on" : "off") +
+            row("Chop filter", filters.chop_filter ? "on" : "off");
+    }
 
-    // Veto gates
-    const vetos = [
-        {name: "1. Regime Router", desc: "Only trades trending markets. Quiet = zero trades", color: "var(--red)"},
-        {name: "2. HTF Alignment", desc: "15min trend must agree with 1min signal direction", color: "var(--red)"},
-        {name: "3. VWAP Filter", desc: "Blocks trades < 0.12 ATR from VWAP (noise zone)", color: "var(--red)"},
-        {name: "4. ATR Prefilter", desc: "Blocks extreme volatility (ATR ratio > 3.0)", color: "var(--yellow)"},
-        {name: "5. Setup Strength", desc: "Score must exceed 65/100 (removes weak entries)", color: "var(--yellow)"},
-        {name: "6. Counter-Trend Block", desc: "Cannot short in trending_up, long in trending_down", color: "var(--red)"},
-        {name: "7. Symbol Cooling", desc: "30 min pause after 3 consecutive losses on same pair", color: "var(--cyan)"},
-        {name: "8. Circuit Breaker", desc: "$25 daily loss limit or 5 consecutive losses", color: "var(--red)"},
-        {name: "9. Hard Loss Cap", desc: "Force close at -1.2R (prevents catastrophic losses)", color: "var(--red)"},
-    ];
-    let vhtml = "";
-    for (const v of vetos) {
-        vhtml += "<div style='display:flex;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);align-items:center'>";
-        vhtml += "<span style='color:" + v.color + ";font-weight:700;min-width:180px'>" + v.name + "</span>";
-        vhtml += "<span style='color:var(--text-secondary);font-size:.72rem'>" + v.desc + "</span></div>";
+    // 5. Execution engine
+    const fees = c.fees || {};
+    const tf = c.timeframes || {};
+    if ($("exec-engine-body")) {
+        $("exec-engine-body").innerHTML =
+            row("Mode", String(c.mode || "paper").toUpperCase() + " · production Delta data, simulated fills", "var(--cyan)") +
+            row("Order type", ex.order_type || "--") +
+            row("Retry taker on reject", ex.retry_taker_on_reject ? "yes" : "no") +
+            row("Max entry slippage", ex.max_entry_slip_bps != null ? ex.max_entry_slip_bps + " bps" : "--") +
+            row("Paper slippage model", paper.slippage_pct != null ? paper.slippage_pct + "%" : "--") +
+            row("Fees maker / taker (incl. GST)", pct(fees.maker) + " / " + pct(fees.taker)) +
+            row("Round trip (taker both legs)", pct(fees.round_trip_taker)) +
+            row("Timeframes", [tf.trigger, tf.primary, tf.higher, tf.macro, tf.session].filter(Boolean).join(" · ")) +
+            row("Analysis bar", (tf.primary || "--") + " close (completed bars only)") +
+            row("Symbols", (c.symbols || []).length + " · " + (c.symbols || []).map(s => s.split("/")[0]).join(" "));
     }
-    document.getElementById("veto-config").innerHTML = vhtml;
 }
 
 // Populate trade type performance from feedback data
@@ -2902,147 +2807,38 @@ function updateRealScannerPerf(recentReal) {
 // ══════════════════════════════════════════════════════════
 
 // ── B.2: DRAWDOWN GAUGE ──
-function updateDrawdownGauge(realStatus) {
-    const wrap = document.getElementById("dd-gauge");
-    if (!wrap) return;
-    const dd = (realStatus && realStatus.rolling_drawdown) || {};
-    if (!dd || Object.keys(dd).length === 0) {
-        wrap.innerHTML = '<div class="empty">No drawdown data</div>';
-        return;
-    }
-    const periods = [
-        { key: "1h", label: "1 Hour", limit: 15 },
-        { key: "24h", label: "24 Hour", limit: 25 },
-        { key: "7d", label: "7 Day", limit: 50 },
-    ];
-    wrap.innerHTML = periods.map(p => {
-        const d = dd[p.key] || {};
-        const pnl = d.pnl || 0;
-        const limit = d.limit || p.limit;
-        const pct = limit > 0 ? Math.min(100, Math.abs(pnl) / limit * 100) : 0;
-        const col = pct > 80 ? "var(--red)" : pct > 50 ? "var(--yellow)" : "var(--green)";
-        return '<div class="flex items-center gap-2">' +
-            '<span style="font-size:.65rem;color:var(--text-muted);min-width:50px">' + p.label + '</span>' +
-            '<div style="flex:1;height:14px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden;position:relative">' +
-            '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + col + ';border-radius:3px;transition:width .3s"></div>' +
-            '</div>' +
-            '<span style="font-size:.65rem;font-family:var(--font-mono);min-width:70px;text-align:right;color:' + col + '">' +
-            '$' + pnl.toFixed(2) + '/' + limit.toFixed(0) + '</span>' +
-            '</div>';
-    }).join("");
-}
 
 // ── B.6: FEE SAVINGS TRACKER ──
-function updateFeeSavings(realStatus) {
-    const fs = (realStatus && realStatus.fix_stats) || {};
-    const fills = fs.fix1_ioc_fill || 0;
-    const skips = fs.fix1_ioc_skip || 0;
-    const total = fills + skips;
-    const fillRate = total > 0 ? (fills / total * 100) : 0;
-    const el = id => document.getElementById(id);
-    if (el("fs-ioc-fills")) el("fs-ioc-fills").textContent = String(fills);
-    if (el("fs-ioc-skips")) el("fs-ioc-skips").textContent = String(skips);
-    // Estimate savings: each skipped trade avoided ~30bp * $20 margin * 20x leverage
-    const estSave = skips * 0.003 * 20 * 20;
-    if (el("fs-est-savings")) el("fs-est-savings").textContent = "$" + estSave.toFixed(2);
-    if (el("fs-fill-rate")) {
-        const rEl = el("fs-fill-rate");
-        rEl.textContent = total > 0 ? fillRate.toFixed(0) + "%" : "--";
-        rEl.style.color = fillRate >= 70 ? "var(--green)" : fillRate >= 50 ? "var(--yellow)" : "var(--red)";
-    }
-    // Avg slippage from closed real trades
-    const rt = (realStatus && realStatus.recent_trades) || [];
-    if (rt.length > 0 && el("fs-avg-slip")) {
-        const slips = rt.filter(t => (t.slippage_bps || 0) > 0).map(t => t.slippage_bps);
-        const avg = slips.length > 0 ? slips.reduce((a, b) => a + b, 0) / slips.length : 0;
-        el("fs-avg-slip").textContent = avg.toFixed(1) + " bp";
-    }
-}
 
 // ── B.11: SCANNER WEIGHTS TABLE ──
 async function loadScannerWeights() {
     try {
-        const d = await fetch("/api/ml/live-calibration").then(r => r.json()).catch(() => null);
+        // The weight manager IS the AI learner; read its live state instead of
+        // guessing weights from calibration buckets (which rendered 0%).
+        const d = await fetch("/api/scanner-health").then(r => r.json()).catch(() => null);
         const body = document.getElementById("sw-body");
         if (!body) return;
-        if (!d || !d.buckets) {
-            body.innerHTML = '<tr><td colspan="3" class="empty">No calibration data</td></tr>';
+        if (!d || !Array.isArray(d) || d.length === 0) {
+            body.innerHTML = '<tr><td colspan="3" class="empty">No scanner has closed a trade yet</td></tr>';
             return;
         }
-        // Aggregate by scanner from buckets
-        const scanners = {};
-        (d.buckets || []).forEach(b => {
-            const sc = b.scanner || "unknown";
-            if (!scanners[sc]) scanners[sc] = { total: 0, ok: 0, drift: 0 };
-            scanners[sc].total++;
-            if (b.status === "OK") scanners[sc].ok++;
-            if (b.status === "DRIFTING") scanners[sc].drift++;
-        });
-        const rows = Object.entries(scanners).sort((a, b) => b[1].ok - a[1].ok);
-        body.innerHTML = rows.map(([sc, v]) => {
-            const health = v.total > 0 ? (v.ok / v.total * 100) : 0;
-            const trendIcon = v.drift > 0 ? '<span class="text-danger">&#x25BC;</span>' :
-                              health >= 80 ? '<span class="text-success">&#x25B2;</span>' :
-                              '<span class="text-warning">&#x25CF;</span>';
-            return '<tr><td style="font-weight:600;color:' + (SCANNER_COLORS[sc] || 'var(--text)') + '">' + esc(sc) + '</td>' +
-                '<td class="font-mono">' + health.toFixed(0) + '%</td>' +
-                '<td>' + trendIcon + (v.drift > 0 ? ' <span style="font-size:.6rem;color:var(--red)">' + v.drift + ' drift</span>' : '') + '</td></tr>';
+        body.innerHTML = d.map(s => {
+            const w = Number(s.weight || 0);
+            const exp = Number(s.expectancy_r || 0);
+            const st = String(s.status || "");
+            const stColor = st === "active" ? "var(--green)" : st === "reduced" ? "var(--yellow)" : "var(--red)";
+            const trend = exp >= 0.3 ? '<span class="text-success">&#x25B2;</span>' :
+                          exp >= -0.1 ? '<span class="text-warning">&#x25CF;</span>' :
+                          '<span class="text-danger">&#x25BC;</span>';
+            return '<tr title="' + esc(s.reason || "") + '"><td style="font-weight:600;color:' + (SCANNER_COLORS[s.scanner] || 'var(--text)') + '">' + esc(s.scanner) +
+                ' <span style="font-size:.6rem;color:' + stColor + '">' + esc(st) + '</span></td>' +
+                '<td class="font-mono">' + w.toFixed(1) + 'x</td>' +
+                '<td>' + trend + ' <span style="font-size:.6rem;color:var(--text-muted)">' + (exp >= 0 ? "+" : "") + exp.toFixed(2) + 'R · ' + (s.trades || 0) + 't</span></td></tr>';
         }).join("");
     } catch (e) {}
 }
 
 // ── C.1: EDGE VERDICT TREND SPARKLINES ──
-async function loadVerdictSparklines() {
-    try {
-        const d = await fetch("/api/ml/edge-verdict-trend").then(r => r.json()).catch(() => null);
-        const wrap = document.getElementById("verdict-sparklines");
-        if (!wrap) return;
-        if (!d || (!d.trend && !d.data)) {
-            wrap.innerHTML = '<div class="empty">No verdict trend data</div>';
-            return;
-        }
-        const trend = d.trend || d.data || d;
-        const cats = ["HOLDS", "WEAK", "UNCLEAR", "NO_EDGE"];
-        const colors = { "HOLDS": "var(--green)", "WEAK": "var(--yellow)", "UNCLEAR": "var(--text-muted)", "NO_EDGE": "var(--red)" };
-        let html = "";
-        if (Array.isArray(trend)) {
-            // Array of {ts, verdict} — aggregate counts
-            const counts = {};
-            cats.forEach(c => counts[c] = 0);
-            trend.forEach(t => {
-                const v = (t.verdict || t.edge_verdict || "").toUpperCase();
-                if (counts[v] !== undefined) counts[v]++;
-            });
-            const total = trend.length || 1;
-            html = cats.map(c => {
-                const n = counts[c] || 0;
-                const pct = (n / total * 100);
-                return '<div class="flex items-center gap-2">' +
-                    '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
-                    '<div class="progress-track-md">' +
-                    '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
-                    '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
-            }).join("");
-        } else if (typeof trend === "object") {
-            // Dict keyed by verdict
-            const total = Object.values(trend).reduce((a, v) => a + (typeof v === "number" ? v : (v.count || 0)), 0) || 1;
-            html = cats.map(c => {
-                const val = trend[c] || trend[c.toLowerCase()] || 0;
-                const n = typeof val === "number" ? val : (val.count || 0);
-                const pct = (n / total * 100);
-                return '<div class="flex items-center gap-2">' +
-                    '<span style="font-size:.6rem;min-width:60px;color:' + colors[c] + ';font-weight:600">' + c + '</span>' +
-                    '<div class="progress-track-md">' +
-                    '<div style="height:100%;width:' + pct.toFixed(1) + '%;background:' + colors[c] + ';border-radius:2px"></div></div>' +
-                    '<span style="font-size:.6rem;font-family:var(--font-mono);min-width:40px;text-align:right">' + n + ' (' + pct.toFixed(0) + '%)</span></div>';
-            }).join("");
-        }
-        wrap.innerHTML = html || '<div class="empty">Unexpected data format</div>';
-    } catch (e) {
-        let w = document.getElementById("verdict-sparklines");
-        if (w) w.innerHTML = '<div class="empty">Fetch failed</div>';
-    }
-}
 
 // ── C.6 + C.7: FEATURE IMPORTANCE + BTC CROSS-ASSET ──
 async function loadFeatureImportance() {
@@ -3070,20 +2866,9 @@ async function loadFeatureImportance() {
             }
         }
 
-        // Fallback 2: read from live_model_results via tracker stats
-        if (topFeats.length === 0) {
-            try {
-                const trkStats = await fetch("/api/tracker/stats").then(r => r.json()).catch(() => null);
-                if (trkStats && trkStats.by_setup) {
-                    // Build pseudo-importance from scanner WR
-                    const setups = Object.entries(trkStats.by_setup || {});
-                    topFeats = setups.map(([name, data]) => [
-                        "scanner_" + name,
-                        parseFloat(data.win_rate || data.wr || 0) / 100
-                    ]).sort((a, b) => b[1] - a[1]).slice(0, 10);
-                }
-            } catch(e) {}
-        }
+        // (A third fallback used to fake "importances" from scanner win rates.
+        // Removed: the panel says model importance, so show nothing rather
+        // than a different statistic.)
 
         // Separate BTC features from general features
         const allFeats = topFeats.length > 0 ? topFeats : [];
@@ -3162,19 +2947,9 @@ function updateKanbanFunnel(funnelData) {
 // ── WIRE SECTION 6.5 into existing data flows ──
 // Hook into the main refresh cycle to populate these panels
 (function wireSection65() {
-    // Drawdown + Fee Savings from real status (already fetched every 5s by loadRealOps)
-    const origUpdateRealOps = window.updateRealActiveTrades;
-    if (origUpdateRealOps) {
-        window.updateRealActiveTrades = function(realStatus) {
-            origUpdateRealOps(realStatus);
-            try { updateDrawdownGauge(realStatus); } catch (e) {}
-            try { updateFeeSavings(realStatus); } catch (e) {}
-        };
-    }
-    // Scanner weights + verdict sparklines + feature importance — load every 30s
+    // Scanner weights + feature importance — load every 30s
     async function loadSection65Slow() {
         try { await loadScannerWeights(); } catch (e) {}
-        try { await loadVerdictSparklines(); } catch (e) {}
         try { await loadFeatureImportance(); } catch (e) {}
     }
     loadSection65Slow();
@@ -3292,86 +3067,36 @@ function updateAttentionRail(status, decision, active, realStatus, funnel) {
 var _deploySparkData = [];
 var _deploySparkChart = null;
 
-function updateDeployableCapital(realStatus) {
-    if (!realStatus) return;
-    let balance = realStatus.balance || 0;
-    let openCount = realStatus.open_count || 0;
-    let margin = 20; // per-trade margin
-    let reserved = openCount * margin;
-    let dd = realStatus.rolling_drawdown || {};
-    let dd1h = (dd["1h"] || {}).pnl || 0;
-    let ddBuffer = Math.max(0, Math.abs(dd1h) * 2); // 2x recent drawdown as buffer
-    let deployable = Math.max(0, balance - reserved - ddBuffer);
-
-    let el = function(id) { return document.getElementById(id); };
-    if (el("kpi-deployable")) el("kpi-deployable").textContent = "$" + deployable.toFixed(0);
-    // UI FIX (2026-04-16): was showing "$3 of $3" which is misleading when
-    // deployable == balance (no reservation). Now show "100% free" when full,
-    // or a clear "X% free" utilisation hint otherwise.
-    if (el("kpi-deploy-pct")) {
-        if (balance <= 0.01) {
-            el("kpi-deploy-pct").textContent = "no balance";
-            el("kpi-deploy-pct").style.color = "var(--text-muted)";
-        } else {
-            let freePct = Math.round(deployable / balance * 100);
-            el("kpi-deploy-pct").textContent = freePct + "% free ($" + balance.toFixed(2) + " bal)";
-            el("kpi-deploy-pct").style.color = freePct >= 70 ? "var(--green)" : freePct >= 30 ? "var(--yellow)" : "var(--red)";
-        }
-    }
-    if (el("kpi-reserved")) el("kpi-reserved").textContent = "$" + reserved.toFixed(0);
-    if (el("kpi-dd-buffer")) el("kpi-dd-buffer").textContent = "$" + ddBuffer.toFixed(1);
-
-    // Sparkline (rolling 30 data points)
-    _deploySparkData.push(deployable);
-    if (_deploySparkData.length > 30) _deploySparkData.shift();
-    try {
-        let canvas = document.getElementById("kpi-deploy-spark");
-        if (canvas && _deploySparkData.length > 2) {
-            if (_deploySparkChart) _deploySparkChart.destroy();
-            _deploySparkChart = new Chart(canvas.getContext("2d"), {
-                type: "line",
-                data: {
-                    labels: _deploySparkData.map(function(_, i) { return ""; }),
-                    datasets: [{
-                        data: _deploySparkData,
-                        borderColor: "rgba(0,255,157,.6)",
-                        backgroundColor: "rgba(0,255,157,.05)",
-                        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.3,
-                    }],
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-                    scales: { x: { display: false }, y: { display: false } },
-                },
-            });
-        }
-    } catch(e) {}
-}
 
 // ── LIVE EDGE ESTIMATE KPI ──
 function updateLiveEdge(closed) {
     if (!closed || !Array.isArray(closed) || closed.length < 5) return;
-    let recent = closed.slice(-20);
-    let wins = 0, totalPnl = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
+    // Last 20 closes by exit time (the API list is not guaranteed sorted).
+    let recent = [...closed]
+        .sort((a, b) => new Date(a.exit_time || a.closed_at || 0) - new Date(b.exit_time || b.closed_at || 0))
+        .slice(-20);
+    let wins = 0, totalPnl = 0, totalR = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
     recent.forEach(function(t) {
         let pnl = parseFloat(t.pnl_usd || 0);
         let r = parseFloat(t.exit_r || t.r_multiple || 0);
         totalPnl += pnl;
+        totalR += r;
         if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
         else { lossPnl += Math.abs(pnl); lossCount++; }
     });
     let wr = recent.length > 0 ? (wins / recent.length * 100) : 0;
-    let avgR = recent.length > 0 ? (totalPnl / recent.length) : 0;
     let avgWin = winCount > 0 ? (winPnl / winCount) : 0;
     let avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
     let ev = recent.length > 0 ? (totalPnl / recent.length) : 0;
 
     let el = function(id) { return document.getElementById(id); };
     if (el("kpi-edge")) {
-        let edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
-        el("kpi-edge").textContent = edgeR.toFixed(2) + "R";
-        el("kpi-edge").style.color = edgeR >= 1.0 ? "var(--green)" : edgeR >= 0.5 ? "var(--yellow)" : "var(--red)";
+        // Headline = expectancy in R over the window, the same statistic the
+        // EDGE strip and scanner health use. (It used to show avg_win/avg_loss
+        // in dollars labelled as "R", which read 0.73R next to a +0.05R strip.)
+        let edgeR = recent.length > 0 ? (totalR / recent.length) : 0;
+        el("kpi-edge").textContent = (edgeR >= 0 ? "+" : "") + edgeR.toFixed(2) + "R";
+        el("kpi-edge").style.color = edgeR >= 0.3 ? "var(--green)" : edgeR >= 0 ? "var(--yellow)" : "var(--red)";
     }
     if (el("kpi-edge-wr")) {
         el("kpi-edge-wr").textContent = wr.toFixed(0) + "%";
@@ -3394,68 +3119,10 @@ function updateLiveEdge(closed) {
         el("kpi-avg-loss").innerHTML = "$" + avgLoss.toFixed(2) + asymWarn;
         el("kpi-avg-loss").style.color = asymmetric ? "var(--yellow)" : "";
     }
-    if (el("kpi-paper-count")) el("kpi-paper-count").textContent = closed.length;
+    if (el("kpi-paper-count")) el("kpi-paper-count").textContent = recent.length + " of " + closed.length;
 }
 
 // ── REAL EDGE (split panel) ──
-function updateRealEdge(realStatus) {
-    if (!realStatus) return;
-    let el = function(id) { return document.getElementById(id); };
-    let closed = realStatus.closed_trades || [];
-    let totalPnl = parseFloat(realStatus.total_pnl || 0);
-
-    if (closed.length === 0) {
-        // UI FIX (2026-04-16): previously filled 5 fields with "--R / --% / $0 / 0"
-        // which looked like a dead dashboard. Now show a single explicit message
-        // and dim the whole card so users know real trading simply hasn't started.
-        if (el("kpi-real-edge")) { el("kpi-real-edge").textContent = "—"; el("kpi-real-edge").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-wr")) { el("kpi-real-wr").textContent = "no trades"; el("kpi-real-wr").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-pnl")) { el("kpi-real-pnl").textContent = "yet"; el("kpi-real-pnl").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-count")) { el("kpi-real-count").textContent = "0"; el("kpi-real-count").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-avg-win")) { el("kpi-real-avg-win").textContent = "—"; el("kpi-real-avg-win").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-avg-loss")) { el("kpi-real-avg-loss").textContent = "—"; el("kpi-real-avg-loss").style.color = "var(--text-muted)"; }
-        if (el("kpi-real-cb")) {
-            let cb = realStatus.circuit_breaker || {};
-            let tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
-            el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "armed";
-            el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--text-muted)";
-        }
-        return;
-    }
-
-    let wins = 0, winPnl = 0, lossPnl = 0, winCount = 0, lossCount = 0;
-    closed.forEach(function(t) {
-        let pnl = parseFloat(t.pnl_usd || 0);
-        if (pnl > 0) { wins++; winPnl += pnl; winCount++; }
-        else { lossPnl += Math.abs(pnl); lossCount++; }
-    });
-    let wr = closed.length > 0 ? (wins / closed.length * 100) : 0;
-    let avgWin = winCount > 0 ? (winPnl / winCount) : 0;
-    let avgLoss = lossCount > 0 ? (lossPnl / lossCount) : 0;
-    let edgeR = avgLoss > 0 ? (avgWin / avgLoss) : 0;
-
-    if (el("kpi-real-edge")) {
-        el("kpi-real-edge").textContent = edgeR.toFixed(2) + "R";
-        el("kpi-real-edge").style.color = edgeR >= 1.0 ? "var(--green)" : edgeR >= 0.5 ? "var(--yellow)" : "var(--red)";
-    }
-    if (el("kpi-real-wr")) {
-        el("kpi-real-wr").textContent = wr.toFixed(0) + "%";
-        el("kpi-real-wr").style.color = wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)";
-    }
-    if (el("kpi-real-pnl")) {
-        el("kpi-real-pnl").textContent = "$" + totalPnl.toFixed(2);
-        el("kpi-real-pnl").style.color = totalPnl >= 0 ? "var(--green)" : "var(--red)";
-    }
-    if (el("kpi-real-avg-win")) el("kpi-real-avg-win").textContent = "$" + avgWin.toFixed(2);
-    if (el("kpi-real-avg-loss")) el("kpi-real-avg-loss").textContent = "$" + avgLoss.toFixed(2);
-    if (el("kpi-real-count")) el("kpi-real-count").textContent = closed.length;
-    if (el("kpi-real-cb")) {
-        let cb = realStatus.circuit_breaker || {};
-        let tripped = cb.is_tripped || (cb.consecutive_losses || 0) >= 3;
-        el("kpi-real-cb").textContent = tripped ? "TRIPPED" : "OK";
-        el("kpi-real-cb").style.color = tripped ? "var(--red)" : "var(--green)";
-    }
-}
 
 // ── SIGNAL RADAR ──
 var _radarChart = null;
@@ -3765,215 +3432,14 @@ async function loadResearchEngine() {
 
 // ── RESOLUTION CLOCK ──
 // Forward-looking thesis timeline showing key price levels and regime questions
-function updateResolutionClock(thesis, prices) {
-    let wrap = document.getElementById("resolution-clock");
-    if (!wrap) return;
-
-    let btc = (prices && prices["BTC/USDT"]) || 0;
-    let eth = (prices && prices["ETH/USDT"]) || 0;
-    let regime = (thesis && thesis.regime) || "unknown";
-    let conf = (thesis && thesis.regime_confidence) || 0;
-
-    // Build resolution questions based on current state
-    let questions = [];
-
-    // BTC key levels
-    if (btc > 0) {
-        let btcRound = Math.round(btc / 1000) * 1000;
-        let btcDist = ((btc - btcRound) / btc * 100).toFixed(2);
-        let direction = btc > btcRound ? "above" : "below";
-        questions.push({
-            question: "BTC hold $" + btcRound.toLocaleString() + "?",
-            pressure: Math.max(0, 100 - Math.abs(btcDist) * 20),
-            status: direction + " (" + Math.abs(btcDist) + "%)",
-            color: btc > btcRound ? "var(--green)" : "var(--red)",
-        });
-    }
-
-    // Regime stability
-    questions.push({
-        question: "Regime stable?",
-        pressure: conf * 100,
-        status: regime.replace("_", " ") + " (" + (conf * 100).toFixed(0) + "%)",
-        color: conf > 0.7 ? "var(--green)" : conf > 0.4 ? "var(--yellow)" : "var(--red)",
-    });
-
-    // Trend continuation
-    let side = (thesis && thesis.dominant_side) || "NEUTRAL";
-    let wr = (thesis && thesis.recent_wr) || 0;
-    questions.push({
-        question: side + " thesis holds?",
-        pressure: wr,
-        status: "WR " + wr.toFixed(0) + "% (last 20)",
-        color: wr >= 60 ? "var(--green)" : wr >= 45 ? "var(--yellow)" : "var(--red)",
-    });
-
-    // Session timing — 2026-04-27 architect directive: show IST on the
-    // dashboard, not UTC. Active-session window 03:00–21:00 UTC =
-    // 08:30–02:30 IST (next day) which spans most of Asian + EU sessions.
-    // Display in IST for the operator's time reference.
-    let nowD = new Date();
-    let utcHour = nowD.getUTCHours();
-    let isActiveSession = (utcHour >= 3 && utcHour < 21);
-    let istHourStr = nowD.toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata"});
-    questions.push({
-        question: "Active session?",
-        pressure: isActiveSession ? 80 : 20,
-        status: isActiveSession ? ("YES (IST " + istHourStr + ")") : ("low volume (IST " + istHourStr + ")"),
-        color: isActiveSession ? "var(--green)" : "var(--text-muted)",
-    });
-
-    wrap.innerHTML = questions.map(function(q) {
-        return '<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,.03)">' +
-            '<div style="display:flex;justify-content:space-between;font-size:.62rem;margin-bottom:3px">' +
-            '<span style="color:var(--text);font-weight:600">' + q.question + '</span>' +
-            '<span style="font-family:var(--font-mono);color:' + q.color + '">' + q.pressure.toFixed(0) + '%</span></div>' +
-            '<div style="height:4px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden">' +
-            '<div style="height:100%;width:' + q.pressure.toFixed(0) + '%;background:' + q.color + ';border-radius:2px;transition:width .5s"></div></div>' +
-            '<div style="font-size:.5rem;color:var(--text-muted);margin-top:2px">' + q.status + '</div></div>';
-    }).join("");
-}
 
 // ── MARKET MAP ──
 // Capital deployed by symbol/family with visual nodes
-async function loadMarketMap() {
-    try {
-        let d = await fetch("/api/market-map").then(function(r) { return r.json(); }).catch(function() { return null; });
-        let wrap = document.getElementById("market-map");
-        if (!wrap || !d || !d.symbols) return;
-
-        let families = d.families || {};
-        let familyColors = {
-            liquid_majors: "#06b6d4", secondary: "#8b5cf6", high_beta: "#f59e0b",
-        };
-
-        let html = '<div style="display:flex;gap:12px;flex-wrap:wrap">';
-
-        for (var famName in families) {
-            let syms = families[famName] || [];
-            let fColor = familyColors[famName] || "var(--text-muted)";
-            let famExposure = 0;
-            let famPnl = 0;
-            let famTrades = 0;
-
-            let nodes = syms.map(function(sym) {
-                let s = d.symbols[sym] || {};
-                let exposure = (s.paper_exposure || 0) + (s.real_exposure || 0);
-                famExposure += exposure;
-                famPnl += (s.pnl || 0);
-                famTrades += (s.trades || 0);
-
-                let size = Math.max(36, Math.min(70, 36 + exposure / 50));
-                let pnlColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.15)" : "rgba(255,59,92,.15)";
-                let borderColor = (s.pnl || 0) >= 0 ? "rgba(0,255,157,.3)" : "rgba(255,59,92,.3)";
-                let coin = sym.replace("/USDT", "");
-
-                return '<div style="width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + pnlColor +
-                    ';border:1px solid ' + borderColor + ';display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:default" ' +
-                    'title="' + sym + ': $' + (s.price || 0).toFixed(2) + ' | ' + (s.trades || 0) + ' trades | WR ' + (s.wr || 0).toFixed(0) + '% | PnL $' + (s.pnl || 0).toFixed(2) + '">' +
-                    '<span style="font-size:.55rem;font-weight:800;color:' + fColor + '">' + coin + '</span>' +
-                    '<span style="font-size:.45rem;font-family:var(--font-mono);color:var(--text-muted)">' + (s.wr || 0).toFixed(0) + '%</span></div>';
-            }).join("");
-
-            html += '<div class="text-center">' +
-                '<div style="font-size:.55rem;font-weight:700;color:' + fColor + ';text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">' +
-                famName.replace("_", " ") + '</div>' +
-                '<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center">' + nodes + '</div>' +
-                '<div style="font-size:.5rem;color:var(--text-muted);margin-top:3px">$' + famExposure.toFixed(0) + ' exp · ' +
-                famTrades + 't · <span style="color:' + (famPnl >= 0 ? 'var(--green)' : 'var(--red)') + '">$' + famPnl.toFixed(0) + '</span></div></div>';
-        }
-
-        html += '</div>';
-
-        // Totals bar
-        html += '<div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:.6rem">' +
-            '<span class="text-muted">Paper: <b class="text-info">$' + (d.total_paper_exposure || 0).toFixed(0) + '</b></span>' +
-            '<span class="text-muted">Real: <b class="text-danger">$' + (d.total_real_exposure || 0).toFixed(0) + '</b></span></div>';
-
-        wrap.innerHTML = html;
-    } catch (e) {}
-}
 
 // ── CATALYST CALENDAR ──
-async function loadCatalystCalendar() {
-    try {
-        let d = await fetch("/api/catalyst-calendar").then(function(r) { return r.json(); }).catch(function() { return null; });
-        let wrap = document.getElementById("catalyst-calendar");
-        if (!wrap || !d) return;
 
-        let html = "";
-
-        // 1. Current session indicator
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;background:rgba(255,255,255,.02);border-radius:3px;margin-bottom:4px">' +
-            '<span style="font-size:.6rem;font-weight:700;color:var(--cyan)">' + (d.current_session || "?") + '</span>' +
-            '<span style="font-size:.55rem;font-family:var(--font-mono);color:var(--text-muted)">' + (d.utc_time || "") + '</span></div>';
-
-        // 2. Session timeline (compact horizontal bar)
-        let sessions = d.sessions || [];
-        html += '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;margin-bottom:6px">';
-        sessions.forEach(function(s) {
-            let width = ((s.utc_end - s.utc_start) / 24 * 100);
-            let bg = s.active ? "rgba(6,182,212,.3)" : "rgba(255,255,255,.03)";
-            let border = s.active ? "rgba(6,182,212,.5)" : "rgba(255,255,255,.05)";
-            html += '<div style="width:' + width + '%;background:' + bg + ';border-right:1px solid ' + border +
-                ';display:flex;align-items:center;justify-content:center" title="' + s.name + ' (UTC ' + s.utc_start + '-' + s.utc_end + ')">' +
-                '<span style="font-size:.4rem;color:' + (s.active ? 'var(--cyan)' : 'rgba(255,255,255,.15)') + '">' +
-                (width > 10 ? s.name.split(" ")[0] : "") + '</span></div>';
-        });
-        html += '</div>';
-
-        // 3. Funding rates
-        let funding = d.funding || {};
-        let fundingKeys = Object.keys(funding);
-        if (fundingKeys.length > 0) {
-            html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:3px">Funding Rates</div>';
-            fundingKeys.forEach(function(sym) {
-                let f = funding[sym];
-                let rate = f.rate_8h || 0;
-                let col = rate > 0 ? "var(--green)" : rate < 0 ? "var(--red)" : "var(--text-muted)";
-                let bias = f.bias === "longs_pay" ? "L pay" : f.bias === "shorts_pay" ? "S pay" : "neutral";
-                html += '<div style="display:flex;justify-content:space-between;font-size:.58rem;padding:1px 0">' +
-                    '<span class="text-muted">' + sym.replace("/USDT", "") + '</span>' +
-                    '<span style="font-family:var(--font-mono);color:' + col + '">' + rate.toFixed(4) + '% <span style="font-size:.5rem">(' + bias + ')</span></span></div>';
-            });
-        }
-
-        // 4. Upcoming events
-        let events = d.upcoming_events || [];
-        if (events.length > 0) {
-            html += '<div style="font-size:.5rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-top:6px;margin-bottom:3px">Upcoming Events</div>';
-            events.forEach(function(e) {
-                let impactCol = e.impact === "high" ? "var(--red)" : e.impact === "medium" ? "var(--yellow)" : "var(--text-muted)";
-                html += '<div style="display:flex;gap:6px;align-items:flex-start;font-size:.55rem;padding:2px 0;border-bottom:1px solid rgba(255,255,255,.02)">' +
-                    '<span style="color:var(--text-muted);min-width:42px;font-family:var(--font-mono)">' + e.date.substring(5) + '</span>' +
-                    '<span style="width:4px;height:4px;border-radius:50%;background:' + impactCol + ';margin-top:4px;flex-shrink:0"></span>' +
-                    '<span class="text-primary">' + e.event + '</span></div>';
-                });
-        }
-
-        wrap.innerHTML = html || '<div class="empty">No catalyst data</div>';
-    } catch (e) {}
-}
-
-// ── Wire Tier 3 into Tier 2+3 refresh cycle ──
-(function wireVisionTier3() {
-    async function loadTier3() {
-        try {
-            let thesis = await fetch("/api/thesis").then(function(r) { return r.json(); }).catch(function() { return null; });
-            let prices = (thesis && thesis.btc_price) ? {"BTC/USDT": thesis.btc_price} : {};
-            // Also get full prices from status
-            try {
-                let st = await fetch("/api/status").then(function(r) { return r.json(); }).catch(function() { return {}; });
-                prices = st.prices || prices;
-            } catch(e) {}
-            updateResolutionClock(thesis, prices);
-        } catch (e) {}
-        try { await loadMarketMap(); } catch (e) {}
-        try { await loadCatalystCalendar(); } catch (e) {}
-    }
-    setTimeout(loadTier3, 4000);
-    setInterval(loadTier3, 20000);  // every 20s (funding rates don't change faster)
-})();
+// (Vision Tier 3 panels — Resolution Clock, Market Map, Catalyst Calendar —
+// were removed from the Live tab: they rendered placeholder data.)
 
 (function wireVisionTier23() {
     // Thesis + agents + pipeline trace + research — load every 15s
@@ -4064,54 +3530,6 @@ async function saveConfig() {
 // ITEM #11: GRID BOT VISUAL MAP
 // ══════════════════════════════════════════════════════════
 
-async function refreshGridBot() {
-    try {
-        let status = await fetch("/api/grid/status").then(function(r) { return r.json(); }).catch(function() { return { enabled: false }; });
-        let badge = document.getElementById("grid-status-badge");
-        let disabledMsg = document.getElementById("grid-disabled-msg");
-        let activeContent = document.getElementById("grid-active-content");
-        if (!badge) return;
-
-        if (!status.enabled) {
-            badge.textContent = "PAUSED";
-            badge.style.background = "var(--text-muted)";
-            if (disabledMsg) disabledMsg.style.display = "block";
-            if (activeContent) activeContent.style.display = "none";
-            return;
-        }
-
-        badge.textContent = "ACTIVE";
-        badge.style.background = "var(--green)";
-        if (disabledMsg) disabledMsg.style.display = "none";
-        if (activeContent) activeContent.style.display = "block";
-
-        let s = status;
-        let el = function(id) { return document.getElementById(id); };
-        if (el("grid-total-fills")) el("grid-total-fills").textContent = s.total_fills || 0;
-        if (el("grid-profit")) el("grid-profit").textContent = "$" + (s.total_profit || 0).toFixed(2);
-        if (el("grid-fees")) el("grid-fees").textContent = "$" + (s.total_fees || 0).toFixed(2);
-        if (el("grid-fills-hr")) el("grid-fills-hr").textContent = (s.fills_per_hour || 0).toFixed(1);
-        if (el("grid-profit-hr")) el("grid-profit-hr").textContent = "$" + (s.profit_per_hour || 0).toFixed(2);
-
-        // Grid ladders visualization
-        let ladders = document.getElementById("grid-ladders");
-        if (ladders && s.symbols) {
-            let html = "";
-            for (var sym in s.symbols) {
-                let info = s.symbols[sym] || {};
-                let center = info.center || info.last_price || 0;
-                let openCount = info.open || 0;
-                let dec = sym.includes("BTC") ? 2 : 4;
-                html += '<div style="padding:8px;border:1px solid var(--border);border-radius:6px">' +
-                    '<div style="font-weight:700;font-size:.72rem">' + esc(sym.replace("/USDT","")) + '</div>' +
-                    '<div style="font-size:.62rem;color:var(--cyan)">Center: $' + center.toFixed(dec) + '</div>' +
-                    '<div class="text-xs-muted">Open: ' + openCount + '</div>' +
-                    '</div>';
-            }
-            ladders.innerHTML = html || '<div class="empty">No grid symbols</div>';
-        }
-    } catch (e) {}
-}
 
 // ── BRAIN TAB ────────────────────────────────────────────
 async function refreshBrainTab() {
@@ -4132,7 +3550,9 @@ async function refreshBrainTab() {
         // 1. Brain Status
         if (stateRes) {
             let modeEl = document.getElementById("brain-mode");
-            if (modeEl) modeEl.textContent = stateRes.dry_run ? "DRY RUN" : "LIVE";
+            // "dry_run" here is the brain's own advisory flag (observe, no
+            // directives), not the trading mode — label it as such.
+            if (modeEl) modeEl.textContent = stateRes.dry_run ? "ADVISORY" : "DIRECTING";
             if (modeEl) modeEl.style.color = stateRes.dry_run ? "#bf00ff" : "#00ff88";
             let obsEl = document.getElementById("brain-observations");
             if (obsEl) obsEl.textContent = (stateRes.total_observations || 0).toLocaleString();
@@ -4152,7 +3572,7 @@ async function refreshBrainTab() {
                 if (Object.keys(ad.side_penalties || {}).length > 0) lines.push('Side penalties: ' + JSON.stringify(ad.side_penalties));
                 if (stateRes.bad_hours && stateRes.bad_hours.length > 0) lines.push('Bad hours detected: <span style="color:#ff6666">' + stateRes.bad_hours.join(", ") + 'h</span>');
                 if (stateRes.best_hours && stateRes.best_hours.length > 0) lines.push('Best hours: <span style="color:#00ff88">' + stateRes.best_hours.join(", ") + 'h</span>');
-                adDiv.innerHTML = lines.length > 0 ? lines.join("<br>") : '<span class="text-dim">No active directives (dry_run mode)</span>';
+                adDiv.innerHTML = lines.length > 0 ? lines.join("<br>") : '<span class="text-dim">No active directives (advisory mode: the brain observes but does not steer)</span>';
             }
 
             // Today's session
@@ -5034,11 +4454,6 @@ async function renderPipelineObs() {
         r('Blocked (regime)', f.blocked_regime, 'var(--red)'),
         '<div class="border-top-dashed"></div>',
         r('Paper Emitted', f.paper_emitted, 'var(--green)'),
-        r('Real Qualified', f.real_qualified, 'var(--yellow)'),
-        r('Real Rejected', f.real_rejected, 'var(--red)'),
-        '<div class="border-top-dashed"></div>',
-        r('Real Executed', f.real_executed, 'var(--accent)'),
-        r('Anti-slip Rej', f.real_anti_slip_rejected, 'var(--red)'),
       ].join('');
     }
 
@@ -5317,7 +4732,8 @@ function renderStageLossMap(data) {
     real_exec: '#00ff9d', exit: '#00d4ff'
   };
 
-  const rows = data.funnel.map((s, i) => {
+  // Paper build: the real_qualify / real_exec stages never receive anything.
+  const rows = data.funnel.filter(s => !String(s.stage || '').startsWith('real_')).map((s, i) => {
     const reached = s.reached || 0;
     const passed = s.passed || 0;
     const failed = s.failed || 0;

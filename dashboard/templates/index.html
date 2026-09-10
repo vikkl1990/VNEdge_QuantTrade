@@ -669,7 +669,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div style="margin-top:8px;display:flex;gap:8px;align-items:center;padding:6px 12px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid rgba(255,255,255,.06)">
       <button id="cc-pause-btn" data-paused="false" data-action="ccTogglePause" style="padding:4px 10px;font-size:.62rem;font-weight:700;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.1);color:var(--yellow);border-radius:4px;cursor:pointer">&#x23F8; Pause</button>
       <div style="margin-left:auto;display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:.72rem">
-        <span class="text-muted">Paper PnL:</span>
+        <span class="text-muted">Today PnL:</span>
         <span id="cc-live-pnl" style="font-weight:900;font-size:1rem;color:var(--green)">$0.00</span>
       </div>
     </div>
@@ -698,25 +698,12 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- Deployable Capital -->
-    <div class="glass-card" class="glass-card--accent-success">
-      <div class="metric-label">Deployable Capital</div>
-      <div class="flex-baseline">
-        <span id="kpi-deployable" class="stat-value stat-value--hero" style=";color:var(--green)">$--</span>
-        <span id="kpi-deploy-pct" class="text-sm text-muted">of $--</span>
-      </div>
-      <div style="height:30px;margin-top:6px"><canvas id="kpi-deploy-spark" style="max-height:30px"></canvas></div>
-      <div style="display:flex;justify-content:space-between;font-size:.6rem;color:var(--text-muted);margin-top:4px">
-        <span>Reserved: <b id="kpi-reserved" class="text-warning">$--</b></span>
-        <span>DD Buffer: <b id="kpi-dd-buffer" class="text-danger">$--</b></span>
-      </div>
-    </div>
-
-    <!-- Live Edge: Paper vs Real split -->
+    
+    <!-- Paper Edge (last 20 closes) -->
     <div class="glass-card" style="border-left:3px solid var(--cyan);grid-column:span 2">
       <div class="grid-1-1-lg">
         <!-- Paper Edge -->
-        <div style="border-right:1px solid #333;padding-right:12px">
+        <div>
           <div class="metric-label">Paper Edge <span class="text-info">(last 20)</span></div>
           <div class="flex-baseline">
             <span id="kpi-edge" class="stat-value" style=";color:var(--cyan)">--R</span>
@@ -731,23 +718,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
           </div>
           <div style="margin-top:4px;font-size:.55rem;color:var(--text-muted)">Trades: <span id="kpi-paper-count" class="text-info">--</span></div>
         </div>
-        <!-- Real Edge -->
-        <div>
-          <div class="metric-label">Real Edge <span class="text-orange">(all time)</span></div>
-          <div class="flex-baseline">
-            <span id="kpi-real-edge" class="stat-value" style=";color:var(--orange)">--R</span>
-          </div>
-          <div class="grid-1-1-mt">
-            <div><div class="text-xs text-muted">Win Rate</div><div id="kpi-real-wr" class="stat-value--xs font-mono" style=";color:var(--green)">--%</div></div>
-            <div><div class="text-xs text-muted">Total PnL</div><div id="kpi-real-pnl" class="stat-value--xs font-mono" style="">$--</div></div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">
-            <div><div class="text-xs text-muted">Avg Win</div><div id="kpi-real-avg-win" class="metric-value text-sm" style=";color:var(--green)">$--</div></div>
-            <div><div class="text-xs text-muted">Avg Loss</div><div id="kpi-real-avg-loss" class="metric-value text-sm" style=";color:var(--red)">$--</div></div>
-          </div>
-          <div style="margin-top:4px;font-size:.55rem;color:var(--text-muted)">Trades: <span id="kpi-real-count" class="text-orange">0</span> | CB: <span id="kpi-real-cb" class="text-success">OK</span></div>
-        </div>
-      </div>
+              </div>
     </div>
 
     <!-- Signal Radar -->
@@ -807,34 +778,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- ═══ VISION TIER 3: Resolution Clock + Market Map + Catalyst Calendar ═══ -->
-  <div style="display:grid;grid-template-columns:1fr 2fr 1fr;gap:8px;margin-bottom:8px">
-
-    <!-- Resolution Clock -->
-    <div class="glass-card" style="border-left:3px solid #ec4899">
-      <div class="panel-title">Resolution Clock</div>
-      <div id="resolution-clock" class="flex-col-gap-2">
-        <div class="empty">Loading...</div>
-      </div>
-    </div>
-
-    <!-- Market Map -->
-    <div class="glass-card" style="border-left:3px solid #3b82f6">
-      <div class="panel-title">Market Map <span class="text-xs text-muted">· capital deployed by family</span></div>
-      <div id="market-map" style="min-height:120px">
-        <div class="empty">Loading market data...</div>
-      </div>
-    </div>
-
-    <!-- Catalyst Calendar -->
-    <div class="glass-card" style="border-left:3px solid #f97316">
-      <div class="panel-title">Catalyst Calendar</div>
-      <div id="catalyst-calendar" class="flex-col-gap-1">
-        <div class="empty">Loading...</div>
-      </div>
-    </div>
-  </div>
-
+  
   <!-- Symbol Scanner Status (merged lifecycle + funnel) -->
   <div class="glass-card" id="symbol-scanner-status" class="mb-2">
     <div class="panel-title">Symbol Scanner Status <span class="badge" id="scanner-status-count">0</span></div>
@@ -848,7 +792,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div class="panel-title" class="m-0">Pipeline Observability</div>
       <div id="po-timestamp" style="font-size:.65rem;color:var(--text-muted);font-family:var(--font-mono)">--</div>
     </div>
-    <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:12px">
       <!-- Col 1: Stage-Loss Map (TODAY) -->
       <div style="padding:10px;border:1px solid rgba(0,212,255,.15);border-radius:6px">
         <div style="font-size:.6rem;color:var(--cyan);letter-spacing:1.5px;font-weight:700;margin-bottom:8px">STAGE-LOSS MAP (TODAY)</div>
@@ -856,33 +800,14 @@ textarea.contact-input{min-height:100px;resize:vertical}
           <div class="text-muted text-sm">Loading...</div>
         </div>
       </div>
-      <!-- Col 2: Rejection Leaderboard + Hotfix Effectiveness (3.2) -->
+      <!-- Col 2: Rejection Leaderboard -->
       <div style="padding:10px;border:1px solid rgba(255,59,92,.15);border-radius:6px;display:flex;flex-direction:column">
         <div style="font-size:.6rem;color:var(--red);letter-spacing:1.5px;font-weight:700;margin-bottom:6px">REJECTION LEADERBOARD</div>
         <div id="po-reject-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.6;flex:0 0 auto;max-height:80px;overflow-y:auto">
           <div class="text-muted text-sm">Loading...</div>
         </div>
-        <div style="border-top:1px dashed rgba(255,255,255,.08);margin:8px 0 6px 0"></div>
-        <div style="font-size:.6rem;color:#818cf8;letter-spacing:1.5px;font-weight:700;margin-bottom:6px">HOTFIX EFFECTIVENESS</div>
-        <div id="po-hotfix-rows" style="font-family:var(--font-mono);font-size:.68rem;line-height:1.6">
-          <div class="text-muted text-sm">Loading...</div>
-        </div>
-      </div>
-      <!-- Col 3: Agents & Circuit Breaker -->
-      <div style="padding:10px;border:1px solid rgba(0,255,157,.15);border-radius:6px">
-        <div class="flex justify-between items-center mb-2">
-          <div style="font-size:.6rem;color:var(--green);letter-spacing:1.5px;font-weight:700">AGENTS &amp; CIRCUIT BREAKER</div>
-          <div class="flex gap-1">
-            <button data-action="cbResetAction" data-arg="reset" title="Reset consecutive losses + trip state (keep pnl counters)" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(255,215,0,.3);background:rgba(255,215,0,.08);color:var(--yellow);border-radius:3px;cursor:pointer;font-weight:700">RESET</button>
-            <button data-action="cbResetAction" data-arg="full" title="Full reset: trip+losses+daily PnL+total PnL (clears drawdown-kill)" style="padding:2px 6px;font-size:.55rem;border:1px solid rgba(255,140,0,.3);background:rgba(255,140,0,.08);color:#ff8c00;border-radius:3px;cursor:pointer;font-weight:700">FULL</button>
+                              </div>
           </div>
-        </div>
-        <div id="po-cb-rows" style="font-family:var(--font-mono);font-size:.72rem;line-height:1.7">
-          <div class="text-muted text-sm">Loading...</div>
-        </div>
-        <div id="po-cb-msg" style="display:none;margin-top:6px;padding:4px 6px;font-size:.65rem;border-radius:3px;font-family:var(--font-mono)"></div>
-      </div>
-    </div>
   </div>
 
   <!-- ═══ PHASE 3.3: LOSS TAXONOMY ════════════════════════ -->
@@ -908,10 +833,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
 
 
-    <!-- Active Trades: Paper + Real side by side -->
+    <!-- Active Trades (paper) -->
     <div class="glass-card live-span-2">
       <div class="panel-title">Active Trades <span class="badge" id="active-trade-count"></span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div style="display:grid;grid-template-columns:1fr;gap:12px">
         <!-- Paper trades -->
         <div style="border:1px solid rgba(0,212,255,.15);border-radius:8px;padding:8px">
           <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Paper Trades</div>
@@ -921,16 +846,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
             </div>
           </div>
         </div>
-        <!-- Real trades -->
-        <div style="border:1px solid rgba(255,59,92,.15);border-radius:8px;padding:8px">
-          <div style="font-size:.6rem;color:var(--red);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:6px;text-align:center">Real Trades</div>
-          <div id="active-trades-real">
-            <div id="active-trades-real-cards" class="flex-col-gap-2">
-              <div class="empty" class="text-sm">No real trades</div>
-            </div>
-          </div>
-        </div>
-      </div>
+              </div>
     </div>
 
     <!-- Signal Feed + Funnel (merged) -->
@@ -1059,14 +975,13 @@ textarea.contact-input{min-height:100px;resize:vertical}
       </div>
     </div>
 
-    <!-- ═══ Track B.1: EQUITY CURVE (paper + real overlay) ═══ -->
+    <!-- EQUITY CURVE (paper) -->
     <div class="glass-card live-span-2" id="equity-curve-panel">
       <div class="flex justify-between items-center mb-2">
         <div class="panel-title" class="m-0">Equity Curve <span class="badge">cumulative PnL</span></div>
         <div style="display:flex;gap:4px;align-items:center;font-size:.65rem;font-family:var(--font-mono)">
           <span class="text-info">● Paper</span>
-          <span style="color:var(--red);margin-left:8px">● Real</span>
-          <span style="margin-left:12px;color:var(--text-muted)">last:</span>
+                    <span style="margin-left:12px;color:var(--text-muted)">last:</span>
           <button data-action="setEqRange" data-arg="100" data-eq="100" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">100t</button>
           <button data-action="setEqRange" data-arg="300" data-eq="300" class="eq-btn eq-active" style="padding:1px 6px;font-size:.55rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.08);color:var(--cyan);border-radius:3px;cursor:pointer;font-weight:700">300t</button>
           <button data-action="setEqRange" data-arg="1000" data-eq="1000" class="eq-btn" style="padding:1px 6px;font-size:.55rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer">1000t</button>
@@ -1076,7 +991,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <div style="position:relative;height:240px">
         <canvas id="equity-curve-canvas"></canvas>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;font-size:.68rem;font-family:var(--font-mono)">
+      <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:8px;font-size:.68rem;font-family:var(--font-mono)">
         <div style="padding:6px 10px;background:rgba(0,212,255,.05);border-left:3px solid var(--cyan);border-radius:4px">
           <div style="color:var(--cyan);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.55rem">Paper</div>
           <div style="display:flex;gap:10px;margin-top:2px;color:var(--text-muted)">
@@ -1086,34 +1001,23 @@ textarea.contact-input{min-height:100px;resize:vertical}
             <span>Peak DD: <b id="eq-paper-dd" class="text-warning">$--</b></span>
           </div>
         </div>
-        <div style="padding:6px 10px;background:rgba(255,59,92,.05);border-left:3px solid var(--red);border-radius:4px">
-          <div style="color:var(--red);font-weight:700;letter-spacing:.5px;text-transform:uppercase;font-size:.55rem">Real</div>
-          <div style="display:flex;gap:10px;margin-top:2px;color:var(--text-muted)">
-            <span>Trades: <b id="eq-real-n" class="text-primary">--</b></span>
-            <span>WR: <b id="eq-real-wr" class="text-success">--</b></span>
-            <span>Net: <b id="eq-real-net" class="text-success">$--</b></span>
-            <span>Peak DD: <b id="eq-real-dd" class="text-warning">$--</b></span>
-          </div>
-        </div>
-      </div>
+              </div>
     </div>
 
-    <!-- ═══ Track B.3: R-MULTIPLE HISTOGRAM (paper vs real side-by-side) ═══ -->
+    <!-- R-MULTIPLE HISTOGRAM (paper) -->
     <div class="glass-card live-span-2" id="r-histogram-panel">
       <div class="flex justify-between items-center mb-2">
-        <div class="panel-title" class="m-0">R-Multiple Distribution <span class="badge">paper vs real</span></div>
+        <div class="panel-title" class="m-0">R-Multiple Distribution <span class="badge">paper</span></div>
         <div style="font-size:.65rem;font-family:var(--font-mono)">
           <span class="text-info">● Paper</span>
-          <span style="color:var(--red);margin-left:8px">● Real</span>
-        </div>
+                  </div>
       </div>
       <div style="position:relative;height:220px">
         <canvas id="r-hist-canvas"></canvas>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted)">
+      <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-top:6px;font-size:.65rem;font-family:var(--font-mono);color:var(--text-muted)">
         <div>Paper avg R: <b id="rh-paper-avg" class="text-info">--</b> · median: <b id="rh-paper-med" class="text-info">--</b></div>
-        <div>Real avg R: <b id="rh-real-avg" class="text-danger">--</b> · median: <b id="rh-real-med" class="text-danger">--</b></div>
-      </div>
+              </div>
     </div>
 
     <!-- ═══ Track B: PAPER↔REAL DIVERGENCE + LOSS ANALYSIS (side-by-side) ═══ -->
@@ -1244,7 +1148,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div class="panel-title" class="m-0">Scanner Performance <span class="text-xs text-muted">· sorted by EV</span></div>
         <div class="flex gap-1" id="scanner-perf-toggle">
           <button data-action="setScannerView" data-arg="paper" data-view="paper" class="sp-btn sp-active" style="padding:2px 10px;font-size:.6rem;border:1px solid rgba(6,182,212,.3);background:rgba(6,182,212,.08);color:var(--cyan);border-radius:3px;cursor:pointer;font-weight:700">PAPER</button>
-          <button data-action="setScannerView" data-arg="real" data-view="real" class="sp-btn" style="padding:2px 10px;font-size:.6rem;border:1px solid var(--border);background:transparent;color:var(--text-muted);border-radius:3px;cursor:pointer;font-weight:600">REAL</button>
         </div>
       </div>
       <div class="tbl-wrap">
@@ -1320,19 +1223,11 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <!-- ═══ SECTION 6.5: Extended Analytics (B.2 + B.6 + B.11 + C.1 + C.6/C.7 + A.1) ═══ -->
 
-  <!-- ROW 1: Drawdown Gauge + Fee Savings + Scanner Weights -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+  <!-- ROW 1: Scanner Weights -->
+  <div style="display:grid;grid-template-columns:1fr;gap:12px;margin-bottom:12px">
 
-    <!-- B.2: Drawdown Gauge -->
-    <div class="glass-card" class="glass-card--accent-danger">
-      <div class="panel-title">Drawdown Gauge</div>
-      <div id="dd-gauge" style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
-        <div class="empty">Loading...</div>
-      </div>
-    </div>
-
-    <!-- B.6: Fee Savings Tracker -->
-
+    
+    
     <!-- B.11: AI Learner / Scanner Weights -->
     <div class="glass-card" class="glass-card--accent-purple">
       <div class="panel-title">Scanner Weights <span class="text-xs text-muted">(AI Learner)</span></div>
@@ -1345,17 +1240,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- ROW 2: ML Insights — Verdict Sparklines + Feature Importance + BTC Cross -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+  <!-- ROW 2: ML Insights — Feature Importance + BTC Cross -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
 
-    <!-- C.1: Edge Verdict Trend Sparklines -->
-    <div class="glass-card" class="glass-card--accent-warning">
-      <div class="panel-title">Edge Verdict Trend <span class="text-xs text-muted">(last 24h)</span></div>
-      <div id="verdict-sparklines" style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
-        <div class="empty">Loading...</div>
-      </div>
-    </div>
-
+    
     <!-- C.6: Hotfix Feature Importance -->
     <div class="glass-card" class="glass-card--accent-info">
       <div class="panel-title">Top ML Features <span class="text-xs text-muted">(model importance)</span></div>
@@ -1417,7 +1305,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <!-- Section Header -->
   <div style="text-align:center;margin-bottom:16px">
     <div style="font-size:1.1rem;font-weight:800;color:var(--text);letter-spacing:2px">STRATEGY CONFIGURATION</div>
-    <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Runtime parameters controlling entry, exit, sizing, and risk management</div>
+    <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Read live from the running bot and settings.yaml · <span id="config-effective-ts">--</span></div>
   </div>
 
   <!-- ═══ ROW 1: Trade Types + Exit System ═══ -->
@@ -1441,34 +1329,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <!-- Exit System -->
     <div class="glass-card">
       <div class="panel-title">Unified Exit System</div>
-      <div style="font-size:.72rem;margin-top:8px">
-        <div class="flex-col-gap-2">
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--cyan)">
-            <span class="text-secondary">Early Kill</span>
-            <span class="font-mono text-info">45-60s</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--yellow)">
-            <span class="text-secondary">Dead Market Kill</span>
-            <span style="font-family:var(--font-mono);color:var(--yellow)">3min</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--green)">
-            <span class="text-secondary">Chandelier Trail</span>
-            <span class="font-mono text-success">ATR-based</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--orange)">
-            <span class="text-secondary">Breakeven Lock</span>
-            <span style="font-family:var(--font-mono);color:var(--orange)">0.15R MFE</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--red)">
-            <span class="text-secondary">Smart Max Age</span>
-            <span style="font-family:var(--font-mono);color:var(--red)">15/20min/8hr</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:rgba(255,255,255,.03);border-radius:4px;border-left:3px solid var(--purple)">
-            <span class="text-secondary">Hard Cap</span>
-            <span style="font-family:var(--font-mono);color:var(--purple)">2x max_age</span>
-          </div>
-        </div>
-      </div>
+      <div id="exit-system-body" style="font-size:.72rem;margin-top:8px"><div class="empty">Loading...</div></div>
     </div>
   </div>
 
@@ -1480,8 +1341,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
       <table style="width:100%;font-size:.75rem;margin-top:6px;border-collapse:collapse">
         <thead><tr class="border-b">
           <th style="text-align:left;padding:5px;color:var(--text-muted)">Scanner</th>
-          <th class="text-center-padded">Min Conf</th>
-          <th class="text-center-padded">Size</th>
+          <th class="text-center-padded">Regimes</th>
+          <th class="text-center-padded">Weight</th>
           <th class="text-center-padded">Status</th>
         </tr></thead>
         <tbody id="scanner-tiers-table"></tbody>
@@ -1492,43 +1353,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <div class="glass-card">
       <div class="panel-title">Risk & Safety Gates</div>
       <div id="risk-params" style="font-size:.75rem;margin-top:6px"></div>
-      <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
-        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Active Protections</div>
-        <div style="display:flex;flex-direction:column;gap:4px;font-size:.72rem">
-          <div class="data-row data-row--success">
-            <span>Fee Viability Filter</span>
-            <span class="text-success">3x fees min</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Grade Gate</span>
-            <span class="text-success">A+, A, B only</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Min Confidence</span>
-            <span class="text-success">45+</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Circuit Breaker</span>
-            <span class="text-success">$15/day, 3 consec</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Orphan Auto-Close</span>
-            <span class="text-success">Enabled</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Session Bias Veto</span>
-            <span class="text-success">4H counter-trade block</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>Stochastic Filter</span>
-            <span class="text-success">OB/OS block</span>
-          </div>
-          <div class="data-row data-row--success">
-            <span>OBV Flow Veto</span>
-            <span class="text-success">Anti-distribution</span>
-          </div>
-        </div>
-      </div>
+      <div id="protections-body" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px"><div class="empty">Loading...</div></div>
     </div>
   </div>
 
@@ -1557,48 +1382,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <!-- Execution Config -->
     <div class="glass-card">
       <div class="panel-title">Execution Engine</div>
-      <div style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;margin-top:6px">
-        <div class="data-row">
-          <span class="text-muted">Entry Mode</span>
-          <span class="font-semibold text-info">Maker-First + Taker (Grade A)</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Maker Timeout</span>
-          <span class="font-semibold">5 seconds</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Max Daily Trades</span>
-          <span class="font-semibold">15</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Margin Range</span>
-          <span class="font-semibold">$15 - $50</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Leverage Cap</span>
-          <span class="font-semibold">75x</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">ML Model</span>
-          <span class="font-semibold text-success">LightGBM + Triple Barrier</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Regime Detector</span>
-          <span class="font-semibold">Advanced (ADX+ATR+BB)</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Timeframes</span>
-          <span class="font-semibold">1m 5m 15m 1h 4h</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Active Pairs</span>
-          <span class="font-semibold">BTC ETH SOL XRP</span>
-        </div>
-        <div class="data-row">
-          <span class="text-muted">Reconciliation</span>
-          <span class="font-semibold text-success">Every 5min + Auto-Close</span>
-        </div>
-      </div>
+      <div id="exec-engine-body" style="display:flex;flex-direction:column;gap:4px;font-size:.72rem;margin-top:6px"><div class="empty">Loading...</div></div>
     </div>
   </div>
 
@@ -1612,11 +1396,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <div class="tab-content" role="tabpanel" id="tab-system">
 
   <div class="grid-2">
-    <div class="glass-card">
-      <div class="panel-title">Host Health</div>
-      <div id="vm-health"><div class="empty">Loading...</div></div>
-    </div>
-    <div class="glass-card">
+        <div class="glass-card">
       <div class="panel-title">Exchange Status</div>
       <div id="exchange-status"><div class="empty">Loading...</div></div>
     </div>
@@ -1644,27 +1424,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
   </div>
 
-  <!-- ═══ Grid Bot Visual Map (Item #11) ═══ -->
-  <div class="glass-card" class="mt-3">
-    <div class="flex justify-between items-center">
-      <div class="panel-title" class="m-0">Grid Bot</div>
-      <span class="badge" id="grid-status-badge" style="background:var(--text-muted);font-size:.55rem">PAUSED</span>
-    </div>
-    <div id="grid-disabled-msg" style="text-align:center;padding:16px;color:var(--text-muted);font-size:.75rem">
-      Grid Bot is paused. Enable in settings.yaml &rarr; grid.enabled: true
-    </div>
-    <div id="grid-active-content" style="display:none">
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px">
-        <div class="stat-card" class="text-center"><div class="stat-value" id="grid-total-fills" class="text-base">0</div><div class="stat-label">Fills</div></div>
-        <div class="stat-card" class="text-center"><div class="stat-value green" id="grid-profit" class="text-base">$0</div><div class="stat-label">Profit</div></div>
-        <div class="stat-card" class="text-center"><div class="stat-value yellow" id="grid-fees" class="text-base">$0</div><div class="stat-label">Fees</div></div>
-        <div class="stat-card" class="text-center"><div class="stat-value" id="grid-fills-hr" class="text-base">0</div><div class="stat-label">Fills/Hr</div></div>
-        <div class="stat-card" class="text-center"><div class="stat-value green" id="grid-profit-hr" class="text-base">$0</div><div class="stat-label">$/Hr</div></div>
-      </div>
-      <div id="grid-ladders" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px"></div>
-    </div>
   </div>
-</div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
   <!-- ═══ Infra Health: Proxy CB + Cron Sync + OB Cache ═══ -->
@@ -1930,31 +1690,12 @@ async function validateApiKeyInline() {
           <div class="text-xs text-muted uppercase">Paper Emitted</div>
           <div style="font-size:1.4rem;font-weight:800;color:var(--green)" id="pm-paper">--</div>
         </div>
-        <div class="stat-card" class="text-center">
-          <div class="text-xs text-muted uppercase">Real Exec</div>
-          <div style="font-size:1.4rem;font-weight:800;color:var(--accent)" id="pm-real-exec">--</div>
-        </div>
-        <div class="stat-card" class="text-center">
-          <div class="text-xs text-muted uppercase">Real Qualified</div>
-          <div style="font-size:1.2rem;font-weight:700;color:var(--yellow)" id="pm-real-qual">--</div>
-        </div>
-        <div class="stat-card" class="text-center">
-          <div class="text-xs text-muted uppercase">Real Rejected</div>
-          <div style="font-size:1.2rem;font-weight:700;color:var(--red)" id="pm-real-rej">--</div>
-        </div>
-        <div class="stat-card" class="text-center">
+                                <div class="stat-card" class="text-center">
           <div class="text-xs text-muted uppercase">Exec Events</div>
           <div style="font-size:1.2rem;font-weight:700;color:var(--purple)" id="pm-exec-ev">--</div>
         </div>
       </div>
-      <!-- Real rejection leaderboard -->
-      <div class="mt-2">
-        <div style="font-size:.65rem;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px">Top Reject Reasons (today)</div>
-        <div id="pm-reject-list" style="display:flex;flex-direction:column;gap:3px">
-          <div class="text-sm text-muted">--</div>
-        </div>
-      </div>
-    </div>
+          </div>
 
     <!-- Agent Heartbeats -->
     <div class="glass-card" class="glass-card--accent-success">
@@ -1964,11 +1705,6 @@ async function validateApiKeyInline() {
       </div>
       <div id="pm-heartbeat-list" style="display:flex;flex-direction:column;gap:5px">
         <div class="text-sm text-muted">Loading...</div>
-      </div>
-      <!-- CB status -->
-      <div style="margin-top:8px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)" id="pm-cb-row">
-        <span class="text-xs text-muted">Circuit Breaker: </span>
-        <span id="pm-cb-status" style="font-weight:700;font-size:.75rem">--</span>
       </div>
     </div>
   </div>
@@ -2075,7 +1811,7 @@ async function validateApiKeyInline() {
   </div>
 
   <!-- Row 3: Hourly Heatmap + Optimizer -->
-  <div style="display:grid;grid-template-columns:2fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
+  <div style="display:grid;grid-template-columns:1fr;gap:var(--gap);margin-bottom:var(--gap)">
 
     <!-- Hourly Performance Heatmap -->
     <div class="glass-card">
@@ -2086,14 +1822,7 @@ async function validateApiKeyInline() {
       </div>
     </div>
 
-    <!-- Optimizer State -->
-    <div class="glass-card">
-      <div class="card-title">Adaptive Optimizer</div>
-      <div id="brain-optimizer-state" style="font-size:12px;color:#aaa">
-        <div class="empty-state-pad">Optimizer inactive — collecting baseline data</div>
-      </div>
-    </div>
-
+    
   </div>
 
   <!-- Row 4: Regime History -->
@@ -2104,14 +1833,7 @@ async function validateApiKeyInline() {
     </div>
   </div>
 
-  <!-- Row 5: Daily Sessions -->
-  <div class="glass-card">
-    <div class="card-title">Daily Session History</div>
-    <div id="brain-sessions-container" class="max-h-300">
-      <div class="empty-state-pad">Session summaries appear after daily rollover (05:30 IST = 00:00 UTC).</div>
-    </div>
-  </div>
-
+  
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->

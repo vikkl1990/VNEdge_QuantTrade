@@ -1805,6 +1805,13 @@ class ScalpStrategy(BaseStrategy):
             ],
             "low_liquidity": [],  # NO TRADING — volume too thin
         }
+        # Expose the routing table by scanner name for the dashboard Config tab
+        # (single source: derived from the live dict, never hand-copied).
+        if not getattr(self, "_regime_routing_names", None):
+            self._regime_routing_names = {
+                regime: [fn.__name__.replace("_scan_", "", 1) for fn in fns]
+                for regime, fns in REGIME_SCANNER_ROUTING.items()
+            }
 
         # ── Per-symbol cooling period: skip after 3 consecutive losses ──
         cool_ts_key = f"_cool_until_{symbol}"

@@ -155,13 +155,10 @@ class DashboardServer:
         self._last_data_update: Optional[str] = None
         self._memory_mb: float = 0.0
 
-        # Fee rates from paper trading config
-        paper_cfg = cfg.get("paper_trading", {})
-        self._fees: Dict[str, float] = {
-            "taker": paper_cfg.get("taker_fee_rate", 0.0006),
-            "maker": paper_cfg.get("maker_fee_rate", 0.0004),
-            "settlement": paper_cfg.get("settlement_fee_rate", 0.0006),
-        }
+        # Fee rates come from the single FeeModel (config `fees:`), expressed as
+        # fractions of notional per side, GST included. Delta perps have no
+        # settlement fee; the old hardcoded 0.06% values were wrong.
+        self._fees: Dict[str, float] = self._fee_rates()
 
         # ── Item #7: ML proxy resilience (retry + circuit breaker + cache) ──
         self._ml_proxy_session: Optional[Any] = None  # lazy aiohttp.ClientSession
@@ -834,6 +831,7 @@ class DashboardServer:
         app.router.add_get("/api/infra", self._handle_infra)
         app.router.add_get("/api/r-metrics", self._handle_r_metrics)
         app.router.add_get("/api/scanner-health", self._handle_scanner_health)
+        app.router.add_get("/api/config/effective", self._handle_effective_config)
         app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
         app.router.add_get("/api/regime", self._handle_regime)
         app.router.add_get("/api/decision", self._handle_decision)
@@ -2331,6 +2329,111 @@ class DashboardServer:
             data["upgrade"] = {"status": "not_started"}
 
         return web.json_response(data, dumps=_safe_dumps)
+
+    def _config_risk(self) -> Dict[str, Any]:
+        """risk: section of settings.yaml (read once, cached)."""
+        cached = getattr(self, "_risk_cfg_cache", None)
+        if cached is not None:
+            return cached
+        risk: Dict[str, Any] = {}
+        try:
+            import yaml
+            settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+            with open(settings_path) as f:
+                risk = dict((yaml.safe_load(f) or {}).get("risk", {}) or {})
+        except Exception:
+            risk = {}
+        self._risk_cfg_cache = risk
+        return risk
+
+    @staticmethod
+    def _fee_rates() -> Dict[str, float]:
+        """Per-side fee fractions from the FeeModel (GST included, no settlement)."""
+        try:
+            from execution.fees import get_fee_model
+            fm = get_fee_model()
+            maker = fm.side_pct("maker") / 100.0
+            taker = fm.side_pct("taker") / 100.0
+        except Exception:
+            maker, taker = 0.000236, 0.00059
+        return {
+            "maker": round(maker, 6),
+            "taker": round(taker, 6),
+            "settlement": 0.0,
+            "round_trip_taker": round(taker * 2, 6),
+            "round_trip_maker_entry": round(maker + taker, 6),
+        }
+
+    async def _handle_effective_config(self, request: web.Request) -> web.Response:
+        """What the running bot actually uses, for the Config tab.
+
+        Replaces the hand-typed tables that drifted from the code (they still
+        showed a $15/day breaker, $15-$50 margin and four active pairs).
+        Every value here is read from live objects or config at request time.
+        """
+        cfg: Dict[str, Any] = {}
+        try:
+            import yaml
+            settings_path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+            with open(settings_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        except Exception as exc:
+            return web.json_response({"error": f"settings.yaml unreadable: {exc}"}, status=500)
+        out: Dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat()}
+
+        # Trade-type exit parameters straight from the tracker constants
+        try:
+            from bot.signal_tracker import TRADE_TYPE_CONFIG
+            out["trade_types"] = {k: dict(v) for k, v in TRADE_TYPE_CONFIG.items()}
+        except Exception as exc:
+            out["trade_types"] = {}
+            out["trade_types_error"] = str(exc)
+
+        # Scanners: regime routing table + weight-manager state
+        scanners: Dict[str, Any] = {"regime_routing": {}, "states": [], "forced": {}}
+        scalp = getattr(self._strategy, "_scalp", None) if self._strategy else None
+        if scalp is not None:
+            scanners["regime_routing"] = dict(getattr(scalp, "_regime_routing_names", {}) or {})
+            wm = getattr(scalp, "_weight_manager", None)
+            if wm is not None:
+                try:
+                    scanners["states"] = wm.get_dashboard_summary()
+                    scanners["forced"] = dict(getattr(wm, "FORCED_STATES", {}) or {})
+                    scanners["min_samples"] = getattr(wm, "MIN_SAMPLES", None)
+                except Exception:
+                    pass
+        out["scanners"] = scanners
+
+        # Risk, filters, execution, paper sizing, timeframes, symbols
+        risk = dict(cfg.get("risk", {}) or {})
+        strat = cfg.get("strategy", {}) or {}
+        out["risk"] = {
+            "risk_per_trade_pct": risk.get("risk_per_trade_pct"),
+            "max_position_size_usd": risk.get("max_position_size_usd"),
+            "max_daily_loss_pct": risk.get("max_daily_loss_pct"),
+            "max_open_positions": risk.get("max_open_positions"),
+            "default_leverage": risk.get("default_leverage"),
+            "max_leverage": risk.get("max_leverage"),
+            "stop_loss": risk.get("stop_loss"),
+            "take_profit": risk.get("take_profit"),
+            "trailing": risk.get("trailing"),
+            "safety": risk.get("safety"),
+        }
+        out["filters"] = dict(strat.get("filters", {}) or {})
+        out["execution"] = dict(cfg.get("execution", {}) or {})
+        out["paper"] = dict(cfg.get("paper_trading", {}) or {})
+        try:
+            stats = self._signal_tracker.get_stats() if self._signal_tracker else {}
+            out["paper"]["stake_per_trade_usd"] = stats.get("paper_stake_per_trade")
+            out["paper"]["start_balance"] = stats.get("paper_start_balance")
+        except Exception:
+            pass
+        out["timeframes"] = dict(cfg.get("timeframes", {}) or {})
+        out["symbols"] = list(cfg.get("symbols", []) or [])
+        out["fees"] = self._fee_rates()
+        out["mode"] = getattr(self, "_mode", None) or "paper"
+        out["strategy"] = strat.get("active")
+        return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_scanner_health(self, request: web.Request) -> web.Response:
         """Return scanner health states from weight manager."""
@@ -3857,8 +3960,9 @@ class DashboardServer:
             recent_trades = []
             if tracker:
                 try:
-                    stats = tracker.get_stats()
-                    recent_trades = stats.get("recent_closed", [])[-20:] if isinstance(stats, dict) else []
+                    # Read the ledger directly; get_stats() has no recent_closed
+                    # key, which left this panel at WR 0% / $0.00 forever.
+                    recent_trades = (tracker.get_closed_signals(limit=20) or [])[-20:]
                 except Exception:
                     pass
 
@@ -3971,38 +4075,35 @@ class DashboardServer:
                 "color": "#f59e0b",
             })
 
-            # 4. Risk Manager Agent
-            mgr = self._get_real_manager()
-            real_open = len(getattr(mgr, 'real_trades', {}) or {}) if mgr else 0
-            cb = mgr.circuit_breaker if mgr else None
-            risk_status = "monitoring"
-            if cb and cb.is_tripped:
-                risk_status = "TRIPPED"
-            elif real_open > 0:
-                risk_status = "active"
+            # 4. Risk Manager Agent — paper mode: report open paper positions
+            # against the configured cap instead of the (always 0) real book.
+            try:
+                paper_open = len(self._signal_tracker.get_active_signals() or []) if self._signal_tracker else 0
+            except Exception:
+                paper_open = 0
+            max_open = 0
+            try:
+                max_open = int((self._config_risk() or {}).get("max_open_positions", 0) or 0)
+            except Exception:
+                pass
+            risk_status = "active" if paper_open > 0 else "monitoring"
             agents.append({
                 "name": "Risk",
                 "icon": "🛡️",
                 "status": risk_status,
-                "detail": str(real_open) + " real open" + (" | CB TRIPPED" if (cb and cb.is_tripped) else ""),
+                "detail": str(paper_open) + " open" + (" of " + str(max_open) + " max" if max_open else ""),
                 "symbol": "",
                 "last_ts": 0,
                 "color": "#ef4444",
             })
 
-            # 5. Execution Agent
+            # 5. Execution Agent — paper fills only in this build
             exec_status = "ready"
-            if mgr and mgr.enabled and not mgr.dry_run:
-                exec_status = "LIVE"
-            elif mgr and mgr.enabled and mgr.dry_run:
-                exec_status = "dry_run"
-            elif mgr and not mgr.enabled:
-                exec_status = "disabled"
             agents.append({
                 "name": "Executor",
                 "icon": "⚡",
                 "status": exec_status,
-                "detail": exec_status.upper(),
+                "detail": "PAPER FILLS",
                 "symbol": "",
                 "last_ts": 0,
                 "color": "#22c55e",

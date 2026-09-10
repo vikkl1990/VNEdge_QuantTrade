@@ -1323,10 +1323,15 @@ class BotOrchestrator:
                         return int(line.split()[1]) / 1024.0
         except Exception:
             pass
-        # Fallback via os (less accurate but works everywhere)
+        # Fallback via os (less accurate but works everywhere).
+        # ru_maxrss is KB on Linux but BYTES on macOS — the dashboard showed
+        # "308864 MB" for a 300 MB process before this check.
         try:
             import resource
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+            import sys
+            rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+            return rss / divisor
         except Exception:
             return 0.0
 

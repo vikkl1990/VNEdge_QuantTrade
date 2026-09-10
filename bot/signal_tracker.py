@@ -743,6 +743,7 @@ class SignalTracker:
         exec_cfg = (config or {}).get("execution", {})
         self._order_type: str = exec_cfg.get("order_type", "maker")  # "maker" | "taker" | "auto"
         self._max_entry_slip_bps: float = exec_cfg.get("max_entry_slip_bps", 30)  # 0 = disabled
+        self._retry_taker_on_reject: bool = bool(exec_cfg.get("retry_taker_on_reject", True))
         self._min_trail_hold_sec: float = exec_cfg.get("min_trail_hold_sec", 15)  # seconds before trail-lock
 
         # --- Chandelier Exit (Upgrade 2) ---
@@ -1016,18 +1017,36 @@ class SignalTracker:
 
                 max_slip_bps = getattr(self, "_max_entry_slip_bps", 30)
                 if max_slip_bps > 0 and est_slip_bps > max_slip_bps:
-                    # Cap slippage: in maker mode the order rests at signal_price,
-                    # so worst realistic fill is signal + max_slip; beyond that the
-                    # order would not fill (and retry_taker_on_reject handles it).
-                    capped_slip = ts.signal_price * max_slip_bps / 10000
-                    is_long = ts.side == "long"
-                    ts.fill_price = ts.signal_price + (capped_slip if is_long else -capped_slip)
-                    ts.slippage_bps = round(max_slip_bps, 2)
-                    logger.warning(
-                        "SLIP CAP: %s %s | raw=%.1fbps capped=%.0fbps | signal=%.4f fill=%.4f",
-                        ts.symbol, ts.side, est_slip_bps, max_slip_bps,
-                        ts.signal_price, ts.fill_price,
-                    )
+                    # HONEST FILL (2026-09-10): the market has moved more than the
+                    # entry cap since the signal. Live, the resting order does not
+                    # fill; with retry_taker_on_reject the bot crosses the spread
+                    # and pays the REAL price, so the paper fill is the observed
+                    # price, taker fees. (It used to be capped at signal+30bp, a
+                    # price that did not exist.) With retry off the order is
+                    # simply not filled and the trade is dropped.
+                    if getattr(self, "_retry_taker_on_reject", True):
+                        ts.fill_price = price
+                        ts.slippage_bps = round(est_slip_bps, 2)
+                        ts.order_type = "taker"
+                        logger.warning(
+                            "SLIP > CAP, TAKER RETRY: %s %s | %.1fbps > %.0fbps | signal=%.4f fill=%.4f",
+                            ts.symbol, ts.side, est_slip_bps, max_slip_bps,
+                            ts.signal_price, ts.fill_price,
+                        )
+                    else:
+                        logger.warning(
+                            "NO FILL: %s %s | slip %.1fbps > cap %.0fbps and taker retry off — dropped",
+                            ts.symbol, ts.side, est_slip_bps, max_slip_bps,
+                        )
+                        ts.exit_price = ts.signal_price
+                        ts.exit_time = datetime.now(timezone.utc).isoformat()
+                        ts.pnl_pct = 0.0
+                        ts.pnl_usd = 0.0
+                        ts.exit_reason = "no_fill"
+                        ts.exit_reason_detailed = "no_fill_slip_cap"
+                        ts.status = "no_fill"
+                        to_close.append(tid)
+                        continue
                 else:
                     ts.fill_price = price
                     ts.slippage_bps = round(est_slip_bps, 2)
@@ -1205,13 +1224,13 @@ class SignalTracker:
                 # For longs, SL >= entry means the lock moved above entry.
                 # Otherwise (bare SL hit with no profit lock), exit at current
                 # price as before (existing loss-side behavior unchanged).
-                if ts.breakeven_set and (
-                    (is_long and ts.stop_loss >= ts.entry_price) or
-                    (not is_long and ts.stop_loss <= ts.entry_price)
-                ):
-                    exit_price_used = ts.stop_loss  # honor the locked level
-                else:
-                    exit_price_used = price
+                # HONEST FILL (2026-09-10): always exit at the tick that crossed
+                # the stop, never at the stop level. A live stop order fills at
+                # or beyond its trigger, so the crossing price is the optimistic
+                # bound of a real fill, and the level is a price that may never
+                # have traded (which is exactly how 16 of 30 trades booked
+                # profit that did not exist).
+                exit_price_used = price
                 ts.exit_price = exit_price_used
                 ts.exit_time = now_iso
                 ts.pnl_pct = self._calc_pnl(ts, exit_price_used, self._order_type)
@@ -1965,6 +1984,30 @@ class SignalTracker:
         # Close completed signals + feed outcomes to ML
         for tid in to_close:
             ts = self._active.pop(tid)
+            # ── LEDGER INTEGRITY GUARD (2026-09-10) ──
+            # A booked exit can never be better than the best price the trade
+            # actually saw. If any exit path ever produces one again (the
+            # breakeven-buffer bug did, for 16 of 30 trades), clamp it to the
+            # observed extreme, recompute P&L, and shout.
+            try:
+                _best = ts.highest_price if ts.side == "long" else ts.lowest_price
+                _too_good = (
+                    _best > 0 and ts.exit_price > 0 and
+                    ((ts.side == "long" and ts.exit_price > _best + 1e-12) or
+                     (ts.side != "long" and ts.exit_price < _best - 1e-12))
+                )
+                if _too_good:
+                    logger.error(
+                        "LEDGER INTEGRITY: %s %s exit %.6f beats best seen %.6f (%s) — clamped",
+                        ts.symbol, ts.side, ts.exit_price, _best, ts.exit_reason,
+                    )
+                    ts.exit_price = _best
+                    ts.pnl_pct = self._calc_pnl(ts, _best, self._order_type)
+                    ts.exit_reason_detailed = (ts.exit_reason_detailed or "") + "|integrity_clamped"
+                    ts.metadata = dict(ts.metadata or {})
+                    ts.metadata["integrity_clamped"] = True
+            except Exception as _ig_exc:
+                logger.error("LEDGER INTEGRITY check failed: %s", _ig_exc)
             closed_dict = ts.to_dict()
             self._closed.append(closed_dict)
 

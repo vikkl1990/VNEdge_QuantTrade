@@ -2016,8 +2016,12 @@ class SignalTracker:
 
     def get_stats(self) -> Dict[str, Any]:
         """Return current performance statistics."""
-        if not self._stats or "paper_start_balance" not in self._stats:
+        # Self-heal: a stats snapshot loaded from disk can lag the ledger
+        # (imported trades, or a recalc that failed on a previous close).
+        if (not self._stats or "paper_start_balance" not in self._stats
+                or self._stats.get("closed") != len(self._closed)):
             self._recalc_stats()
+            self._save_stats()
         return self._stats.copy()
 
     @property
@@ -2988,17 +2992,38 @@ class SignalTracker:
             "paper_stake_per_trade": 100.0,  # max $100, min $50 (fee-viable sizing)
             # Daily P&L breakdown
             "daily_pnl": self._calc_daily_pnl(),
-            "fee_schedule": {
-                "taker_pct": self.TAKER_FEE_PCT,
-                "settlement_pct": self.SETTLEMENT_FEE_PCT,
-                "round_trip_standard_pct": self.TAKER_FEE_PCT * 2 + self.SETTLEMENT_FEE_PCT,
-                "round_trip_scalper_pct": self.SCALPER_ENTRY_MAKER_PCT + self.SCALPER_EXIT_FEE_PCT + self.SETTLEMENT_FEE_PCT,
-                "scalper_window_btc_min": 999999 // 60,
-                "scalper_window_other_min": 999999 // 60,
-            },
+            "fee_schedule": self._fee_schedule_summary(),
             # R-Multiple metrics (global)
             "r_metrics": self._calc_global_r_metrics(all_r_values, all_mae, all_mfe, win_count, total),
         }
+
+    @staticmethod
+    def _fee_schedule_summary() -> Dict[str, float]:
+        """Fee schedule for the stats payload, sourced from the FeeModel.
+
+        This used to read class constants that were removed when the
+        FeeModel landed; the AttributeError silently aborted every
+        _recalc_stats() call, freezing stats (and scanner health) at the
+        last pre-refactor close. Never let a fee lookup break stats again.
+        """
+        try:
+            from execution.fees import get_fee_model
+            fm = get_fee_model()
+            return {
+                "maker_pct": round(fm.side_pct("maker"), 4),
+                "taker_pct": round(fm.side_pct("taker"), 4),
+                "settlement_pct": 0.0,
+                "round_trip_standard_pct": round(fm.round_trip_pct("taker", "taker"), 4),
+                "round_trip_maker_entry_pct": round(fm.round_trip_pct("maker", "taker"), 4),
+            }
+        except Exception:
+            return {
+                "maker_pct": SignalTracker.MAKER_FEE_PCT,
+                "taker_pct": SignalTracker.TAKER_FEE_PCT,
+                "settlement_pct": 0.0,
+                "round_trip_standard_pct": SignalTracker.TAKER_FEE_PCT * 2,
+                "round_trip_maker_entry_pct": SignalTracker.MAKER_FEE_PCT + SignalTracker.TAKER_FEE_PCT,
+            }
 
     def _calc_daily_pnl(self) -> Dict[str, Any]:
         """Calculate daily P&L breakdown from closed signals."""

@@ -1084,16 +1084,8 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
         setColor("eq-max-slip", maxSlip, 3.0, 5.0);
     }
 
-    // Mini bar (tracker is source of truth for balance)
-    try {
-        const tStats = await api("/api/tracker/stats");
-        if (tStats) {
-            const ppEl = document.getElementById("paper-bal-mini");
-            if (ppEl) ppEl.textContent = "$" + (tStats.paper_balance || 0).toLocaleString("en-US", {minimumFractionDigits:2});
-            const scEl = document.getElementById("signals-mini-count");
-            if (scEl) scEl.textContent = tStats.closed || 0;
-        }
-    } catch(e) {}
+    // Paper figures — single writer
+    try { await refreshPaperSummary(); } catch(e) {}
 
     // Latency
     try {
@@ -1635,36 +1627,9 @@ function updateAlerts(alerts) {
 // TAB 2: ANALYTICS REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshAnalytics() {
-    // Update portfolio overview cards
+    // Portfolio overview cards — single writer
+    try { await refreshPaperSummary(); } catch(e) {}
     try {
-        let as = await api("/api/tracker/stats");
-        if (as) {
-            let ab = document.getElementById("an-balance");
-            if(ab) ab.textContent = "$" + (as.paper_balance||0).toFixed(2);
-            let ar = document.getElementById("an-return");
-            if(ar){var ret=((as.paper_balance||1000)-1000)/1000*100;ar.textContent=(ret>=0?"+":"")+ret.toFixed(1)+"%";ar.style.color=ret>=0?"var(--green)":"var(--red)";}
-            let aw = document.getElementById("an-wr");
-            if(aw) aw.textContent = (as.win_rate||0).toFixed(1)+"%";
-            let ap = document.getElementById("an-pf");
-            if(ap) ap.textContent = (as.profit_factor||0).toFixed(2);
-            let at2 = document.getElementById("an-trades");
-            if(at2) at2.textContent = as.total_signals||0;
-        }
-        // Real account data
-        let rs = await api("/api/real/status");
-        if (rs) {
-            let arb = document.getElementById("an-real-bal");
-            if(arb) arb.textContent = "$" + (rs.balance||0).toFixed(2);
-            let arp = document.getElementById("an-real-pnl");
-            if(arp) {
-                let tp2 = (rs.circuit_breaker||{}).total_pnl||0;
-                arp.textContent = (tp2>=0?"+":"") + "$" + Math.abs(tp2).toFixed(2);
-                arp.style.color = tp2 >= 0 ? "var(--green)" : "var(--red)";
-            }
-            let art = document.getElementById("an-real-trades");
-            if(art) art.textContent = rs.total_closed||0;
-        }
-        // Shadow account aggregates (last 24h, populated by /api/real/status)
         const sh = (rs && rs.shadow_stats_24h) || {};
         const shN   = Number(sh.n || 0);
         const shPnl = Number(sh.net_pnl || 0);
@@ -1917,51 +1882,63 @@ function updateSessionAnalysis(report, trkStats) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// PAPER SUMMARY — the ONE source for every paper figure on the page.
+// Fed by /api/paper/summary, which is computed from the SignalTracker
+// ledger (closed_signals.json). Nothing else writes these elements.
+// ═══════════════════════════════════════════════════════════════
+let _paperSummary = null;
+async function refreshPaperSummary() {
+    let s = null;
+    try { s = await api("/api/paper/summary"); } catch (e) { s = null; }
+    if (!s || s.available === false) return;
+    _paperSummary = s;
+    const $ = id => document.getElementById(id);
+    const money = (v, plus) => (plus && v >= 0 ? "+" : (v < 0 ? "-" : "")) + "$" + Math.abs(v || 0).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const col = v => (v >= 0 ? "var(--green)" : "var(--red)");
+    const set = (id, text, color) => { const e = $(id); if (!e) return; e.textContent = text; if (color) e.style.color = color; };
+
+    // header mini bar
+    set("paper-bal-mini", money(s.balance));
+    set("signals-mini-count", String(s.closed || 0));
+    // command centre: today
+    set("cmd-today-pnl", money(s.today_pnl_usd, true), col(s.today_pnl_usd));
+    set("cmd-today-wr", (s.today_win_rate || 0).toFixed(0) + "%");
+    set("cmd-today-trades", String(s.trades_today || 0));
+    set("cmd-today-fees", "$" + (s.today_fees_usd || 0).toFixed(2));
+    // last closed paper trade
+    const lt = s.last_trade, le = $("cmd-last-trade");
+    if (le) {
+        if (lt) {
+            le.innerHTML = '<span style="font-weight:700;color:' + col(lt.pnl_usd) + '">' + money(lt.pnl_usd, true) + '</span> '
+                + esc((lt.symbol || "?").split("/")[0]) + ' ' + esc(lt.side || "?")
+                + ' <span class="text-muted" style="font-size:.7rem">' + esc(lt.exit_reason || "") + '</span>';
+        } else { le.textContent = "--"; }
+    }
+    // market highlight bar
+    set("mh-paper-bal", money(s.balance));
+    set("mh-peak", money(s.peak_balance));
+    set("mh-dd", (s.max_drawdown_pct || 0).toFixed(1) + "%", (s.max_drawdown_pct || 0) > 2 ? "var(--red)" : "var(--green)");
+    set("mh-pf", (s.profit_factor || 0).toFixed(2));
+    // analytics: paper account card + hero block
+    set("an-balance", money(s.balance));
+    set("an-return", (s.total_pnl_pct >= 0 ? "+" : "") + (s.total_pnl_pct || 0).toFixed(1) + "%", col(s.total_pnl_pct));
+    set("an-wr", (s.win_rate || 0).toFixed(1) + "%");
+    set("an-pf", (s.profit_factor || 0).toFixed(2));
+    set("an-trades", String(s.closed || 0));
+    const hero = $("paper-balance-hero");
+    if (hero) { hero.textContent = money(s.balance); hero.className = s.net_pnl_usd >= 0 ? "green" : "red"; hero.style.fontFamily = "var(--font-mono)"; }
+    set("paper-net-pnl", "Net P&L: " + money(s.net_pnl_usd, true), col(s.net_pnl_usd));
+    set("paper-return-pct", "Return: " + (s.total_pnl_pct >= 0 ? "+" : "") + (s.total_pnl_pct || 0).toFixed(2) + "%", col(s.total_pnl_pct));
+    set("paper-dd", (s.max_drawdown_pct || 0).toFixed(1) + "%");
+    set("paper-peak", money(s.peak_balance));
+    set("paper-fees", "$" + (s.fees_usd || 0).toFixed(2));
+    set("paper-tpd", ((s.closed || 0) / Math.max(1, s.trading_days || 1)).toFixed(1));
+}
+
 async function updatePaperBalance(report) {
-    if (!report) return;
-    // Use tracker stats as single source of truth for P&L
-    let stats = {};
-    try { stats = (await api("/api/tracker/stats")) || {}; } catch(e) { stats = {}; }
-
-    const netPnl = stats.paper_pnl_usd || 0;
-    const grossPnl = stats.paper_gross_pnl_usd || 0;
-    const totalFees = stats.paper_total_fees_usd || 0;
-    const totalTrades = stats.closed || 0;
-    const dd = report.current_drawdown || 0;
-    const peak = report.peak_balance || 0;
-
-    // Hero: paper mode shows $1000 + PnL, live mode shows exchange balance
-    const isPaper = stats.is_paper_mode !== false;
-    const startBal = stats.paper_start_balance || 1000;
-    const heroVal = isPaper ? (startBal + netPnl) : (stats.exchange_balance || 0);
-    const cls = netPnl >= 0 ? "green" : "red";
-    const heroEl = document.getElementById("paper-balance-hero");
-    heroEl.textContent = "$" + Math.abs(heroVal).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
-    heroEl.className = cls;
-    heroEl.style.fontFamily = "var(--font-mono)";
-
-    // Net P&L
-    const netEl = document.getElementById("paper-net-pnl");
-    netEl.textContent = "Net P&L: " + (netPnl >= 0 ? "+$" : "-$") + Math.abs(netPnl).toFixed(2);
-    netEl.className = cls;
-
-    // Return % against starting balance
-    const retEl = document.getElementById("paper-return-pct");
-    const returnPct = startBal > 0 ? ((netPnl / startBal) * 100) : 0;
-    retEl.textContent = "Return: " + (netPnl >= 0 ? "+" : "") + returnPct.toFixed(2) + "%";
-    retEl.className = cls;
-
-    // Drawdown and peak
-    document.getElementById("paper-dd").textContent = dd.toFixed(1) + "%";
-    document.getElementById("paper-peak").textContent = "$" + peak.toFixed(2);
-
-    // Actual fees from tracker (not estimated)
-    document.getElementById("paper-fees").textContent = "$" + totalFees.toFixed(2);
-
-    // Trades per day
-    const daily = stats.daily_pnl || {};
-    const tradingDays = Math.max(1, Object.keys(daily).length);
-    document.getElementById("paper-tpd").textContent = (totalTrades / tradingDays).toFixed(1);
+    // delegated to the single paper writer (refreshPaperSummary)
+    return refreshPaperSummary();
 }
 
 function updateDailyPnl(stats) {
@@ -4586,23 +4563,7 @@ function openTradeDetail(trade) {
 
 // --- Dashboard Header Update ---
 function updateDashboardHeader(trkStats, closed, decision) {
-    if (trkStats) {
-        let daily = trkStats.daily_pnl || {};
-        let today = new Date().toISOString().slice(0, 10);
-        let td = daily[today] || {};
-        let pnl = td.net_pnl || 0;
-        let pnlEl = document.getElementById("cmd-today-pnl");
-        if (pnlEl) {
-            pnlEl.textContent = (pnl < 0 ? "-" : "") + "$" + Math.abs(pnl).toFixed(2);
-            pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
-        }
-        let wrEl = document.getElementById("cmd-today-wr");
-        if (wrEl) wrEl.textContent = (td.wr || 0).toFixed(0) + "%";
-        let trEl = document.getElementById("cmd-today-trades");
-        if (trEl) trEl.textContent = td.trades || 0;
-        let feEl = document.getElementById("cmd-today-fees");
-        if (feEl) feEl.textContent = "$" + (td.fees || 0).toFixed(0);
-    }
+    // cmd-today-* are written by refreshPaperSummary() (single source)
     if (decision) {
         let macroEl = document.getElementById("cmd-macro-bias");
         if (macroEl) {
@@ -4611,18 +4572,7 @@ function updateDashboardHeader(trkStats, closed, decision) {
             macroEl.style.color = bias === "bullish" ? "var(--green)" : bias === "bearish" ? "var(--red)" : "var(--text-muted)";
         }
     }
-    if (closed && closed.length > 0) {
-        let t = closed[closed.length - 1];
-        let lpnl = t.pnl_usd || 0;
-        let sym = (t.symbol || "?").split("/")[0];
-        let side = t.side || "?";
-        let reason = t.exit_reason || "?";
-        let el = document.getElementById("cmd-last-trade");
-        if (el) {
-            let color = lpnl >= 0 ? "var(--green)" : "var(--red)";
-            el.innerHTML = '<span style="font-weight:700;color:' + color + '">$' + (lpnl >= 0 ? "+" : "") + lpnl.toFixed(2) + '</span> <span class="text-muted">' + sym + ' ' + side + '</span> <span class="text-xs text-muted">' + reason + '</span>';
-        }
-    }
+    // cmd-last-trade is written by refreshPaperSummary()
 }
 
 
@@ -4746,16 +4696,7 @@ async function dashUpdate() {
     let real = results[2];
     let decision = results[3];
 
-    // 1. Today paper performance
-    let daily = stats.daily_pnl || {};
-    let today = new Date().toISOString().slice(0,10);
-    let td = daily[today] || {};
-    let pnl = td.net_pnl || 0;
-    let e1 = document.getElementById("cmd-today-pnl");
-    if(e1){e1.textContent=(pnl<0?"-":"")+"$"+Math.abs(pnl).toFixed(2);e1.style.color=pnl>=0?"var(--green)":"var(--red)";}
-    let e2 =document.getElementById("cmd-today-wr");if(e2)e2.textContent=(td.wr||0).toFixed(0)+"%";
-    let e3 =document.getElementById("cmd-today-trades");if(e3)e3.textContent=td.trades||0;
-    let e4 =document.getElementById("cmd-today-fees");if(e4)e4.textContent="$"+(td.fees||0).toFixed(0);
+    // 1. Today paper performance — written by refreshPaperSummary() (single source)
 
     // 2. Real trading performance — Phase 5.0.2 (2026-04-22)
     // DB-BACKED counters (was: cb.trade_count_today / cb.total_pnl which
@@ -4812,11 +4753,7 @@ async function dashUpdate() {
         if (_lblLast) { _lblLast.textContent = "Last Real".toUpperCase(); _lblLast.style.color = "var(--red)"; }
     }
 
-    // 3. Header bar updates
-    let ppMini = document.getElementById("paper-bal-mini");
-    if(ppMini && stats.paper_balance) ppMini.textContent = "$" + stats.paper_balance.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
-    let sigMini = document.getElementById("signals-mini-count");
-    if(sigMini) sigMini.textContent = stats.total_signals || 0;
+    // 3. Header bar paper figures are written by refreshPaperSummary()
     // 3. Exchange balance
     let eb =document.getElementById("exchange-bal");if(eb&&stats.exchange_balance)eb.textContent="$"+stats.exchange_balance.toFixed(2);
 
@@ -4885,25 +4822,7 @@ async function dashUpdate() {
       if(rle3&&real&&real.total_closed>0)rle3.innerHTML='<span class="text-muted">No trades today</span>';
     }
 
-    // 8. Market highlight bar
-    let mhBal =document.getElementById("mh-paper-bal");
-    if(mhBal&&stats.paper_balance)mhBal.textContent="$"+stats.paper_balance.toFixed(2);
-    // Peak: calculate from paper balance + gross pnl history
-    let mhPeak =document.getElementById("mh-peak");
-    if(mhPeak){
-        let peakVal =stats.paper_balance||1000;
-        let daily =stats.daily_pnl||{};
-        let runBal =stats.paper_start_balance||1000;
-        let maxBal =runBal;
-        let days =Object.keys(daily).sort();
-        for(var di=0;di<days.length;di++){runBal+=(daily[days[di]].net_pnl||0);if(runBal>maxBal)maxBal=runBal;}
-        mhPeak.textContent="$"+maxBal.toFixed(2);
-        // Drawdown
-        let mhDD =document.getElementById("mh-dd");
-        if(mhDD){var ddp=maxBal>0?((maxBal-(stats.paper_balance||0))/maxBal*100):0;mhDD.textContent=ddp.toFixed(1)+"%";mhDD.style.color=ddp>2?"var(--red)":"var(--green)";}
-    }
-    let mhPF =document.getElementById("mh-pf");
-    if(mhPF&&stats.profit_factor)mhPF.textContent=stats.profit_factor.toFixed(2);
+    // 8. Market highlight bar: paper balance / peak / drawdown / PF are written by refreshPaperSummary()
     // Avg R from r_metrics
     let mhAR =document.getElementById("mh-avgr");
     let rm =stats.r_metrics||{};
@@ -4984,7 +4903,7 @@ async function dashUpdate() {
 
     } catch(err) { console.error("dashUpdate error:", err); }
 }
-document.addEventListener("DOMContentLoaded", function() { dashUpdate(); setInterval(() => { if(!window._refreshLiveActive) dashUpdate(); }, 3000); });
+document.addEventListener("DOMContentLoaded", function() { refreshPaperSummary(); setInterval(refreshPaperSummary, 5000); dashUpdate(); setInterval(() => { if(!window._refreshLiveActive) dashUpdate(); }, 3000); });
 
 // ═══ BLOCK 4 (original lines 7827-9126) ═══
 async function showJourney(tradeId) {

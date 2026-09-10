@@ -802,6 +802,7 @@ class DashboardServer:
         app.router.add_get("/api/paper/active",   self._handle_paper_active)
         app.router.add_get("/api/paper/closed",   self._handle_paper_closed)
         app.router.add_get("/api/paper/stats",    self._handle_paper_stats)
+        app.router.add_get("/api/paper/summary",  self._handle_paper_summary)   # single source for paper UI
 
         # Phase 2 Shadow-of-Shadow leaderboard (2026-04-27) — fan-out exit
         # config A/B/C/D/E. Aggregates per exit_config_id over the window.
@@ -1542,6 +1543,7 @@ class DashboardServer:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
 
+    @staticmethod
     def _normalize_paper_trade(s: dict) -> dict:
         """Convert a signals_history.json entry to the unified trade shape."""
         meta = s.get("metadata") or {}
@@ -1645,20 +1647,20 @@ class DashboardServer:
         }
 
     def _load_paper_signals(self, source: str) -> list:
-        """Load + parse paper signals storage. source: 'active' | 'closed'."""
-        import json as _json
-        path = "/home/opc/crypto-trading-bot/storage/" + (
-            "signals_history.json" if source == "active" else "closed_signals.json"
-        )
+        """Paper signals from the tracker's single ledger. source: 'active' | 'closed'.
+
+        Previously read a hardcoded cloud path (/home/opc/...), so every
+        /api/paper/* endpoint was empty on any other host.
+        """
+        tr = self._signal_tracker
+        if tr is None:
+            return []
         try:
-            with open(path) as f:
-                d = _json.load(f)
-            arr = d if isinstance(d, list) else d.get("signals", []) if isinstance(d, dict) else []
-            return arr
+            if source == "active":
+                return list(tr.get_active_signals())
+            return list(tr.get_closed_signals(limit=5000))
         except Exception:
             return []
-
-    # ── Paper endpoints ────────────────────────────────────────────
 
     async def _handle_paper_active(self, request: web.Request) -> web.Response:
         """GET /api/paper/active → currently-tracked open paper signals."""
@@ -1968,17 +1970,115 @@ class DashboardServer:
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_performance(self, request: web.Request) -> web.Response:
-        async with self._lock:
-            data = {
-                "daily_pnl": self._daily_pnl,
-                "total_pnl": self._total_pnl,
-                "win_rate": self._win_rate,
-                "trades_today": self._trades_today,
-                "max_drawdown": self._max_drawdown,
-                "wins": self._wins,
-                "losses": self._losses,
-            }
+        """Performance figures derived from the tracker ledger (same numbers as
+        /api/paper/summary) — the old copy-on-update counters could lag or
+        disagree with the tracker."""
+        summ = self._paper_summary()
+        data = {
+            "daily_pnl": summ.get("today_pnl_usd", 0.0),
+            "total_pnl": summ.get("total_pnl_pct", 0.0),
+            "total_pnl_usd": summ.get("net_pnl_usd", 0.0),
+            "win_rate": summ.get("win_rate", 0.0),
+            "trades_today": summ.get("trades_today", 0),
+            "max_drawdown": summ.get("max_drawdown_pct", 0.0),
+            "wins": summ.get("wins", 0),
+            "losses": summ.get("losses", 0),
+        }
         return web.json_response(data, dumps=_safe_dumps)
+
+    def _paper_summary(self) -> dict:
+        """ONE source of truth for every paper figure on the dashboard.
+
+        Everything is computed from SignalTracker: its stats dict plus its
+        closed ledger. Balance = start balance + Σ net pnl_usd of closed
+        trades. Today = closes whose exit_time is today (UTC).
+        """
+        tr = self._signal_tracker
+        if tr is None:
+            return {"available": False}
+        try:
+            stats = tr.get_stats() or {}
+            closed = tr.get_closed_signals(limit=5000) or []
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        start = float(stats.get("paper_start_balance", 1000.0) or 1000.0)
+        pnls = []
+        equity = []
+        bal = start
+        today_pnl = 0.0
+        today_fees = 0.0
+        today_wins = 0
+        trades_today = 0
+        peak = start
+        max_dd = 0.0
+        days = set()
+        for c in closed:
+            p = float(c.get("pnl_usd") or 0.0)
+            pnls.append(p)
+            bal += p
+            peak = max(peak, bal)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - bal) / peak * 100.0)
+            et = str(c.get("exit_time") or c.get("entry_time") or "")
+            equity.append({"t": et, "balance": round(bal, 2)})
+            if et[:10]:
+                days.add(et[:10])
+            if et.startswith(today):
+                today_pnl += p
+                today_fees += float(c.get("total_fees_usd") or 0.0)
+                today_wins += 1 if p > 0 else 0
+                trades_today += 1
+        wins = sum(1 for p in pnls if p > 0)
+        losses = sum(1 for p in pnls if p < 0)
+        gross_w = sum(p for p in pnls if p > 0)
+        gross_l = -sum(p for p in pnls if p < 0)
+        last = closed[-1] if closed else None
+        active = []
+        try:
+            active = tr.get_active_signals() or []
+        except Exception:
+            pass
+        return {
+            "available": True,
+            "source": "signal_tracker",
+            "mode": "paper",
+            "start_balance": round(start, 2),
+            "balance": round(bal, 2),
+            "net_pnl_usd": round(bal - start, 2),
+            "gross_pnl_usd": round(float(stats.get("paper_gross_pnl_usd", 0.0) or 0.0), 2),
+            "fees_usd": round(float(stats.get("paper_total_fees_usd", 0.0) or 0.0), 2),
+            "total_pnl_pct": round((bal - start) / start * 100.0, 3) if start else 0.0,
+            "today_pnl_usd": round(today_pnl, 2),
+            "today_fees_usd": round(today_fees, 2),
+            "today_wins": today_wins,
+            "today_win_rate": round(today_wins / trades_today * 100.0, 1) if trades_today else 0.0,
+            "trades_today": trades_today,
+            "peak_balance": round(peak, 2),
+            "trading_days": len(days),
+            "closed": len(pnls),
+            "open": len(active),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / len(pnls) * 100.0, 1) if pnls else 0.0,
+            "profit_factor": round(gross_w / gross_l, 2) if gross_l > 0 else (999.0 if gross_w > 0 else 0.0),
+            "avg_pnl_usd": round(sum(pnls) / len(pnls), 2) if pnls else 0.0,
+            "best_usd": round(max(pnls), 2) if pnls else 0.0,
+            "worst_usd": round(min(pnls), 2) if pnls else 0.0,
+            "max_drawdown_pct": round(max_dd, 2),
+            "last_trade": ({
+                "symbol": last.get("symbol"), "side": last.get("side"),
+                "pnl_usd": round(float(last.get("pnl_usd") or 0.0), 2),
+                "pnl_pct": last.get("pnl_pct"), "exit_reason": last.get("exit_reason"),
+                "exit_time": last.get("exit_time"), "scanner": (last.get("metadata") or {}).get("scanner") or last.get("scanner"),
+            } if last else None),
+            "equity_curve": equity[-500:],
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def _handle_paper_summary(self, request: web.Request) -> web.Response:
+        """GET /api/paper/summary — the single source for all paper UI numbers."""
+        return web.json_response(self._paper_summary(), dumps=_safe_dumps)
 
     async def _handle_alerts(self, request: web.Request) -> web.Response:
         async with self._lock:

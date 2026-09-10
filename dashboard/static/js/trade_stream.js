@@ -1,6 +1,6 @@
-/* Multi-Exchange Trade Stream — clean unified view across paper/shadow/demo/real and delta/bybit
+/* Trade Stream — paper trades on production Delta India data
  * Renders into #trade-stream-panel.
- * Uses /api/paper/closed and /api/shadow/closed.
+ * Uses /api/paper/closed.
  * 2026-04-26
  */
 (function () {
@@ -11,8 +11,8 @@
   // and Phase 2 fan-out virtual trades are filtered server-side via
   // ?clean=true (default in /api/shadow/closed). User can flip type=all
   // or open the API directly with clean=false for raw audit data.
-  let exchangeFilter = 'delta_india'; // delta is the live shadow source
-  let typeFilter = 'shadow';
+  let exchangeFilter = 'paper';
+  let typeFilter = 'paper';
   let limitVal = 50;
   let daysVal = 1;
 
@@ -78,22 +78,10 @@
   let lastExcludedN = 0;  // surfaced in the meta footer
 
   async function fetchTrades() {
-    // Fan out: paper + shadow per exchange. clean=true filters the
-    // legacy auto_responder_stuck_60m rows + Phase 2 fan-out from the
-    // shadow endpoint server-side.
-    const fetches = [];
-    if (typeFilter === 'all' || typeFilter === 'paper') {
-      if (exchangeFilter === 'all' || exchangeFilter === 'paper') {
-        fetches.push(fetch(`/api/paper/closed?days=${daysVal}&limit=${limitVal}`).then(r => r.ok ? r.json() : {trades: []}));
-      }
-    }
-    if (typeFilter !== 'paper') {
-      const exchanges = exchangeFilter === 'all' ? ['delta_india', 'bybit'] : [exchangeFilter];
-      for (const ex of exchanges) {
-        if (ex === 'paper') continue;
-        fetches.push(fetch(`/api/shadow/closed?exchange=${ex}&days=${daysVal}&limit=${limitVal}&clean=true`).then(r => r.ok ? r.json() : {trades: [], excluded_n: 0}));
-      }
-    }
+    // Single mode: paper trades on production Delta data.
+    const fetches = [
+      fetch(`/api/paper/closed?days=${daysVal}&limit=${limitVal}`).then(r => r.ok ? r.json() : {trades: []}),
+    ];
     const results = await Promise.all(fetches);
     let all = [];
     lastExcludedN = 0;
@@ -125,18 +113,11 @@
         </select>
         Exchange
         <select id="tx-ex" class="tx-stream-sel">
-          <option value="all"          ${exchangeFilter==='all'?'selected':''}>all</option>
           <option value="paper"        ${exchangeFilter==='paper'?'selected':''}>paper only</option>
-          <option value="delta_india"  ${exchangeFilter==='delta_india'?'selected':''}>delta</option>
-          <option value="bybit"        ${exchangeFilter==='bybit'?'selected':''}>bybit</option>
         </select>
         Type
         <select id="tx-tt" class="tx-stream-sel">
-          <option value="shadow" ${typeFilter==='shadow'?'selected':''}>shadow</option>
-          <option value="real"   ${typeFilter==='real'?'selected':''}>real</option>
           <option value="paper"  ${typeFilter==='paper'?'selected':''}>paper</option>
-          <option value="demo"   ${typeFilter==='demo'?'selected':''}>demo</option>
-          <option value="all"    ${typeFilter==='all'?'selected':''}>all</option>
         </select>
         Limit
         <select id="tx-lim" class="tx-stream-sel">
@@ -153,7 +134,7 @@
     if (!el) return;
     el.innerHTML = `
       <div class="tx-stream-header">
-        <span class="tx-stream-title">Trade Stream — shadow tracking (clean)</span>
+        <span class="tx-stream-title">Trade Stream — paper trades (production data)</span>
         ${controls()}
       </div>
       <div id="tx-body"><div class="tx-stream-empty">Loading…</div></div>

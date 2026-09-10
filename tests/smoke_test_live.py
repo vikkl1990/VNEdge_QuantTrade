@@ -218,7 +218,7 @@ async def run_all():
                 body = await r.text()
                 leaked = []
                 for word in ["api_key", "api_secret", "password", "secret_key",
-                             "BINANCE_API_KEY", "DASHBOARD_PASSWORD"]:
+                             "DELTA_API_KEY", "DASHBOARD_PASSWORD"]:
                     if word.lower() in body.lower():
                         leaked.append(word)
                 if leaked:

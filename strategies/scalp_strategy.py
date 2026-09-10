@@ -74,7 +74,7 @@ from strategies.regime_filter import (
 )
 from bot.ev_engine import EVEngine
 from bot.feature_logger import FeatureLogger
-from bot.ml_scorer import MLScorer, build_scoring_features
+from bot.ml_scorer import MLScorer, ML_SERVER_URL, build_scoring_features
 from bot.mode_manager import get_mode_manager
 from bot.training_dataset import TrainingDataset
 from data.structure import build_structure_map, StructureMap
@@ -445,7 +445,7 @@ class ScalpStrategy(BaseStrategy):
         # via ml.scoring_url but the default must not be a stale VM.
         ml_cfg = config.get("ml", {})
         self._ml_scorer = MLScorer(
-            url=ml_cfg.get("scoring_url", "http://10.0.2.4:8081/api/score"),
+            url=ml_cfg.get("scoring_url") or None,  # None → MLScorer resolves ML_SERVER_URL at runtime
             enabled=ml_cfg.get("enabled", True),
             shadow_mode=ml_cfg.get("shadow_mode", True),  # Start shadow — log only, no veto
         )
@@ -3670,7 +3670,14 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["p_win"] = round(ev_result.p_win, 4)
 
         # ── ML scoring metadata ──
-        signal.metadata["ml_probability"] = round(ml_result.get("probability", 0.5), 4)
+        # probability is None when the ML server is unreachable/abstains
+        # (Phase 4.2) — round(None) raised TypeError and killed the whole
+        # scalp analysis for the symbol. Store None as-is.
+        # Downstream consumers (signal_tracker, logging) do float()/%.3f on
+        # this field, so fall back to neutral 0.5; ml_verdict still carries
+        # UNREACHABLE/ABSTAIN so the outage is visible.
+        _ml_prob = ml_result.get("probability")
+        signal.metadata["ml_probability"] = round(_ml_prob, 4) if isinstance(_ml_prob, (int, float)) else 0.5
         signal.metadata["ml_verdict"] = ml_result.get("verdict", "?")
         signal.metadata["ml_latency_ms"] = ml_result.get("latency_ms", 0)
         signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
@@ -3855,7 +3862,7 @@ class ScalpStrategy(BaseStrategy):
             "SCALP %s [%s]: %s %s | conf=%d w=%.1fx grade=%s | ML=%.3f/%s | %s",
             best.name, best_sr.tier.upper(), best.side.value.upper(), symbol,
             signal.confidence, best_sr.scanner_weight, signal.grade.value,
-            ml_result.get("probability", 0.5), ml_result.get("verdict", "?"),
+            signal.metadata["ml_probability"], ml_result.get("verdict", "?"),
             ", ".join(best.confirmations),
         )
 

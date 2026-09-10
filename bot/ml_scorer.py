@@ -9,6 +9,7 @@ Architecture:
 """
 
 import logging
+import os
 import time
 from typing import Dict, Optional
 
@@ -17,23 +18,41 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# VM2 ML server
-ML_SERVER_URL = "http://10.0.2.4:8081/api/score"
+# ML server base URL. Override with ML_SERVER_URL (e.g. http://127.0.0.1:8091
+# when running ml_training/run_trainer.py locally). Legacy default = VM4.
+_ML_SERVER_DEFAULT_BASE = "http://10.0.2.4:8081"
+
+
+def resolve_ml_server_url() -> str:
+    """Scoring endpoint from the *current* environment (call at runtime)."""
+    base = os.getenv("ML_SERVER_URL", _ML_SERVER_DEFAULT_BASE).rstrip("/")
+    return f"{base}/api/score"
+
+
+# Import-time snapshot kept for backwards compatibility. Prefer
+# resolve_ml_server_url() — .env is usually loaded after this import.
+ML_SERVER_BASE = os.getenv("ML_SERVER_URL", _ML_SERVER_DEFAULT_BASE).rstrip("/")
+ML_SERVER_URL = f"{ML_SERVER_BASE}/api/score"
 SCORE_TIMEOUT = 2.0  # seconds — scalp signals are time-sensitive
+_CB_FAILURES_TO_OPEN = 3   # consecutive connection failures before the breaker opens
+_CB_OPEN_SECS = 300.0      # how long to skip the ML host once the breaker is open
 
 
 class MLScorer:
     """Scores scanner candidates via VM2 ML API. Fail-open design."""
 
-    def __init__(self, url: str = ML_SERVER_URL, enabled: bool = True,
+    def __init__(self, url: Optional[str] = None, enabled: bool = True,
                  shadow_mode: bool = True):
         """
         Args:
-            url: VM2 scoring endpoint
+            url: scoring endpoint. None → resolve from ML_SERVER_URL *now*
+                 (not at import time: main.py imports this module before
+                 config.loader calls load_dotenv, so a module-level default
+                 would never see the .env value).
             enabled: Master switch
             shadow_mode: If True, log ML score but never veto trades
         """
-        self._url = url
+        self._url = url or resolve_ml_server_url()
         self._enabled = enabled
         self._shadow_mode = shadow_mode
         self._last_error: Optional[str] = None
@@ -58,6 +77,23 @@ class MLScorer:
         """
         if not self._enabled:
             return {"probability": 0.5, "verdict": "DISABLED", "scanner": scanner_name}
+
+        # Circuit breaker (2026-09-09): score_candidate() runs synchronous
+        # `requests` calls inside the bot's asyncio loop. When the ML host is
+        # unreachable every call blocked the loop for SCORE_TIMEOUT (plus a 3s
+        # health probe), starving candle polling ("Stale data", "Trade monitor
+        # DELAYED"). After 3 consecutive connection failures, skip the network
+        # entirely for _CB_OPEN_SECS and return UNREACHABLE immediately.
+        _cb_until = getattr(self, "_cb_open_until", 0.0)
+        if time.time() < _cb_until:
+            self._stats["errors"] += 1
+            return {
+                "probability": None,
+                "verdict": "UNREACHABLE",
+                "scanner": scanner_name,
+                "bucket_action": "ABSTAIN",
+                "circuit_open": True,
+            }
 
         # Architect review #10: Model staleness kill switch
         # If the ML model on VM4 hasn't been retrained in >48h, degrade to
@@ -115,6 +151,7 @@ class MLScorer:
                 timeout=SCORE_TIMEOUT,
             )
             latency_ms = (time.time() - t0) * 1000
+            self._cb_consecutive_failures = 0  # connection succeeded — reset breaker
             self._stats["avg_latency_ms"] = (
                 self._stats["avg_latency_ms"] * 0.9 + latency_ms * 0.1
             )
@@ -238,7 +275,18 @@ class MLScorer:
         except Exception as e:
             self._stats["errors"] += 1
             self._last_error = str(e)
-            logger.warning("ML score error for %s: %s", scanner_name, e)
+            _fails = getattr(self, "_cb_consecutive_failures", 0) + 1
+            self._cb_consecutive_failures = _fails
+            if _fails >= _CB_FAILURES_TO_OPEN:
+                self._cb_open_until = time.time() + _CB_OPEN_SECS
+                self._cb_consecutive_failures = 0
+                logger.warning(
+                    "ML scorer circuit OPEN for %.0fs after %d consecutive failures "
+                    "(host %s unreachable): %s",
+                    _CB_OPEN_SECS, _fails, self._url, e,
+                )
+            else:
+                logger.warning("ML score error for %s: %s", scanner_name, e)
             return {
                 "probability": None,  # Phase 4.2: None not 0.5
                 "verdict": "UNREACHABLE",

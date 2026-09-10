@@ -2,7 +2,7 @@
 Exchange abstraction layer.
 
 Provides a unified interface for interacting with cryptocurrency exchanges
-(Binance, Bybit, OKX, Delta Exchange) through the ``ExchangeBase`` contract
+(Delta Exchange India) through the ``ExchangeBase`` contract
 and the ``CcxtExchangeClient`` implementation.
 
 Quick start::

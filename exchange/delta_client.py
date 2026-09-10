@@ -90,14 +90,14 @@ PRODUCT_MAP = {
         "prod_id": 26540,
         "symbol": "TAOUSD",
         "contract_size": 0.01,  # 1 lot = 0.01 TAO
-        "tick_size": 0.1,         # prod API: 0.1 (was 0.01 — FIXED)
+        "tick_size": 0.01,         # prod API: 0.1 (was 0.01 — FIXED)
         "tick_size_demo": 0.1,
     },
     "DOGE/USDT": {
         "demo_id": 101555,
         "prod_id": 14745,
         "symbol": "DOGEUSD",
-        "contract_size": 1.0,
+        "contract_size": 100.0,
         "tick_size": 0.000001,     # prod API: 0.000001 (was 0.00001 — FIXED)
         "tick_size_demo": 0.000001,
     },
@@ -190,7 +190,7 @@ PRODUCT_MAP = {
         "prod_id": 45540,
         "symbol": "POPCATUSD",
         "contract_size": 1.0,
-        "tick_size": 0.0001,
+        "tick_size": 0.00001,
         "tick_size_demo": 0.0001,
     },
     # MEME: marginal depth (~$600) but wide 1.66% ATR_1h. Keep under low_liquidity veto.
@@ -199,7 +199,7 @@ PRODUCT_MAP = {
         "prod_id": 18286,
         "symbol": "MEMEUSD",
         "contract_size": 100.0,     # 1 lot = 100 MEME
-        "tick_size": 0.000001,
+        "tick_size": 0.0000001,
         "tick_size_demo": 0.000001,
     },
     # 1MBABYDOGE: native symbol, 1M-multiplier. Thin today, left here for registry completeness.
@@ -217,6 +217,21 @@ PRODUCT_MAP = {
 DEMO_BALANCE_ASSET_ID = 3
 # Production balance asset IDs to check
 PROD_BALANCE_ASSET_IDS = [14, 5, 3, 1, 2, 4, 6, 7]  # 14=USD on Delta India production
+
+
+def _decode(resp):
+    """delta-rest-client's request() returns a requests.Response. Unwrap to
+    the JSON `result` payload (or the raw JSON when no `result` key)."""
+    if resp is None:
+        return None
+    if hasattr(resp, "json"):
+        try:
+            resp = resp.json()
+        except Exception:
+            return None
+    if isinstance(resp, dict) and "result" in resp:
+        return resp["result"]
+    return resp
 
 
 class DeltaClient:
@@ -670,7 +685,7 @@ class DeltaClient:
             if client_order_id:
                 payload["client_order_id"] = client_order_id[:32]
 
-            result = self._client.request("POST", "/v2/orders", payload=payload, auth=True)
+            result = _decode(self._client.request("POST", "/v2/orders", payload=payload, auth=True))
             self._track_order_placed()
             logger.info(
                 "DELTA [%s] TP: %s %s %d lots @ %.4f | coid=%s | result=%s",
@@ -920,10 +935,16 @@ class DeltaClient:
             product_id = self._get_product_id(symbol)
             # Use the REST API ticker endpoint
             resp = self._client.request("GET", f"/v2/tickers/{product_id}")
+            if resp is not None and hasattr(resp, "json"):
+                resp = resp.json()
+            if isinstance(resp, dict) and "result" in resp:
+                resp = resp["result"]
             if resp and isinstance(resp, dict):
+                # Delta nests best bid/ask under "quotes"
+                quotes = resp.get("quotes") or {}
                 return {
-                    "bid": float(resp.get("best_bid", 0) or 0),
-                    "ask": float(resp.get("best_ask", 0) or 0),
+                    "bid": float(quotes.get("best_bid") or resp.get("best_bid", 0) or 0),
+                    "ask": float(quotes.get("best_ask") or resp.get("best_ask", 0) or 0),
                     "last": float(resp.get("close", 0) or resp.get("last_price", 0) or 0),
                     "mark": float(resp.get("mark_price", 0) or 0),
                 }
@@ -941,6 +962,10 @@ class DeltaClient:
         try:
             product_id = self._get_product_id(symbol)
             resp = self._client.request("GET", f"/v2/tickers/{product_id}")
+            if resp is not None and hasattr(resp, "json"):
+                resp = resp.json()
+            if isinstance(resp, dict) and "result" in resp:
+                resp = resp["result"]
             if resp and isinstance(resp, dict):
                 return {
                     "symbol": symbol,
@@ -964,7 +989,13 @@ class DeltaClient:
         """
         try:
             product_id = self._get_product_id(symbol)
-            resp = self._client.request("GET", f"/v2/l2orderbook/{product_id}", params={"depth": depth})
+            if not product_id:
+                return None
+            # delta-rest-client's request() takes `query=` (not `params=`) and
+            # returns a requests.Response, not a dict — decode it here.
+            resp = self._client.request("GET", f"/v2/l2orderbook/{product_id}", query={"depth": depth})
+            if resp is not None and hasattr(resp, "json"):
+                resp = resp.json()
             if resp and isinstance(resp, dict):
                 # Delta India wraps payload in "result" — unwrap if present
                 data = resp.get("result", resp) if "result" in resp else resp
@@ -1160,6 +1191,7 @@ class DeltaClient:
                 "GET", f"/v2/orders/client_order_id/{client_order_id[:32]}",
                 auth=True,
             )
+            result = _decode(result)
             if isinstance(result, dict) and result.get("id"):
                 return result
             return None
@@ -1179,10 +1211,10 @@ class DeltaClient:
             if product_id:
                 payload["product_ids"] = str(product_id)
             payload["contract_types"] = "perpetual_futures"
-            result = self._client.request("GET", "/v2/orders/history",
-                                          payload=payload, auth=True)
+            result = _decode(self._client.request("GET", "/v2/orders/history",
+                                                  query=payload, auth=True))
             if isinstance(result, dict):
-                return result.get("result", result.get("data", []))
+                return result.get("data", result.get("result", []))
             return result if isinstance(result, list) else []
         except Exception as e:
             logger.warning("DELTA [%s] ORDER HISTORY: %s", self.mode.upper(), e)
@@ -1203,9 +1235,10 @@ class DeltaClient:
         try:
             result = self._client.request(
                 "GET", "/v2/positions",
-                payload={"product_id": product_id},
+                query={"product_id": product_id},
                 auth=True,
             )
+            result = _decode(result)
             pos = result if isinstance(result, dict) else {}
             if pos and int(pos.get("size", 0) or 0) != 0:
                 return {
@@ -1233,10 +1266,11 @@ class DeltaClient:
         """
         try:
             result = self._client.request(
-                "DELETE", "/v2/positions/all",
-                payload={},
+                "POST", "/v2/positions/close_all",
+                payload={"close_all_portfolio": True, "close_all_isolated": True},
                 auth=True,
             )
+            result = _decode(result)
             logger.critical("DELTA [%s] EMERGENCY CLOSE-ALL executed: %s",
                            self.mode.upper(), str(result)[:200])
             return result if isinstance(result, dict) else {"raw": result}
@@ -1256,7 +1290,7 @@ class DeltaClient:
         """
         try:
             self._client.request(
-                "PUT", "/v2/account/margin-mode",
+                "PUT", "/v2/users/margin_mode",
                 payload={"margin_mode": mode},
                 auth=True,
             )
@@ -1276,7 +1310,7 @@ class DeltaClient:
             return False
         try:
             self._client.request(
-                "POST", "/v2/positions/auto-topup",
+                "PUT", "/v2/positions/auto_topup",
                 payload={"product_id": product_id, "auto_topup": True},
                 auth=True,
             )
@@ -1322,8 +1356,8 @@ class DeltaClient:
             payload["bracket_trail_amount"] = str(round(trail_amount / tick) * tick)
 
         try:
-            result = self._client.request("PUT", "/v2/orders/bracket",
-                                          payload=payload, auth=True)
+            result = _decode(self._client.request("PUT", "/v2/orders/bracket",
+                                                  payload=payload, auth=True))
             logger.info("DELTA [%s] EDIT BRACKET: %s SL=%.4f TP=%.4f | result=%s",
                        self.mode.upper(), symbol, stop_loss_price, take_profit_price,
                        str(result)[:200])
@@ -1332,3 +1366,54 @@ class DeltaClient:
             logger.warning("DELTA [%s] EDIT BRACKET failed: %s | %s",
                           self.mode.upper(), symbol, e)
             return {"error": str(e)}
+
+
+def validate_product_map(mode: str = "live") -> Dict[str, Any]:
+    """Compare PRODUCT_MAP against GET /v2/products and log any drift.
+
+    Called once at startup by the orchestrator. Never raises; returns a
+    summary dict. Checks symbol, tick_size and contract_value for every
+    production product id (demo ids are not validated).
+    """
+    import json as _json
+    import urllib.request as _url
+    base = ("https://cdn-ind.testnet.deltaex.org" if mode == "demo"
+            else "https://api.india.delta.exchange")
+    id_key = "demo_id" if mode == "demo" else "prod_id"
+    tick_key = "tick_size_demo" if mode == "demo" else "tick_size"
+    summary = {"checked": 0, "mismatches": [], "missing": []}
+    try:
+        with _url.urlopen(f"{base}/v2/products?page_size=2000", timeout=15) as r:
+            live = {p["id"]: p for p in _json.load(r)["result"]}
+    except Exception as e:
+        logger.warning("PRODUCT_MAP validator: could not fetch products (%s)", e)
+        summary["error"] = str(e)
+        return summary
+    for sym, info in PRODUCT_MAP.items():
+        pid = info.get(id_key)
+        if not pid:
+            continue
+        lp = live.get(pid)
+        summary["checked"] += 1
+        if not lp:
+            summary["missing"].append(sym)
+            logger.error("PRODUCT_MAP: %s id %s not found on Delta (%s)", sym, pid, mode)
+            continue
+        problems = []
+        if lp.get("symbol") != info.get("symbol"):
+            problems.append(f"symbol {info.get('symbol')}→{lp.get('symbol')}")
+        try:
+            if abs(float(lp["tick_size"]) - float(info.get(tick_key, 0))) > 1e-12:
+                problems.append(f"tick {info.get(tick_key)}→{lp['tick_size']}")
+            if abs(float(lp["contract_value"]) - float(info.get("contract_size", 0))) > 1e-12:
+                problems.append(f"contract {info.get('contract_size')}→{lp['contract_value']}")
+        except Exception:
+            pass
+        if lp.get("state") != "live":
+            problems.append(f"state={lp.get('state')}")
+        if problems:
+            summary["mismatches"].append((sym, problems))
+            logger.error("PRODUCT_MAP DRIFT: %s (%s): %s", sym, pid, "; ".join(problems))
+    if not summary["mismatches"] and not summary["missing"]:
+        logger.info("PRODUCT_MAP validated: %d products match Delta (%s)", summary["checked"], mode)
+    return summary

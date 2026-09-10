@@ -168,6 +168,15 @@ class CandleCollector:
                 if not raw:
                     break
 
+                # Delta's candle API pads `since`+`limit` ranges with flat,
+                # zero-volume placeholder bars stamped in the FUTURE. Drop them
+                # or the training set (and the pagination cursor) gets poisoned.
+                _now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                raw = [c for c in raw
+                       if (c.timestamp if hasattr(c, 'timestamp') else c[0]) <= _now_ms]
+                if not raw:
+                    break
+
                 # Handle both list and OHLCV dataclass
                 for candle in raw:
                     if hasattr(candle, 'timestamp'):

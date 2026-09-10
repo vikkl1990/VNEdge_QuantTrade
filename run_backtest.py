@@ -683,9 +683,7 @@ class ScalpBacktester:
             # Map exchange names
             ccxt_id = {
                 "delta": "delta",
-                "binance": "binance",
-                "bybit": "bybit",
-            }.get(exchange_id, "binance")  # fallback to binance for data
+            }.get(exchange_id, "delta")
 
             exchange = getattr(ccxt, ccxt_id)({
                 "apiKey": exchange_cfg.get("api_key", ""),

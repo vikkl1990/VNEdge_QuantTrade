@@ -54,24 +54,16 @@ Automated crypto derivatives trading bot built for **Delta Exchange India**. Use
 | Post-Impulse | Re-entries after impulse moves | Large impulse candle + shallow pullback + small current candle |
 | BB Squeeze | Volatility expansion | BB bandwidth expanding after squeeze, directional breakout |
 
-## Operating Modes
+## Operating Mode
+
+One mode: **paper** — production Delta India market data, simulated fills, real money off.
 
 ```bash
-# Signal-only (default) — generates alerts, no trades
-python main.py --mode signal_only
-
-# Paper trading — simulated trades on live data
-python main.py --mode paper
-
-# Live trading
-python main.py --mode live
-
-# Backtesting
+python main.py                 # paper (default)
 python main.py --mode backtest --symbols BTCUSDT
-
-# Forward test — paper trades with full logging
-python main.py --mode forward_test
 ```
+
+Live order placement is disabled unless `ALLOW_LIVE_TRADING=1` is set explicitly.
 
 ## Setup
 

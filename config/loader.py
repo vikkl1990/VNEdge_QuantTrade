@@ -53,9 +53,6 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     prefix = exchange_name.upper()
     config["exchange"]["api_key"] = os.getenv(f"{prefix}_API_KEY", "")
     config["exchange"]["api_secret"] = os.getenv(f"{prefix}_API_SECRET", "")
-    if exchange_name == "okx":
-        config["exchange"]["passphrase"] = os.getenv("OKX_PASSPHRASE", "")
-
     if os.getenv("BOT_MODE"):
         config["bot"]["mode"] = os.getenv("BOT_MODE")
     if os.getenv("LOG_LEVEL"):

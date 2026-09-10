@@ -140,7 +140,6 @@ class DashboardServer:
         self._trade_monitor = None   # set externally by orchestrator
         self._strategy = None        # set externally by orchestrator
         self._decision_engine = None # set externally by orchestrator
-        self._latency_arb = None     # set externally by orchestrator
 
         self._daily_pnl: float = 0.0
         self._total_pnl: float = 0.0
@@ -523,7 +522,9 @@ class DashboardServer:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
-        user = body.get("username", "")
+        # The dashboard login form (static/js/app.js) posts {email, password};
+        # older clients post {username, password}. Accept either.
+        user = body.get("username") or body.get("email") or ""
         password = body.get("password", "")
         # SEC FIX (2026-04-16): removed "LOGIN DEBUG" log that leaked pwd_len,
         # expected username, and match booleans. A log-viewer or aggregator
@@ -773,6 +774,11 @@ class DashboardServer:
 
         # Pages
         app.router.add_get("/", self._handle_index)
+        # ML Lab links (header button, footer, admin "research") used to point
+        # at the old cloud VM's public IP. Redirect to wherever ML_SERVER_URL
+        # says the ML Lab lives (local ml_training/run_trainer.py by default).
+        app.router.add_get("/ml-lab", self._handle_ml_lab_redirect)
+        app.router.add_get("/ml-lab/{tail:.*}", self._handle_ml_lab_redirect)
         app.router.add_get("/admin", self._handle_admin_panel)  # production admin panel (2026-04-19)
         app.router.add_get("/profile", self._handle_profile_page)  # production profile page (2026-04-19)
 
@@ -792,20 +798,10 @@ class DashboardServer:
         app.router.add_post("/api/copilot/action", self._handle_copilot_action)
         # Phase 3 quant heroes — Sharpe/Sortino/MaxDD/PF (2026-04-26)
         app.router.add_get("/api/quant-metrics", self._handle_quant_metrics)
-        # Exchange Compare — Delta India vs Bybit (2026-04-26)
-        app.router.add_get("/api/exchange-comparison", self._handle_exchange_comparison)
-        # Multi-exchange overview — per-exchange active + last + today (2026-04-26)
-        app.router.add_get("/api/multi-exchange/overview", self._handle_multi_exchange_overview)
-        # Multi-exchange closed trades by bucket — for Analytics Trade History 4-tab (2026-04-26)
-        app.router.add_get("/api/multi-exchange/closed",   self._handle_multi_exchange_closed)
         # Unified Paper + Shadow API family (2026-04-26) — clean per-mode endpoints
         app.router.add_get("/api/paper/active",   self._handle_paper_active)
         app.router.add_get("/api/paper/closed",   self._handle_paper_closed)
         app.router.add_get("/api/paper/stats",    self._handle_paper_stats)
-        app.router.add_get("/api/shadow/exchanges", self._handle_shadow_exchanges)
-        app.router.add_get("/api/shadow/active",  self._handle_shadow_active)
-        app.router.add_get("/api/shadow/closed",  self._handle_shadow_closed)
-        app.router.add_get("/api/shadow/stats",   self._handle_shadow_stats)
 
         # Phase 2 Shadow-of-Shadow leaderboard (2026-04-27) — fan-out exit
         # config A/B/C/D/E. Aggregates per exit_config_id over the window.
@@ -820,7 +816,6 @@ class DashboardServer:
         # Maker counterfactual analytics (2026-04-27 Path A) — what would
         # shadow PnL look like if patient-mode maker fills worked? Reads
         # cf_maker_savings_* fields stamped into close_meta by _close_shadow.
-        app.router.add_get("/api/maker/counterfactual", self._handle_maker_counterfactual)
 
         # Chief Quant continuous briefing (2026-04-28) — meta-agent that
         # aggregates all other agents into one decision-grade markdown
@@ -845,8 +840,6 @@ class DashboardServer:
         app.router.add_get("/api/grid/status", self._handle_grid_status)
         app.router.add_get("/api/grid/positions", self._handle_grid_positions)
         app.router.add_get("/api/real/status", self._handle_real_status)
-        app.router.add_post("/api/real/toggle", self._handle_real_toggle)
-        app.router.add_post("/api/emergency-stop", self._handle_emergency_stop)
         app.router.add_get("/api/emergency-status", self._handle_emergency_status)
         app.router.add_get("/api/risk-metrics", self._handle_risk_metrics)
         app.router.add_get("/api/session-heatmap", self._handle_session_heatmap)
@@ -863,9 +856,6 @@ class DashboardServer:
         except Exception as _e:
             import logging as _log
             _log.getLogger("dashboard").warning("PPP api wiring failed: %s", _e)
-        app.router.add_get("/api/latency-arb", self._handle_latency_arb)
-        app.router.add_get("/api/latency-arb/dislocations", self._handle_latency_arb_dislocations)
-        app.router.add_get("/api/latency-arb/analysis", self._handle_latency_arb_analysis)
         app.router.add_get("/api/agents/status", self._handle_agents_status)
         app.router.add_get("/api/risk-return", self._handle_risk_return_scatter)
         app.router.add_get("/api/pipeline/overview", self._handle_pipeline_overview)
@@ -875,13 +865,10 @@ class DashboardServer:
         app.router.add_get("/api/pipeline/hotfix_stats", self._handle_hotfix_stats)
         app.router.add_get("/api/pipeline/loss_taxonomy", self._handle_loss_taxonomy)
         app.router.add_get("/api/supervisor/status", self._handle_supervisor_status)
-        app.router.add_post("/api/real/cb-reset", self._handle_cb_reset)
 
         # ── Track A (2026-04-11): LOCK 75% + Force Flat ──
         # A.2: close 75% of a specific real position (lock profit, keep runner)
         # A.3: force flat — close ALL open real positions immediately
-        app.router.add_post("/api/real/lock_75", self._handle_lock_75)
-        app.router.add_post("/api/real/force_flat", self._handle_force_flat)
 
         # ── Items #6+8: Config Editor + Hot-Reload ──
         app.router.add_get("/api/config", self._handle_config_get)
@@ -951,6 +938,19 @@ class DashboardServer:
     # ------------------------------------------------------------------
     # Request handlers
     # ------------------------------------------------------------------
+
+    async def _handle_ml_lab_redirect(self, request: web.Request) -> web.Response:
+        """GET /ml-lab[/{tail}] → redirect to the ML Lab server (ML_SERVER_URL).
+
+        The ML Lab has its own UI (/, /research). Browsers open it directly;
+        this only translates a host-agnostic link into the configured URL.
+        """
+        base = os.getenv("ML_SERVER_URL", "http://10.0.2.4:8081").rstrip("/")
+        tail = request.match_info.get("tail", "") or ""
+        target = f"{base}/{tail}" if tail else f"{base}/"
+        if request.query_string:
+            target += f"?{request.query_string}"
+        raise web.HTTPFound(target)
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         index_path = _TEMPLATES_DIR / "index.html"
@@ -1571,129 +1571,6 @@ class DashboardServer:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
 
-    async def _handle_exchange_comparison(self, request: web.Request) -> web.Response:
-        """Exchange Compare tab — side-by-side metrics for paper / delta_india / bybit.
-        Query: ?days=N (default 7, max 90)
-        Returns per-exchange aggregates for the comparison panel.
-        """
-        import math
-        days = max(1, min(90, int(request.query.get("days", "7"))))
-        out = {"days": days, "by_exchange": {}, "overall_paper": {}, "ts": datetime.utcnow().isoformat()}
-        if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            async with self._db_pool.acquire() as con:
-                # 2026-04-27 — clean filter: drop admin/orphan/reconcile
-                # closes (PnL=$0 force-cleanups by Agent 9-A or restart
-                # reconciler) + Phase 2 fan-out fan-out trades. Without
-                # this, Exchange Compare tab over-states paper baseline,
-                # under-states delta_india edge, and shows phantom bybit
-                # numbers from before the bybit dispatcher pause.
-                _CLEAN_NOT_IN = (
-                    "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                    "    NOT IN ('auto_responder_stuck_60m', "
-                    "            'restart_orphan_cleanup', "
-                    "            'reconcile_overaged_close') "
-                    "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "    != 'true' OR "
-                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
-                )
-
-                # Paper trades (no exchange concept — separate aggregate)
-                paper = await con.fetchrow(
-                    f"""SELECT COUNT(*) AS n,
-                              SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-                              SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END)::float AS gw,
-                              SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END)::float AS gl,
-                              SUM(pnl_usd)::float AS pnl_total,
-                              AVG(pnl_usd)::float AS avg
-                         FROM user_trades
-                        WHERE trade_type = 'paper'
-                          AND closed_at >= NOW() - INTERVAL '{days} days'
-                          AND closed_at IS NOT NULL
-                          {_CLEAN_NOT_IN}"""
-                )
-                if paper and paper["n"]:
-                    n = int(paper["n"]); wins = int(paper["wins"] or 0)
-                    gw = float(paper["gw"] or 0); gl = float(paper["gl"] or 0)
-                    out["overall_paper"] = {
-                        "n": n,
-                        "wr_pct": (wins / n * 100.0) if n else None,
-                        "pf": (gw / gl) if gl > 0 else None,
-                        "pnl_total": float(paper["pnl_total"] or 0),
-                        "avg": float(paper["avg"] or 0),
-                    }
-
-                # Per-exchange shadow + real (clean filter applied)
-                exch_rows = await con.fetch(
-                    f"""SELECT exchange,
-                              COUNT(*) AS n,
-                              SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-                              SUM(CASE WHEN pnl_usd > 0 THEN pnl_usd ELSE 0 END)::float AS gw,
-                              SUM(CASE WHEN pnl_usd < 0 THEN -pnl_usd ELSE 0 END)::float AS gl,
-                              SUM(pnl_usd)::float AS pnl_total,
-                              AVG(pnl_usd)::float AS avg,
-                              SUM(CASE WHEN COALESCE(metadata::jsonb->>'fee_type','') = 'maker' THEN 1 ELSE 0 END) AS makers,
-                              SUM(fees_usd)::float AS total_fees,
-                              array_agg(pnl_usd ORDER BY closed_at) AS pnl_series
-                         FROM user_trades
-                        WHERE trade_type IN ('shadow', 'real')
-                          AND closed_at >= NOW() - INTERVAL '{days} days'
-                          AND closed_at IS NOT NULL
-                          AND pnl_usd IS NOT NULL
-                          {_CLEAN_NOT_IN}
-                        GROUP BY exchange
-                        ORDER BY exchange"""
-                )
-
-                for r in exch_rows:
-                    n = int(r["n"]); wins = int(r["wins"] or 0)
-                    gw = float(r["gw"] or 0); gl = float(r["gl"] or 0)
-                    series = [float(p) for p in (r["pnl_series"] or []) if p is not None]
-                    # Sharpe (per-trade, no annualization)
-                    if len(series) > 1:
-                        m = sum(series) / len(series)
-                        var = sum((p - m) ** 2 for p in series) / len(series)
-                        sd = math.sqrt(var) if var > 0 else 0
-                        sharpe = (m / sd) if sd > 0 else None
-                    else:
-                        sharpe = None
-                    # Max drawdown
-                    cum = 0.0; peak = 0.0; max_dd = 0.0
-                    for p in series:
-                        cum += p
-                        if cum > peak:
-                            peak = cum
-                        if peak - cum > max_dd:
-                            max_dd = peak - cum
-                    out["by_exchange"][r["exchange"]] = {
-                        "n": n,
-                        "wins": wins,
-                        "wr_pct": (wins / n * 100.0) if n else None,
-                        "pf": (gw / gl) if gl > 0 else None,
-                        "pnl_total": float(r["pnl_total"] or 0),
-                        "avg": float(r["avg"] or 0),
-                        "makers": int(r["makers"] or 0),
-                        "maker_pct": (int(r["makers"] or 0) / n * 100.0) if n else None,
-                        "total_fees": float(r["total_fees"] or 0),
-                        "sharpe": sharpe,
-                        "max_dd_usd": max_dd,
-                    }
-        except Exception as e:
-            import logging as _log
-            _log.getLogger("dashboard").warning("exchange-comparison error: %s", e)
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    # ══════════════════════════════════════════════════════════════
-    # PAPER + SHADOW API family (2026-04-26)
-    # Unified shape: every trade dict has the same keys regardless of source.
-    # Paper trades come from signals_history.json (in-memory tracker).
-    # Shadow trades come from user_trades (DB) with exchange filter.
-    # ══════════════════════════════════════════════════════════════
-
-    @staticmethod
     def _normalize_paper_trade(s: dict) -> dict:
         """Convert a signals_history.json entry to the unified trade shape."""
         meta = s.get("metadata") or {}
@@ -1878,200 +1755,6 @@ class DashboardServer:
             return datetime.min
 
     # ── Shadow endpoints ───────────────────────────────────────────
-
-    async def _handle_shadow_exchanges(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/exchanges → list of exchanges with shadow data + counts."""
-        out = {"exchanges": [], "ts": datetime.utcnow().isoformat() + "Z"}
-        if not self._db_pool:
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            async with self._db_pool.acquire() as con:
-                rows = await con.fetch(
-                    """SELECT exchange,
-                              COUNT(*) AS n,
-                              SUM(CASE WHEN closed_at IS NOT NULL THEN 1 ELSE 0 END) AS closed,
-                              MAX(opened_at) AS last_open
-                         FROM user_trades
-                        WHERE trade_type IN ('shadow', 'real')
-                        GROUP BY exchange ORDER BY exchange"""
-                )
-                out["exchanges"] = [
-                    {"exchange": r["exchange"], "n": int(r["n"]), "closed": int(r["closed"] or 0),
-                     "last_open": r["last_open"].isoformat() if r["last_open"] else None}
-                    for r in rows
-                ]
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    async def _handle_shadow_active(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/active?exchange=delta_india|bybit&clean=true|false
-
-        clean=true (default) hides Phase 2 fan-out virtual trades from the
-        active list — they have their own dedicated leaderboard widget
-        (/api/phase2/leaderboard). 41 phase2_virtual trades open at any
-        given moment otherwise drown the operator's "current real positions"
-        view.
-        """
-        exchange = request.query.get("exchange", "delta_india")
-        clean = request.query.get("clean", "true").lower() == "true"
-        out = {"trades": [], "n": 0, "excluded_n": 0, "clean": clean,
-               "filters": {"exchange": exchange, "clean": clean},
-               "ts": datetime.utcnow().isoformat() + "Z"}
-        if not self._db_pool:
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            async with self._db_pool.acquire() as con:
-                clean_clause = ""
-                if clean:
-                    clean_clause = (
-                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "    != 'true' OR "
-                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
-                    )
-                rows = await con.fetch(
-                    f"""SELECT * FROM user_trades
-                        WHERE trade_type = 'shadow'
-                          AND exchange = $1
-                          AND closed_at IS NULL
-                          {clean_clause}
-                        ORDER BY opened_at DESC LIMIT 200""", exchange
-                )
-                out["trades"] = [self._row_to_trade(r) for r in rows]
-                out["n"] = len(out["trades"])
-                if clean:
-                    excl = await con.fetchval(
-                        """SELECT COUNT(*)::int FROM user_trades
-                            WHERE trade_type='shadow' AND exchange=$1
-                              AND closed_at IS NULL
-                              AND COALESCE(metadata::jsonb->>'is_phase2_virtual','false')
-                                  = 'true'""",
-                        exchange,
-                    )
-                    out["excluded_n"] = int(excl or 0)
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    async def _handle_shadow_closed(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/closed?exchange=delta_india&limit=N&days=N&symbol=BTC/USDT
-                              &clean=true|false (default true)
-
-        clean=true (default) excludes:
-          - `auto_responder_stuck_60m` legacy force-closes (zero-PnL admin
-            cleanup before 2026-04-27 06:41 UTC max_age fix)
-          - `is_phase2_virtual` fan-out rows (tracked via leaderboard)
-        Pass clean=false to inspect raw audit trail.
-        """
-        exchange = request.query.get("exchange", "delta_india")
-        try:
-            limit = max(1, min(2000, int(request.query.get("limit", "100"))))
-            days = int(request.query.get("days", "7"))
-        except Exception:
-            limit, days = 100, 7
-        symbol = request.query.get("symbol", "")
-        clean = request.query.get("clean", "true").lower() == "true"
-        out = {"trades": [], "n": 0, "excluded_n": 0, "clean": clean,
-               "filters": {"exchange": exchange, "limit": limit, "days": days,
-                           "symbol": symbol or None, "clean": clean},
-               "ts": datetime.utcnow().isoformat() + "Z"}
-        if not self._db_pool:
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            async with self._db_pool.acquire() as con:
-                params = [exchange]
-                sym_clause = ""
-                if symbol:
-                    params.append(symbol)
-                    sym_clause = "AND symbol = $2 "
-                clean_clause = ""
-                if clean:
-                    clean_clause = (
-                        "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "    != 'true' OR "
-                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
-                    )
-                rows = await con.fetch(
-                    f"""SELECT * FROM user_trades
-                         WHERE trade_type = 'shadow'
-                           AND exchange = $1
-                           AND closed_at IS NOT NULL
-                           AND closed_at >= NOW() - INTERVAL '{days} days'
-                           {sym_clause}
-                           {clean_clause}
-                         ORDER BY closed_at DESC LIMIT {limit}""",
-                    *params
-                )
-                out["trades"] = [self._row_to_trade(r) for r in rows]
-                out["n"] = len(out["trades"])
-                if clean:
-                    excl = await con.fetchval(
-                        f"""SELECT COUNT(*)::int FROM user_trades
-                             WHERE trade_type='shadow' AND exchange=$1
-                               AND closed_at IS NOT NULL
-                               AND closed_at >= NOW() - INTERVAL '{days} days'
-                               {sym_clause}
-                               AND (COALESCE(metadata::jsonb->>'exit_reason','')
-                                       IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                                    OR (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true'
-                                        AND COALESCE(metadata::jsonb->>'exit_config_id','') != 'primary'))""",
-                        *params,
-                    )
-                    out["excluded_n"] = int(excl or 0)
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    async def _handle_shadow_stats(self, request: web.Request) -> web.Response:
-        """GET /api/shadow/stats?exchange=delta_india&days=N&clean=true → aggregate metrics.
-
-        clean=true (default) excludes auto_responder_stuck_60m + phase2_virtual rows.
-        See _handle_shadow_closed for rationale.
-        """
-        exchange = request.query.get("exchange", "delta_india")
-        try:
-            days = max(1, min(365, int(request.query.get("days", "7"))))
-        except Exception:
-            days = 7
-        clean = request.query.get("clean", "true").lower() == "true"
-        out = {"trade_type": "shadow", "exchange": exchange, "days": days, "clean": clean,
-               "ts": datetime.utcnow().isoformat() + "Z"}
-        if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            async with self._db_pool.acquire() as con:
-                clean_clause = ""
-                if clean:
-                    clean_clause = (
-                        "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') "
-                    "    != 'true' OR "
-                    "    COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
-                    )
-                rows = await con.fetch(
-                    f"""SELECT * FROM user_trades
-                         WHERE trade_type = 'shadow'
-                           AND exchange = $1
-                           AND closed_at IS NOT NULL
-                           AND closed_at >= NOW() - INTERVAL '{days} days'
-                           {clean_clause}""",
-                    exchange
-                )
-                trades = [self._row_to_trade(r) for r in rows]
-            out.update(self._aggregate_stats(trades))
-            # Also include per-symbol breakdown
-            from collections import defaultdict
-            per_sym = defaultdict(list)
-            for t in trades:
-                per_sym[t["symbol"]].append(t)
-            out["by_symbol"] = {sym: self._aggregate_stats(ts) for sym, ts in per_sym.items()}
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_phase2_leaderboard(self, request: web.Request) -> web.Response:
         """Phase 2 Shadow-of-Shadow leaderboard endpoint.
@@ -2297,338 +1980,6 @@ class DashboardServer:
             return web.Response(text=path.read_text(), content_type="text/markdown")
         except Exception as e:
             return web.Response(text=f"# Error reading briefing\n\n{e}", content_type="text/markdown")
-
-    async def _handle_maker_counterfactual(self, request: web.Request) -> web.Response:
-        """Path A — maker counterfactual for shadow trades.
-
-        Reads cf_maker_savings_* fields stamped into close_meta by
-        _close_shadow on every shadow trade. Aggregates per window:
-            - Actual shadow PnL (100% taker)
-            - Counterfactual @ 50% maker fill (patient mode estimate)
-            - Counterfactual @ 100% maker fill (theoretical max)
-
-        Lets the operator see "if patient maker were working at X%, the
-        edge would be Y" without requiring the actual maker code to fire.
-        Calibrates against Path B real pilot when that lands.
-
-        Query: ?days=N (default 1, max 30) ?clean=true (default)
-        """
-        try:
-            days = max(1, min(30, int(request.query.get("days", "1"))))
-        except Exception:
-            days = 1
-        clean = request.query.get("clean", "true").lower() == "true"
-        out = {
-            "days": days, "clean": clean,
-            "n": 0,
-            "actual_net": 0.0,
-            "cf_50pct_savings": 0.0, "cf_50pct_net": 0.0,
-            "cf_100pct_savings": 0.0, "cf_100pct_net": 0.0,
-            "uplift_50pct_pct": None,
-            "uplift_100pct_pct": None,
-            "ts": datetime.utcnow().isoformat() + "Z",
-        }
-        if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
-            return web.json_response(out, dumps=_safe_dumps)
-        try:
-            clean_clause = ""
-            if clean:
-                clean_clause = (
-                    "AND COALESCE(metadata::jsonb->>'exit_reason','') "
-                    "    NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                    "AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' "
-                    "     OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary') "
-                )
-            sql = f"""
-                SELECT
-                    COUNT(*) AS n,
-                    SUM(pnl_usd)::float AS actual_net,
-                    SUM(NULLIF(metadata::jsonb->>'cf_maker_savings_50pct','')::float)::float
-                        AS cf_50_savings,
-                    SUM(NULLIF(metadata::jsonb->>'cf_maker_savings_100pct','')::float)::float
-                        AS cf_100_savings
-                FROM user_trades
-                WHERE trade_type='shadow'
-                  AND closed_at >= NOW() - INTERVAL '{days} days'
-                  AND closed_at IS NOT NULL
-                  {clean_clause}
-            """
-            async with self._db_pool.acquire() as con:
-                row = await con.fetchrow(sql)
-            n = int(row["n"] or 0)
-            actual = float(row["actual_net"] or 0)
-            cf50_save = float(row["cf_50_savings"] or 0)
-            cf100_save = float(row["cf_100_savings"] or 0)
-            cf50_net = actual + cf50_save
-            cf100_net = actual + cf100_save
-            out.update({
-                "n": n,
-                "actual_net": round(actual, 2),
-                "cf_50pct_savings": round(cf50_save, 2),
-                "cf_50pct_net": round(cf50_net, 2),
-                "cf_100pct_savings": round(cf100_save, 2),
-                "cf_100pct_net": round(cf100_net, 2),
-                "uplift_50pct_pct":  round((cf50_save / abs(actual)) * 100, 1) if actual != 0 else None,
-                "uplift_100pct_pct": round((cf100_save / abs(actual)) * 100, 1) if actual != 0 else None,
-            })
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    # ══════════════════════════════════════════════════════════════
-
-    async def _handle_multi_exchange_overview(self, request: web.Request) -> web.Response:
-        """Per-exchange × trade_type breakdown for the multi-exchange UI overlay.
-        Returns: active (currently open), last (most recent close), today (24h aggregates).
-        Buckets: paper, delta_shadow, delta_real, bybit_shadow, bybit_demo, bybit_real.
-        """
-        out = {
-            "active": {},
-            "last": {},
-            "today": {},
-            "ts": datetime.utcnow().isoformat() + "Z",
-        }
-        if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
-            return web.json_response(out, dumps=_safe_dumps)
-
-        BUCKETS = ["paper", "delta_shadow", "delta_real",
-                   "bybit_shadow", "bybit_demo", "bybit_real"]
-        for b in BUCKETS:
-            out["active"][b] = []
-            out["last"][b] = None
-            out["today"][b] = {"n": 0, "wr_pct": None, "pnl_total": 0.0, "fees": 0.0}
-
-        def bucket_for(exchange: str, trade_type: str) -> str:
-            tt = (trade_type or "").lower()
-            ex = (exchange or "").lower()
-            if tt == "paper":
-                return "paper"
-            if ex == "delta_india" and tt == "shadow":  return "delta_shadow"
-            if ex == "delta_india" and tt == "real":    return "delta_real"
-            if ex == "bybit"       and tt == "shadow":  return "bybit_shadow"
-            if ex == "bybit"       and tt == "demo":    return "bybit_demo"
-            if ex == "bybit"       and tt == "real":    return "bybit_real"
-            return "paper"  # fallback
-
-        try:
-            async with self._db_pool.acquire() as con:
-                # 1. ACTIVE — currently open, all exchanges.
-                # 2026-04-27 — clean filter excludes is_phase2_virtual
-                # so ~30 fan-out trades don't drown the active list.
-                rows = await con.fetch("""
-                    SELECT id::text, exchange, trade_type, symbol, side,
-                           entry_price, quantity, opened_at,
-                           COALESCE(metadata::jsonb->>'scanner','') AS scanner,
-                           COALESCE(metadata::jsonb->>'fee_type','') AS fee_type,
-                           NULLIF(metadata::jsonb->>'stop_loss','')::float   AS stop_loss,
-                           NULLIF(metadata::jsonb->>'take_profit','')::float AS take_profit,
-                           NULLIF(metadata::jsonb->>'leverage','')::float    AS leverage,
-                           NULLIF(metadata::jsonb->>'last_price','')::float  AS last_price
-                      FROM user_trades
-                     WHERE closed_at IS NULL
-                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
-                     ORDER BY opened_at DESC LIMIT 200
-                """)
-                for r in rows:
-                    b = bucket_for(r["exchange"], r["trade_type"])
-                    entry = float(r["entry_price"]) if r["entry_price"] is not None else None
-                    last  = float(r["last_price"])  if r["last_price"]  is not None else None
-                    qty   = float(r["quantity"])    if r["quantity"]    is not None else None
-                    upnl  = None
-                    if entry is not None and last is not None and qty is not None:
-                        sgn = 1.0 if (r["side"] or "").lower() == "long" else -1.0
-                        upnl = (last - entry) * qty * sgn
-                    out["active"][b].append({
-                        "id": r["id"], "symbol": r["symbol"], "side": r["side"],
-                        "entry_price": entry,
-                        "quantity":    qty,
-                        "opened_at":   r["opened_at"].isoformat() if r["opened_at"] else None,
-                        "scanner":     r["scanner"],
-                        "fee_type":    r["fee_type"],
-                        "stop_loss":   float(r["stop_loss"])   if r["stop_loss"]   is not None else None,
-                        "take_profit": float(r["take_profit"]) if r["take_profit"] is not None else None,
-                        "leverage":    float(r["leverage"])    if r["leverage"]    is not None else None,
-                        "last_price":  last,
-                        "unrealized_pnl": upnl,
-                    })
-
-                # 2. LAST closed per bucket
-                last_rows = await con.fetch("""
-                    SELECT DISTINCT ON (exchange, trade_type)
-                           exchange, trade_type, symbol, side,
-                           entry_price, exit_price, pnl_usd, closed_at,
-                           COALESCE(metadata::jsonb->>'exit_reason','') AS exit_reason,
-                           COALESCE(metadata::jsonb->>'fee_type','') AS fee_type
-                      FROM user_trades
-                     WHERE closed_at IS NOT NULL
-                       -- 2026-04-27 clean filter
-                       AND COALESCE(metadata::jsonb->>'exit_reason','')
-                           NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
-                     ORDER BY exchange, trade_type, closed_at DESC
-                """)
-                for r in last_rows:
-                    b = bucket_for(r["exchange"], r["trade_type"])
-                    out["last"][b] = {
-                        "symbol": r["symbol"], "side": r["side"],
-                        "entry_price": float(r["entry_price"]) if r["entry_price"] is not None else None,
-                        "exit_price":  float(r["exit_price"])  if r["exit_price"]  is not None else None,
-                        "pnl_usd":     float(r["pnl_usd"])     if r["pnl_usd"]     is not None else None,
-                        "closed_at":   r["closed_at"].isoformat() if r["closed_at"] else None,
-                        "exit_reason": r["exit_reason"], "fee_type": r["fee_type"],
-                    }
-
-                # 3. TODAY (last 24h) per-bucket aggregates
-                # 2026-04-27 clean filter — same as ACTIVE/LAST blocks above.
-                tod_rows = await con.fetch("""
-                    SELECT exchange, trade_type,
-                           COUNT(*) AS n,
-                           SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins,
-                           SUM(pnl_usd)::float AS pnl_total,
-                           SUM(fees_usd)::float AS fees
-                      FROM user_trades
-                     WHERE closed_at >= NOW() - INTERVAL '24 hours'
-                       AND closed_at IS NOT NULL
-                       AND COALESCE(metadata::jsonb->>'exit_reason','')
-                           NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')
-                       AND (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')
-                     GROUP BY exchange, trade_type
-                """)
-                for r in tod_rows:
-                    b = bucket_for(r["exchange"], r["trade_type"])
-                    n = int(r["n"] or 0); wins = int(r["wins"] or 0)
-                    out["today"][b] = {
-                        "n": n,
-                        "wr_pct": (wins / n * 100.0) if n else None,
-                        "pnl_total": float(r["pnl_total"] or 0),
-                        "fees": float(r["fees"] or 0),
-                    }
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
-
-    async def _handle_multi_exchange_closed(self, request: web.Request) -> web.Response:
-        """GET /api/multi-exchange/closed?bucket=paper|delta_shadow|bybit_shadow|bybit_demo
-                                          &days=N&limit=N&symbol=BTC/USDT
-        Powers the Analytics Trade History 4-tab unified component (Surface E).
-        Buckets map to (exchange, trade_type) tuples in user_trades.
-        """
-        bucket = (request.query.get("bucket") or "paper").lower()
-        try:
-            limit = max(1, min(2000, int(request.query.get("limit", "100"))))
-            days  = max(1, min(365,  int(request.query.get("days",  "7"))))
-        except Exception:
-            limit, days = 100, 7
-        symbol = request.query.get("symbol", "")
-
-        # bucket → (exchange, trade_type)
-        BUCKET_MAP = {
-            "paper":         (None,         "paper"),   # exchange-agnostic
-            "delta_shadow":  ("delta_india", "shadow"),
-            "delta_real":    ("delta_india", "real"),
-            "bybit_shadow":  ("bybit",       "shadow"),
-            "bybit_demo":    ("bybit",       "demo"),
-            "bybit_real":    ("bybit",       "real"),
-        }
-        if bucket not in BUCKET_MAP:
-            return web.json_response(
-                {"error": f"unknown bucket '{bucket}'", "valid": list(BUCKET_MAP.keys())},
-                status=400, dumps=_safe_dumps,
-            )
-        exchange, trade_type = BUCKET_MAP[bucket]
-
-        # 2026-04-27 PAPER FIX — paper signals live in closed_signals.json
-        # (file-based by design), NOT in user_trades. The DB query for
-        # trade_type='paper' returned 0 rows → TRADE HISTORY widget's
-        # PAPER tab showed empty even though 90+ paper signals close
-        # daily. Route bucket=paper to the same JSON-backed source as
-        # /api/paper/closed for consistency.
-        if bucket == "paper":
-            paper_signals = self._load_paper_signals("closed")
-            if symbol:
-                paper_signals = [s for s in paper_signals if s.get("symbol") == symbol]
-            if days > 0:
-                cutoff = datetime.utcnow() - timedelta(days=days)
-                paper_signals = [s for s in paper_signals
-                                 if s.get("exit_time") and self._parse_iso_safe(s["exit_time"]) >= cutoff]
-            paper_signals = paper_signals[-limit:]
-            paper_trades = [self._normalize_paper_trade(s) for s in paper_signals]
-            paper_out = {
-                "trades": paper_trades, "n": len(paper_trades),
-                "filters": {"bucket": "paper", "exchange": None, "trade_type": "paper",
-                            "limit": limit, "days": days, "symbol": symbol or None,
-                            "source": "closed_signals.json"},
-                "ts": datetime.utcnow().isoformat() + "Z",
-            }
-            if paper_trades:
-                paper_out["agg"] = self._aggregate_stats(paper_trades)
-            return web.json_response(paper_out, dumps=_safe_dumps)
-
-        out = {"trades": [], "n": 0,
-               "filters": {"bucket": bucket, "exchange": exchange,
-                           "trade_type": trade_type, "limit": limit, "days": days,
-                           "symbol": symbol or None},
-               "ts": datetime.utcnow().isoformat() + "Z"}
-        if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
-            return web.json_response(out, dumps=_safe_dumps)
-
-        # 2026-04-27 — clean filter wired into the multi-exchange Trade
-        # History tab (last unfiltered API). Was contaminating the
-        # DELTA · SHADOW tab with 105 auto_responder_stuck_60m + 52
-        # reconcile_overaged_close + 25 restart_orphan_cleanup + 70+
-        # is_phase2_virtual fan-out trades, ballooning n=152→406 and
-        # net=-$12.86→-$86.31. Default clean=true; pass clean=false
-        # to see raw audit trail.
-        clean = request.query.get("clean", "true").lower() == "true"
-        out["filters"]["clean"] = clean
-        try:
-            async with self._db_pool.acquire() as con:
-                params = [trade_type]
-                where = ["trade_type = $1", "closed_at IS NOT NULL",
-                         f"closed_at >= NOW() - INTERVAL '{days} days'"]
-                if exchange is not None:
-                    params.append(exchange)
-                    where.append(f"exchange = ${len(params)}")
-                if symbol:
-                    params.append(symbol)
-                    where.append(f"symbol = ${len(params)}")
-                if clean:
-                    where.append(
-                        "COALESCE(metadata::jsonb->>'exit_reason','') "
-                        "NOT IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close')"
-                    )
-                    where.append(
-                        "(COALESCE(metadata::jsonb->>'is_phase2_virtual','false') != 'true' "
-                        " OR COALESCE(metadata::jsonb->>'exit_config_id','') = 'primary')"
-                    )
-                sql = (f"SELECT * FROM user_trades WHERE " + " AND ".join(where)
-                       + f" ORDER BY closed_at DESC LIMIT {limit}")
-                rows = await con.fetch(sql, *params)
-                out["trades"] = [self._row_to_trade(r) for r in rows]
-                out["n"] = len(out["trades"])
-                # Aggregate quick stats so the UI can show header summary
-                if out["trades"]:
-                    out["agg"] = self._aggregate_stats(out["trades"])
-                # Surface excluded count for the UI footnote
-                if clean:
-                    excl_params = list(params)
-                    excl_where = ["trade_type = $1", "closed_at IS NOT NULL",
-                                  f"closed_at >= NOW() - INTERVAL '{days} days'"]
-                    if exchange is not None: excl_where.append(f"exchange = $2")
-                    if symbol:               excl_where.append(f"symbol = ${len(excl_params)}")
-                    excl_where.append(
-                        "(COALESCE(metadata::jsonb->>'exit_reason','') "
-                        " IN ('auto_responder_stuck_60m','restart_orphan_cleanup','reconcile_overaged_close') "
-                        " OR (COALESCE(metadata::jsonb->>'is_phase2_virtual','false') = 'true' AND COALESCE(metadata::jsonb->>'exit_config_id','') != 'primary'))"
-                    )
-                    excl_sql = "SELECT COUNT(*)::int FROM user_trades WHERE " + " AND ".join(excl_where)
-                    out["excluded_n"] = int(await con.fetchval(excl_sql, *excl_params) or 0)
-        except Exception as e:
-            out["error"] = str(e)[:200]
-        return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_positions(self, request: web.Request) -> web.Response:
         async with self._lock:
@@ -3122,7 +2473,10 @@ class DashboardServer:
             )
 
         # 3. Try up to 2 attempts with 1s backoff
-        vm4_url = f"http://10.0.2.4:8081{path}"
+        # ML Lab host: ML_SERVER_URL env (e.g. http://127.0.0.1:8091 for a local
+        # ml_training/run_trainer.py). Defaults to the legacy VM4 private IP.
+        _ml_base = os.getenv("ML_SERVER_URL", "http://10.0.2.4:8081").rstrip("/")
+        vm4_url = f"{_ml_base}{path}"
         if qs:
             vm4_url += f"?{qs}"
 
@@ -3730,57 +3084,6 @@ class DashboardServer:
             "recent_trades": [],
         })
 
-    async def _handle_real_toggle(self, request: web.Request) -> web.Response:
-        """RETIRED 2026-04-20 (Option-A consolidation).
-
-        The legacy shared-account RealTradingManager is no longer the source
-        of truth. Mode changes go through /api/user/real/toggle which writes
-        users.bot_mode (PostgreSQL) per-user and validates that a matching
-        API key exists.
-
-        Returning 410 Gone so any stale JS hitting this endpoint is forced
-        to fail loudly rather than silently write state the system ignores.
-        Front-end dropdown was re-wired in commit 2e5f6d5 to target the
-        per-user endpoint instead.
-        """
-        return web.json_response({
-            "error": "gone",
-            "reason": "Legacy shared-account toggle removed — trading mode is per-user now.",
-            "replacement": "POST /api/user/real/toggle with {bot_mode: 'paper'|'demo'|'live'}",
-            "hint": "Use /profile → Trading → Mode Readiness card, or admin force-mode.",
-        }, status=410)
-
-    async def _handle_emergency_stop(self, request: web.Request) -> web.Response:
-        """KILL SWITCH: Stop all trading immediately."""
-        self._emergency_stop = True
-        logger.critical("EMERGENCY STOP ACTIVATED via dashboard")
-
-        # Disable real trading
-        mgr = getattr(self, '_real_manager', None)
-        if not mgr and hasattr(self, '_orchestrator'):
-            mgr = getattr(self._orchestrator, '_real_manager', None)
-        if mgr:
-            mgr.enabled = False
-            mgr._save_state()
-            logger.critical("EMERGENCY: Real trading DISABLED")
-
-        # Send Telegram alert
-        try:
-            alerts = getattr(self, '_alert_manager', None)
-            if alerts:
-                await alerts.send_system_alert(
-                    "EMERGENCY STOP ACTIVATED — All trading halted",
-                    level=AlertLevel.ERROR,
-                )
-        except Exception:
-            pass
-
-        return web.json_response({
-            "status": "emergency_stop_activated",
-            "real_trading": "disabled",
-            "message": "All trading halted. Restart bot to resume.",
-        })
-
     async def _handle_emergency_status(self, request: web.Request) -> web.Response:
         """Check if emergency stop is active."""
         return web.json_response({"emergency_stop": self._emergency_stop})
@@ -4183,95 +3486,6 @@ class DashboardServer:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    async def _handle_cb_reset(self, request: web.Request) -> web.Response:
-        """Manually reset the real trading circuit breaker.
-
-        Query params:
-          full=true       — also reset total_pnl to 0 (clears drawdown-kill state)
-          reenable=true   — also set real_manager.enabled = True (overrides drawdown-kill disable)
-          daily=true      — also reset daily_pnl to 0 (clears daily loss limit)
-          probation=true  — also enable probation mode (Phase 3.5): 50% size for first 3 trades or 4h
-
-        Default (no params) = reset consecutive_losses + is_tripped only (backward compat).
-        """
-        try:
-            mgr = getattr(self, '_real_manager', None)
-            if mgr is None:
-                orch = getattr(self, '_orchestrator', None)
-                if orch:
-                    mgr = getattr(orch, '_real_manager', None)
-            if mgr is None:
-                return web.json_response({"error": "real_manager_not_available"}, status=404)
-
-            full = request.query.get("full", "").lower() in ("1", "true", "yes")
-            reenable = request.query.get("reenable", "").lower() in ("1", "true", "yes")
-            reset_daily = request.query.get("daily", "").lower() in ("1", "true", "yes")
-            probation = request.query.get("probation", "").lower() in ("1", "true", "yes")
-
-            cb = mgr.circuit_breaker
-            old_state = {
-                "is_tripped": cb.is_tripped,
-                "consecutive_losses": cb.consecutive_losses,
-                "trip_reason": cb.trip_reason,
-                "daily_pnl": cb.daily_pnl,
-                "total_pnl": cb.total_pnl,
-                "enabled": getattr(mgr, 'enabled', None),
-            }
-            # Always reset trip state
-            cb.is_tripped = False
-            cb.consecutive_losses = 0
-            cb.trip_reason = ""
-            # Optional: reset total_pnl (clears drawdown-kill reason)
-            if full:
-                cb.total_pnl = 0.0
-            # Optional: reset daily_pnl
-            if reset_daily or full:
-                cb.daily_pnl = 0.0
-            # Optional: re-enable the real manager (for drawdown-kill recovery)
-            if reenable:
-                try:
-                    mgr.enabled = True
-                except Exception:
-                    pass
-            # Phase 3.5: Optional probation mode (50% size for 3 trades or 4h)
-            if probation and reenable:
-                try:
-                    import time as _t
-                    mgr._probation_size_mult = 0.5
-                    mgr._probation_started_at = _t.time()
-                    mgr._probation_trades_done = 0
-                    mgr._probation_max_trades = 3
-                    mgr._probation_max_age_sec = 4 * 3600
-                    logger.warning(
-                        "PROBATION ENABLED: 50%% size for next 3 trades or 4 hours via API"
-                    )
-                except Exception as _pe:
-                    logger.warning("probation setup failed: %s", _pe)
-            mgr._save_state()
-            logger.warning(
-                "CB RESET via API: full=%s reenable=%s daily=%s | was: tripped=%s losses=%d daily=$%.2f total=$%.2f enabled=%s",
-                full, reenable, reset_daily,
-                old_state["is_tripped"], old_state["consecutive_losses"],
-                old_state["daily_pnl"], old_state["total_pnl"], old_state["enabled"],
-            )
-            return web.json_response({
-                "ok": True,
-                "was": old_state,
-                "now": {
-                    "is_tripped": False,
-                    "consecutive_losses": 0,
-                    "daily_pnl": cb.daily_pnl,
-                    "total_pnl": cb.total_pnl,
-                    "enabled": getattr(mgr, 'enabled', None),
-                },
-                "flags_applied": {"full": full, "reenable": reenable, "daily": reset_daily},
-            })
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    # ==================================================================
-    # Track A (2026-04-11): LOCK 75% + Force Flat
-    # ==================================================================
     def _get_real_manager(self):
         """Resolve the real_manager instance from self or the orchestrator."""
         mgr = getattr(self, '_real_manager', None)
@@ -4280,121 +3494,6 @@ class DashboardServer:
             if orch:
                 mgr = getattr(orch, '_real_manager', None)
         return mgr
-
-    async def _handle_lock_75(self, request: web.Request) -> web.Response:
-        """A.2: close 75% of a specific real position (profit lock, keep 25% runner).
-
-        POST body: {"trade_id": "live_xxx"}  OR  {"paper_trade_id": "abc123..."}
-        Uses real_manager.partial_close_real() with close_pct=0.75. The 25%
-        remainder continues to run with its existing SL/TP bracket.
-        """
-        try:
-            mgr = self._get_real_manager()
-            if mgr is None:
-                return web.json_response({"error": "real_manager_not_available"}, status=404)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            trade_id = body.get("trade_id", "")
-            paper_id = body.get("paper_trade_id", "")
-
-            # Resolve paper_trade_id from real trade_id if only that was given
-            if trade_id and not paper_id:
-                for pid, rid in list(getattr(mgr, "paper_to_real", {}).items()):
-                    if rid == trade_id:
-                        paper_id = pid
-                        break
-                if not paper_id:
-                    # Fallback: scan real_trades for a trade with matching id
-                    rt = getattr(mgr, "real_trades", {}) or {}
-                    t = rt.get(trade_id)
-                    if t is not None:
-                        paper_id = getattr(t, "paper_trade_id", "") or ""
-
-            if not paper_id:
-                return web.json_response({
-                    "error": "no_paper_id_resolved",
-                    "detail": "Could not resolve paper_trade_id from given identifiers",
-                }, status=400)
-
-            # Call partial_close_real via tp_level=0 sentinel (manual lock, not a TP hit)
-            try:
-                await mgr.partial_close_real(paper_id, 0, 0.75)
-                logger.warning("LOCK 75%% via dashboard: paper_id=%s", paper_id[:16])
-            except Exception as e:
-                return web.json_response({"error": f"partial_close_failed: {e}"}, status=500)
-
-            return web.json_response({
-                "ok": True,
-                "paper_trade_id": paper_id,
-                "close_pct": 0.75,
-                "remaining_pct": 0.25,
-            })
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    async def _handle_force_flat(self, request: web.Request) -> web.Response:
-        """A.3: force flat — close ALL open real positions immediately.
-
-        Calls mirror_paper_exit("force_flat") on every entry in real_trades,
-        or falls back to partial_close_real(1.0) if mirror_paper_exit can't
-        resolve the paper side. Read-only at the per-trade level until all
-        closes fire. Intentionally sequential to avoid API rate spikes.
-        """
-        try:
-            mgr = self._get_real_manager()
-            if mgr is None:
-                return web.json_response({"error": "real_manager_not_available"}, status=404)
-            rt = dict(getattr(mgr, "real_trades", {}) or {})
-            if not rt:
-                return web.json_response({"ok": True, "closed": 0, "detail": "no_open_positions"})
-
-            results = []
-            for trade_id, t in rt.items():
-                try:
-                    paper_id = getattr(t, "paper_trade_id", "") or ""
-                    symbol = getattr(t, "symbol", "?")
-                    side = getattr(t, "side", "?")
-                    # Use current market price from paper engine / last-known
-                    px = float(getattr(t, "current_price", 0) or getattr(t, "entry_price", 0) or 0)
-                    ok = False
-                    if paper_id:
-                        r = await mgr.mirror_paper_exit(
-                            paper_id, px, "force_flat",
-                            paper_slippage_bps=0.0, symbol=symbol, side=side,
-                        )
-                        ok = bool(r and r.get("status") == "exited")
-                    if not ok:
-                        # Fallback path — 100% close via partial_close_real
-                        try:
-                            await mgr.partial_close_real(paper_id or trade_id, 0, 1.0)
-                            ok = True
-                        except Exception:
-                            ok = False
-                    results.append({
-                        "trade_id": trade_id, "symbol": symbol, "side": side, "ok": ok,
-                    })
-                except Exception as e:
-                    results.append({"trade_id": trade_id, "ok": False, "error": str(e)[:60]})
-
-            closed_n = sum(1 for r in results if r.get("ok"))
-            logger.warning("FORCE FLAT via dashboard: closed %d/%d open real positions",
-                           closed_n, len(results))
-            return web.json_response({
-                "ok": True,
-                "closed": closed_n,
-                "total": len(results),
-                "results": results,
-            })
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-    # ==================================================================
-    # Items #6+8: Config Editor + Hot-Reload
-    # ==================================================================
-
-    _SENSITIVE_KEYS = {"api_key", "api_secret", "bot_token", "passphrase", "password", "secret"}
 
     def _strip_secrets(self, cfg, _depth=0):
         """Recursively redact keys containing sensitive substrings."""
@@ -5789,109 +4888,6 @@ class DashboardServer:
             data["grid_uptime_sec"] = self._grid_bot.get_status().get("uptime_sec", 0)
 
         return web.json_response(data, dumps=_safe_dumps)
-
-    async def _handle_latency_arb(self, request: web.Request) -> web.Response:
-        """Return latency arb engine stats for all symbols."""
-        if self._latency_arb is None:
-            return web.json_response({
-                "active": False,
-                "stats": {},
-                "symbols": [],
-            }, dumps=_safe_dumps)
-
-        stats = self._latency_arb.get_stats()
-        # Add per-symbol price snapshots
-        symbol_data = []
-        for sym in self._latency_arb.symbols:
-            bp = self._latency_arb._binance_prices.get(sym)
-            dp = self._latency_arb._delta_prices.get(sym)
-            now = time.time()
-
-            entry = {"symbol": sym}
-            if bp:
-                entry["binance_bid"] = round(bp.bid, 2)
-                entry["binance_ask"] = round(bp.ask, 2)
-                entry["binance_mid"] = round(bp.mid, 2)
-                entry["binance_age_ms"] = round((now - bp.local_recv_ts) * 1000, 0)
-            if dp:
-                entry["delta_bid"] = round(dp.bid, 2)
-                entry["delta_ask"] = round(dp.ask, 2)
-                entry["delta_mid"] = round(dp.mid, 2)
-                entry["delta_age_ms"] = round((now - dp.local_recv_ts) * 1000, 0)
-            if bp and dp and dp.mid > 0:
-                disl = (bp.mid - dp.mid) / dp.mid * 100
-                entry["dislocation_pct"] = round(disl, 4)
-                entry["dislocation_usd"] = round(bp.mid - dp.mid, 2)
-                entry["direction"] = "LONG" if disl > 0 else "SHORT" if disl < 0 else "FLAT"
-                entry["spread_delta_pct"] = round((dp.ask - dp.bid) / dp.mid * 100, 4) if dp.mid else 0
-                # Net edge calculation (Layer 1)
-                try:
-                    ne = self._latency_arb.compute_net_edge(sym, disl)
-                    entry["net_edge"] = ne
-                except Exception:
-                    entry["net_edge"] = {}
-            # Stats from history
-            entry["avg_disl"] = stats.get("avg_dislocation_pct", {}).get(sym, 0)
-            entry["max_disl"] = stats.get("max_dislocation_pct", {}).get(sym, 0)
-            entry["p95_disl"] = stats.get(f"p95_dislocation_pct_{sym}", 0)
-            entry["tradeable_pct"] = stats.get(f"tradeable_pct_{sym}", 0)
-            entry["avg_latency_ms"] = stats.get("avg_latency_ms", {}).get(sym, 0)
-            symbol_data.append(entry)
-
-        return web.json_response({
-            "active": True,
-            "running": self._latency_arb._running,
-            "measure_only": self._latency_arb._measure_only,
-            "uptime_s": round(time.time() - (stats.get("started_at") or time.time()), 0),
-            "binance_msgs": stats.get("binance_msgs", 0),
-            "delta_msgs": stats.get("delta_msgs", 0),
-            "dislocations_detected": stats.get("dislocations_detected", 0),
-            "signals_generated": stats.get("signals_generated", 0),
-            "min_threshold_pct": self._latency_arb.MIN_DISLOCATION_PCT,
-            "cost_rt_pct": 0.14,
-            "symbols": symbol_data,
-        }, dumps=_safe_dumps)
-
-    async def _handle_latency_arb_dislocations(self, request: web.Request) -> web.Response:
-        """Return recent dislocation history for a symbol."""
-        if self._latency_arb is None:
-            return web.json_response({"dislocations": []})
-        sym = request.query.get("symbol", "BTC/USDT")
-        n = min(int(request.query.get("n", "50")), 200)
-        dislocations = self._latency_arb.get_recent_dislocations(sym, n)
-        return web.json_response({"symbol": sym, "dislocations": dislocations}, dumps=_safe_dumps)
-
-    async def _handle_latency_arb_analysis(self, request: web.Request) -> web.Response:
-        """Return full 5-layer analysis: decay, convergence, simulation, session stats."""
-        if self._latency_arb is None:
-            return web.json_response({"active": False}, dumps=_safe_dumps)
-
-        sym = request.query.get("symbol")  # None = all symbols
-        try:
-            decay = self._latency_arb.get_decay_analysis(sym)
-        except Exception:
-            decay = {}
-        try:
-            convergence = self._latency_arb.get_convergence_stats(sym)
-        except Exception:
-            convergence = {}
-        try:
-            simulation = self._latency_arb.get_simulation_results(sym)
-        except Exception:
-            simulation = {}
-        try:
-            session = self._latency_arb.get_session_stats(sym)
-        except Exception:
-            session = {}
-
-        return web.json_response({
-            "active": True,
-            "symbol_filter": sym,
-            "decay": decay,
-            "convergence": convergence,
-            "simulation": simulation,
-            "session": session,
-        }, dumps=_safe_dumps)
 
     async def _handle_pause(self, request: web.Request) -> web.Response:
         async with self._lock:

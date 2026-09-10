@@ -44,22 +44,6 @@
     return 'overview-maker--fail';
   }
 
-  // Multi-exchange BOOK cache (refreshed every 8s, used by main render)
-  let _bookCacheTs = 0;
-  function _bookCacheRefresh() {
-    if (Date.now() - _bookCacheTs < 6000) return;
-    _bookCacheTs = Date.now();
-    fetch('/api/multi-exchange/overview', { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (!d || !d.active) return;
-        window._mexBookCounts = {};
-        for (const [bucket, arr] of Object.entries(d.active)) {
-          window._mexBookCounts[bucket] = (arr || []).length;
-        }
-      }).catch(() => {});
-  }
-
   // Phase 2 secondary status row — restores info from killed legacy strips.
   // Single line: KILL SWITCH | ACTIVITY 24h | ALERTS
   function renderSecondary(s) {
@@ -125,25 +109,10 @@
     const makerN    = maker.n != null && maker.n > 0 ? 'n=' + maker.n : '';
 
     // Empty-state markers — suppress meta lines that are just "0p / 0r / 0s · +$0.00"
-    // 2026-04-26: per-exchange breakdown via the multi-exchange snapshot endpoint.
-    // Async-fetched lazily; first render falls back to legacy paper/real/shadow keys.
     const bookOpen = (book.open || 0);
     let bookMeta = '';
     if (bookOpen > 0) {
-      // Fetch the multi-exchange snapshot once per render cycle (cached in module)
-      _bookCacheRefresh();
-      if (window._mexBookCounts) {
-        const c = window._mexBookCounts;
-        const parts = [];
-        if (c.paper)        parts.push(`${c.paper}p`);
-        if (c.delta_shadow) parts.push(`${c.delta_shadow}Δs`);
-        if (c.bybit_shadow) parts.push(`${c.bybit_shadow}βs`);
-        if (c.bybit_demo)   parts.push(`${c.bybit_demo}βd`);
-        if (c.delta_real || c.bybit_real) parts.push(`${(c.delta_real||0)+(c.bybit_real||0)}r`);
-        bookMeta = parts.join(' / ') + ' · ' + escapeHtml(fmtMoneyShort(book.cap_deployed));
-      } else {
-        bookMeta = `${book.paper || 0}p / ${book.real || 0}r / ${book.shadow || 0}s · ${escapeHtml(fmtMoneyShort(book.cap_deployed))}`;
-      }
+        bookMeta = `${book.paper || 0} paper · ${escapeHtml(fmtMoneyShort(book.cap_deployed))}`;
     }
     const edgeMeta = (edge.pnl_24h != null || edge.pf != null)
       ? `${pfText}${pfText && pnl24Text ? ' · ' : ''}${pnl24Text}`

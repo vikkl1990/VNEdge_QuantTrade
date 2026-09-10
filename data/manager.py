@@ -340,6 +340,14 @@ class DataManager:
         new_row = pd.DataFrame([row])
         new_row = self._normalize_df(new_row)
 
+        # Defensive guard: never store a bar whose open time is in the future.
+        # Delta's REST candle API pads ranges with flat zero-volume placeholder
+        # bars ahead of "now"; those poison ATR/volume/regime calculations.
+        _ts = new_row["timestamp"].iloc[0]
+        if _ts > pd.Timestamp.now(tz="UTC") + pd.Timedelta(seconds=5):
+            logger.debug("Dropping future candle %s/%s @ %s", symbol, timeframe, _ts)
+            return
+
         with self._lock:
             df = self._get_or_create(symbol, timeframe)
             ts = new_row["timestamp"].iloc[0]
@@ -510,11 +518,24 @@ class DataManager:
             if not isinstance(data, dict):
                 return 0
             restored = 0
+            _now = pd.Timestamp.now(tz="UTC")
+            _dropped = 0
             for (sym, tf), df in data.items():
                 if isinstance(df, pd.DataFrame) and len(df) > 0:
+                    # Scrub placeholder bars stamped in the future (see
+                    # update_candle guard) that older builds persisted.
+                    if "timestamp" in df.columns:
+                        _before = len(df)
+                        _ts = pd.to_datetime(df["timestamp"], utc=True)
+                        df = df[_ts <= _now].reset_index(drop=True)
+                        _dropped += _before - len(df)
+                    if len(df) == 0:
+                        continue
                     key = self._key(sym, tf)
                     self._store[key] = df
                     restored += 1
+            if _dropped:
+                logger.warning("CANDLE CACHE: dropped %d future-stamped placeholder bars", _dropped)
             total_candles = sum(len(df) for df in data.values() if isinstance(df, pd.DataFrame))
             logger.warning(
                 "CANDLE CACHE RESTORED: %d entries, %d candles from %s (%.0fm old)",

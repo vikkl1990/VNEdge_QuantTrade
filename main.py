@@ -79,7 +79,7 @@ def parse_args(argv=None):
         type=str,
         default=None,
         choices=[m.value for m in BotMode],
-        help="Operating mode (default: from config or signal_only).",
+        help="Operating mode (default: paper — production Delta data, simulated fills).",
     )
     parser.add_argument(
         "--config",
@@ -107,7 +107,7 @@ def _resolve_mode(args, config):
     env_mode = os.environ.get("BOT_MODE")
     if env_mode:
         return BotMode.from_str(env_mode)
-    cfg_mode = config.get("bot", {}).get("mode", "signal_only")
+    cfg_mode = config.get("bot", {}).get("mode", "paper")
     return BotMode.from_str(cfg_mode)
 
 
@@ -236,6 +236,12 @@ async def async_main(args):
     # -- Configuration (dict-based for universal module compatibility) --
     config = load_config_dict(args.config)
     mode = _resolve_mode(args, config)
+    if mode == BotMode.LIVE and os.environ.get("ALLOW_LIVE_TRADING") != "1":
+        logger.critical(
+            "Refusing to start in LIVE mode: real money is OFF. This build runs PAPER "
+            "(production Delta data, simulated fills). Set ALLOW_LIVE_TRADING=1 to override."
+        )
+        sys.exit(2)
     symbols = _resolve_symbols(args, config)
 
     # -- Logging --

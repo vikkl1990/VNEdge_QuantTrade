@@ -11,7 +11,7 @@
   // shadow is now the canonical edge tracker now that the max_age fix
   // ships, the legacy auto_responder_stuck_60m noise is filtered server-
   // side, and Phase 2 fan-out trades are excluded from the aggregate.
-  let currentMode = 'shadow';
+  let currentMode = 'paper';
   let currentDays = 7;
 
   function fmt(v, decimals) {
@@ -52,10 +52,7 @@
           <span class="qh-title">Quant Edge — last ${currentDays}d / ${escapeHtml(currentMode)}</span>
           <div class="qh-controls">
             <select id="qh-mode-sel" class="qh-sel">
-              <option value="all">all</option>
               <option value="paper">paper</option>
-              <option value="real">real</option>
-              <option value="shadow">shadow</option>
             </select>
             <select id="qh-days-sel" class="qh-sel">
               <option value="1">1d</option>
@@ -74,10 +71,7 @@
         <span class="qh-title">Quant Edge — last ${currentDays}d / ${escapeHtml(currentMode)}</span>
         <div class="qh-controls">
           <select id="qh-mode-sel" class="qh-sel">
-            <option value="shadow"${currentMode==='shadow'?'selected':''}>shadow</option>
-            <option value="real"  ${currentMode==='real'?'selected':''}>real</option>
             <option value="paper" ${currentMode==='paper'?'selected':''}>paper</option>
-            <option value="all"   ${currentMode==='all'?'selected':''}>all</option>
           </select>
           <select id="qh-days-sel" class="qh-sel">
             <option value="1"  ${currentDays==1?'selected':''}>1d</option>

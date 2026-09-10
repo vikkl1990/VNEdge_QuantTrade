@@ -45,7 +45,7 @@ class BotConfig:
 
 @dataclass(frozen=True)
 class ExchangeConfig:
-    name: str = "binance"
+    name: str = "delta"
     region: str = ""               # "india" for Delta India (api.india.delta.exchange)
     market_type: str = "futures"
     testnet: bool = True
@@ -431,7 +431,7 @@ def _inject_env(data: Dict[str, Any]) -> Dict[str, Any]:
         data.setdefault("bot", {})["mode"] = env_mode
 
     # Exchange credentials
-    active = _env_str("ACTIVE_EXCHANGE", data.get("exchange", {}).get("name", "binance"))
+    active = _env_str("ACTIVE_EXCHANGE", data.get("exchange", {}).get("name", "delta"))
     prefix = active.upper()
     data.setdefault("exchange", {}).update({
         "name": active,

@@ -1037,6 +1037,19 @@ class SignalTracker:
                     actual_slip = abs(ts.fill_price - ts.signal_price)
                     ts.slippage_impact_r = round(actual_slip / ts.initial_risk, 4)
 
+                # Anchor ALL PnL / R-multiple math to the actual (simulated) fill.
+                # Scanners such as structure_bounce emit entry_price = the S/R
+                # level, which can sit 30bps+ from the market; measuring PnL from
+                # that level credited every trade with slippage it never earned
+                # (2026-09-09 journal: +3.26% reported vs +0.96% from fills).
+                # signal_price keeps the intended level for slippage analytics.
+                if ts.fill_price > 0 and ts.fill_price != ts.entry_price:
+                    ts.entry_price = ts.fill_price
+                    ts.highest_price = max(ts.highest_price, ts.fill_price) if ts.side == "long" else ts.fill_price
+                    ts.lowest_price = min(ts.lowest_price, ts.fill_price) if ts.side != "long" else ts.fill_price
+                    if ts.stop_loss > 0:
+                        ts.initial_risk = abs(ts.fill_price - ts.stop_loss)
+
             # Update high/low watermarks
             if price > ts.highest_price:
                 ts.highest_price = price
@@ -3255,12 +3268,17 @@ class SignalTracker:
             # Keep last 5000 closed signals in main file (was 1000 — lost data)
             self._closed = self._closed[-5000:]
             self._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1))
-            # APPEND-ONLY ARCHIVE: never lose a trade
+            # APPEND-ONLY ARCHIVE: never lose a trade — but write each close
+            # once. _save_closed() can run more than once per close, which
+            # duplicated 10 of 15 trades in the 2026-09-09 archive.
             if self._closed:
                 latest = self._closed[-1]
-                archive = _STORAGE_DIR / "closed_signals_archive.jsonl"
-                with open(archive, "a") as f:
-                    f.write(json.dumps(latest, default=str) + chr(10))
+                latest_id = latest.get("trade_id") if isinstance(latest, dict) else None
+                if latest_id and latest_id != getattr(self, "_last_archived_id", None):
+                    archive = _STORAGE_DIR / "closed_signals_archive.jsonl"
+                    with open(archive, "a") as f:
+                        f.write(json.dumps(latest, default=str) + chr(10))
+                    self._last_archived_id = latest_id
         except Exception as exc:
             logger.warning("Failed to save closed signals: %s", exc)
 

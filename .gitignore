@@ -37,3 +37,8 @@ deploy/.last_deployment.json
 storage/
 data/candles/
 backtest/results/
+
+# Local runtime
+.bot.pid
+.ml_lab.pid
+ml_training.log

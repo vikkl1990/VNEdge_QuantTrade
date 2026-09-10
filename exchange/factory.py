@@ -22,9 +22,6 @@ logger = logging.getLogger(__name__)
 # All currently supported exchanges use the CCXT adapter, but the mapping
 # makes it trivial to swap in exchange-specific implementations later.
 _CLIENT_REGISTRY: Dict[str, type] = {
-    ExchangeName.BINANCE.value: CcxtExchangeClient,
-    ExchangeName.BYBIT.value:   CcxtExchangeClient,
-    ExchangeName.OKX.value:     CcxtExchangeClient,
     ExchangeName.DELTA.value:   CcxtExchangeClient,
 }
 

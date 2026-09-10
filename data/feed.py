@@ -535,6 +535,22 @@ class DataFeed:
             ohlcv = await self._delta_native_candles(sub.symbol, tf, limit=10)
 
         if not ohlcv:
+            # CCXT returned nothing (thin Delta contracts omit bars for
+            # minutes with no trades, and `since`-based requests come back
+            # empty). Try the native endpoint before declaring the symbol stale.
+            ohlcv = await self._delta_native_candles(sub.symbol, tf, limit=10)
+
+        if not ohlcv:
+            return
+
+        # Delta's candle API pads a `since`+`limit` request with flat,
+        # zero-volume placeholder bars stamped in the FUTURE (verified
+        # 2026-09-09: 15m request returned bars up to +109 min ahead).
+        # Storing them corrupts ATR / volume / regime for every strategy.
+        # Keep only bars whose open time has already started.
+        _now_ms = int(time.time() * 1000)
+        ohlcv = [row for row in ohlcv if int(row[0]) <= _now_ms]
+        if not ohlcv:
             return
 
         sub.last_data_time = time.monotonic()
@@ -619,6 +635,11 @@ class DataFeed:
             result = data.get("result", [])
             if not result:
                 return None
+
+            # Delta returns candles NEWEST-FIRST. Sort ascending before slicing,
+            # otherwise result[-limit:] keeps the OLDEST bars and the latest
+            # candles are never ingested (symbols on this path went stale).
+            result = sorted(result, key=lambda c: int(c.get("time", 0)))
 
             # Convert to CCXT format: [[timestamp_ms, open, high, low, close, volume], ...]
             ohlcv = []

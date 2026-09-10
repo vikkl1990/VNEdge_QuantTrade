@@ -31,7 +31,7 @@ logger = logging.getLogger("bot.delta_ws")  # use bot.* namespace for visibility
 
 # Delta India WebSocket endpoints
 WS_URL_PROD = "wss://socket.india.delta.exchange"
-WS_URL_DEMO = "wss://socket.testnet.delta.exchange"
+WS_URL_DEMO = "wss://socket-ind.testnet.deltaex.org"  # India testnet (socket.testnet.delta.exchange has no DNS)
 WS_URL = WS_URL_PROD  # Default to production
 
 # Symbol mapping: our format → Delta WS format

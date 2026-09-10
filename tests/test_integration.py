@@ -6,6 +6,7 @@ RealCircuitBreaker, Trade model, StateManager, and PaperExecutionEngine.
 """
 
 import asyncio
+import os
 import sys
 import tempfile
 import time
@@ -14,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-sys.path.insert(0, "/Users/scorpion/Desktop/Claude AI Crypto Bot/crypto-trading-bot")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from bot.signal_tracker import (
     TrackedSignal,
@@ -299,7 +300,9 @@ class TestCircuitBreaker:
         cb = RealCircuitBreaker(daily_loss_limit=25.0, max_consecutive_losses=3)
         cb.record_trade(-30.0)
         assert cb.is_tripped is True
-        cb.today = str(date.today() - timedelta(days=1))
+        # The breaker keeps its day in UTC; use the same clock here so the
+        # test doesn't break in evenings east of UTC.
+        cb.today = str(datetime.now(timezone.utc).date() - timedelta(days=1))
         allowed, reason = cb.is_allowed()
         assert allowed is True
         assert cb.is_tripped is False

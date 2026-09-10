@@ -119,7 +119,7 @@ class TestIndexPage:
         body = await resp.text()
         # Check for actual secret VALUES, not form field names.
         # Form fields like `api_key` input and `password` input are expected in login forms.
-        sensitive_patterns = ["BINANCE_API_KEY", "DASHBOARD_PASSWORD",
+        sensitive_patterns = ["DELTA_API_KEY", "DASHBOARD_PASSWORD",
                               "sk-ant-", "Bearer sk-"]
         for pattern in sensitive_patterns:
             assert pattern not in body, (
@@ -294,7 +294,7 @@ class TestNoSensitiveDataExposure:
 
     SENSITIVE_WORDS = [
         "api_key", "api_secret", "password", "secret_key",
-        "BINANCE_API_KEY", "DASHBOARD_PASSWORD", "DASHBOARD_SECRET_KEY",
+        "DELTA_API_KEY", "DASHBOARD_PASSWORD", "DASHBOARD_SECRET_KEY",
         "private_key", "passphrase",
     ]
 

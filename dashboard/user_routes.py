@@ -492,7 +492,7 @@ class UserRouteHandler:
             updates["preferred_leverage"] = min(max(int(updates["preferred_leverage"]), 1), 50)
         if "max_open_positions" in updates:
             updates["max_open_positions"] = min(max(int(updates["max_open_positions"]), 1), 10)
-        if "bot_mode" in updates and updates["bot_mode"] not in ("paper", "live", "signal_only"):
+        if "bot_mode" in updates and updates["bot_mode"] not in ("paper", "live"):
             return web.json_response({"error": "invalid bot_mode"}, status=400)
 
         success = await self.auth.update_profile(user["user_id"], updates)

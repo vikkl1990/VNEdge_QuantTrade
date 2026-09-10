@@ -26,14 +26,14 @@ from config.constants import (
 
 class TestBotMode:
     def test_all_values(self):
-        expected = {"signal_only", "paper", "live", "backtest", "forward_test"}
+        expected = {"paper", "live", "backtest"}
         actual = {m.value for m in BotMode}
         assert actual == expected
 
     def test_from_str_valid(self):
         assert BotMode.from_str("paper") == BotMode.PAPER
         assert BotMode.from_str("live") == BotMode.LIVE
-        assert BotMode.from_str("signal_only") == BotMode.SIGNAL_ONLY
+        assert BotMode.from_str("backtest") == BotMode.BACKTEST
 
     def test_from_str_case_insensitive(self):
         assert BotMode.from_str("PAPER") == BotMode.PAPER

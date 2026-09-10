@@ -51,10 +51,7 @@ const API = {
 
   // ── Real Trading ──
   realStatus:     () => API.get('/api/real/status'),
-  realToggle:     (d) => API.post('/api/real/toggle', d),
-  emergencyStop:  () => fetch('/api/emergency-stop', { method: 'POST', credentials: 'same-origin' }),
   emergencyStatus:() => API.get('/api/emergency-status'),
-  cbReset:        (d) => API.post('/api/real/cb-reset', d),
   lockReal75:     (d) => API.post('/api/real/lock_75', d),
   forceFlat:      () => API.post('/api/real/force_flat', {}),
 
@@ -97,9 +94,6 @@ const API = {
   gridPositions:    () => API.get('/api/grid/positions'),
 
   // ── Latency Arb ──
-  latencyArb:           () => API.get('/api/latency-arb'),
-  latencyDislocations:  () => API.get('/api/latency-arb/dislocations'),
-  latencyAnalysis:      () => API.get('/api/latency-arb/analysis'),
 
   // ── Config ──
   config:       () => API.get('/api/config'),

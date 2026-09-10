@@ -131,7 +131,8 @@ class ConsoleAlerter:
         color = _Color.GREEN if is_buy else _Color.RED
         direction = signal_type.upper().replace("_", " ")
 
-        price = sig.get("price", 0.0)
+        # Signal.to_dict() emits "entry_price"; "price" is the legacy key.
+        price = sig.get("price") or sig.get("entry_price") or 0.0
         sl = sig.get("stop_loss", sig.get("sl"))
         tp1 = sig.get("tp1", sig.get("take_profit_1"))
         tp2 = sig.get("tp2", sig.get("take_profit_2"))

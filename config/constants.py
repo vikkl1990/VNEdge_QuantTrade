@@ -8,11 +8,9 @@ from enum import Enum, unique
 @unique
 class BotMode(str, Enum):
     """Operating mode for the trading bot."""
-    SIGNAL_ONLY = "signal_only"
     PAPER = "paper"
     LIVE = "live"
     BACKTEST = "backtest"
-    FORWARD_TEST = "forward_test"
 
     @classmethod
     def from_str(cls, value: str) -> "BotMode":
@@ -166,9 +164,6 @@ class PositionSide(str, Enum):
 @unique
 class ExchangeName(str, Enum):
     """Supported exchange identifiers."""
-    BINANCE = "binance"
-    BYBIT = "bybit"
-    OKX = "okx"
     DELTA = "delta"
 
     @classmethod

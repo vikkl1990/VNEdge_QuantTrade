@@ -90,7 +90,8 @@ class RealCircuitBreaker:
         self.daily_pnl: float = 0.0
         self.total_pnl: float = 0.0
         self.consecutive_losses: int = 0
-        self.today: str = str(date.today())
+        # UTC, to match is_allowed()'s reset check (local date drifted in IST evenings)
+        self.today: str = str(datetime.now(timezone.utc).date())
         self.is_tripped: bool = False
         self.trip_reason: str = ""
         self.trade_count_today: int = 0
@@ -2700,7 +2701,7 @@ class RealTradingManager:
                 has_protection = False
                 try:
                     product_id = delta._get_product_id(internal_sym)
-                    open_orders = delta._client.get_active_orders(product_id=product_id) or []
+                    open_orders = delta._client.get_live_orders(query={"product_id": product_id}) or []
                     for o in open_orders:
                         if o.get("stop_order_type") in ("stop_loss_order", "take_profit_order"):
                             has_protection = True

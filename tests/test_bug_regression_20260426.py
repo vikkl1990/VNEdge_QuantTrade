@@ -4,7 +4,7 @@ These exist to prevent the 5 production bugs we hit today from silently
 recurring. Each test maps to a specific bug from the bug-bash session.
 
 Bug catalogue (see commit 359b1b5):
-  Bug 1: bybit_shadow_monitor crash on $4 jsonb_build_object type ambiguity
+  Bug 1: (removed — bybit shadow monitor deleted with multi-exchange support)
   Bug 2: shadow trades orphaned across restart (early return bug)
   Bug 3a: compute_size ignored shadow_simulated_balance
   Bug 3b: user_registry.user_config missing pass-through keys
@@ -24,33 +24,6 @@ from execution.exit_guards import (
     _RELAXED_PATIENCE_MULT,
     _RELAXED_FEE_FLOOR_MULT,
 )
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Bug 1: bybit_shadow_monitor.py $4 cast
-# ────────────────────────────────────────────────────────────────────────
-class TestBug1MonitorJsonbCast:
-    """Pin the `$4::text` cast in bybit_shadow_monitor.close_bybit_shadow.
-
-    Without ::text, asyncpg can't infer the type of the value passed to
-    jsonb_build_object('close_exit_reason', $4) and crashes with
-    IndeterminateDatatypeError. This is a SOURCE-level pin since the
-    actual function calls a live DB.
-    """
-
-    def test_cast_present_in_source(self):
-        """Verify the $4::text cast wasn't accidentally removed."""
-        import pathlib
-        src = pathlib.Path(__file__).parent.parent / "scripts" / "bybit_shadow_monitor.py"
-        if not src.exists():
-            pytest.skip("bybit_shadow_monitor.py not present in this checkout")
-        text = src.read_text()
-        # Look for the close_exit_reason field with ::text cast
-        assert "'close_exit_reason', $4::text" in text, (
-            "Bug 1 regression: $4::text cast missing from close_bybit_shadow "
-            "jsonb_build_object call. Without it asyncpg "
-            "raises IndeterminateDatatypeError and the monitor crash-loops."
-        )
 
 
 # ────────────────────────────────────────────────────────────────────────

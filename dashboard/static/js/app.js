@@ -258,7 +258,7 @@ async function loadProfile() {
 function updateModeBtns(mode) {
     let modes = ["paper", "demo", "live"];
     let colors = {paper:"#00d4ff", demo:"#ffd700", live:"#ff3b5c"};
-    let msgs = {paper:"Paper mode — no real orders placed", demo:"Demo mode — trades on Delta testnet (fake money)", live:"LIVE mode — real money on Delta exchange"};
+    let msgs = {paper:"Paper mode — production Delta data, simulated fills, no real orders", demo:"Demo mode — trades on Delta testnet (fake money)", live:"LIVE mode — real money on Delta exchange"};
     for (var i = 0; i < modes.length; i++) {
         let btn = document.getElementById("mode-btn-" + modes[i]);
         if (!btn) continue;
@@ -466,7 +466,7 @@ function refreshProfile() {
 
 // ── GLOBALS ──────────────────────────────────────────────
 let activeTab = "live";
-let liveTimer = null, analyticsTimer = null, systemTimer = null, latencyTimer = null, agentsTimer = null, brainTimer = null, adminTimer = null;
+let liveTimer = null, analyticsTimer = null, systemTimer = null,  agentsTimer = null, brainTimer = null, adminTimer = null;
 let laSelectedSymbol = "BTC/USDT";
 let equityChart = null;
 let cachedPrices = {};
@@ -509,74 +509,6 @@ async function api(path) {
         return await r.json();
     } catch { return null; }
 }
-
-async function setRealMode(mode) {
-    // 2026-04-20: routed to per-user bot_mode system (legacy /api/real/toggle
-    // hit the shared-account real_manager which is permanently disabled since
-    // the security pass — toggling it briefly set enabled=True but the next
-    // status read snapped back to disabled because of config/state enforcement).
-    //
-    // New mapping:
-    //   "disabled" → bot_mode: paper  (internal simulation only)
-    //   "dry_run"  → bot_mode: demo   (real Delta testnet with your demo key)
-    //   "live"     → bot_mode: live   (Delta production with your live key)
-    const modeMap = {"disabled": "paper", "dry_run": "demo", "live": "live"};
-    const botMode = modeMap[mode] || "paper";
-
-    if (botMode === "live" && !confirm("⚠️ ENABLE LIVE TRADING?\n\nThis will place REAL orders with REAL money on Delta Exchange.\n\nAre you absolutely sure?")) {
-        const sel = document.getElementById("real-mode-select-live");
-        if (sel) sel.value = "dry_run";
-        return;
-    }
-    if (botMode === "live" && !confirm("🔴 FINAL CONFIRMATION\n\nReal money will be at risk.\nCircuit breaker: $25/day loss limit.\n\nProceed?")) {
-        const sel = document.getElementById("real-mode-select-live");
-        if (sel) sel.value = "dry_run";
-        return;
-    }
-    try {
-        const r = await fetch("/api/user/real/toggle", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            credentials: "same-origin",
-            body: JSON.stringify({bot_mode: botMode})
-        });
-        // Defensive JSON parse: some older code paths or middleware can
-        // return non-JSON bodies (stale caches, 410 Gone text, etc.).
-        // Don't let the JSON parse error eclipse the real HTTP status.
-        let d = {};
-        try { d = await r.json(); } catch (parseErr) {
-            try { const txt = await r.clone().text(); d = { error: txt.slice(0, 200) }; } catch(e) {}
-        }
-        if (!r.ok) {
-            const urlHit = r.url || "(unknown)";
-            // Batch A #19: blocking alert() → non-blocking toast
-            (window._notify || alert)(
-                "Mode change rejected (HTTP " + r.status + "): " +
-                (d.error || r.statusText) +
-                (d.hint ? "\n\n" + d.hint : "") +
-                "\n[debug] URL: " + urlHit +
-                "\n[debug] HTTP 404 here = stale app.js cache. Hard-refresh (Cmd+Shift+R)."
-            , 'error', 10000);
-            // Revert the dropdown so the UI matches DB truth
-            try {
-                const stat = await fetch("/api/user/real/status", {credentials:"same-origin"}).then(x => x.ok ? x.json() : {}).catch(()=>({}));
-                const cur = (stat.mode || stat.bot_mode || "paper").toLowerCase();
-                const inv = {"paper":"disabled","demo":"dry_run","live":"live"};
-                const sel = document.getElementById("real-mode-select-live");
-                if (sel) sel.value = inv[cur] || "disabled";
-            } catch(e) {}
-            return;
-        }
-        // Success — next status poll updates all dashboard widgets
-    } catch (e) {
-        // Batch A #19: blocking alert() → non-blocking toast
-        (window._notify || alert)("Mode change failed: " + (e && e.message ? e.message : e), 'error', 8000);
-    }
-}
-// Legacy support
-// (removed alert blocks above; below preserves remaining functions)
-// REMOVED: stale toggleRealTrading(enabled) — conflicts with robust version at line ~8224.
-// The robust version reads current state from API, confirms, and flips.
 
 function healthColor(pct) {
     if (pct > 85) return "var(--red)";
@@ -663,9 +595,8 @@ function switchTab(tab) {
     activeTab = tab;
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === "tab-" + tab));
-    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer); clearInterval(latencyTimer); clearInterval(agentsTimer); clearInterval(brainTimer); clearInterval(adminTimer);
+    clearInterval(liveTimer); clearInterval(analyticsTimer); clearInterval(systemTimer);  clearInterval(agentsTimer); clearInterval(brainTimer); clearInterval(adminTimer);
     if (tab === "live") { refreshLive(); liveTimer = setInterval(refreshLive, 2000); }
-    if (tab === "latency") { refreshLatencyArb(); latencyTimer = setInterval(refreshLatencyArb, 1000); }
     if (tab === "analytics") { refreshAnalytics(); analyticsTimer = setInterval(refreshAnalytics, 10000); }
     if (tab === "system") { refreshSystem(); systemTimer = setInterval(refreshSystem, 5000); }
     if (tab === "agents") { refreshAgents(); agentsTimer = setInterval(refreshAgents, 15000); }
@@ -1136,6 +1067,10 @@ async function refreshLive() { window._refreshLiveActive = true; await _refreshL
     updateSignals(signals);
     updateFunnel(funnel);
     updateAlerts(alerts);
+    // Header stats (PnL, win rate, etc.) — trkStats/closed/decision are in
+    // scope here; this call previously lived inside updateAlerts() where
+    // they were undefined and threw a ReferenceError on every poll.
+    try { updateDashboardHeader(trkStats, closed, decision); } catch(e) { console.error("Dashboard header update failed:", e); }
     updateVetoStats(funnel);
     try { updateKanbanFunnel(funnel); } catch (e) {}
     // per-symbol status removed (consolidated into Symbol Scanner Status)
@@ -1722,7 +1657,6 @@ function updateAlerts(alerts) {
             <span class="alert-msg">${esc(a.message || a.msg || "")}</span>
         </div>`;
     }).join("");
-    console.log("HEADER_UPDATE: trkStats=", typeof trkStats, "closed=", typeof closed, closed ? closed.length : 0); try { updateDashboardHeader(trkStats, closed, decision); } catch(e) { console.error("Dashboard header update failed:", e); }
 }
 
 // ══════════════════════════════════════════════════════════
@@ -2135,33 +2069,6 @@ function updateSessionHeatmap(data) {
 
 let _currentClosedTab = "paper";
 let _lastRealStatus = null;  // cache for tab switching
-function switchClosedTab(tab) {
-    _currentClosedTab = tab;
-    document.getElementById("paper-closed-wrap").style.display = tab === "paper" ? "block" : "none";
-    document.getElementById("real-closed-wrap").style.display = (tab === "demo" || tab === "real") ? "block" : "none";
-    const paperBtn = document.getElementById("tab-paper-closed");
-    const demoBtn = document.getElementById("tab-demo-closed");
-    if (!demoBtn) return; // GUARD: element may not exist
-    const realBtn = document.getElementById("tab-real-closed");
-    paperBtn.style.background = tab === "paper" ? "var(--cyan)" : "transparent";
-    paperBtn.style.color = tab === "paper" ? "#000" : "var(--text-muted)";
-    paperBtn.style.fontWeight = tab === "paper" ? "600" : "400";
-    demoBtn.style.background = tab === "demo" ? "rgba(0,212,255,.8)" : "transparent";
-    demoBtn.style.color = tab === "demo" ? "#000" : "var(--text-muted)";
-    demoBtn.style.fontWeight = tab === "demo" ? "600" : "400";
-    realBtn.style.background = tab === "real" ? "var(--red)" : "transparent";
-    realBtn.style.color = tab === "real" ? "#fff" : "var(--text-muted)";
-    realBtn.style.fontWeight = tab === "real" ? "600" : "400";
-    // Re-render the table with correct data for selected tab
-    if (_lastRealStatus && (tab === "demo" || tab === "real")) {
-        updateRealClosedTrades(_lastRealStatus);
-    }
-}
-
-// Phase 4.2 — writer for the small "Recent Closed Trades" sidebar panel.
-// Populates BOTH demo and live tbody elements independently so whichever
-// tab is open has the correct data. 9-col schema matches template:
-// Date | Symbol | Side | Entry | Exit | Slip | PnL $ | Margin | Exit Reason.
 function _renderTradesRow(t) {
     const pnl = Number(t.pnl_usd || 0);
     const margin = Number(t.margin || t.margin_usd || (t.metadata && (t.metadata.margin || t.metadata.margin_usd)) || 0);
@@ -2322,372 +2229,6 @@ function updateClosedTrades(closed) {
 
 // ══════════════════════════════════════════════════════════
 // TAB: LATENCY ARB REFRESH
-// ══════════════════════════════════════════════════════════
-async function refreshLatencyArb() {
-    const [data, hist, analysis] = await Promise.all([
-        api("/api/latency-arb"),
-        api(`/api/latency-arb/dislocations?symbol=${encodeURIComponent(laSelectedSymbol)}&n=50`),
-        api("/api/latency-arb/analysis")
-    ]);
-
-    if (!data) return;
-
-    // Status badge
-    const badge = document.getElementById("la-status-badge");
-    if (data.active && data.running) {
-        badge.textContent = data.measure_only ? "MEASURING" : "LIVE TRADING";
-        badge.style.background = data.measure_only ? "rgba(0,212,255,.08)" : "rgba(0,255,157,.08)";
-        badge.style.color = data.measure_only ? "var(--cyan)" : "var(--green)";
-        badge.style.borderColor = data.measure_only ? "rgba(0,212,255,.2)" : "rgba(0,255,157,.2)";
-    } else {
-        badge.textContent = data.active ? "PAUSED" : "OFFLINE";
-        badge.style.background = "rgba(90,112,144,.08)";
-        badge.style.color = "var(--text-muted)";
-        badge.style.borderColor = "rgba(90,112,144,.15)";
-    }
-
-    // Uptime
-    const up = data.uptime_s || 0;
-    const um = Math.floor(up / 60), us = Math.floor(up % 60);
-    document.getElementById("la-uptime").textContent = `Uptime: ${um}m ${us}s`;
-
-    // Global stats
-    document.getElementById("la-binance-msgs").textContent = (data.binance_msgs || 0).toLocaleString();
-    document.getElementById("la-delta-msgs").textContent = (data.delta_msgs || 0).toLocaleString();
-    document.getElementById("la-dislocations").textContent = (data.dislocations_detected || 0).toLocaleString();
-    document.getElementById("la-signals").textContent = (data.signals_generated || 0).toLocaleString();
-
-    // Per-symbol cards
-    const symbols = data.symbols || [];
-    const cardsWrap = document.getElementById("la-symbol-cards");
-    if (symbols.length === 0) {
-        cardsWrap.innerHTML = '<div class="empty">No exchange data yet — engine starting...</div>';
-    } else {
-        cardsWrap.innerHTML = symbols.map(s => {
-            const disl = s.dislocation_pct || 0;
-            const absDisl = Math.abs(disl);
-            const dir = s.direction || "FLAT";
-            const dirColor = dir === "LONG" ? "var(--green)" : dir === "SHORT" ? "var(--red)" : "var(--text-muted)";
-            const edgeBg = absDisl >= 0.20 ? "rgba(0,255,157,.06)" : absDisl >= 0.10 ? "rgba(255,215,0,.05)" : "rgba(255,255,255,.02)";
-            const edgeBorder = absDisl >= 0.20 ? "rgba(0,255,157,.25)" : absDisl >= 0.10 ? "rgba(255,215,0,.2)" : "var(--border)";
-            const shortSym = (s.symbol || "").replace("/USDT", "");
-
-            const costPct = data.cost_rt_pct || 0.14;
-            const netEdge = absDisl - costPct;
-            const netColor = netEdge > 0 ? "var(--green)" : "var(--red)";
-
-            return `<div style="background:${edgeBg};border:1px solid ${edgeBorder};border-radius:var(--radius-lg);padding:14px;transition:all .3s">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                    <div class="flex items-center gap-2">
-                        <span style="font-size:1.1rem;font-weight:900;color:var(--text)">${esc(shortSym)}</span>
-                        <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${dirColor};background:${dir==='LONG'?'rgba(0,255,157,.08)':dir==='SHORT'?'rgba(255,59,92,.08)':'rgba(90,112,144,.06)'}">${dir}</span>
-                    </div>
-                    <div class="text-right">
-                        <div style="font-size:1.3rem;font-weight:900;font-family:var(--font-mono);color:${absDisl>=0.20?'var(--green)':absDisl>=0.10?'var(--yellow)':'var(--text-muted)'}">${disl>=0?'+':''}${disl.toFixed(4)}%</div>
-                        <div style="font-size:.62rem;color:var(--text-muted);letter-spacing:.5px">DISLOCATION</div>
-                    </div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:.73rem;font-family:var(--font-mono)">
-                    <div class="data-row-soft">
-                        <span class="text-muted">Binance</span>
-                        <span style="color:var(--cyan);font-weight:600">$${num(s.binance_mid)}</span>
-                    </div>
-                    <div class="data-row-soft">
-                        <span class="text-muted">Delta</span>
-                        <span style="color:var(--purple);font-weight:600">$${num(s.delta_mid)}</span>
-                    </div>
-                    <div class="data-row-soft">
-                        <span class="text-muted">Δ USD</span>
-                        <span style="font-weight:600;color:${dirColor}">$${num(s.dislocation_usd)}</span>
-                    </div>
-                    <div class="data-row-soft">
-                        <span class="text-muted">Net Edge</span>
-                        <span style="font-weight:700;color:${netColor}">${netEdge>=0?'+':''}${netEdge.toFixed(3)}%</span>
-                    </div>
-                    <div class="data-row-soft">
-                        <span class="text-muted">Spread</span>
-                        <span>${num(s.spread_delta_pct,3)}%</span>
-                    </div>
-                    <div class="data-row-soft">
-                        <span class="text-muted">Latency</span>
-                        <span>${num(s.avg_latency_ms,0)}ms</span>
-                    </div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;font-size:.65rem;text-align:center">
-                    <div class="bg-faint">
-                        <div style="font-weight:700;font-family:var(--font-mono);color:var(--yellow)">${num(s.avg_disl,3)}%</div>
-                        <div class="text-muted">AVG</div>
-                    </div>
-                    <div class="bg-faint">
-                        <div style="font-weight:700;font-family:var(--font-mono);color:var(--orange)">${num(s.p95_disl,3)}%</div>
-                        <div class="text-muted">P95</div>
-                    </div>
-                    <div class="bg-faint">
-                        <div style="font-weight:700;font-family:var(--font-mono);color:${(s.tradeable_pct||0)>=5?'var(--green)':'var(--red)'}">${num(s.tradeable_pct,1)}%</div>
-                        <div class="text-muted">TRADEABLE</div>
-                    </div>
-                </div>
-            </div>`;
-        }).join("");
-    }
-
-    // Symbol tabs for history
-    const tabsWrap = document.getElementById("la-sym-tabs");
-    tabsWrap.innerHTML = symbols.map(s => {
-        const sym = s.symbol || "";
-        const short = sym.replace("/USDT","");
-        const isActive = sym === laSelectedSymbol;
-        return `<button onclick="laSelectSymbol('${sym}')" style="padding:4px 12px;border-radius:4px;border:1px solid ${isActive?'var(--cyan)':'var(--border)'};background:${isActive?'rgba(0,212,255,.1)':'rgba(255,255,255,.02)'};color:${isActive?'var(--cyan)':'var(--text-muted)'};font-size:.72rem;font-weight:600;cursor:pointer;font-family:var(--font-sans)">${short}</button>`;
-    }).join("");
-    document.getElementById("la-history-sym").textContent = laSelectedSymbol.replace("/USDT","");
-
-    // History table
-    const tbody = document.getElementById("la-history-body");
-    const disls = hist?.dislocations || [];
-    if (disls.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty">No dislocation data yet</td></tr>';
-    } else {
-        tbody.innerHTML = disls.map(d => {
-            const absD = Math.abs(d.disl_pct);
-            const rowBg = absD >= 0.20 ? "rgba(0,255,157,.04)" : absD >= 0.10 ? "rgba(255,215,0,.02)" : "";
-            const dirCol = d.direction === "long" ? "var(--green)" : "var(--red)";
-            return `<tr style="background:${rowBg}">
-                <td>${esc(d.time)}</td>
-                <td class="text-info">$${num(d.binance)}</td>
-                <td class="text-purple">$${num(d.delta)}</td>
-                <td style="font-weight:700;color:${absD>=0.20?'var(--green)':absD>=0.10?'var(--yellow)':'var(--text-muted)'}">${d.disl_pct>=0?'+':''}${d.disl_pct.toFixed(4)}%</td>
-                <td style="color:${dirCol};font-weight:600">${d.direction.toUpperCase()}</td>
-                <td>${num(d.latency_ms,0)}ms</td>
-            </tr>`;
-        }).join("");
-    }
-
-    // Net Edge Analysis (per-pair with classification)
-    const edgeWrap = document.getElementById("la-edge-analysis");
-    if (symbols.length > 0) {
-        let edgeHtml = '';
-        symbols.forEach(s => {
-            const short = (s.symbol||"").replace("/USDT","");
-            const ne = s.net_edge || {};
-            const cls = ne.classification || "NO_TRADE";
-            const clsColor = cls === "EXECUTABLE" ? "var(--green)" : cls === "WATCH" ? "var(--yellow)" : "var(--text-muted)";
-            const clsBg = cls === "EXECUTABLE" ? "rgba(0,255,157,.06)" : cls === "WATCH" ? "rgba(255,215,0,.04)" : "rgba(255,255,255,.02)";
-            const netEdge = ne.net_edge_pct || 0;
-            const dailySigs = ((s.tradeable_pct || 0) / 100) * (data.binance_msgs || 0) / Math.max(1, (data.uptime_s || 1) / 86400);
-            edgeHtml += `<div style="margin-top:8px;padding:10px;background:${clsBg};border-radius:6px;border:1px solid var(--border);border-left:3px solid ${clsColor}">
-                <div class="flex-between-mb">
-                    <span class="font-bold text-base">${short}</span>
-                    <span style="font-size:.65rem;padding:2px 8px;border-radius:4px;font-weight:700;color:${clsColor};background:${cls==='EXECUTABLE'?'rgba(0,255,157,.1)':cls==='WATCH'?'rgba(255,215,0,.08)':'rgba(90,112,144,.08)'};border:1px solid ${clsColor}">${cls}</span>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:.72rem;font-family:var(--font-mono)">
-                    <span class="text-muted">Gross Disl:</span><span>${num(ne.gross_disl_pct,4)}%</span>
-                    <span class="text-muted">Spread:</span><span class="text-warning">${num(ne.spread_pct,4)}%</span>
-                    <span class="text-muted">Total Cost:</span><span class="text-danger">${num(ne.total_cost_pct,4)}%</span>
-                    <span class="text-muted">Net Edge:</span><span style="font-weight:700;color:${netEdge>0?'var(--green)':'var(--red)'}"> ${netEdge>0?'+':''}${num(netEdge,4)}%</span>
-                    <span class="text-muted">Safety Buffer:</span><span>${num(ne.safety_buffer,2)}%</span>
-                    <span class="text-muted">Est. Sigs/Day:</span><span class="text-info">${num(dailySigs,0)}</span>
-                </div>
-            </div>`;
-        });
-        edgeWrap.innerHTML = edgeHtml;
-    }
-
-    // Distribution
-    const distWrap = document.getElementById("la-disl-distribution");
-    if (symbols.length > 0 && disls.length > 10) {
-        const allDisls = disls.map(d => Math.abs(d.disl_pct));
-        const buckets = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 1.00];
-        let distHtml = '<div class="text-sm">';
-        buckets.forEach(b => {
-            const count = allDisls.filter(d => d >= b).length;
-            const pct = (count / allDisls.length * 100);
-            const barW = Math.min(pct, 100);
-            const barColor = b >= 0.20 ? "var(--green)" : b >= 0.10 ? "var(--yellow)" : "var(--text-muted)";
-            distHtml += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-                <span style="width:55px;text-align:right;color:var(--text-muted);font-family:var(--font-mono)">≥${b.toFixed(2)}%</span>
-                <div style="flex:1;height:18px;background:rgba(255,255,255,.03);border-radius:3px;overflow:hidden">
-                    <div style="height:100%;width:${barW}%;background:${barColor};border-radius:3px;transition:width .5s"></div>
-                </div>
-                <span style="width:50px;font-family:var(--font-mono);font-weight:600;color:${barColor}">${pct.toFixed(1)}%</span>
-            </div>`;
-        });
-        distHtml += '</div>';
-        distWrap.innerHTML = distHtml;
-    }
-
-    // ── ANALYSIS LAYERS (from /api/latency-arb/analysis) ──
-    if (analysis && analysis.active) {
-        // Layer 2: Decay Analysis
-        const decayWrap = document.getElementById("la-decay-analysis");
-        const decay = analysis.decay || {};
-        const decaySymbols = Object.keys(decay);
-        if (decaySymbols.length > 0) {
-            let dh = '<table><thead><tr><th>Pair</th><th>Spikes</th><th>Avg Dur</th><th>1s</th><th>2s</th><th>5s</th><th>10s</th><th>Avg Peak</th></tr></thead><tbody>';
-            decaySymbols.forEach(sym => {
-                const d = decay[sym];
-                if (!d || !d.total_spikes) return;
-                const short = sym.replace("/USDT","");
-                const s1 = (d.survived_1s_pct||0).toFixed(0);
-                const s2 = (d.survived_2s_pct||0).toFixed(0);
-                const s5 = (d.survived_5s_pct||0).toFixed(0);
-                const s10 = (d.survived_10s_pct||0).toFixed(0);
-                dh += `<tr>
-                    <td class="font-bold">${short}</td>
-                    <td>${d.total_spikes}</td>
-                    <td>${num(d.avg_duration_s,1)}s</td>
-                    <td style="color:${s1>50?'var(--green)':'var(--red)'}">${s1}%</td>
-                    <td style="color:${s2>50?'var(--green)':'var(--red)'}">${s2}%</td>
-                    <td style="color:${s5>30?'var(--green)':'var(--red)'}">${s5}%</td>
-                    <td style="color:${s10>20?'var(--green)':'var(--yellow)'}">${s10}%</td>
-                    <td class="text-info">${num(d.avg_peak_disl_pct,3)}%</td>
-                </tr>`;
-            });
-            dh += '</tbody></table>';
-            dh += '<div style="font-size:.62rem;color:var(--text-muted);margin-top:6px">Survival rate = % of spikes still above threshold at N seconds. Higher = more time to act.</div>';
-            decayWrap.innerHTML = dh;
-        }
-
-        // Layer 3: Convergence
-        const convWrap = document.getElementById("la-convergence");
-        const conv = analysis.convergence || {};
-        const convSymbols = Object.keys(conv);
-        if (convSymbols.length > 0) {
-            let ch = '';
-            convSymbols.forEach(sym => {
-                const c = conv[sym];
-                if (!c || !c.total_resolved) return;
-                const short = sym.replace("/USDT","");
-                const dcPct = (c.delta_converged_pct||0);
-                const brPct = (c.binance_reverted_pct||0);
-                const mxPct = (c.mixed_pct||0);
-                const dcW = Math.min(dcPct, 100);
-                const brW = Math.min(brPct, 100);
-                ch += `<div style="margin-bottom:12px;padding:8px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border)">
-                    <div style="font-weight:700;font-size:.82rem;margin-bottom:6px">${short} <span style="color:var(--text-muted);font-weight:400">(${c.total_resolved} resolved)</span></div>
-                    <div style="margin-bottom:4px;display:flex;align-items:center;gap:8px;font-size:.72rem">
-                        <span style="width:90px;color:var(--green)">Delta→Binance</span>
-                        <div class="progress-track-lg">
-                            <div style="height:100%;width:${dcW}%;background:var(--green);border-radius:3px"></div>
-                        </div>
-                        <span style="width:40px;font-family:var(--font-mono);color:var(--green);font-weight:600">${dcPct.toFixed(0)}%</span>
-                    </div>
-                    <div style="display:flex;align-items:center;gap:8px;font-size:.72rem">
-                        <span style="width:90px;color:var(--red)">Binance←revert</span>
-                        <div class="progress-track-lg">
-                            <div style="height:100%;width:${brW}%;background:var(--red);border-radius:3px"></div>
-                        </div>
-                        <span style="width:40px;font-family:var(--font-mono);color:var(--red);font-weight:600">${brPct.toFixed(0)}%</span>
-                    </div>
-                    <div style="font-size:.65rem;color:var(--text-muted);margin-top:4px">Avg convergence: ${num(c.avg_convergence_pct,1)}% of gap closed</div>
-                </div>`;
-            });
-            convWrap.innerHTML = ch || '<div class="empty">No resolved spikes yet</div>';
-        }
-
-        // Layer 4: Simulation
-        const simWrap = document.getElementById("la-simulation");
-        const sim = analysis.simulation || {};
-        const simSymbols = Object.keys(sim);
-        if (simSymbols.length > 0) {
-            let sh = '';
-            simSymbols.forEach(sym => {
-                const s = sim[sym];
-                if (!s || !s.total_trades) return;
-                const short = sym.replace("/USDT","");
-                const wr = s.win_rate || 0;
-                const netPnl = s.total_net_pnl || 0;
-                sh += `<div style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,.02);border-radius:6px;border:1px solid var(--border);border-left:3px solid ${netPnl>=0?'var(--green)':'var(--red)'}">
-                    <div class="flex-between-mb">
-                        <span class="font-bold text-base">${short}</span>
-                        <span style="font-size:.72rem;color:var(--text-muted)">${s.total_trades} simulated</span>
-                    </div>
-                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;font-size:.72rem">
-                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${wr>=50?'var(--green)':'var(--red)'}">${wr.toFixed(1)}%</div><div class="text-muted">Win Rate</div></div>
-                        <div><div style="font-weight:800;font-family:var(--font-mono);color:${netPnl>=0?'var(--green)':'var(--red)'}">${netPnl>=0?'+':''}${netPnl.toFixed(3)}%</div><div class="text-muted">Total P&L</div></div>
-                        <div><div class="font-extrabold font-mono">${num(s.avg_net_pnl,3)}%</div><div class="text-muted">Avg Trade</div></div>
-                        <div><div class="font-extrabold font-mono">${num(s.avg_hold_time_s,1)}s</div><div class="text-muted">Avg Hold</div></div>
-                    </div>
-                </div>`;
-            });
-            simWrap.innerHTML = sh || '<div class="empty">No simulated trades yet</div>';
-        }
-
-        // Layer 5: Session Heatmap (Net Edge by Pair × UTC Hour)
-        const sessWrap = document.getElementById("la-session-heatmap");
-        const sess = analysis.session || {};
-        const sessSymbols = Object.keys(sess);
-        if (sessSymbols.length > 0) {
-            // Build heatmap: rows = pairs, cols = UTC hours 0-23
-            const hours = Array.from({length:24}, (_,i)=>i);
-            let hh = '<div class="overflow-x-auto"><table style="font-size:.65rem;min-width:700px"><thead><tr><th style="position:sticky;left:0;background:var(--bg);z-index:1">Pair</th>';
-            hours.forEach(h => {
-                hh += `<th style="text-align:center;min-width:28px;padding:2px 3px">${h}</th>`;
-            });
-            hh += '</tr></thead><tbody>';
-            sessSymbols.forEach(sym => {
-                const sd = sess[sym];
-                if (!sd || !sd.by_hour) return;
-                const short = sym.replace("/USDT","");
-                hh += `<tr><td style="font-weight:700;position:sticky;left:0;background:var(--bg);z-index:1">${short}</td>`;
-                hours.forEach(h => {
-                    const hd = sd.by_hour[String(h)] || {};
-                    const avgD = hd.avg_disl || 0;
-                    const count = hd.count || 0;
-                    const tPct = hd.pct_tradeable || 0;
-                    // Color: green if avg_disl > cost (profitable), yellow if close, dim if no data
-                    let bg = "transparent";
-                    let color = "var(--text-muted)";
-                    if (count === 0) {
-                        bg = "rgba(255,255,255,.01)";
-                        color = "var(--text-muted)";
-                    } else if (avgD >= 0.15) {
-                        bg = `rgba(0,255,157,${Math.min(avgD/0.5,0.3).toFixed(2)})`;
-                        color = "var(--green)";
-                    } else if (avgD >= 0.08) {
-                        bg = `rgba(255,215,0,${Math.min(avgD/0.3,0.15).toFixed(2)})`;
-                        color = "var(--yellow)";
-                    } else {
-                        bg = "rgba(255,255,255,.02)";
-                    }
-                    const title = `${short} UTC ${h}:00\\nAvg: ${avgD.toFixed(3)}%\\nCount: ${count}\\nTradeable: ${tPct.toFixed(1)}%`;
-                    hh += `<td style="text-align:center;background:${bg};color:${color};font-family:var(--font-mono);font-weight:600;padding:4px 2px;border:1px solid rgba(255,255,255,.02)" title="${title}">${count>0?avgD.toFixed(2):'-'}</td>`;
-                });
-                hh += '</tr>';
-            });
-            hh += '</tbody></table></div>';
-            hh += '<div style="display:flex;gap:12px;margin-top:8px;font-size:.6rem;color:var(--text-muted)">';
-            hh += '<span>■ <span class="text-success">Green</span> = avg disl ≥ 0.15% (likely profitable)</span>';
-            hh += '<span>■ <span class="text-warning">Yellow</span> = 0.08-0.15% (watch)</span>';
-            hh += '<span>■ Dim = < 0.08% (no edge)</span>';
-            hh += '</div>';
-
-            // Add active/quiet hour summary
-            sessSymbols.forEach(sym => {
-                const sd = sess[sym];
-                if (!sd) return;
-                const short = sym.replace("/USDT","");
-                const active = sd.active_hours || [];
-                const quiet = sd.quiet_hours || [];
-                if (active.length > 0 || quiet.length > 0) {
-                    hh += `<div style="margin-top:6px;font-size:.68rem">
-                        <span class="font-semibold">${short}:</span>
-                        ${active.length > 0 ? `<span class="text-success"> Active: UTC ${active.join(', ')}</span>` : ''}
-                        ${quiet.length > 0 ? `<span class="text-muted"> | Quiet: UTC ${quiet.join(', ')}</span>` : ''}
-                    </div>`;
-                }
-            });
-            sessWrap.innerHTML = hh;
-        }
-    }
-}
-
-function laSelectSymbol(sym) {
-    laSelectedSymbol = sym;
-    refreshLatencyArb();
-}
-
-// ══════════════════════════════════════════════════════════
-// TAB 3: SYSTEM REFRESH
 // ══════════════════════════════════════════════════════════
 async function refreshSystem() {
     // Each fetch independent — one failure can't block others
@@ -3007,24 +2548,6 @@ function filterSignals(sym) {
 }
 
 // ── EMERGENCY STOP ───────────────────────────────────────
-async function emergencyStop() {
-    if (!confirm("EMERGENCY STOP: This will immediately halt ALL trading. Are you sure?")) return;
-    if (!confirm("CONFIRM: This action cannot be undone without restarting the bot.")) return;
-    try {
-        const r = await fetch("/api/emergency-stop", {method:"POST", credentials:"include"});
-        const d = await r.json();
-        if (d.status === "emergency_stop_activated") {
-            document.getElementById("emergency-btn").style.background = "var(--red)";
-            document.getElementById("emergency-btn").style.color = "#fff";
-            document.getElementById("emergency-btn").textContent = "STOPPED";
-            alert("EMERGENCY STOP ACTIVATED. All trading halted. Restart bot to resume.");
-        } else {
-            alert("Failed: " + JSON.stringify(d));
-        }
-    } catch(e) { alert("Emergency stop failed: " + e.message); }
-}
-
-// ── CONFIG TAB ───────────────────────────────────────────
 function populateConfigTab() {
     // Trade Type Config table
     const cfg = {
@@ -3239,26 +2762,6 @@ async function lockReal75(tradeId) {
 }
 
 // Track A.3: Force Flat action
-async function forceFlatReal() {
-    if (!confirm("🚨 FORCE FLAT: close ALL open real positions immediately?\n\nThis cannot be undone.")) return;
-    try {
-        const r = await fetch("/api/real/force_flat", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: "{}",
-        });
-        const d = await r.json();
-        if (d.ok) {
-            alert("✅ Force Flat: closed " + (d.closed || 0) + "/" + (d.total || 0) + " positions");
-        } else {
-            alert("❌ Force Flat failed: " + (d.error || "unknown"));
-        }
-    } catch (e) {
-        alert("❌ Force Flat network error: " + e.message);
-    }
-}
-
-// ── #2 + #9 MTF CHAIN UPDATE ─────────────────────────────
 function updateMTFChain(decision) {
     if (!decision) return;
     const ind = decision.indicators || {};
@@ -4549,57 +4052,6 @@ async function ccTogglePause() {
     } catch (e) { console.warn("Pause toggle error:", e); }
 }
 
-async function ccToggleReal() {
-    // 2026-04-20 Option-A: routed to per-user bot_mode (legacy /api/real/toggle → 410).
-    // Semantics: OFF = paper, ON = demo (safer default; live requires /profile switch).
-    let label = document.getElementById("cc-real-label");
-    let isOn = label.textContent !== "OFF";
-    const newMode = isOn ? "paper" : "demo";
-    try {
-        const r = await fetch("/api/user/real/toggle", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ bot_mode: newMode }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) {
-            alert("Toggle rejected: " + (d.error || r.statusText) +
-                  (d.hint ? "\n\n" + d.hint : ""));
-            return;
-        }
-        label.textContent = isOn ? "OFF" : "ON";
-        label.parentElement.style.borderColor = isOn ? "rgba(255,59,92,.3)" : "rgba(0,255,157,.3)";
-        label.parentElement.style.color = isOn ? "var(--red)" : "var(--green)";
-    } catch (e) { console.warn("Real toggle error:", e); }
-}
-
-async function ccEmergencyStop() {
-    if (!confirm("EMERGENCY STOP: disable ALL trading. Continue?")) return;
-    try {
-        await fetch("/api/emergency-stop", { method: "POST" });
-        let btn = document.getElementById("cc-estop-btn");
-        btn.style.opacity = "0.4";
-        btn.textContent = "STOPPED";
-    } catch (e) { alert("Emergency stop failed: " + e.message); }
-}
-
-// Update CC 2.0 real label + live PnL on every refresh
-function updateCC20(status, realStatus) {
-    try {
-        let lbl = document.getElementById("cc-real-label");
-        if (lbl && realStatus) {
-            lbl.textContent = realStatus.enabled ? "ON" : "OFF";
-        }
-        let pnlEl = document.getElementById("cc-live-pnl");
-        if (pnlEl && status) {
-            let pnl = parseFloat(status.paper_pnl_usd || status.daily_pnl || 0);
-            pnlEl.textContent = "$" + pnl.toFixed(2);
-            pnlEl.style.color = pnl >= 0 ? "var(--green)" : "var(--red)";
-        }
-    } catch (e) {}
-}
-
 // ══════════════════════════════════════════════════════════
 // ITEMS #6+8: CONFIG EDITOR + HOT-RELOAD
 // ══════════════════════════════════════════════════════════
@@ -5289,46 +4741,6 @@ if (typeof window !== "undefined") {
     setTimeout(() => { try { refreshPpp(); } catch(e) {} }, 1500);
     setInterval(() => { try { refreshPpp(); } catch(e) {} }, 60000);
 }
-
-function switchRecentClosed(tab) {
-    // Phase 4.2 — 4-tab switch (paper / demo / live / shadow). Legacy "real"
-    // arg aliases to "demo" for backward compatibility with cached HTML/JS
-    // during the rollout.
-    if (tab === "real") tab = "demo";
-    const wraps = {
-        paper:  "rc-paper-wrap",
-        demo:   "rc-demo-wrap",
-        live:   "rc-live-wrap",
-        shadow: "rc-shadow-wrap",
-    };
-    // Show only the selected wrap
-    for (const [k, id] of Object.entries(wraps)) {
-        const el = document.getElementById(id);
-        if (el) el.style.display = (tab === k) ? "" : "none";
-    }
-    // Tab colour: cyan=paper, yellow=demo (testnet), red=live (real money),
-    // violet=shadow (shadow_live, no real fills)
-    const styles = {
-        paper:  { on: { bg: "rgba(0,212,255,.15)",  c: "var(--cyan)",   b: "rgba(0,212,255,.3)" } },
-        demo:   { on: { bg: "rgba(245,158,11,.15)", c: "var(--yellow)", b: "rgba(245,158,11,.3)" } },
-        live:   { on: { bg: "rgba(255,59,92,.15)",  c: "var(--red)",    b: "rgba(255,59,92,.3)" } },
-        shadow: { on: { bg: "rgba(167,139,250,.18)", c: "#a78bfa",      b: "rgba(167,139,250,.4)" } },
-    };
-    const off = { bg: "transparent", c: "var(--text-muted)", b: "var(--border)" };
-    for (const k of Object.keys(styles)) {
-        const btn = document.getElementById("rc-tab-" + k);
-        if (!btn) continue;
-        const s = (tab === k) ? styles[k].on : off;
-        btn.style.background = s.bg;
-        btn.style.color = s.c;
-        btn.style.borderColor = s.b;
-    }
-    // Re-render with the latest cached status (no API call — cheap)
-    if (typeof _lastRealStatus !== "undefined" && _lastRealStatus) {
-        try { updateRecentRealClosed(_lastRealStatus); } catch(e) { console.error(e); }
-    }
-}
-
 
 function updatePnlCalendar(trkStats) {
     let cal = document.getElementById("pnl-calendar");
@@ -6028,53 +5440,6 @@ function renderLossTaxonomy(data) {
 // ══════════════════════════════════════════════════════════
 // Circuit Breaker reset buttons — three modes
 // ══════════════════════════════════════════════════════════
-async function cbResetAction(mode) {
-  const msgEl = document.getElementById('po-cb-msg');
-  const confirmMsgs = {
-    reset: 'Reset circuit breaker?\n\nThis clears: is_tripped, consecutive_losses, trip_reason.\nKeeps: daily_pnl, total_pnl, enabled state.\n\nContinue?',
-    full: 'FULL reset?\n\nThis clears: is_tripped, consecutive_losses, daily_pnl, total_pnl.\nKeeps: enabled state.\n\nUse this to clear drawdown-kill pnl accumulator.\n\nContinue?',
-    reenable: 'RE-ENABLE real trading (FULL SIZE)?\n\nThis clears ALL CB state AND sets enabled=true with full position sizes.\n\n⚠ WARNING: Real trading will resume on next qualifying signal at 100% margin.\n\nRECOMMENDED: Use "+ PROB" instead for probation-mode (50% size).\n\nContinue?',
-    probation: 'RE-ENABLE WITH PROBATION (Phase 3.5)?\n\nThis re-enables real trading with reduced risk:\n  • 50% position size for first 3 trades\n  • Auto-exits to full size after 3 trades or 4 hours\n  • Safer recovery from drawdown-kill\n\n✓ Recommended over plain RE-ENABLE.\n\nContinue?',
-  };
-  if (!confirm(confirmMsgs[mode] || 'Reset?')) return;
-
-  let url = '/api/real/cb-reset';
-  if (mode === 'full') url += '?full=true';
-  else if (mode === 'reenable') url += '?full=true&reenable=true';
-  else if (mode === 'probation') url += '?full=true&reenable=true&probation=true';
-
-  try {
-    const r = await fetch(url, {method: 'POST'});
-    const d = await r.json();
-    if (msgEl) {
-      msgEl.style.display = 'block';
-      if (d.ok) {
-        const wasEnabled = d.was ? d.was.enabled : null;
-        const nowEnabled = d.now ? d.now.enabled : null;
-        msgEl.style.background = 'rgba(0,255,157,.08)';
-        msgEl.style.border = '1px solid rgba(0,255,157,.2)';
-        msgEl.style.color = 'var(--green)';
-        msgEl.textContent = `✓ ${mode.toUpperCase()} OK · was tripped=${d.was.is_tripped} losses=${d.was.consecutive_losses} enabled=${wasEnabled} · now losses=0 enabled=${nowEnabled}`;
-        // Trigger immediate refresh
-        setTimeout(() => renderPipelineObs(), 300);
-      } else {
-        msgEl.style.background = 'rgba(255,59,92,.08)';
-        msgEl.style.border = '1px solid rgba(255,59,92,.2)';
-        msgEl.style.color = 'var(--red)';
-        msgEl.textContent = '✗ ERROR: ' + (d.error || 'unknown');
-      }
-      setTimeout(() => { msgEl.style.display = 'none'; }, 8000);
-    }
-  } catch(e) {
-    if (msgEl) {
-      msgEl.style.display = 'block';
-      msgEl.style.background = 'rgba(255,59,92,.08)';
-      msgEl.style.color = 'var(--red)';
-      msgEl.textContent = '✗ Network error: ' + e.message;
-    }
-  }
-}
-
 // ══════════════════════════════════════════════════════════
 // Phase 3.1: Stage Loss Map window selector
 // ══════════════════════════════════════════════════════════
@@ -6335,166 +5700,6 @@ try {
 } catch(e) {}
 
 // ═══ Track D: REAL OPS STRIP (Fix #1-5 governance) ═════════
-async function loadRealOps() {
-  try {
-    const r = await fetch('/api/real/status', {cache: 'no-store'});
-    if (!r.ok) return;
-    const d = await r.json();
-    if (!d) return;
-
-    const set = (id, text, color) => {
-      const e = document.getElementById(id);
-      if (!e) return;
-      if (text != null) e.textContent = text;
-      if (color) e.style.color = color;
-    };
-    const bg = (id, color) => {
-      const e = document.getElementById(id);
-      if (e && color) e.style.background = color;
-    };
-
-    // 1. Status badge — derive from per-user bot_mode (canonical source)
-    // Legacy values: "LIVE" / "DRY RUN" / undefined
-    // New values:    "live" / "demo" / "paper"
-    const rawMode = (d.mode || 'unknown').toString().toLowerCase();
-    const modeDisplay = rawMode === 'live' ? 'LIVE'
-                      : rawMode === 'demo' || rawMode === 'dry_run' ? 'DEMO'
-                      : rawMode === 'paper' ? 'PAPER'
-                      : rawMode.toUpperCase();
-    const modeColor = rawMode === 'live' ? 'var(--red)'
-                    : rawMode === 'demo' || rawMode === 'dry_run' ? 'var(--cyan)'
-                    : rawMode === 'paper' ? 'var(--text-muted)'
-                    : 'var(--text-muted)';
-    const modeBg = rawMode === 'live' ? 'rgba(255,59,92,.18)'
-                 : rawMode === 'demo' || rawMode === 'dry_run' ? 'rgba(0,212,255,.15)'
-                 : 'rgba(128,128,128,.15)';
-    set('rops-status', modeDisplay, modeColor);
-    bg('rops-status', modeBg);
-
-    // 2. Balance
-    const bal = d.balance || 0;
-    set('rops-balance', '$' + bal.toFixed(2));
-
-    // 3. Rolling drawdown (1h / 24h / 7d)
-    const rd = d.rolling_drawdown || {};
-    const fmtCb = (w) => {
-      const r = rd[w];
-      if (!r) return '--';
-      const pnl = r.pnl || 0;
-      const pct = r.pct || 0;
-      const col = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--yellow)' : (pnl >= 0 ? 'var(--green)' : 'var(--text-muted)');
-      return { text: (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + ' (' + pct.toFixed(0) + '%)', color: col };
-    };
-    const cb1h = fmtCb('1h');
-    const cb24h = fmtCb('24h');
-    const cb7d = fmtCb('7d');
-    if (typeof cb1h === 'object') set('rops-cb-1h', cb1h.text, cb1h.color);
-    if (typeof cb24h === 'object') set('rops-cb-24h', cb24h.text, cb24h.color);
-    if (typeof cb7d === 'object') set('rops-cb-7d', cb7d.text, cb7d.color);
-
-    // 4. Fix counters
-    const fs = d.fix_stats || {};
-    const f1Fill = fs.fix1_ioc_fill || 0;
-    const f1Skip = fs.fix1_ioc_skip || 0;
-    const f2 = fs.fix2_trail_prop || 0;
-    const f3 = fs.fix3_ml_floor_block || 0;
-    const f4 = fs.fix4_regime_block || 0;
-    const f5 = fs.fix5_tp_override || 0;
-
-    set('rops-fix1', f1Fill + '/' + f1Skip, (f1Fill + f1Skip) > 0 ? 'var(--green)' : 'var(--text-muted)');
-    set('rops-fix2', String(f2), f2 > 0 ? 'var(--green)' : 'var(--text-muted)');
-    set('rops-fix3', String(f3), f3 > 0 ? 'var(--cyan)' : 'var(--text-muted)');
-    set('rops-fix4', String(f4), f4 > 0 ? 'var(--cyan)' : 'var(--text-muted)');
-    set('rops-fix5', String(f5), f5 > 0 ? 'var(--green)' : 'var(--text-muted)');
-
-    // 5. Probation mode
-    const p = d.probation || {};
-    if (p.active) {
-      const tradesLeft = p.remaining_trades || 0;
-      const secsLeft = Math.max(0, p.remaining_sec || 0);
-      const minsLeft = (secsLeft / 60).toFixed(0);
-      const mult = (p.size_mult * 100).toFixed(0);
-      set('rops-probation', `${mult}% × ${tradesLeft}t / ${minsLeft}m`, 'var(--yellow)');
-    } else {
-      set('rops-probation', 'off', 'var(--text-muted)');
-    }
-
-    // 6. CB tripped border warning
-    const cb = d.circuit_breaker || {};
-    const strip = document.getElementById('real-ops-strip');
-    if (strip) {
-      if (cb.is_tripped) {
-        strip.style.border = '2px solid var(--red)';
-        strip.style.background = 'rgba(255,59,92,.08)';
-      } else if (!d.enabled) {
-        strip.style.border = '1px solid rgba(128,128,128,.3)';
-        strip.style.background = 'rgba(128,128,128,.03)';
-      } else {
-        strip.style.border = '1px solid rgba(255,59,92,.15)';
-        strip.style.background = 'rgba(255,59,92,.03)';
-      }
-    }
-  } catch(e) {
-    // Silent — keeps last state on transient failures
-  }
-}
-
-async function toggleRealTrading() {
-  // 2026-04-20: routed to per-user bot_mode system (Option-A consolidation).
-  // Old endpoint /api/real/toggle returns 410 Gone.
-  // Toggle semantics: paper ↔ demo (safer default than flipping to live).
-  // To switch into live, use /profile → Trading → Mode Readiness → Switch to Live.
-  let currentMode = 'paper';
-  try {
-    const s = await fetch('/api/user/real/status', {credentials:'same-origin'}).then(r => r.json());
-    currentMode = (s.mode || s.bot_mode || 'paper').toLowerCase();
-  } catch(e) {}
-  const newMode = currentMode === 'paper' ? 'demo' : 'paper';
-  if (!confirm(`Trading mode: ${currentMode.toUpperCase()} → ${newMode.toUpperCase()}?\n\n` +
-               (newMode === 'demo'
-                 ? 'Signals will mirror to Delta testnet with fake money.'
-                 : 'Signals will stop mirroring — simulation only.') +
-               '\n\nFor LIVE mode, use /profile → Trading → Switch to Live.')) return;
-  try {
-    const r = await fetch('/api/user/real/toggle', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bot_mode: newMode}),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok) {
-      // Batch A #19: blocking alert() → non-blocking toast
-      (window._notify || alert)('Trading mode now: ' + (d.bot_mode || newMode).toUpperCase(), 'ok', 4000);
-      loadRealOps();
-    } else {
-      (window._notify || alert)('Toggle rejected: ' + (d.error || 'unknown') +
-            (d.hint ? '\n' + d.hint : ''), 'error', 8000);
-    }
-  } catch(e) {
-    (window._notify || alert)('Toggle error: ' + e.message, 'error', 8000);
-  }
-}
-
-async function killAllTrading() {
-  if (!confirm('⚠ EMERGENCY STOP — this halts ALL trading activity. Continue?')) return;
-  if (!confirm('Are you ABSOLUTELY sure? Bot will need manual restart.')) return;
-  try {
-    const r = await fetch('/api/emergency-stop', {method: 'POST'});
-    const d = await r.json().catch(() => ({}));
-    alert('Emergency stop: ' + JSON.stringify(d));
-    loadRealOps();
-  } catch(e) {
-    alert('Kill error: ' + e.message);
-  }
-}
-
-// Fire on load + every 5s
-try {
-  loadRealOps();
-  setInterval(loadRealOps, 5000);
-} catch(e) {}
-
 // ═══ Track C: ML OPS strip + Verdict Matrix + Live Calibration ═══
 async function loadMlOps() {
   try {

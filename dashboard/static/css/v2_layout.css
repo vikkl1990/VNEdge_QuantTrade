@@ -1,0 +1,280 @@
+/* v2 Production Layout — declutter pass (2026-04-26)
+ * Spec: docs/UX_DESIGN_SYSTEM_v2_PRODUCTION.md (Phase 1 layout)
+ *
+ * Operator-grade IA: kill the 6-strip wall, compact the header,
+ * promote Overview Strip to top of viewport, enforce single accent.
+ * Loaded LAST so it overrides earlier rules.
+ */
+
+/* ═════════════════════════════════════════════════════════
+ * 0. FORCE DARK MODE — non-negotiable until inline-style
+ *    codemod (#18) lets light theme work. The 200+ inline
+ *    `style="color:#xxx"` in app.js can't respect tokens yet,
+ *    so light mode gives white page + dark cards.
+ * ════════════════════════════════════════════════════════ */
+:root, html, body {
+  color-scheme: dark !important;
+  background-color: var(--bg, #0a0e1a) !important;
+  color: var(--text-primary, #e8eef9) !important;
+}
+html { background: var(--bg, #0a0e1a) !important; }
+body { background: var(--bg, #0a0e1a) !important; }
+.tab-content, .container, .main, main, [role="main"] {
+  background: var(--bg, #0a0e1a) !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 1. KILL THE 6-STRIP WALL above the fold.
+ *    These were at lines 511-639 of index.html, eating 200+px
+ *    of vertical real estate before any data was visible.
+ *    Phase 2 will consolidate their info into Overview Strip
+ *    secondary row. For now: hide.
+ * ════════════════════════════════════════════════════════ */
+#mode-banner,
+.info-bar,
+#rdrift-strip,
+#real-ops-strip,
+#ml-ops-strip,
+#current-action-banner {
+  display: none !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 2. COMPACT HEADER — drop the marketing chrome.
+ *    "VN EDGE / TRADE WITH PRECISION" + big logo = 100px gone.
+ *    Operator grade = brand demoted, ops promoted.
+ * ════════════════════════════════════════════════════════ */
+.header,
+header.dash-header,
+[class*="dash-header"]:first-of-type {
+  padding: 8px 18px !important;
+  min-height: 44px !important;
+}
+
+/* Logo: shrink. Tagline: gone. */
+.header img,
+.header svg,
+.header [class*="logo"] img,
+.header [class*="logo"] svg {
+  width: 22px !important;
+  height: 22px !important;
+}
+
+/* Header tagline: keep VISIBLE but tighten it (operator subtitle) */
+.header [class*="tagline"],
+.header-brand-tagline {
+  display: inline-block !important;
+  font-size: 0.52rem !important;
+  letter-spacing: 2.5px !important;
+  color: var(--text-tertiary, #6b7794) !important;
+  font-weight: 500 !important;
+  text-transform: uppercase !important;
+  text-shadow: none !important;     /* kill the green neon glow */
+  margin-top: 1px !important;
+}
+
+/* Generic .subtitle / small in header still hidden (only branded-tagline shows) */
+.header .login-subtitle,
+.header small {
+  display: none !important;
+}
+
+/* "VN EDGE" wordmark: smaller, lighter weight */
+.header h1, .header [class*="brand"], .header [class*="title"] {
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 3. TAB BAR — tighter, single accent active state
+ * ════════════════════════════════════════════════════════ */
+.tab-bar {
+  padding: 0 12px !important;
+  min-height: 36px !important;
+  background: var(--bg, #0a0e1a) !important;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.06)) !important;
+  backdrop-filter: none !important;
+}
+
+.tab-btn {
+  padding: 6px 14px !important;
+  font-size: 0.72rem !important;
+  font-weight: 500 !important;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  color: var(--text-secondary) !important;
+  border-radius: 0 !important;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary) !important;
+}
+
+.tab-btn.active {
+  color: var(--accent, #00d4a8) !important;
+  border-bottom-color: var(--accent, #00d4a8) !important;
+  background: transparent !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 4. OVERVIEW STRIP — promote to ABOVE THE FOLD.
+ *    With legacy strips gone, this is now the first visual.
+ * ════════════════════════════════════════════════════════ */
+.overview-strip {
+  margin-top: 0 !important;
+  margin-bottom: 12px !important;
+  background: var(--bg-card, #0f1524) !important;
+  border-bottom: 1px solid var(--border-strong, rgba(255,255,255,0.10)) !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 5. CARD HYGIENE — kill rounded-corner-fitness-app vibe
+ * ════════════════════════════════════════════════════════ */
+.glass-card,
+.panel,
+.card {
+  border-radius: 6px !important;        /* was 12px+ */
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  background: var(--bg-card, #0f1524) !important;
+  border: 1px solid var(--border, rgba(255,255,255,0.06)) !important;
+}
+
+/* Hero stat cards: tighten padding, normalize type */
+.glass-card .stat-value--hero,
+[class*="cmd-panel"] .stat-value--hero {
+  font-size: 1.5rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.5px !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * HERO NUMBER COLOR DISCIPLINE — neutral by default
+ * Override inline style="color:var(--green)" with text-primary
+ * UNLESS the element actually represents PnL (has pnl-pos/pnl-neg).
+ * Production rule: green/red is reserved for DIRECTION, not decoration.
+ * ════════════════════════════════════════════════════════ */
+.stat-value:not(.pnl-pos):not(.pnl-neg):not([class*="success"]):not([class*="danger"]):not(.text-success):not(.text-danger),
+.stat-value--hero:not(.pnl-pos):not(.pnl-neg):not([class*="success"]):not([class*="danger"]):not(.text-success):not(.text-danger),
+.kpi-value:not(.pnl-pos):not(.pnl-neg):not(.text-success):not(.text-danger) {
+  color: var(--text-primary, #e8eef9) !important;
+}
+
+/* PnL-direction cells get color */
+.pnl-pos { color: var(--success, #22c55e) !important; }
+.pnl-neg { color: var(--danger,  #ef4444) !important; }
+
+/* Card section headers — never colored; consistent muted micro-label */
+.card h2, .card h3, .glass-card h2, .glass-card h3,
+.card .label, .glass-card .label,
+[class*="section-title"],
+.section-title-cyan, .section-title-red, .section-title-yellow,
+.section-title-green, .section-title-purple, .section-title-orange {
+  color: var(--text-secondary, #9ca8be) !important;
+  font-size: 0.62rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 1.5px !important;
+  text-transform: uppercase !important;
+  text-shadow: none !important;
+}
+
+/* "WHY NO TRADES?" + "DEPLOYABLE CAPITAL" + similar yellow scare-headers
+ * → neutral micro-label */
+[style*="color:var(--yellow)"][style*="text-transform:uppercase"],
+[style*="color: var(--yellow)"][style*="text-transform"],
+[id="trade-diagnostic"] {
+  color: var(--text-tertiary, #6b7794) !important;
+}
+
+/* Hero stat backdrop — quiet down "PAPER TRADING $49.20" full-width green
+ * by giving the CARD a subtle border tint instead of the number screaming */
+[id*="cmd-today-pnl"], [id*="cmd-real-pnl"],
+[id*="paper-today-pnl"], [id*="real-today-pnl"] {
+  color: var(--text-primary) !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 6. SCARE-COLOR HYGIENE — drop the cyan/yellow "fear"
+ * ════════════════════════════════════════════════════════ */
+
+/* "WHY NO TRADES?" yellow scare → neutral grey */
+[id*="trade-diagnostic"]::before {
+  content: none !important;
+}
+.section-title-cyan,
+[class*="section-title-cyan"] {
+  color: var(--text-secondary) !important;
+  text-transform: uppercase !important;
+  font-size: 0.62rem !important;
+  letter-spacing: 1.5px !important;
+  font-weight: 600 !important;
+}
+.section-title-red,
+[class*="section-title-red"] {
+  color: var(--text-secondary) !important;
+  text-transform: uppercase !important;
+  font-size: 0.62rem !important;
+  letter-spacing: 1.5px !important;
+  font-weight: 600 !important;
+}
+
+/* The "All systems operational" green banner — redundant w/ Overview State cell.
+ * Class is `.alert-banner.normal` (rendered by app.js:1259-1272). */
+[class*="systems-operational"],
+[id*="systems-operational"],
+.alert-banner.normal,
+#alert-banner.normal,
+.system-status-banner {
+  display: none !important;
+}
+/* Banner with DEFAULT/normal state hides; only critical/warning shows */
+.alert-banner:not(.critical):not(.warning):not(.danger) {
+  display: none !important;
+}
+
+/* Yellow "PAPER LEARNING" tag — demote */
+[class*="paper-learning"],
+[id*="paper-learning"] {
+  font-size: 0.6rem !important;
+  font-weight: 500 !important;
+  color: var(--text-tertiary) !important;
+  background: transparent !important;
+  padding: 2px 6px !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 7. KILL DELTA CONNECTION POPUP — hide it permanently
+ *    (the underlying handler keeps re-rendering it; this is
+ *    the operator-grade decision: shadow_live IS the desired
+ *    state, this isn't an error).
+ * ════════════════════════════════════════════════════════ */
+[class*="delta-conn"],
+[id*="delta-conn"],
+[class*="connection-modal"],
+[id*="connection-modal"],
+.conn-modal,
+[data-modal="connection"] {
+  display: none !important;
+}
+
+/* Generic warning popup containing "DELTA CONNECTION" — gets killed by v2_polish.js */
+
+/* ═════════════════════════════════════════════════════════
+ * 8. ATTENTION RAIL — keep but tighten
+ * ════════════════════════════════════════════════════════ */
+[class*="attention-rail"], [id*="attention-rail"] {
+  font-size: 0.74rem !important;
+}
+
+/* ═════════════════════════════════════════════════════════
+ * 9. TABULAR + MONOSPACE everywhere data displays
+ * ════════════════════════════════════════════════════════ */
+table td, table th, .data-row, .stat-mini {
+  font-variant-numeric: tabular-nums;
+}

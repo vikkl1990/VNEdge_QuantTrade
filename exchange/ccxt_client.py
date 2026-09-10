@@ -1,5 +1,5 @@
 """
-CCXT-based exchange client supporting Binance, Bybit, OKX, and Delta Exchange.
+CCXT-based exchange client for Delta Exchange India.
 
 Uses ccxt.pro for websocket streaming with automatic fallback to REST polling
 when websockets are unavailable or fail.
@@ -49,9 +49,6 @@ logger = logging.getLogger(__name__)
 
 # Map our canonical exchange name to the ccxt class name
 _CCXT_CLASS_MAP: Dict[str, str] = {
-    "binance": "binance",
-    "bybit": "bybit",
-    "okx": "okx",
     "delta": "delta",       # ccxt id for Delta Exchange
 }
 
@@ -59,17 +56,11 @@ _CCXT_CLASS_MAP: Dict[str, str] = {
 # This mapping converts our canonical "BTC/USDT" format into what the
 # exchange expects for perpetual swap markets.
 _FUTURES_SYMBOL_SUFFIX: Dict[str, str] = {
-    "binance": ":USDT",     # BTC/USDT:USDT
-    "bybit": ":USDT",       # BTC/USDT:USDT
-    "okx": ":USDT",         # BTC/USDT:USDT (swap)
     "delta": "",             # Delta uses BTC/USDT directly
 }
 
 # API key environment variable names per exchange
 _ENV_KEY_MAP: Dict[str, Tuple[str, str, Optional[str]]] = {
-    "binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET", None),
-    "bybit":   ("BYBIT_API_KEY",   "BYBIT_API_SECRET",   None),
-    "okx":     ("OKX_API_KEY",     "OKX_API_SECRET",     "OKX_PASSPHRASE"),
     "delta":   ("DELTA_API_KEY",   "DELTA_API_SECRET",    None),
 }
 
@@ -112,7 +103,7 @@ class CcxtExchangeClient(ExchangeBase):
     """
     Production exchange client built on top of ccxt / ccxt.pro.
 
-    Supports Binance, Bybit, OKX, and Delta Exchange for both spot
+    Supports Delta Exchange India for both spot
     and USDT-margined perpetual futures.
 
     Parameters

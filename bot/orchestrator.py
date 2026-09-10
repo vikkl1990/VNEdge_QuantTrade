@@ -29,13 +29,6 @@ try:
 except ImportError:
     _HAS_DELTA_WS = False
 
-# Optional Latency Arb engine (Binance vs Delta price dislocation)
-try:
-    from strategies.latency_arb import LatencyArbEngine
-    _HAS_LATENCY_ARB = True
-except ImportError:
-    _HAS_LATENCY_ARB = False
-
 
 class BotOrchestrator:
     """Orchestrates all trading bot components in a single async event loop.
@@ -289,9 +282,12 @@ class BotOrchestrator:
                 try:
                     import os
                     # Pass API creds for private WS channels (orders, positions)
-                    _dry_run = getattr(self._real_manager, "dry_run", True) if self._real_manager else True
-                    _ws_api_key = os.getenv("DELTA_DEMO_API_KEY" if _dry_run else "DELTA_API_KEY", "")
-                    _ws_api_secret = os.getenv("DELTA_DEMO_API_SECRET" if _dry_run else "DELTA_API_SECRET", "")
+                    # Single operating mode: PRODUCTION market data, simulated fills.
+                    # The WebSocket always uses the live Delta India endpoint; the
+                    # testnet ("demo") feed is never used for prices any more.
+                    _dry_run = False
+                    _ws_api_key = os.getenv("DELTA_API_KEY", "")
+                    _ws_api_secret = os.getenv("DELTA_API_SECRET", "")
 
                     self._delta_ws = DeltaWebSocket(
                         symbols=self._symbols,
@@ -324,8 +320,6 @@ class BotOrchestrator:
             # 3d. Latency Arb engine — DISABLED 2026-04-26 (architect strip).
             # Original disable note: "negative edge, 2.4s latency, 0% tradeable".
             # Engine left as None; misleading "failed to start" log removed.
-            # To re-enable: import LatencyArbEngine + reinstate the start() call.
-            self._latency_arb = None
 
             # 4. Start heartbeat monitor
             await self._heartbeat.start()
@@ -417,15 +411,27 @@ class BotOrchestrator:
                 self._log.warning("ML feedback loop NOT wired: no _training_dataset found on strategy")
             self._dashboard._decision_engine = self._decision_engine
             self._dashboard._grid_bot = self._grid_bot
-            self._dashboard._latency_arb = self._latency_arb
             dash_cfg = self._config.get("dashboard", {})
-            dash_host = dash_cfg.get("host", "0.0.0.0") if isinstance(dash_cfg, dict) else "0.0.0.0"
-            dash_port = dash_cfg.get("port", 8080) if isinstance(dash_cfg, dict) else 8080
+            if not isinstance(dash_cfg, dict):
+                dash_cfg = {}
+            # Env vars (documented in .env.example) take precedence over YAML.
+            dash_host = os.getenv("DASHBOARD_HOST") or dash_cfg.get("host", "0.0.0.0")
+            dash_port = int(os.getenv("DASHBOARD_PORT") or dash_cfg.get("port", 8080))
+
+            async def _start_dashboard() -> None:
+                try:
+                    await self._dashboard.start(dash_host, dash_port)
+                except OSError as e:
+                    self._log.error(
+                        "DASHBOARD FAILED TO START on %s:%s — %s. "
+                        "Port likely in use; set DASHBOARD_PORT in .env to a free port.",
+                        dash_host, dash_port, e,
+                    )
+                except Exception:
+                    self._log.exception("DASHBOARD FAILED TO START on %s:%s", dash_host, dash_port)
+
             self._tasks.append(
-                asyncio.create_task(
-                    self._dashboard.start(dash_host, dash_port),
-                    name="dashboard",
-                )
+                asyncio.create_task(_start_dashboard(), name="dashboard")
             )
 
             # 6. Start alert manager
@@ -472,7 +478,10 @@ class BotOrchestrator:
                         _delta_live = getattr(self._real_manager, '_delta_live', None)
                     if _delta_live is None:
                         from exchange.delta_client import DeltaClient
-                        _delta_live = DeltaClient(mode="live")
+                        # owner="system" opts into the shared .env DELTA_API_KEY /
+                        # DELTA_API_SECRET (same as RealTradingManager). Without it
+                        # connect() refuses and the orderbook cache runs degraded.
+                        _delta_live = DeltaClient(mode="live", owner="system")
                         _delta_live.connect()
                     self._ob_cache = OrderbookCache(
                         _delta_live,
@@ -546,11 +555,6 @@ class BotOrchestrator:
                 self._log.debug("Shutdown cleanup: %s", _shutdown_exc)
 
         # Stop Latency Arb engine
-        if self._latency_arb:
-            try:
-                await self._latency_arb.stop()
-            except Exception as _shutdown_exc:
-                self._log.debug("Shutdown cleanup: %s", _shutdown_exc)
 
         # Save final state
         try:
@@ -1972,7 +1976,7 @@ class BotOrchestrator:
 
         # -- Execute (if mode permits) --
         order_result = None
-        if self._mode in (BotMode.PAPER, BotMode.LIVE, BotMode.FORWARD_TEST):
+        if self._mode in (BotMode.PAPER, BotMode.LIVE):
             try:
                 order_result = await self._execution.execute(symbol, sig_dict)
                 self._log.info(
@@ -2167,7 +2171,7 @@ class BotOrchestrator:
     ) -> None:
         """Fully close a position."""
         symbol = position["symbol"]
-        if self._mode in (BotMode.PAPER, BotMode.LIVE, BotMode.FORWARD_TEST):
+        if self._mode in (BotMode.PAPER, BotMode.LIVE):
             try:
                 result = await self._execution.close_position(symbol, position)
                 self._log.info("Position closed: %s reason=%s result=%s", symbol, reason, result)
@@ -2193,7 +2197,7 @@ class BotOrchestrator:
     ) -> None:
         """Partially close a position at a take-profit level."""
         symbol = position["symbol"]
-        if self._mode in (BotMode.PAPER, BotMode.LIVE, BotMode.FORWARD_TEST):
+        if self._mode in (BotMode.PAPER, BotMode.LIVE):
             try:
                 result = await self._execution.partial_close(
                     symbol, position, close_pct

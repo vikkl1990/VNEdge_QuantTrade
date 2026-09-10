@@ -2013,8 +2013,15 @@ class DashboardServer:
         peak = start
         max_dd = 0.0
         days = set()
+        total_fees = 0.0
+        total_gross = 0.0
         for c in closed:
             p = float(c.get("pnl_usd") or 0.0)
+            f = float(c.get("total_fees_usd") or 0.0)
+            # Gross = net + fees unless the record carries its own gross figure.
+            g = c.get("gross_pnl_usd")
+            total_fees += f
+            total_gross += float(g) if g is not None else p + f
             pnls.append(p)
             bal += p
             peak = max(peak, bal)
@@ -2046,8 +2053,10 @@ class DashboardServer:
             "start_balance": round(start, 2),
             "balance": round(bal, 2),
             "net_pnl_usd": round(bal - start, 2),
-            "gross_pnl_usd": round(float(stats.get("paper_gross_pnl_usd", 0.0) or 0.0), 2),
-            "fees_usd": round(float(stats.get("paper_total_fees_usd", 0.0) or 0.0), 2),
+            # Derived from the ledger, like net_pnl_usd, so the three always reconcile
+            # (the tracker's running counters miss trades imported into the ledger).
+            "gross_pnl_usd": round(total_gross, 2),
+            "fees_usd": round(total_fees, 2),
             "total_pnl_pct": round((bal - start) / start * 100.0, 3) if start else 0.0,
             "today_pnl_usd": round(today_pnl, 2),
             "today_fees_usd": round(today_fees, 2),

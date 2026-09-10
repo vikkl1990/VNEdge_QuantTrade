@@ -689,10 +689,11 @@ async function refreshAgents() {
       supEl.style.color = running ? (anomalies > 0 ? "var(--red)" : "var(--green)") : "var(--red)";
     }
 
-    // Agent status cards
+    // Agent status cards (the static card was removed from the template —
+    // null-safe lookup keeps the rest of this refresh working)
     const agents = d.agents || {};
     let activeCount = Object.values(agents).filter(a => a.status === "RUNNING").length;
-    const el = id => document.getElementById(id);
+    const el = id => document.getElementById(id) || document.createElement("div");
     el("agents-count").textContent = activeCount + " active";
     el("agents-count").className = "badge " + (activeCount > 0 ? "badge-green" : "badge-yellow");
 
@@ -754,37 +755,8 @@ async function refreshAgents() {
       }).join("");
     }
 
-    // QA Test Results
-    const qa_results = d.qa_results || {};
-    el("qa-unit-result").textContent = qa_results.unit || "--";
-    el("qa-unit-result").style.color = (qa_results.unit || "").includes("PASS") ? "var(--green)" : "var(--red)";
-    el("qa-integration-result").textContent = qa_results.integration || "--";
-    el("qa-integration-result").style.color = (qa_results.integration || "").includes("PASS") ? "var(--green)" : "var(--red)";
-    el("qa-api-result").textContent = qa_results.api || "--";
-    el("qa-api-result").style.color = (qa_results.api || "").includes("PASS") ? "var(--green)" : "var(--red)";
-    el("qa-data-result").textContent = qa_results.data_integrity || "--";
-    el("qa-data-result").style.color = (qa_results.data_integrity || "").includes("PASS") ? "var(--green)" : "var(--red)";
-    const passRate = qa_results.pass_rate || "--";
-    el("qa-pass-rate").textContent = passRate;
-    el("qa-pass-rate").className = "badge " + (String(passRate).includes("100") ? "badge-green" : "badge-yellow");
-
-    // Defects table
-    const defects = d.defects || [];
-    el("defect-count").textContent = defects.length;
-    const dtb = el("defects-table");
-    if (defects.length) {
-      dtb.innerHTML = defects.map(df => {
-        const sevCls = df.severity === "CRITICAL" ? "color:var(--red)" : df.severity === "HIGH" ? "color:var(--yellow)" : "";
-        return `<tr>
-          <td>${df.id}</td>
-          <td style="${sevCls};font-weight:700">${df.severity}</td>
-          <td class="text-sm">${df.description}</td>
-          <td><span class="badge ${df.status === 'FIXED' ? 'badge-green' : 'badge-red'}">${df.status}</span></td>
-        </tr>`;
-      }).join("");
-    } else {
-      dtb.innerHTML = '<tr><td colspan="4" class="text-muted">No defects</td></tr>';
-    }
+    // (QA Test Results and Open Defects panels removed — /api/agents/team
+    //  never carried qa_results/defects outside the cloud deployment.)
 
     // Loss analysis
     const losses = d.recent_losses || [];
@@ -1949,7 +1921,7 @@ async function updatePaperBalance(report) {
     if (!report) return;
     // Use tracker stats as single source of truth for P&L
     let stats = {};
-    try { stats = await api("/api/tracker/stats"); } catch(e) {}
+    try { stats = (await api("/api/tracker/stats")) || {}; } catch(e) { stats = {}; }
 
     const netPnl = stats.paper_pnl_usd || 0;
     const grossPnl = stats.paper_gross_pnl_usd || 0;
@@ -4658,90 +4630,6 @@ function updateDashboardHeader(trkStats, closed, decision) {
 // Dashboard header auto-update (clean rewrite)
 
 // Phase 5.17 — PPP & Maker Calibration panel
-async function refreshPpp() {
-    const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerHTML = txt; };
-    try {
-        const r = await fetch("/api/ppp", { credentials: "same-origin" });
-        if (!r.ok) {
-            setText("ppp-binary-summary", `<span style="color:var(--red)">api ${r.status}</span>`);
-            return;
-        }
-        const d = await r.json();
-
-        // Binary classifier
-        const b = (d.models || {}).binary || {};
-        if (b.loaded) {
-            setText("ppp-binary-summary",
-                `n=${b.n_samples||0} pos=${b.n_positives||0}<br>` +
-                `prec=${(b.oof_precision||0).toFixed(3)} rec=${(b.oof_recall||0).toFixed(3)}<br>` +
-                `AUC=${(b.oof_roc_auc||0).toFixed(3)} thresh=${(b.threshold||0).toFixed(3)}<br>` +
-                `<span class="text-muted">p95 lat: ${(b.p95_latency_ms||0).toFixed(1)}ms</span>`
-            );
-        } else {
-            setText("ppp-binary-summary", '<span class="text-muted">not loaded</span>');
-        }
-
-        // Regressor
-        const reg = (d.models || {}).regressor || {};
-        if (reg.loaded) {
-            const sp = reg.spearman || 0;
-            const lo = reg.spearman_ci_low || 0;
-            const hi = reg.spearman_ci_high || 0;
-            const sigOk = (lo > 0 || hi < 0) ? '✓' : '✗ CI straddles 0';
-            setText("ppp-regressor-summary",
-                `n=${reg.n_samples||0} thresh=${(reg.threshold_r||0).toFixed(2)}R<br>` +
-                `Spearman=${sp.toFixed(3)} ${sigOk}<br>` +
-                `CI [${lo.toFixed(2)}, ${hi.toFixed(2)}]<br>` +
-                `MAE=${(reg.mae_r||0).toFixed(3)}R lift=${(reg.decile_lift_r||0).toFixed(3)}R`
-            );
-        } else {
-            setText("ppp-regressor-summary", '<span class="text-muted">not loaded</span>');
-        }
-
-        // Recent decisions
-        const rec = d.recent_24h || {};
-        const bin24 = rec.binary || {};
-        const reg24 = rec.regressor || {};
-        setText("ppp-recent",
-            `total signals: ${rec.total_signals||0}<br>` +
-            `<span style="color:var(--cyan)">Binary</span> admit=${bin24.admit||0} reject=${bin24.reject||0} fail-open=${bin24.failopen||0}<br>` +
-            `<span style="color:var(--yellow)">Regressor</span> admit=${reg24.admit||0} reject=${reg24.reject||0}<br>` +
-            `avg score: bin=${(bin24.avg_score||0).toFixed(3)} reg=${(reg24.avg_score_r||0).toFixed(2)}R`
-        );
-
-        // Maker calibration
-        const m = d.maker_calibration_7d || {};
-        const rateColor = m.maker_fill_rate_pct >= 30 ? "var(--green)" :
-                          m.maker_fill_rate_pct >= 10 ? "var(--yellow)" : "var(--red)";
-        setText("ppp-maker",
-            `total: ${m.total_real_trades||0} trades<br>` +
-            `maker: ${m.maker_fills||0} (<span style="color:${rateColor};font-weight:600">${(m.maker_fill_rate_pct||0).toFixed(1)}%</span>)<br>` +
-            `taker: ${m.taker_fills||0}<br>` +
-            `other: ${m.other||0}`
-        );
-
-        // Counterfactual
-        const c = d.counterfactual || {};
-        const cb = c.binary || {};
-        const cr = c.regressor || {};
-        setText("ppp-counterfactual",
-            `Sample: ${c.sample_size||0} labeled trades<br>` +
-            `<span style="color:var(--cyan)">Binary if enforced:</span> kept $${(cb.admit_cohort_pnl||0).toFixed(2)} | rejected $${(cb.reject_cohort_pnl||0).toFixed(2)} | savings $${(cb.savings_if_enforced||0).toFixed(2)}<br>` +
-            `<span style="color:var(--yellow)">Regressor if enforced:</span> kept $${(cr.admit_cohort_pnl||0).toFixed(2)} | rejected $${(cr.reject_cohort_pnl||0).toFixed(2)} | savings $${(cr.savings_if_enforced||0).toFixed(2)}`
-        );
-    } catch (e) {
-        console.error("ppp refresh:", e);
-        setText("ppp-binary-summary", `<span style="color:var(--red)">err: ${e.message}</span>`);
-    }
-}
-
-// Auto-refresh on page load + every 60s
-if (typeof window !== "undefined") {
-    window.refreshPpp = refreshPpp;
-    setTimeout(() => { try { refreshPpp(); } catch(e) {} }, 1500);
-    setInterval(() => { try { refreshPpp(); } catch(e) {} }, 60000);
-}
-
 function updatePnlCalendar(trkStats) {
     let cal = document.getElementById("pnl-calendar");
     if (!cal || !trkStats) return;

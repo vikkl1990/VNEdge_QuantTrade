@@ -443,12 +443,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <link rel="stylesheet" href="/static/css/design-system.css">
 <link rel="stylesheet" href="/static/css/components.css">
 <link rel="stylesheet" href="/static/css/layout.css">
-<link rel="stylesheet" href="/static/css/overview_strip.css">
-<link rel="stylesheet" href="/static/css/copilot.css">
-<link rel="stylesheet" href="/static/css/quant_heroes.css">
-<link rel="stylesheet" href="/static/css/phase2_leaderboard.css">
-<link rel="stylesheet" href="/static/css/agents_status.css">
-<link rel="stylesheet" href="/static/css/chief_quant_briefing.css">
 <link rel="stylesheet" href="/static/css/v2_layout.css">
 </head>
 <body>
@@ -527,9 +521,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <button class="tab-btn" data-tab="config" role="tab" aria-controls="tab-config" aria-selected="false" data-action="switchTab" data-arg="config">Config</button>
   <button class="tab-btn" data-tab="system" role="tab" aria-controls="tab-system" aria-selected="false" data-action="switchTab" data-arg="system">System</button>
   <button class="tab-btn" data-tab="agents" role="tab" aria-controls="tab-agents" aria-selected="false" data-action="switchTab" data-arg="agents">Agents</button>
-  <button class="tab-btn" data-tab="profile" role="tab" aria-controls="tab-profile" aria-selected="false" data-action="switchTab" data-arg="profile">Profile</button>
   <button class="tab-btn tab-btn--brain" data-tab="brain" role="tab" aria-controls="tab-brain" aria-selected="false" data-action="switchTab" data-arg="brain">Brain</button>
-  <button class="tab-btn" data-tab="admin" role="tab" aria-controls="tab-admin" aria-selected="false" data-action="switchTab" data-arg="admin" id="admin-tab-btn" style="display:none">Admin</button>
 </nav>
 
 <!-- ═══ PRICE TICKER ═══════════════════════════════════════ -->
@@ -616,13 +608,10 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <!-- Trading Dashboard (replaces old Command Center) -->
   <!-- Architect's Overview Strip — Agent 14 UX P0 #1 (B3, 2026-04-26) -->
-  <section id="overview-strip" class="overview-strip" aria-label="Live system overview"></section>
 
   <!-- Co-pilot Sprint 1 MVP: Decisions Queued For You (2026-04-26) -->
-  <section id="copilot-panel" class="copilot-panel" aria-label="Decisions queued for architect"></section>
 
   <!-- Phase 3 Quant Heroes — Sharpe/Sortino/PF/MaxDD (2026-04-26) -->
-  <section id="quant-heroes" class="quant-heroes" aria-label="Quant edge metrics"></section>
 
   <div class="glass-card live-span-2" id="cmd-panel">
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
@@ -671,11 +660,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
         <div style="text-align:center;margin-bottom:8px">
           <div class="section-title-cyan">Last Paper</div>
           <div id="cmd-last-trade" class="text-secondary-base">--</div>
-        </div>
-        <div style="border-top:1px solid rgba(255,255,255,.06);margin:6px 0"></div>
-        <div class="text-center">
-          <div id="cmd-last-real-label" class="section-title-red">Last Real</div>
-          <div id="cmd-last-real-trade" class="text-secondary-base">--</div>
         </div>
       </div>
 
@@ -978,56 +962,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
 
 
-    <!-- Phase 5.17 — PPP / Maker Calibration panel (Quant ops view) -->
-    <div class="glass-card live-span-2">
-      <div class="flex justify-between items-center mb-2">
-        <div class="panel-title">PPP & Execution Calibration <span class="badge">advisory</span></div>
-        <button id="ppp-refresh" data-action="refreshPpp" style="padding:3px 10px;font-size:.65rem;border:1px solid rgba(0,212,255,.3);background:rgba(0,212,255,.15);color:var(--cyan);border-radius:4px;cursor:pointer">⟲ refresh</button>
-      </div>
-      <div class="grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
-
-        <!-- Binary classifier -->
-        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
-          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">PPP Binary Classifier (5.9-A)</div>
-          <div id="ppp-binary-summary" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
-            <span class="text-muted">loading…</span>
-          </div>
-        </div>
-
-        <!-- Regressor -->
-        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
-          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">PPP Regressor (5.15)</div>
-          <div id="ppp-regressor-summary" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
-            <span class="text-muted">loading…</span>
-          </div>
-        </div>
-
-        <!-- Recent decisions -->
-        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
-          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Last 24h Decisions</div>
-          <div id="ppp-recent" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
-            <span class="text-muted">loading…</span>
-          </div>
-        </div>
-
-        <!-- Maker calibration -->
-        <div style="border:1px solid var(--border);border-radius:6px;padding:8px">
-          <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Maker Fill Rate (7d real)</div>
-          <div id="ppp-maker" style="font-family:var(--font-mono);font-size:.7rem;color:var(--text)">
-            <span class="text-muted">loading…</span>
-          </div>
-        </div>
-
-      </div>
-
-      <!-- Counterfactual P&L -->
-      <div style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:4px">Counterfactual P&L (if PPP enforced on labeled cohort)</div>
-        <div id="ppp-counterfactual" style="font-family:var(--font-mono);font-size:.7rem">
-          <span class="text-muted">loading…</span>
-        </div>
-      </div>
-    </div>
 
     <!-- Recent Closed Trades — Paper / Demo / Live (Phase 4.2: 3-tab split) -->
     <div class="glass-card live-span-2">
@@ -1184,18 +1118,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
     <!-- ═══ Track B: PAPER↔REAL DIVERGENCE + LOSS ANALYSIS (side-by-side) ═══ -->
     <div class="glass-card live-span-2" id="divergence-loss-panel">
-      <div class="grid-1-1-lg">
-        <!-- LEFT: Per-symbol divergence -->
-        <div>
-          <div class="panel-title" style="margin:0 0 8px 0">Paper↔Real Divergence <span class="badge">last 24h</span></div>
-          <div style="position:relative;height:180px">
-            <canvas id="divergence-canvas"></canvas>
-          </div>
-          <div class="mt-2 text-xs text-muted font-mono">
-            Bars: (paper_R − real_R) per symbol. 🟢 real matches paper. 🟡 &lt;0.25R. 🔴 &gt;0.5R.
-            Fix #2 target: &lt;$0.30/trade divergence.
-          </div>
-        </div>
+      <div>
         <!-- RIGHT: Loss Analysis recommendations -->
         <div>
           <div class="panel-title" style="margin:0 0 8px 0">Loss Analysis <span class="badge">24h buckets</span></div>
@@ -1380,25 +1303,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <!-- ═══ SECTION 6: Paper vs Real + Execution Quality ═══ -->
   <div class="grid-1-1">
     <div class="glass-card">
-      <div class="panel-title">Paper vs Real</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
-        <div class="text-center">
-          <div style="font-size:.6rem;color:var(--cyan);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Paper</div>
-          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono)" id="corr-paper-wr">--%</div>
-          <div class="text-xs text-muted">Win Rate</div>
-          <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);margin-top:6px" id="corr-paper-r">--R</div>
-          <div class="text-xs text-muted">Avg R</div>
-        </div>
-        <div class="text-center">
-          <div style="font-size:.6rem;color:var(--red);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:8px">Real</div>
-          <div style="font-size:1.2rem;font-weight:800;font-family:var(--font-mono)" id="corr-real-wr">--%</div>
-          <div class="text-xs text-muted">Win Rate</div>
-          <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);margin-top:6px" id="corr-real-r">--R</div>
-          <div class="text-xs text-muted">Avg R</div>
-        </div>
-      </div>
-    </div>
-    <div class="glass-card">
       <div class="panel-title">Execution Quality</div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px">
         <div class="stat-card"><div class="stat-value" id="eq-avg-slip" style="color:var(--green);font-size:.9rem">--</div><div class="stat-label">Avg Slip (bps)</div></div>
@@ -1428,27 +1332,6 @@ textarea.contact-input{min-height:100px;resize:vertical}
     </div>
 
     <!-- B.6: Fee Savings Tracker -->
-    <div class="glass-card" class="glass-card--accent-success">
-      <div class="panel-title">Fee Savings <span class="text-xs text-muted">(Fix #1 IOC)</span></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
-        <div class="stat-card"><div class="stat-value green" id="fs-ioc-fills" class="text-lg">0</div><div class="stat-label">IOC Fills</div></div>
-        <div class="stat-card"><div class="stat-value cyan" id="fs-ioc-skips" class="text-lg">0</div><div class="stat-label">Slippage Avoided</div></div>
-      </div>
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;font-size:.7rem">
-          <span class="text-muted">Avg slip (filled)</span>
-          <span id="fs-avg-slip" class="font-mono text-success">--</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:.7rem;margin-top:4px">
-          <span class="text-muted">Est. savings</span>
-          <span id="fs-est-savings" class="font-mono text-success">$--</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:.7rem;margin-top:4px">
-          <span class="text-muted">Fill rate</span>
-          <span id="fs-fill-rate" class="font-mono">--%</span>
-        </div>
-      </div>
-    </div>
 
     <!-- B.11: AI Learner / Scanner Weights -->
     <div class="glass-card" class="glass-card--accent-purple">
@@ -1521,44 +1404,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
   </div>
 
   <!-- Performance Attribution Panel -->
-  <div class="glass-card mt-gap">
-    <div class="card-title">Performance Attribution</div>
-    <div class="flex items-center gap-2 mb-3">
-      <button class="btn btn--info btn--sm" data-action="refreshAttribution">Refresh</button>
-      <span class="text-muted text-xs">PnL by scanner × regime × grade</span>
-    </div>
-    <div id="attribution-table-wrap" class="overflow-x-auto max-h-300">
-      <table class="data-table w-full">
-        <thead><tr>
-          <th>Scanner</th><th>Regime</th><th>Grade</th>
-          <th class="text-right">Trades</th><th class="text-right">WR</th>
-          <th class="text-right">Avg PnL</th><th class="text-right">Total PnL</th>
-        </tr></thead>
-        <tbody id="attribution-body"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody>
-      </table>
-    </div>
-  </div>
 
   <!-- Backtest Panel -->
-  <div class="glass-card mt-gap">
-    <div class="card-title">Strategy Backtester</div>
-    <div class="grid-2" style="gap:12px;margin-bottom:12px">
-      <label class="text-9ba3b5">Symbols (comma-separated, blank = all)
-        <input id="bt-symbols" type="text" class="form-input-dark" placeholder="BTC/USDT, ETH/USDT">
-      </label>
-      <label class="text-9ba3b5">Scanners (comma-separated, blank = all)
-        <input id="bt-scanners" type="text" class="form-input-dark" placeholder="structure_bounce">
-      </label>
-      <label class="text-9ba3b5">ML Threshold
-        <input id="bt-ml" type="number" class="form-input-dark" value="0.60" step="0.01" min="0.4" max="0.9">
-      </label>
-      <label class="text-9ba3b5">Confidence Floor
-        <input id="bt-conf" type="number" class="form-input-dark" value="55" min="30" max="100">
-      </label>
-    </div>
-    <button class="btn btn--success btn--sm" data-action="runBacktest">Run Backtest</button>
-    <div id="bt-result" class="mt-3 text-sm text-muted">Configure params and click Run.</div>
-  </div>
 
 </div>
 
@@ -1766,7 +1613,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 
   <div class="grid-2">
     <div class="glass-card">
-      <div class="panel-title">VM Health</div>
+      <div class="panel-title">Host Health</div>
       <div id="vm-health"><div class="empty">Loading...</div></div>
     </div>
     <div class="glass-card">
@@ -1845,302 +1692,8 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB 5: ABOUT                                           -->
 <!-- ═══════════════════════════════════════════════════════ -->
-<div class="tab-content" role="tabpanel" id="tab-about">
-
-  <!-- Hero -->
-  <div class="about-hero">
-    <div class="subtitle">AI-Powered Crypto Trading Engine</div>
-    <h1>VN <span>Edge</span></h1>
-    <div class="about-desc">
-      <p>VN Edge is a fully automated cryptocurrency trading engine that combines multi-scanner signal detection with machine learning ranked candidates and regime-aware execution. It continuously monitors the market across multiple timeframes and pairs, identifying high-probability setups in real time.</p>
-      <p>Built on a three-engine architecture, VN Edge uses LightGBM and gradient boosted models to rank and filter trade candidates. Regime detection ensures the system adapts to trending, ranging, quiet, and volatile conditions, while multi-layered risk management protects capital through VWAP vetoes, HTF alignment checks, circuit breakers, and dynamic position sizing.</p>
-      <p>Whether in paper learning mode or live execution, VN Edge provides full transparency through this dashboard, real-time Telegram alerts, and detailed analytics on every trade taken.</p>
-    </div>
-  </div>
-
-  <!-- Features Grid -->
-  <div class="features-grid">
-    <div class="feature-card">
-      <span class="fc-icon">&#x1F50D;</span>
-      <h3>7 Scanner Engine</h3>
-      <p>Structure bounce, BOS/CHoCH, liquidity sweep, momentum breakout, mean reversion, order block, and volume profile scanners working in parallel across all monitored pairs.</p>
-    </div>
-    <div class="feature-card">
-      <span class="fc-icon">&#x1F9E0;</span>
-      <h3>ML Ranking</h3>
-      <p>LightGBM and GBR hybrid models score every candidate signal. Pure candle math features, MFE-based soft labels, and 0.60+ AUC validation ensure only the highest quality setups pass through.</p>
-    </div>
-    <div class="feature-card">
-      <span class="fc-icon">&#x1F30A;</span>
-      <h3>Regime-Aware</h3>
-      <p>Real-time detection of trending, ranging, quiet, and volatile market conditions. The engine dynamically adjusts thresholds, position sizing, and scanner weights based on the current regime.</p>
-    </div>
-    <div class="feature-card">
-      <span class="fc-icon">&#x1F6E1;</span>
-      <h3>Risk Layers</h3>
-      <p>VWAP hard veto, higher timeframe alignment, circuit breakers, maximum drawdown limits, correlation guards, and adaptive position sizing protect capital at every level.</p>
-    </div>
-  </div>
-
-  <!-- Contact Form -->
-  <div class="contact-section">
-    <h3>Get In Touch</h3>
-    <div class="contact-sub">Have questions or feedback? Send us a message.</div>
-    <form id="contact-form" onsubmit="return handleContact(event)">
-      <input type="text" class="contact-input" id="contact-name" placeholder="Your Name" required>
-      <input type="email" class="contact-input" id="contact-email" placeholder="Email Address" required>
-      <textarea class="contact-input" id="contact-message" placeholder="Your message..." required></textarea>
-      <button type="submit" class="contact-btn" id="contact-submit">SEND MESSAGE</button>
-    </form>
-  </div>
-
-  <!-- Risk Disclaimer -->
-  <div class="about-disclaimer">
-    <h4>Risk Disclaimer</h4>
-    <p>Trading cryptocurrencies involves significant risk of loss. Past performance does not guarantee future results. VN Edge is an experimental trading tool &mdash; use at your own risk. Never trade with money you cannot afford to lose.</p>
-  </div>
-
-</div>
 
 <!-- ═══ TAB: PROFILE ════════════════════════════════════════ -->
-<div class="tab-content" role="tabpanel" id="tab-profile">
-  <div class="grid-2">
-    <!-- LEFT COLUMN -->
-    <div>
-      <!-- Account Info -->
-      <div class="glass-card">
-        <div class="panel-title">&#128100; Account Information</div>
-        <form id="profile-form">
-          <label class="profile-label">Full Name</label>
-          <input type="text" id="prof-name" class="login-input" placeholder="Full Name">
-          <label class="profile-label">Email</label>
-          <input type="email" id="prof-email" class="login-input" placeholder="Email" readonly style="opacity:.6;cursor:not-allowed">
-          <label class="profile-label">Phone</label>
-          <input type="tel" id="prof-phone" class="login-input" placeholder="Phone Number">
-          <label class="profile-label">Timezone</label>
-          <select id="prof-timezone" class="login-input">
-            <option value="Asia/Kolkata" selected>India (IST)</option>
-            <option value="UTC">UTC</option>
-            <option value="America/New_York">Eastern (ET)</option>
-            <option value="America/Chicago">Central (CT)</option>
-            <option value="America/Denver">Mountain (MT)</option>
-            <option value="America/Los_Angeles">Pacific (PT)</option>
-            <option value="Europe/London">London (GMT)</option>
-            <option value="Europe/Berlin">Berlin (CET)</option>
-            <option value="Asia/Tokyo">Tokyo (JST)</option>
-            <option value="Asia/Shanghai">Shanghai (CST)</option>
-            <option value="Asia/Ho_Chi_Minh">Ho Chi Minh (ICT)</option>
-            <option value="Australia/Sydney">Sydney (AEST)</option>
-          </select>
-        </form>
-      </div>
-
-      <!-- Address -->
-      <div class="glass-card">
-        <div class="panel-title">&#127968; Address</div>
-        <label class="profile-label">Address Line 1</label>
-        <input type="text" id="prof-addr1" class="login-input" placeholder="Address Line 1">
-        <label class="profile-label">Address Line 2</label>
-        <input type="text" id="prof-addr2" class="login-input" placeholder="Address Line 2">
-        <div class="grid-2" class="gap-2">
-          <div>
-            <label class="profile-label">City</label>
-            <input type="text" id="prof-city" class="login-input" placeholder="City">
-          </div>
-          <div>
-            <label class="profile-label">State / Province</label>
-            <input type="text" id="prof-state" class="login-input" placeholder="State">
-          </div>
-        </div>
-        <div class="grid-2" class="gap-2">
-          <div>
-            <label class="profile-label">Country</label>
-            <input type="text" id="prof-country" class="login-input" placeholder="Country">
-          </div>
-          <div>
-            <label class="profile-label">Postal Code</label>
-            <input type="text" id="prof-postal" class="login-input" placeholder="Postal Code">
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- RIGHT COLUMN -->
-    <div>
-      <!-- API Keys -->
-      <div class="glass-card">
-        <div class="panel-title">&#128273; API Keys</div>
-        <div id="api-keys-list">
-          <div class="api-key-row">
-            <div class="api-key-info">
-              <span class="api-key-label">Live Exchange</span>
-              <span class="api-key-masked" id="ak-live-key">&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;</span>
-            </div>
-            <div class="api-key-actions">
-              <button class="btn-sm btn-edit" data-action="openApiKeyModal" data-arg="live">Edit</button>
-              <button class="btn-sm btn-del" data-action="deleteApiKey" data-arg="live">Delete</button>
-            </div>
-          </div>
-        </div>
-        <button class="login-btn" style="margin-top:12px;width:auto;padding:8px 20px;font-size:.75rem" data-action="openApiKeyModal" data-arg="new">+ Add Key</button>
-      </div>
-
-      <!-- Trading Mode + Settings -->
-      <div class="glass-card">
-        <div class="panel-title">&#9881; Trading Mode &amp; Settings</div>
-
-        <!-- Mode Switcher — prominent -->
-        <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:16px">
-          <button id="mode-btn-paper" data-action="switchUserMode" data-arg="paper" style="padding:12px;border-radius:8px;border:2px solid rgba(0,212,255,.3);background:rgba(0,212,255,.08);color:#00d4ff;cursor:pointer;font-weight:700;font-size:13px;text-align:center;transition:all .2s">
-            <div class="icon-lg">&#128196;</div>
-            PAPER<br><span class="icon-label-sub">Simulated</span>
-          </button>
-        </div>
-        <div id="mode-status-msg" style="font-size:11px;color:#5a7090;text-align:center;margin-bottom:12px">Paper mode — production Delta data, simulated fills, no real orders</div>
-
-        <label class="profile-label">Bot Mode</label>
-        <select id="prof-bot-mode" class="login-input" style="display:none">
-          <option value="paper">Paper Trading</option>
-        </select>
-        <label class="profile-label">Trading Pairs</label>
-        <div class="pairs-checkboxes" id="prof-pairs">
-          <label class="pair-check"><input type="checkbox" value="BTC/USDT" checked> BTC</label>
-          <label class="pair-check"><input type="checkbox" value="ETH/USDT" checked> ETH</label>
-          <label class="pair-check"><input type="checkbox" value="SOL/USDT"> SOL</label>
-          <label class="pair-check"><input type="checkbox" value="XRP/USDT"> XRP</label>
-          <label class="pair-check"><input type="checkbox" value="DOGE/USDT"> DOGE</label>
-          <label class="pair-check"><input type="checkbox" value="ADA/USDT"> ADA</label>
-          <label class="pair-check"><input type="checkbox" value="AVAX/USDT"> AVAX</label>
-          <label class="pair-check"><input type="checkbox" value="LINK/USDT"> LINK</label>
-          <label class="pair-check"><input type="checkbox" value="DOT/USDT"> DOT</label>
-          <label class="pair-check"><input type="checkbox" value="MATIC/USDT"> MATIC</label>
-        </div>
-        <label class="profile-label">Leverage: <span id="prof-leverage-val">5</span>x</label>
-        <input type="range" id="prof-leverage" class="profile-slider" min="1" max="20" value="5" oninput="document.getElementById('prof-leverage-val').textContent=this.value">
-        <div class="grid-2" style="gap:8px;margin-top:8px">
-          <div>
-            <label class="profile-label">Risk per Trade (%)</label>
-            <input type="number" id="prof-risk" class="login-input" placeholder="1.0" step="0.1" min="0.1" max="10" value="1.0">
-          </div>
-          <div>
-            <label class="profile-label">Max Daily Loss (%)</label>
-            <input type="number" id="prof-max-loss" class="login-input" placeholder="5.0" step="0.5" min="1" max="50" value="5.0">
-          </div>
-        </div>
-        <label class="profile-label">Max Open Positions</label>
-        <input type="number" id="prof-max-pos" class="login-input" placeholder="3" min="1" max="20" value="3">
-      </div>
-
-      <!-- Notifications -->
-      <div class="glass-card">
-        <div class="panel-title">&#128276; Notifications</div>
-        <label class="profile-label">Telegram Chat ID</label>
-        <input type="text" id="prof-tg-chat" class="login-input" placeholder="Telegram Chat ID">
-        <div class="notif-toggles">
-          <label class="notif-toggle"><input type="checkbox" id="notif-signals" checked> <span class="toggle-slider"></span> Signal Alerts</label>
-          <label class="notif-toggle"><input type="checkbox" id="notif-trades" checked> <span class="toggle-slider"></span> Trade Execution</label>
-          <label class="notif-toggle"><input type="checkbox" id="notif-tp"> <span class="toggle-slider"></span> Take Profit Hit</label>
-          <label class="notif-toggle"><input type="checkbox" id="notif-sl"> <span class="toggle-slider"></span> Stop Loss Hit</label>
-          <label class="notif-toggle"><input type="checkbox" id="notif-system"> <span class="toggle-slider"></span> System Alerts</label>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Account Status Row -->
-  <div class="glass-card" class="mt-gap">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px">
-      <div class="flex-items-3">
-        <span class="info-badge learning" id="prof-tier">FREE TIER</span>
-        <span style="font-size:.78rem;color:var(--text-secondary)">Verification: <span id="prof-verified" style="color:var(--yellow);font-weight:600">Pending</span></span>
-      </div>
-      <div style="display:flex;gap:20px;font-size:.75rem;color:var(--text-muted)">
-        <span>Member since: <span id="prof-member-since" class="text-secondary">--</span></span>
-        <span>Last login: <span id="prof-last-login" class="text-secondary">--</span></span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Save Button -->
-  <div style="text-align:center;margin-top:16px">
-    <button class="login-btn" style="width:auto;padding:12px 48px;font-size:.9rem" data-action="saveProfile">SAVE CHANGES</button>
-    <div class="login-error" id="profile-save-error" style="display:none"></div>
-    <div id="profile-save-ok" style="display:none;color:var(--green);font-size:.8rem;margin-top:8px;font-weight:600">Profile saved successfully!</div>
-  </div>
-
-  <!-- Admin Panel (visible to admin users only) -->
-  <div class="glass-card" style="margin-top:16px;border-color:rgba(167,139,250,.3)" id="admin-panel">
-    <div class="panel-title" class="text-purple">&#128272; Admin Panel <span class="badge" style="background:rgba(167,139,250,.15);color:var(--purple)">admin only</span></div>
-
-    <!-- System Overview -->
-    <div class="grid-4" class="mb-4">
-      <div class="stat-card"><div class="stat-value blue" id="admin-total-users">1</div><div class="stat-label">Total Users</div></div>
-      <div class="stat-card"><div class="stat-value green" id="admin-active-users">1</div><div class="stat-label">Active</div></div>
-      <div class="stat-card"><div class="stat-value yellow" id="admin-total-trades">0</div><div class="stat-label">Total Trades</div></div>
-      <div class="stat-card"><div class="stat-value" id="admin-uptime">--</div><div class="stat-label">Bot Uptime</div></div>
-    </div>
-
-    <!-- Registered Users Table -->
-    <div class="mb-4">
-      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Registered Users</div>
-      <div class="tbl-wrap">
-        <table>
-          <thead>
-            <tr><th>Email</th><th>Name</th><th>Role</th><th>API Keys</th><th>Pairs</th><th>Leverage</th><th>Status</th><th>Last Login</th></tr>
-          </thead>
-          <tbody id="admin-users-body">
-            <tr>
-              <td class="font-semibold">admin@vnedge.com</td>
-              <td>Admin</td>
-              <td><span class="badge" style="background:rgba(167,139,250,.15);color:var(--purple)">admin</span></td>
-              <td>Delta: &#10003;</td>
-              <td>BTC, ETH, SOL + 7 more</td>
-              <td>10x</td>
-              <td class="text-success">Active</td>
-              <td id="admin-last-login">--</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Current Configuration Summary — dynamic per-user (2026-04-19) -->
-    <!-- Previously had hardcoded placeholder text ("Key: bauW...USj9 | Balance: $199.19")
-         that was fiction shown to every user. Now fetched live from
-         /api/user/profile + /api/user/api-keys + /api/user/connection-status. -->
-    <div class="mb-4">
-      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">Current Bot Configuration <span style="color:var(--text-muted);font-weight:500;text-transform:none;letter-spacing:0" id="myConfigUser">(your account)</span></div>
-      <div class="grid-3" class="gap-2">
-        <div class="metric-cell">
-          <div class="metric-label">Exchange</div>
-          <div class="font-semibold text-info">Delta India</div>
-          <div class="text-xs text-muted">Production data · paper fills</div>
-        </div>
-        <div class="metric-cell">
-          <div class="metric-label">Trading Pairs</div>
-          <div class="font-semibold text-success" id="myPairsCount">loading…</div>
-          <div class="text-xs text-muted" id="myPairsList">—</div>
-        </div>
-        <div class="metric-cell">
-          <div class="metric-label">Risk Limits</div>
-          <div style="font-weight:600;color:var(--yellow)" id="myRiskHeadline">loading…</div>
-          <div class="text-xs text-muted" id="myRiskSub">—</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- API Key Status — YOUR keys only -->
-    <div>
-      <div style="font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;font-weight:700">
-        Your API Keys
-        <a href="/profile" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:500;margin-left:8px;font-size:.7rem">manage in Profile →</a>
-      </div>
-      <div class="grid-2" class="gap-2" id="myKeysCards">
-        <div class="text-xs text-muted" style="grid-column:1/-1">loading your keys…</div>
-      </div>
-    </div>
-  </div>
-</div>
 
 <script>
 // ── Per-user bot-config card: fetches actual user data, not hardcoded. ──
@@ -2360,11 +1913,7 @@ async function validateApiKeyInline() {
 <!-- ═══ AGENTS TAB ═══════════════════════════════════════ -->
 <div class="tab-content" role="tabpanel" id="tab-agents">
 
-  <!-- 🧠 Chief Quant Continuous Briefing — meta-agent (moved from Live tab 2026-04-28) -->
-  <section id="chief-quant-panel" aria-label="Chief Quant continuous briefing"></section>
 
-  <!-- 🛰 Agents Status — 14-agent team + Tier A/B + specialty crons (2026-04-27) -->
-  <section id="agents-status-panel" aria-label="Agents status table"></section>
 
   <!-- Phase 0: Pipeline Funnel + Heartbeat row -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap);margin-bottom:var(--gap)">
@@ -2445,37 +1994,8 @@ async function validateApiKeyInline() {
   </div>
 
   <div class="grid-2">
-    <!-- LEFT: Agent Status Cards -->
+    <!-- LEFT: ML Model Performance -->
     <div>
-      <div class="glass-card">
-        <div class="panel-title">Agent Status <span class="badge badge-green" id="agents-count">0 active</span></div>
-        <div id="agents-status-list" style="display:flex;flex-direction:column;gap:10px">
-          <div class="stat-card" class="glass-card--accent-success">
-            <div class="flex justify-between items-center">
-              <strong>QA Auditor</strong>
-              <span class="badge badge-green" id="qa-status">IDLE</span>
-            </div>
-            <div class="text-muted" class="text-sm-mt" id="qa-last-run">Last run: --</div>
-            <div class="text-base-mt" id="qa-summary">Waiting for first run...</div>
-          </div>
-          <div class="stat-card" class="glass-card--accent-info">
-            <div class="flex justify-between items-center">
-              <strong>Loss Analyzer</strong>
-              <span class="badge badge-green" id="loss-analyzer-status">IDLE</span>
-            </div>
-            <div class="text-muted" class="text-sm-mt" id="loss-last-run">Last run: --</div>
-            <div class="text-base-mt" id="loss-summary">Monitoring losses...</div>
-          </div>
-          <div class="stat-card" class="glass-card--accent-purple">
-            <div class="flex justify-between items-center">
-              <strong>ML Trainer</strong>
-              <span class="badge" id="ml-trainer-status">IDLE</span>
-            </div>
-            <div class="text-muted" class="text-sm-mt" id="ml-last-run">Last run: --</div>
-            <div class="text-base-mt" id="ml-summary">Loading...</div>
-          </div>
-        </div>
-      </div>
 
       <!-- ML Model Performance -->
       <div class="glass-card" class="mt-gap">
@@ -2494,40 +2014,8 @@ async function validateApiKeyInline() {
     <!-- RIGHT: QA Test Results + Loss Analysis -->
     <div>
       <!-- QA Test Results -->
-      <div class="glass-card">
-        <div class="panel-title">QA Test Results <span class="badge" id="qa-pass-rate">--</span></div>
-        <div id="qa-results-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-          <div class="stat-card">
-            <div class="text-muted" class="text-sm">Unit Tests</div>
-            <div class="text-lg font-bold" id="qa-unit-result">--</div>
-          </div>
-          <div class="stat-card">
-            <div class="text-muted" class="text-sm">Integration Tests</div>
-            <div class="text-lg font-bold" id="qa-integration-result">--</div>
-          </div>
-          <div class="stat-card">
-            <div class="text-muted" class="text-sm">API Tests</div>
-            <div class="text-lg font-bold" id="qa-api-result">--</div>
-          </div>
-          <div class="stat-card">
-            <div class="text-muted" class="text-sm">Data Integrity</div>
-            <div class="text-lg font-bold" id="qa-data-result">--</div>
-          </div>
-        </div>
-      </div>
 
       <!-- Defects List -->
-      <div class="glass-card" class="mt-gap">
-        <div class="panel-title">Open Defects <span class="badge badge-red" id="defect-count">0</span></div>
-        <div id="defects-list" class="max-h-300">
-          <table class="trade-table">
-            <thead><tr><th>ID</th><th>Severity</th><th>Description</th><th>Status</th></tr></thead>
-            <tbody id="defects-table">
-              <tr><td colspan="4" class="text-muted">Loading...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
 
       <!-- Recent Loss Analysis -->
       <div class="glass-card" class="mt-gap">
@@ -2629,99 +2117,6 @@ async function validateApiKeyInline() {
 <!-- ═══════════════════════════════════════════════════════ -->
 <!-- TAB: ADMIN (visible to admin role only)                -->
 <!-- ═══════════════════════════════════════════════════════ -->
-<div class="tab-content" role="tabpanel" id="tab-admin">
-
-  <!-- Row 1: User Management + Active Sessions -->
-  <div class="grid-2" class="mb-gap">
-
-    <!-- User Management -->
-    <div class="glass-card">
-      <div class="card-title">User Management</div>
-      <div class="mb-3">
-        <button class="btn btn--info btn--sm" data-action="refreshAdminUsers">Refresh</button>
-        <button class="btn btn--success btn--sm" data-action="adminAddUser" style="margin-left:8px">+ Add User</button>
-        <span class="text-muted text-xs ml-auto" id="admin-user-count">0 users</span>
-      </div>
-      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
-        <table class="data-table" id="admin-users-table">
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Mode</th>
-              <th>Active</th>
-              <th>Last Login</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="admin-users-body">
-            <tr><td colspan="6" class="empty-state">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Active Sessions -->
-    <div class="glass-card">
-      <div class="card-title">Active Sessions</div>
-      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
-        <table class="data-table" id="admin-sessions-table">
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>IP</th>
-              <th>Last Activity</th>
-              <th>Requests</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="admin-sessions-body">
-            <tr><td colspan="5" class="empty-state">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Row 2: Audit Log -->
-  <div class="grid-2" class="mb-gap">
-
-    <!-- Audit Log -->
-    <div class="glass-card">
-      <div class="card-title">Login Audit Trail</div>
-      <div style="overflow-x:auto;max-height:350px;overflow-y:auto">
-        <table class="data-table" id="admin-audit-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Email</th>
-              <th>IP</th>
-              <th>Result</th>
-              <th>Reason</th>
-            </tr>
-          </thead>
-          <tbody id="admin-audit-body">
-            <tr><td colspan="5" class="empty-state">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- Row 3: System Stats -->
-  <div class="glass-card">
-    <div class="card-title">Database Stats</div>
-    <div class="grid-4" id="admin-db-stats">
-      <div class="stat-mini"><span class="metric-label">Total Users</span><span class="stat-value--sm text-info" id="admin-stat-users">--</span></div>
-      <div class="stat-mini"><span class="metric-label">Active Sessions</span><span class="stat-value--sm text-success" id="admin-stat-sessions">--</span></div>
-      <div class="stat-mini"><span class="metric-label">Total Trades</span><span class="stat-value--sm text-warning" id="admin-stat-trades">--</span></div>
-      <div class="stat-mini"><span class="metric-label">API Keys</span><span class="stat-value--sm text-purple" id="admin-stat-keys">--</span></div>
-    </div>
-  </div>
-
-</div>
 
 <!-- ═══ STATUS FOOTER (compact, kept for JS) ═════════════ -->
 <footer class="dash-footer">
@@ -2745,18 +2140,15 @@ async function validateApiKeyInline() {
         <h4>Quick Links</h4>
         <a href="#tab-live" data-action="switchTab" data-arg="live">Dashboard</a>
         <a href="#tab-analytics" data-action="switchTab" data-arg="analytics">Analytics</a>
-        <a href="#tab-about" data-action="switchTab" data-arg="about">About</a>
         <a href="https://t.me/vnedgebot" target="_blank" rel="noopener">Telegram Bot</a>
       </div>
       <div class="footer-col">
         <h4>System</h4>
         <a href="#tab-system" data-action="switchTab" data-arg="system">System Status</a>
-        <a href="#tab-about" data-action="switchTab" data-arg="about">Contact</a>
       </div>
       <div class="footer-col">
         <h4>Resources</h4>
         <a href="https://t.me/vnedgebot" target="_blank" rel="noopener">Telegram Alerts</a>
-        <a href="#tab-about" data-action="switchTab" data-arg="about">Risk Disclaimer</a>
         <a href="#tab-analytics" data-action="switchTab" data-arg="analytics">Trade History</a>
       </div>
     </div>
@@ -2801,15 +2193,8 @@ async function validateApiKeyInline() {
 <script src="/static/js/core.js"></script>
 <script src="/static/js/ux_utils.js"></script>
 <script src="/static/js/app.js"></script>
-<script src="/static/js/overview_strip.js"></script>
-<script src="/static/js/copilot.js"></script>
-<script src="/static/js/quant_heroes.js"></script>
-<script src="/static/js/phase2_leaderboard.js"></script>
-<script src="/static/js/agents_status.js"></script>
-<script src="/static/js/chief_quant_briefing.js"></script>
 <script src="/static/js/trade_stream.js"></script>
 <script src="/static/js/v2_polish.js"></script>
-<script src="/static/js/admin.js"></script>
 <div id="trade-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--bg);border:1px solid var(--border-active);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">

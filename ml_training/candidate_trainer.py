@@ -1614,6 +1614,7 @@ class CandidateTrainer:
         htf_1h_df: Optional[pd.DataFrame] = None,
         htf_4h_df: Optional[pd.DataFrame] = None,
         btc_df: Optional[pd.DataFrame] = None,  # Phase 5.0a
+        save_models: bool = True,
     ) -> Dict:
         """Run the complete candidate training pipeline end-to-end.
 
@@ -1875,6 +1876,7 @@ class CandidateTrainer:
                 htf_1h_df=htf_1h_df,
                 htf_4h_df=htf_4h_df,
                 btc_df=btc_df,  # Phase 5.0a
+                save_models=save_models,
             )
             all_results[scanner_name] = result
 

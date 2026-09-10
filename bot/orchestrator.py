@@ -324,6 +324,8 @@ class BotOrchestrator:
                         on_price=self._on_ws_price,
                         on_order_fill=self._on_ws_order_fill,
                         on_position_update=self._on_ws_position_update,
+                        on_candle=self._on_ws_candle,
+                        candle_timeframes=[v for v in (self._config.get("timeframes", {}) or {}).values() if isinstance(v, str)] or None,
                         api_key=_ws_api_key,
                         api_secret=_ws_api_secret,
                         mode="demo" if _dry_run else "live",
@@ -628,6 +630,16 @@ class BotOrchestrator:
     # ------------------------------------------------------------------
     # Fast trade monitor (5s cycle — higher priority than signal scanning)
     # ------------------------------------------------------------------
+
+    async def _on_ws_candle(self, symbol: str, tf: str, candle: dict) -> None:
+        """WebSocket candlestick → data feed (same close detection as REST)."""
+        feed = getattr(self, "_data_feed", None)
+        if feed is None or not hasattr(feed, "ingest_candle"):
+            return
+        try:
+            await feed.ingest_candle(symbol, tf, candle)
+        except Exception as exc:
+            self._log.debug("ws candle ingest failed %s/%s: %s", symbol, tf, exc)
 
     async def _on_ws_price(self, symbol: str, last: float, bid: float, ask: float, mark: float) -> None:
         """WebSocket price callback — fires every ~100ms per symbol."""

@@ -480,50 +480,109 @@ class DataFeed:
     # REST polling fallback
     # ------------------------------------------------------------------
 
-    async def _poll_loop(self) -> None:
-        """Periodically fetch candles via REST when websocket is unavailable."""
-        self._state = FeedState.POLLING
-        logger.info("REST polling active – interval=%.1f s", self._poll_interval)
+    # Timeframe length in ms — used to schedule polls right after each bar closes.
+    _TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+              "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000, "1d": 86_400_000}
+    _POLL_GRACE_MS = 1_500          # fetch this long after the boundary (exchange finalises the bar)
+    _POLL_PARALLEL = 8              # concurrent REST requests
+    _POLL_RETRY_MS = 5_000          # retry a failed (symbol, tf) after this long
+    _POLL_SAFETY_MS = 60_000        # 1m/5m frames: also re-poll at least this often (catches missed closes)
 
-        # Per-symbol error tracking (prevents one bad symbol from killing all feeds)
+    def _next_boundary_ms(self, tf: str, now_ms: int) -> int:
+        tf_ms = self._TF_MS.get(tf, 60_000)
+        return (now_ms // tf_ms + 1) * tf_ms
+
+    async def _poll_loop(self) -> None:
+        """Boundary-aligned, parallel REST candle polling.
+
+        Old behaviour: 100 sequential requests (20 symbols x 5 frames, ~300 ms
+        each) then a 10 s sleep — a ~41 s cycle, so a 5m close was noticed
+        0-41 s late. New behaviour: every (symbol, tf) is polled ~1.5 s after
+        its own bar boundary, up to 8 requests in flight at once. 1m/5m frames
+        are additionally refreshed at least once a minute; 15m/1h/4h only at
+        their boundaries. The Delta WebSocket candlestick channels (see
+        ingest_candle) usually deliver the close first; this loop is the
+        backstop.
+        """
+        self._state = FeedState.POLLING
+        logger.info("REST polling active — boundary-aligned, %d parallel", self._POLL_PARALLEL)
         _sym_errors: Dict[str, int] = {}
         _sym_disabled: set = set()
+        next_due: Dict[tuple, int] = {}
+        sem = asyncio.Semaphore(self._POLL_PARALLEL)
+
+        async def _one(sub: _Subscription, tf: str, now_ms: int) -> None:
+            async with sem:
+                try:
+                    await self._poll_once(sub, tf)
+                    _sym_errors[sub.symbol] = 0
+                    boundary = self._next_boundary_ms(tf, now_ms) + self._POLL_GRACE_MS
+                    if tf in ("1m", "3m", "5m"):
+                        boundary = min(boundary, now_ms + self._POLL_SAFETY_MS)
+                    next_due[(sub.symbol, tf)] = boundary
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("REST poll error for %s/%s", sub.symbol, tf)
+                    _sym_errors[sub.symbol] = _sym_errors.get(sub.symbol, 0) + 1
+                    next_due[(sub.symbol, tf)] = now_ms + self._POLL_RETRY_MS
+                    # Per-symbol circuit breaker: disable after 15 consecutive errors
+                    # (3 poll cycles x 5 timeframes = 15). Other symbols unaffected.
+                    if _sym_errors[sub.symbol] >= 15:
+                        logger.error(
+                            "REST DISABLED for %s: %d consecutive errors — "
+                            "skipping until restart (other symbols unaffected)",
+                            sub.symbol, _sym_errors[sub.symbol],
+                        )
+                        _sym_disabled.add(sub.symbol)
 
         while not self._stop_event.is_set():
-            for sub in self._subscriptions.values():
-                # Skip symbols that have been disabled due to persistent errors
+            now_ms = int(time.time() * 1000)
+            due = []
+            for sub in list(self._subscriptions.values()):
                 if sub.symbol in _sym_disabled:
                     continue
                 for tf in sub.timeframes:
-                    try:
-                        await self._poll_once(sub, tf)
-                        # Success: reset this symbol's error count
-                        _sym_errors[sub.symbol] = 0
-                    except asyncio.CancelledError:
-                        return
-                    except Exception:
-                        logger.warning(
-                            "REST poll error for %s/%s", sub.symbol, tf
-                        )
-                        _sym_errors[sub.symbol] = _sym_errors.get(sub.symbol, 0) + 1
-                        # Per-symbol circuit breaker: disable after 15 consecutive errors
-                        # (3 poll cycles × 5 timeframes = 15). Other symbols unaffected.
-                        if _sym_errors[sub.symbol] >= 15:
-                            logger.error(
-                                "REST DISABLED for %s: %d consecutive errors — "
-                                "skipping until restart (other symbols unaffected)",
-                                sub.symbol, _sym_errors[sub.symbol],
-                            )
-                            _sym_disabled.add(sub.symbol)
-                            break  # skip remaining TFs for this symbol
-
+                    if now_ms >= next_due.get((sub.symbol, tf), 0):
+                        due.append((sub, tf))
+            if due:
+                await asyncio.gather(*(_one(sub, tf, now_ms) for sub, tf in due), return_exceptions=True)
+            # Sleep until the earliest due time (max 1 s so stop() stays responsive)
+            pending = [t for k, t in next_due.items() if k[0] not in _sym_disabled]
+            wait_ms = min([t - int(time.time() * 1000) for t in pending] + [1000]) if pending else 1000
             try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=self._poll_interval
-                )
+                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.05, min(wait_ms, 1000) / 1000))
                 return
             except asyncio.TimeoutError:
                 pass
+
+    async def ingest_candle(self, symbol: str, tf: str, candle: Dict[str, Any]) -> None:
+        """Feed a candle that arrived from the WebSocket candlestick channel.
+
+        Same store + closed-bar detection as the REST poller, so a close is
+        emitted exactly once whichever source sees it first. ``candle`` uses
+        the REST shape: timestamp (ms), open, high, low, close, volume.
+        """
+        sub = self._subscriptions.get(symbol)
+        if sub is None or tf not in sub.timeframes:
+            return
+        try:
+            ts_ms = int(candle["timestamp"])
+        except Exception:
+            return
+        if ts_ms > int(time.time() * 1000):
+            return  # never store a bar that hasn't started
+        prev_ts = sub.last_candle_ts.get(tf, 0)
+        if ts_ms < prev_ts:
+            return  # stale replay
+        self._dm.update_candle(symbol, tf, candle)
+        sub.last_data_time = time.monotonic()
+        if ts_ms > prev_ts and prev_ts > 0:
+            closed = sub.last_candle.get(tf)
+            if closed is not None:
+                await self._emit(event="candle_closed", symbol=symbol, timeframe=tf, candle=closed)
+        sub.last_candle_ts[tf] = ts_ms
+        sub.last_candle[tf] = candle
 
     async def _poll_once(self, sub: _Subscription, tf: str) -> None:
         """Fetch the latest candles for one (symbol, tf) pair via REST.

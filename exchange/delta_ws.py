@@ -83,6 +83,8 @@ class DeltaWebSocket:
         on_price: Optional[Callable] = None,
         on_order_fill: Optional[Callable] = None,
         on_position_update: Optional[Callable] = None,
+        on_candle: Optional[Callable] = None,
+        candle_timeframes: Optional[List[str]] = None,
         api_key: str = "",
         api_secret: str = "",
         mode: str = "live",
@@ -98,6 +100,9 @@ class DeltaWebSocket:
         self.on_price = on_price  # callback(symbol, last, bid, ask, mark)
         self.on_order_fill = on_order_fill  # callback(symbol, order_id, client_order_id, fill_price, side, size)
         self.on_position_update = on_position_update  # callback(symbol, size, entry_price, pnl)
+        # callback(symbol, tf, candle_dict) — Delta candlestick_{tf} channel, REST-shaped dict
+        self.on_candle = on_candle
+        self._candle_timeframes: List[str] = list(candle_timeframes or ["1m", "5m", "15m", "1h", "4h"])
         self._api_key = api_key
         self._api_secret = api_secret
         self._ping_interval = ping_interval
@@ -251,13 +256,17 @@ class DeltaWebSocket:
         if not delta_symbols:
             return
 
-        # Public channels: v2/ticker
+        # Public channels: v2/ticker + candlesticks (real-time candle closes;
+        # the REST poller is only a backstop when these are subscribed)
         channels = [
             {
                 "name": "v2/ticker",
                 "symbols": delta_symbols,
             }
         ]
+        if self.on_candle:
+            for _tf in self._candle_timeframes:
+                channels.append({"name": f"candlestick_{_tf}", "symbols": delta_symbols})
 
         # Private channels (requires auth) — need symbol arrays
         if self._authenticated:
@@ -297,6 +306,11 @@ class DeltaWebSocket:
                 self._authenticated = False
             return
 
+        # ── PUBLIC: Candlestick update (candlestick_1m / _5m / ...) ──
+        if msg_type.startswith("candlestick_"):
+            await self._handle_candle(data)
+            return
+
         # ── PUBLIC: Ticker update ──
         if msg_type == "v2/ticker":
             await self._handle_ticker(data)
@@ -311,6 +325,36 @@ class DeltaWebSocket:
         if msg_type == "positions":
             await self._handle_position_event(data)
             return
+
+    async def _handle_candle(self, data: dict) -> None:
+        """candlestick_{tf} message → on_candle(symbol, tf, candle).
+
+        Delta sends the live bar repeatedly as it evolves; timestamps are in
+        microseconds (candle_start_time). The feed decides when a bar is
+        complete (a newer candle_start_time appears).
+        """
+        if not self.on_candle:
+            return
+        try:
+            symbol = REVERSE_MAP.get(data.get("symbol", ""))
+            tf = data.get("resolution") or data.get("type", "")[len("candlestick_"):]
+            start_us = data.get("candle_start_time")
+            if not symbol or not tf or not start_us:
+                return
+            candle = {
+                "timestamp": int(int(start_us) // 1000),  # µs → ms
+                "open": float(data.get("open", 0) or 0),
+                "high": float(data.get("high", 0) or 0),
+                "low": float(data.get("low", 0) or 0),
+                "close": float(data.get("close", 0) or 0),
+                "volume": float(data.get("volume", 0) or 0),
+            }
+            if candle["close"] <= 0:
+                return
+            self.candle_msg_count = getattr(self, "candle_msg_count", 0) + 1
+            await self.on_candle(symbol, tf, candle)
+        except Exception as exc:
+            logger.debug("DeltaWS candle callback error: %s", exc)
 
     async def _handle_ticker(self, data: dict) -> None:
         """Process ticker price update."""

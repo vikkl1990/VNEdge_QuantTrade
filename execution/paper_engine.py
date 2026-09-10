@@ -229,10 +229,12 @@ class PaperExecutionEngine:
                 return None
             position_size = (risk_amount / sl_distance) * lev
 
-        notional = fill_price * position_size / lev
-        # Scalper + Maker: entry at maker rate (0.02%), exit free within window
-        entry_fee_rate = self.maker_fee_rate if use_maker else self.taker_fee_rate
-        fee = notional * entry_fee_rate  # Maker entry = 0.02% (was taker 0.06%)
+        notional = fill_price * position_size / lev   # margin actually deployed
+        # Exchange fees are charged on FULL notional (price × size), not margin.
+        from execution.fees import get_fee_model
+        fee = get_fee_model().leg_fee_usd(
+            fill_price * position_size, "maker" if use_maker else "taker", symbol,
+        )
 
         if notional > self.balance:
             logger.info(
@@ -311,7 +313,9 @@ class PaperExecutionEngine:
             fill_price = current_price + slip
 
         exit_size = trade.remaining_size * close_pct
-        fee = (fill_price * exit_size / trade.leverage) * self.settlement_fee_rate  # Exit uses settlement/taker
+        # Exits are market orders → taker, charged on the leg's full notional
+        from execution.fees import get_fee_model
+        fee = get_fee_model().leg_fee_usd(fill_price * exit_size, "taker", trade.symbol)
 
         if close_pct >= 1.0:
             pnl = trade.mark_closed(fill_price, fee, reason)

@@ -1414,6 +1414,18 @@ def validate_product_map(mode: str = "live") -> Dict[str, Any]:
         if problems:
             summary["mismatches"].append((sym, problems))
             logger.error("PRODUCT_MAP DRIFT: %s (%s): %s", sym, pid, "; ".join(problems))
+    # Commission rates: refresh the shared FeeModel from the exchange and log
+    # any difference from the configured defaults (fees are per product).
+    try:
+        from execution.fees import get_fee_model
+        _diffs = get_fee_model().update_from_products(
+            live.values(), {s: i.get(id_key) for s, i in PRODUCT_MAP.items() if i.get(id_key)},
+        )
+        summary["fee_diffs"] = _diffs
+        for d in _diffs:
+            logger.warning("FEE RATE DRIFT: %s", d)
+    except Exception as _fe:
+        logger.debug("fee refresh skipped: %s", _fe)
     if not summary["mismatches"] and not summary["missing"]:
         logger.info("PRODUCT_MAP validated: %d products match Delta (%s)", summary["checked"], mode)
     return summary

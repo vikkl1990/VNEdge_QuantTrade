@@ -101,6 +101,21 @@ class ExecutionEngine:
     # Entry
     # ==================================================================
 
+    async def execute(self, symbol: str, signal: Dict[str, Any]):
+        """Interface parity with PaperExecutionEngine.execute().
+
+        The orchestrator drives every engine through execute(symbol, signal).
+        This live engine only implements execute_entry(signal, position_size)
+        and has never been exercised through the orchestrator (audit finding
+        #4). Fail loudly rather than with an AttributeError deep in the loop:
+        the live path must be wired and tested end-to-end before it is armed.
+        """
+        raise NotImplementedError(
+            "Live ExecutionEngine.execute() is not wired: sizing, admission and the "
+            "orchestrator contract must be implemented and tested before live trading "
+            f"({symbol}). See audit finding #4."
+        )
+
     async def execute_entry(
         self, signal: Dict[str, Any], position_size: float
     ) -> Trade:

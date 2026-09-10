@@ -149,7 +149,10 @@ async def build_components(config, mode, symbols, logger):
 
     # -- Execution engine (live vs paper) --
     if mode in (BotMode.LIVE,):
-        execution_engine = ExecutionEngine(config_dict, exchange)
+        # ExecutionEngine(exchange, config, risk_manager) — the arguments were
+        # previously passed in the wrong order, so the live engine treated the
+        # exchange object as its config (audit finding #4).
+        execution_engine = ExecutionEngine(exchange, config_dict, risk_manager=risk_manager)
         logger.warning("*** LIVE EXECUTION ENGINE ACTIVE - real orders will be placed ***")
     else:
         execution_engine = PaperExecutionEngine(config_dict)

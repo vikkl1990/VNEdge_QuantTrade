@@ -153,7 +153,9 @@ class SimulatorConfig:
     #   peak ≥ 0.3R → lock 0.60× peak
 
     # Fees (round-trip as fraction of notional)
-    fee_rate_per_side: float = 0.00047  # Scalper tier
+    # Half of the maker-entry / taker-exit round trip incl. GST (0.0826 % / 2),
+    # so `fee_rate_per_side * 2` in fee_r matches execution/fees.FeeModel.
+    fee_rate_per_side: float = 0.000413
 
     # Debug
     verbose: bool = False

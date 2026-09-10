@@ -54,8 +54,10 @@ def _completed_bars_only(df, tf: str, now_ms: int):
         mask = (open_ms + tf_ms) <= now_ms
         if mask.all():
             return df
-        out = df[mask]
-        return out if len(out) > 0 else df
+        # An empty frame is the truthful answer when nothing has completed;
+        # returning the forming bar would put an unfinished candle back in
+        # front of the scanners.
+        return df[mask]
     except Exception:
         return df
 

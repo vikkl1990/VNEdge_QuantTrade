@@ -359,23 +359,25 @@ class TestFeeCalculation:
         ts.exit_price = 66200.0
         tracker = _make_tracker()
         pnl = tracker._calc_pnl(ts, 66200.0)
-        expected_fee_pct = 0.177
-        assert abs(ts.total_fees_pct - expected_fee_pct) < 0.01
-        assert ts.fee_type == "standard"
+        # Delta India perps: maker entry 0.0236 % + taker exit 0.059 % on the
+        # exit leg's notional (66200/66000) — no settlement fee, no promo.
+        expected_fee_pct = 0.0236 + 0.059 * (66200.0 / 66000.0)
+        assert abs(ts.total_fees_pct - expected_fee_pct) < 0.001
+        assert ts.fee_type == "maker_entry"
         assert ts.gross_pnl_pct > ts.total_fees_pct
 
-    def test_fee_calculation_scalper(self):
+    def test_fee_calculation_taker_entry(self):
         sig = _make_signal(entry_price=66000.0, stop_loss=65500.0, confidence=75, ml_probability=0.55)
         ts = TrackedSignal.from_signal(sig)
         ts.entry_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         ts.exit_time = datetime.now(timezone.utc).isoformat()
         ts.exit_price = 66200.0
+        ts.slippage_bps = 6.0          # crossed the spread → taker entry
         tracker = _make_tracker()
-        pnl = tracker._calc_pnl(ts, 66200.0)
-        expected_fee_pct = 0.079
-        assert abs(ts.total_fees_pct - expected_fee_pct) < 0.01
-        assert ts.fee_type == "scalper"
-        assert ts.within_scalper is True
+        pnl = tracker._calc_pnl(ts, 66200.0, "auto")
+        expected_fee_pct = 0.059 + 0.059 * (66200.0 / 66000.0)
+        assert abs(ts.total_fees_pct - expected_fee_pct) < 0.001
+        assert ts.fee_type == "taker_entry"
 
 
 # ═══════════════════════════════════════════════════════════════

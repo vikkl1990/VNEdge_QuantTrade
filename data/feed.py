@@ -577,12 +577,14 @@ class DataFeed:
             return  # stale replay
         self._dm.update_candle(symbol, tf, candle)
         sub.last_data_time = time.monotonic()
-        if ts_ms > prev_ts and prev_ts > 0:
-            closed = sub.last_candle.get(tf)
-            if closed is not None:
-                await self._emit(event="candle_closed", symbol=symbol, timeframe=tf, candle=closed)
+        closed = sub.last_candle.get(tf) if (ts_ms > prev_ts and prev_ts > 0) else None
+        # Advance the watermark BEFORE awaiting listeners: while a listener is
+        # suspended another producer (REST vs WS) could otherwise observe the
+        # old watermark and emit the same close twice.
         sub.last_candle_ts[tf] = ts_ms
         sub.last_candle[tf] = candle
+        if closed is not None:
+            await self._emit(event="candle_closed", symbol=symbol, timeframe=tf, candle=closed)
 
     async def _poll_once(self, sub: _Subscription, tf: str) -> None:
         """Fetch the latest candles for one (symbol, tf) pair via REST.
@@ -639,19 +641,22 @@ class DataFeed:
 
             # A newer timestamp means the previous bar is COMPLETE. Emit the
             # finished bar; the new one is still forming (near-zero body and
-            # volume) and must not drive analysis.
+            # volume) and must not drive analysis. The watermark is advanced
+            # BEFORE awaiting listeners so a concurrent producer cannot emit
+            # the same close a second time.
+            closed = None
             if candle["timestamp"] > prev_ts and prev_ts > 0:
                 closed = sub.last_candle.get(tf)
-                if closed is not None:
-                    await self._emit(
-                        event="candle_closed",
-                        symbol=sub.symbol,
-                        timeframe=tf,
-                        candle=closed,
-                    )
             if candle["timestamp"] >= prev_ts:
                 sub.last_candle_ts[tf] = candle["timestamp"]
                 sub.last_candle[tf] = candle
+            if closed is not None:
+                await self._emit(
+                    event="candle_closed",
+                    symbol=sub.symbol,
+                    timeframe=tf,
+                    candle=closed,
+                )
 
         # Price from last candle
         last_close = ohlcv[-1][4]

@@ -325,8 +325,17 @@ class ScalpStrategy(BaseStrategy):
         self.scalper_cost_pct = 0.047   # entry maker only (exit free under Scalper)
 
         # --- Fee Viability Constants (Upgrade 1) ---
-        self.FEE_RT_TAKER = 0.00059   # 0.059% entry only — Scalper Offer = free exit
-        self.FEE_RT_MAKER = 0.00024   # maker entry only — Scalper Offer = free exit
+        # Round-trip fractions from the shared FeeModel (entry + taker exit,
+        # GST included). The old values counted the entry leg only, on the
+        # assumption of a free-exit "scalper offer" the exchange does not run.
+        try:
+            from execution.fees import get_fee_model as _gfm
+            _fm = _gfm(config)
+            self.FEE_RT_TAKER = _fm.round_trip_pct("taker", "taker") / 100.0   # ≈ 0.00118
+            self.FEE_RT_MAKER = _fm.round_trip_pct("maker", "taker") / 100.0   # ≈ 0.000826
+        except Exception:
+            self.FEE_RT_TAKER = 0.00118
+            self.FEE_RT_MAKER = 0.000826
         self.FEE_VIABILITY_MULT = 2.5 # min move must be 2.5x fees (was 4x — too strict in low vol)
         self.min_edge_high_conf = 0.18  # conservative_move ≥ 0.18% for conf 90+
         self.min_edge_low_conf = 0.25   # conservative_move ≥ 0.25% for conf < 90

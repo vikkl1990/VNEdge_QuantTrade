@@ -83,8 +83,11 @@ def check_price_freshness(signal: Dict[str, Any]) -> tuple:
     Returns (is_fresh, age_seconds).
     """
     ts = signal.get("timestamp")
+    # A missing, malformed or unsupported timestamp is NOT evidence of
+    # freshness. Fail closed: treat it as stale so it cannot pass a safety
+    # gate by accident (previously every bad value returned (True, 0)).
     if not ts:
-        return True, 0  # no timestamp = assume fresh (paper mode)
+        return False, float("inf")
 
     try:
         if isinstance(ts, str):
@@ -92,9 +95,11 @@ def check_price_freshness(signal: Dict[str, Any]) -> tuple:
         elif isinstance(ts, (int, float)):
             signal_time = datetime.fromtimestamp(ts, tz=timezone.utc)
         else:
-            return True, 0
+            return False, float("inf")
+        if signal_time.tzinfo is None:
+            signal_time = signal_time.replace(tzinfo=timezone.utc)
 
         age = (datetime.now(timezone.utc) - signal_time).total_seconds()
         return age < _STALE_THRESHOLD_SEC, age
     except Exception:
-        return True, 0
+        return False, float("inf")

@@ -289,13 +289,13 @@ class TestFeeViability:
         assert "entry_slip_pct" in bd
         assert "exit_slip_pct" in bd
 
-    def test_scalper_exit_fee_zero(self):
-        """Scalper exit fee should be 0."""
+    def test_exit_fee_is_taker_regardless_of_window(self):
+        """Exits are market orders: taker fee incl. GST, no free-exit promo."""
         result = SignalTracker.get_min_viable_move(
             symbol="BTC/USDT", position_usd=500.0,
             leverage=10.0, sl_distance_pct=0.5, within_scalper=True,
         )
-        assert result["breakdown"]["exit_fee_pct"] == 0.0
+        assert abs(result["breakdown"]["exit_fee_pct"] - 0.059) < 1e-6
 
     def test_altcoin_higher_slippage(self):
         """Altcoins (DOGE) should have higher slippage than BTC."""
@@ -554,52 +554,25 @@ class TestPnLCalculation:
 # ===================================================================
 
 class TestFeeConstants:
-    def test_taker_fee(self):
+    """Fees come from execution/fees.FeeModel (Delta India: maker 0.02 %,
+    taker 0.05 %, +18 % GST, no settlement fee on perpetuals)."""
+
+    def test_legacy_names_still_present(self):
         assert SignalTracker.TAKER_FEE_PCT == 0.059
+        assert SignalTracker.MAKER_FEE_PCT == 0.0236
 
-    def test_settlement_fee(self):
-        assert SignalTracker.SETTLEMENT_FEE_PCT == 0.059
+    def test_model_matches_exchange_schedule(self):
+        from execution.fees import FeeModel
+        fm = FeeModel()
+        assert fm.side_pct("taker") == pytest.approx(0.059)
+        assert fm.side_pct("maker") == pytest.approx(0.0236)
+        assert fm.round_trip_pct("maker", "taker") == pytest.approx(0.0826)
 
-    def test_scalper_entry_maker(self):
-        assert SignalTracker.SCALPER_ENTRY_MAKER_PCT == 0.02
+    def test_maker_entry_cheaper_than_taker_entry(self):
+        from execution.fees import FeeModel
+        fm = FeeModel()
+        assert fm.round_trip_pct("maker", "taker") < fm.round_trip_pct("taker", "taker")
 
-    def test_scalper_exit_free(self):
-        assert SignalTracker.SCALPER_EXIT_FEE_PCT == 0.00
-
-    def test_scalper_round_trip_cheaper(self):
-        """Scalper round-trip should be cheaper than standard."""
-        scalper_total = (
-            SignalTracker.SCALPER_ENTRY_MAKER_PCT +
-            SignalTracker.SCALPER_EXIT_FEE_PCT +
-            SignalTracker.SETTLEMENT_FEE_PCT
-        )
-        standard_total = (
-            SignalTracker.TAKER_FEE_PCT * 2 +
-            SignalTracker.SETTLEMENT_FEE_PCT
-        )
-        assert scalper_total < standard_total
-
-
-# ===================================================================
-# Scalper window constants
-# ===================================================================
-
-@pytest.mark.skipif(not _HAS_LEGACY_WINDOWS,
-                    reason="SCALPER_WINDOW_* constants replaced by Phase 4.7 Profit Defender")
-class TestScalperWindows:
-    def test_btc_window(self):
-        assert SCALPER_WINDOW_BTC == 14 * 60  # 14 minutes
-
-    def test_other_window(self):
-        assert SCALPER_WINDOW_OTHER == 6 * 60  # 6 minutes
-
-    def test_btc_longer_than_other(self):
-        assert SCALPER_WINDOW_BTC > SCALPER_WINDOW_OTHER
-
-
-# ===================================================================
-# R-multiple tracking
-# ===================================================================
 
 class TestRMultiples:
     def test_r_multiple_long_win(self):

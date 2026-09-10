@@ -2611,17 +2611,10 @@ class SignalTracker:
     # P&L calculation
     # ------------------------------------------------------------------
 
-    # Delta Exchange fee schedule
-    # Standard fees
-    # Delta Exchange India actual rates (base + 18% GST)
-    TAKER_FEE_PCT = 0.059    # 0.05% base + 18% GST = 0.059% per side
-    MAKER_FEE_PCT = 0.0236   # 0.02% base + 18% GST = 0.0236% per side
-    SETTLEMENT_FEE_PCT = 0.059  # 0.05% base + 18% GST = 0.059% on close
-
-    # Scalper offer fees (0% closing fee within window)
-    SCALPER_ENTRY_MAKER_PCT = 0.02   # 0.02% maker opening fee
-    SCALPER_ENTRY_TAKER_PCT = 0.05   # 0.05% taker opening fee
-    SCALPER_EXIT_FEE_PCT = 0.00      # FREE exit within Scalper window
+    # Fee schedule lives in execution/fees.py (FeeModel) — config `fees:`.
+    # These constants are kept only for legacy readers of the old names.
+    TAKER_FEE_PCT = 0.059    # 0.05% + 18% GST, per side, % of notional
+    MAKER_FEE_PCT = 0.0236   # 0.02% + 18% GST, per side, % of notional
 
     @staticmethod
     def _calc_pnl(ts: TrackedSignal, exit_price: float, order_type: str = "maker") -> float:
@@ -2667,9 +2660,7 @@ class SignalTracker:
         else:
             gross_pct = pnl_at(exit_price)
 
-        # Determine if trade closed within Scalper window
-        scalper_window_sec = 999999 if "BTC" in ts.symbol else 999999
-        within_scalper = False
+        # Trade duration (kept for analytics; funding is optional in the model)
         trade_duration_sec = 0
         try:
             entry_dt = datetime.fromisoformat(ts.entry_time)
@@ -2678,42 +2669,37 @@ class SignalTracker:
             else:
                 exit_dt = datetime.now(timezone.utc)
             trade_duration_sec = (exit_dt - entry_dt).total_seconds()
-            within_scalper = trade_duration_sec <= scalper_window_sec
         except (ValueError, TypeError):
             pass
 
-        # Calculate fees based on Scalper eligibility and configured order type
-        # order_type is now passed as parameter (supports maker/taker/auto)
-        if within_scalper:
-            # Scalper offer: configured entry fee + FREE exit (0%) + settlement (0.06%)
-            entry_fee = (
-                SignalTracker.SCALPER_ENTRY_MAKER_PCT
-                if order_type in ("maker", "auto")
-                else SignalTracker.SCALPER_ENTRY_TAKER_PCT
-            )
-            fee_pct = (
-                entry_fee                            # 0.02% maker or 0.05% taker
-                + SignalTracker.SCALPER_EXIT_FEE_PCT # 0.00% exit (FREE within window)
-                + SignalTracker.SETTLEMENT_FEE_PCT   # 0.06% settlement
-            )
-            ts.fee_type = "scalper"
+        # ── Fees: execution/fees.FeeModel, charged per leg on each leg's notional ──
+        # Entry is maker when the order rested at the signal price (no slippage
+        # captured), taker when it crossed the spread or config is taker-only.
+        # Every exit leg (TP partials, trail, stop) is a market order → taker.
+        from execution.fees import FeeLeg, get_fee_model
+        _fm = get_fee_model()
+        _entry_liq = _fm.entry_liquidity(order_type, getattr(ts, "slippage_bps", 0.0))
+        _legs = []
+        if ts.tp1_pnl_locked != 0 or ts.tp2_pnl_locked != 0:
+            _closed = 1.0 - ts.position_remaining_pct
+            if ts.tp1_hit:
+                _legs.append(FeeLeg(min(_closed, 0.35), ts.tp1))
+            if ts.tp2_hit:
+                _legs.append(FeeLeg(max(0.0, _closed - 0.35), ts.tp2))
+            _legs.append(FeeLeg(ts.position_remaining_pct, exit_price))
+        elif ts.tp3_hit:
+            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.35, ts.tp2), FeeLeg(0.30, ts.tp3)]
+        elif ts.tp2_hit:
+            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.35, ts.tp2), FeeLeg(0.30, exit_price)]
+        elif ts.tp1_hit:
+            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.65, exit_price)]
         else:
-            # Standard fees: configured entry fee + taker exit + settlement
-            entry_fee = (
-                SignalTracker.MAKER_FEE_PCT
-                if order_type == "maker"
-                else SignalTracker.TAKER_FEE_PCT
-            )
-            fee_pct = (
-                entry_fee                            # 0.0236% maker or 0.059% taker
-                + SignalTracker.TAKER_FEE_PCT        # 0.059% exit (always taker for stops)
-                + SignalTracker.SETTLEMENT_FEE_PCT   # 0.059% settlement
-            )
-            ts.fee_type = "standard"
-
+            _legs = [FeeLeg(1.0, exit_price)]
+        _fees = _fm.trade_fees(ts.entry_price, _entry_liq, _legs, symbol=ts.symbol,
+                               hold_seconds=trade_duration_sec)
+        fee_pct = _fees.total_pct
+        ts.fee_type = f"{_entry_liq}_entry"
         ts.trade_duration_sec = trade_duration_sec
-        ts.scalper_window_sec = scalper_window_sec
-        ts.within_scalper = within_scalper
 
         # Net PnL = Gross PnL - fees
         net_pct = gross_pct - fee_pct
@@ -2729,31 +2715,12 @@ class SignalTracker:
         # Store net values (the "official" PnL)
         ts.pnl_usd = round(ts.position_size_usd * net_pct / 100, 2)
 
-        # Calculate exit R-multiple: fee-adjusted net P&L in risk units
+        # Exit R-multiple: NET result (gross legs − all fees) in units of the
+        # initial risk. The previous formula subtracted the full round-trip
+        # fee inside every partial leg, so a 3-leg exit paid fees three times.
         if ts.initial_risk > 0:
-            # Fee impact in price terms
-            fee_impact = ts.entry_price * fee_pct / 100  # fee as price distance
-
-            if is_long:
-                raw_r = (exit_price - ts.entry_price - fee_impact) / ts.initial_risk
-            else:
-                raw_r = (ts.entry_price - exit_price - fee_impact) / ts.initial_risk
-
-            def r_at(price: float) -> float:
-                if is_long:
-                    return (price - ts.entry_price - fee_impact) / ts.initial_risk
-                return (ts.entry_price - price - fee_impact) / ts.initial_risk
-
-            # For partial exits (35/35/30 split), use weighted R
-            if ts.tp3_hit:
-                r_val = 0.35 * r_at(ts.tp1) + 0.35 * r_at(ts.tp2) + 0.30 * raw_r
-            elif ts.tp2_hit:
-                r_val = 0.35 * r_at(ts.tp1) + 0.35 * r_at(ts.tp2) + 0.30 * raw_r
-            elif ts.tp1_hit:
-                r_val = 0.35 * r_at(ts.tp1) + 0.65 * raw_r
-            else:
-                r_val = raw_r
-            ts.exit_r = round(r_val, 4)
+            net_price_move = ts.entry_price * net_pct / 100.0
+            ts.exit_r = round(net_price_move / ts.initial_risk, 4)
         else:
             ts.exit_r = 0.0
 
@@ -2808,24 +2775,13 @@ class SignalTracker:
         exit_slip = (0.05 + (excess / 1000.0) * 0.01) * liq
         exit_slip = min(exit_slip, 0.15)
 
-        if within_scalper:
-            # Scalper offer: configured entry fee + FREE exit + settlement
-            entry_fee = (
-                SignalTracker.SCALPER_ENTRY_MAKER_PCT
-                if order_type in ("maker", "auto")
-                else SignalTracker.SCALPER_ENTRY_TAKER_PCT
-            )
-            exit_fee = SignalTracker.SCALPER_EXIT_FEE_PCT   # 0% — free within window
-            settlement = SignalTracker.SETTLEMENT_FEE_PCT
-        else:
-            # Standard: configured entry fee + taker exit + settlement
-            entry_fee = (
-                SignalTracker.MAKER_FEE_PCT
-                if order_type == "maker"
-                else SignalTracker.TAKER_FEE_PCT
-            )
-            exit_fee = SignalTracker.TAKER_FEE_PCT  # exits are always market/taker
-            settlement = SignalTracker.SETTLEMENT_FEE_PCT
+        # Commission from the shared FeeModel (per side, GST included). Perpetuals
+        # carry no settlement fee; exits are market orders → taker.
+        from execution.fees import get_fee_model
+        _fm = get_fee_model()
+        entry_fee = _fm.side_pct("maker" if order_type in ("maker", "auto") else "taker", symbol)
+        exit_fee = 0.0 if _fm.free_exit else _fm.side_pct("taker", symbol)
+        settlement = 0.0
 
         total_fees_pct = entry_fee + exit_fee + settlement + entry_slip + exit_slip
         min_move_pct = total_fees_pct

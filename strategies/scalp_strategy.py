@@ -1459,7 +1459,13 @@ class ScalpStrategy(BaseStrategy):
         indicators["macro_bias_str"] = _macro_bias_str
 
         # --- Detect market regime + regime age tracking ---
-        regime = self._regime_filter.detect_regime(indicators, df=primary_df)  # P0: advanced detector with tightened thresholds
+        # Regime is a 5m-scale concept. Detecting it on the 1m frame made the
+        # volume-ratio test (last bar / 20-bar SMA) fire "low_liquidity" on most
+        # alts whenever one quiet minute printed (ratios of 0.01-0.07 at night
+        # while the 5m ratio was 0.2-0.8). Use the confirm (5m) frame when it
+        # has enough history; fall back to the primary frame otherwise.
+        _regime_df = confirm_df if (confirm_df is not None and len(confirm_df) >= 50) else primary_df
+        regime = self._regime_filter.detect_regime(indicators, df=_regime_df)  # P0: advanced detector with tightened thresholds
 #DISABLED#         # --- P2: 4h session bias can upgrade ranging → trending ---
 #DISABLED#         # If 4h has strong direction but 5m is "ranging", the higher TF wins
 #DISABLED#         if regime in ("ranging", "sideways") and session_bias != 0:

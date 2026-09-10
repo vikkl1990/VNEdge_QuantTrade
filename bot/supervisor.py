@@ -40,10 +40,14 @@ class Supervisor:
         real_manager=None,
         heartbeat=None,
         log: Optional[logging.Logger] = None,
+        restart_feed=None,
     ) -> None:
         self._signal_tracker = signal_tracker
         self._real_manager = real_manager
         self._heartbeat = heartbeat
+        # async callable that restarts the market-data feed in-process
+        # (the old path shelled out to `systemctl`, which does not exist on macOS)
+        self._restart_feed = restart_feed
         self._log = log or logger
         self._task: Optional[asyncio.Task] = None
         self._started_at: float = time.time()
@@ -349,23 +353,29 @@ class Supervisor:
                 )
                 return
 
-            self._log.critical(
-                "STALE FEED AUTO-RESTART: ALL candle feeds dead for %.0fs (>%ds threshold) — "
-                "triggering systemctl restart (attempt %d/%d this hour)",
-                stale_sec, self.STALE_FEED_RESTART_SEC,
-                restart_count + 1, self.STALE_FEED_MAX_RESTARTS,
-            )
-
             self._stale_restart_count = restart_count + 1
 
-            # Trigger restart via subprocess (non-blocking)
-            import subprocess
-            subprocess.Popen(
-                ["sudo", "systemctl", "restart", "cryptobot"],
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            # In-process feed restart. The previous implementation shelled out
+            # to `sudo systemctl restart cryptobot`, which only existed on the
+            # cloud VM — on macOS it silently did nothing while the bot sat
+            # with dead feeds (2026-09-10 overnight).
+            if self._restart_feed is not None:
+                self._log.critical(
+                    "STALE FEED AUTO-RESTART: ALL candle feeds dead for %.0fs (>%ds threshold) — "
+                    "restarting the data feed in-process (attempt %d/%d this hour)",
+                    stale_sec, self.STALE_FEED_RESTART_SEC,
+                    restart_count + 1, self.STALE_FEED_MAX_RESTARTS,
+                )
+                try:
+                    await self._restart_feed()
+                except Exception as _rf_err:
+                    self._log.error("STALE FEED: in-process feed restart failed: %s", _rf_err)
+            else:
+                self._log.critical(
+                    "STALE FEED: ALL candle feeds dead for %.0fs (>%ds threshold) and no restart "
+                    "hook is wired — restart the bot manually",
+                    stale_sec, self.STALE_FEED_RESTART_SEC,
+                )
         except Exception as e:
             self._log.debug("Stale feed restart check failed: %s", e)
 

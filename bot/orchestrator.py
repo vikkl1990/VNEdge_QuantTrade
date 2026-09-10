@@ -491,6 +491,7 @@ class BotOrchestrator:
                     real_manager=getattr(self, '_real_manager', None),
                     heartbeat=self._heartbeat,
                     log=self._log,
+                    restart_feed=self._restart_data_feed,
                 )
                 await self._supervisor.start()
                 # Wire supervisor to dashboard for status endpoint
@@ -630,6 +631,37 @@ class BotOrchestrator:
     # ------------------------------------------------------------------
     # Fast trade monitor (5s cycle — higher priority than signal scanning)
     # ------------------------------------------------------------------
+
+    async def _restart_data_feed(self) -> None:
+        """Supervisor hook: restart the REST candle feed and the WebSocket in-process.
+
+        Used when every candle feed has been silent past the supervisor's
+        threshold (typically after the host slept or lost its network).
+        """
+        feed = getattr(self, "_data_feed", None)
+        if feed is not None:
+            try:
+                await feed.stop()
+            except Exception as exc:
+                self._log.warning("feed stop during restart: %s", exc)
+            await feed.start()
+            for sym in self._symbols:
+                try:
+                    await feed.subscribe(sym)
+                except Exception as exc:
+                    self._log.warning("re-subscribe %s failed: %s", sym, exc)
+            self._log.warning("DATA FEED RESTARTED in-process (%d symbols)", len(self._symbols))
+        ws = getattr(self, "_delta_ws", None)
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+            try:
+                await ws.connect()
+                self._log.warning("DELTA WEBSOCKET RECONNECTED in-process")
+            except Exception as exc:
+                self._log.warning("websocket reconnect failed: %s", exc)
 
     async def _on_ws_candle(self, symbol: str, tf: str, candle: dict) -> None:
         """WebSocket candlestick → data feed (same close detection as REST)."""

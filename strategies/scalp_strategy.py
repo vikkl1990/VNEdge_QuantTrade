@@ -3604,17 +3604,17 @@ class ScalpStrategy(BaseStrategy):
                             )
 
                             _rule_a = (
-                                _verdict_upper == "WEAK"
+                                _verdict_upper in ("MARGINAL", "WEAK")
                                 and _conf_p36 < 70
                                 and not _htf_aligned_p36
                             )
                             _rule_b = (
-                                _verdict_upper == "WEAK"
+                                _verdict_upper in ("MARGINAL", "WEAK")
                                 and _is_chop_p36
                                 and not _a_plus_escape
                             )
                             _rule_c = (
-                                _verdict_upper == "WEAK"
+                                _verdict_upper in ("MARGINAL", "WEAK")
                                 and float(ml_prob) < 0.45
                                 and not _a_plus_escape
                             )
@@ -3724,7 +3724,7 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
         # Phase 5 CVD veto: pass CVD proxy to orchestrator for universal veto check
         signal.metadata["cvd_proxy_10"] = ml_features.get("mkt_cvd_proxy_10", ml_features.get("cvd_proxy_10", 0))
-        signal.metadata["ml_threshold"] = self._ml_thresholds.get(symbol, 0.65)
+        signal.metadata["ml_threshold"] = self._ml_thresholds.get(symbol, self.DEFAULT_ML_THRESHOLD)
         signal.metadata["ml_model_version"] = ml_result.get("model_version", "unknown")
         # Phase 4.5: which model scope actually scored this trade
         signal.metadata["ml_resolved_scope"] = ml_result.get("resolved_scope", "scanner")

@@ -44,6 +44,9 @@ def parse_args():
     parser.add_argument("--timeframes", type=str, default=None,
                         help="Comma-separated timeframes (default: 1m,5m,15m)")
     parser.add_argument("--port", type=int, default=8081, help="Dashboard port")
+    parser.add_argument("--no-dashboard", action="store_true",
+                        help="Train only; do not start a dashboard process (used by auto_retrainer "
+                             "when a serving dashboard already owns the port)")
     return parser.parse_args()
 
 
@@ -72,12 +75,16 @@ async def main():
     args = parse_args()
 
     # Start dashboard in a separate process so it's never blocked
-    dash_proc = multiprocessing.Process(
-        target=_run_dashboard, args=(args.port,), daemon=True
-    )
-    dash_proc.start()
-    logger.info("Dashboard started in separate process (PID %d) on port %d",
-                dash_proc.pid, args.port)
+    dash_proc = None
+    if not args.no_dashboard:
+        dash_proc = multiprocessing.Process(
+            target=_run_dashboard, args=(args.port,), daemon=True
+        )
+        dash_proc.start()
+        logger.info("Dashboard started in separate process (PID %d) on port %d",
+                    dash_proc.pid, args.port)
+    else:
+        logger.info("--no-dashboard: training only, serving dashboard left untouched")
 
     if args.train:
         from config.loader import load_config as load_config_dict
@@ -107,6 +114,10 @@ async def main():
             logger.info("=== TRAINING PIPELINE COMPLETE ===")
         except Exception as e:
             logger.exception("Training pipeline failed: %s", e)
+
+    if dash_proc is None:
+        logger.info("Training-only run finished; exiting.")
+        return
 
     # Keep running (dashboard process stays alive)
     logger.info("ML Training system ready. Dashboard at http://0.0.0.0:%d", args.port)

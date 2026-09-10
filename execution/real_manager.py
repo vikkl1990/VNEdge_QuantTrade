@@ -607,13 +607,13 @@ class RealTradingManager:
 
         # ML verdict filter: only trade when ML says TAKE or STRONG_TAKE
         ml_verdict = meta.get("ml_verdict", "")
-        if ml_verdict and ml_verdict not in ("TAKE", "STRONG_TAKE", "WEAK", "NO_MODEL", ""):
-            logger.info("SMART QUALIFY FAIL: ml_verdict=%s (need WEAK/TAKE/STRONG_TAKE)", ml_verdict)
+        if ml_verdict and ml_verdict not in ("TAKE", "STRONG_TAKE", "MARGINAL", "WEAK", "NO_MODEL", ""):
+            logger.info("SMART QUALIFY FAIL: ml_verdict=%s (need MARGINAL/TAKE/STRONG_TAKE)", ml_verdict)
             return False, f"ml_verdict:{ml_verdict}"
 
         ml_prob = meta.get("ml_probability", None)
         if ml_prob is not None and float(ml_prob) > 0 and float(ml_prob) <= 0.35:
-            logger.info("SMART QUALIFY FAIL: ml_prob=%.3f <= 0.45", float(ml_prob))
+            logger.info("SMART QUALIFY FAIL: ml_prob=%.3f <= 0.35", float(ml_prob))
             return False, f"ml_prob_low:{ml_prob}"
 
         # ── Fix #3 (2026-04-11): REAL-ONLY ML THRESHOLD FLOOR ──

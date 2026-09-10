@@ -46,7 +46,10 @@ execution:
   order_type: auto
   retry_taker_on_reject: true
   max_entry_slip_bps: 30
-  min_trail_hold_sec: 15
+  # Seconds before breakeven / trail locks may move the stop. One primary
+  # (5m) bar: locks that fired 15s after entry closed 24 of 29 trades inside
+  # two minutes and captured 20% of MFE (2026-09-10 audit).
+  min_trail_hold_sec: 300
 # real_trading: section REMOVED (2026-04-20 Option-A consolidation).
 # The legacy shared-account RealManager is retired. Per-user trading is
 # driven by users.bot_mode (PostgreSQL) + user_api_keys, routed through

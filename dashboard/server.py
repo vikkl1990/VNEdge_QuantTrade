@@ -944,7 +944,7 @@ class DashboardServer:
         The ML Lab has its own UI (/, /research). Browsers open it directly;
         this only translates a host-agnostic link into the configured URL.
         """
-        base = os.getenv("ML_SERVER_URL", "http://10.0.2.4:8081").rstrip("/")
+        base = os.getenv("ML_SERVER_URL", "http://127.0.0.1:8091").rstrip("/")
         tail = request.match_info.get("tail", "") or ""
         target = f"{base}/{tail}" if tail else f"{base}/"
         if request.query_string:
@@ -1856,7 +1856,7 @@ class DashboardServer:
         import os, glob
         from pathlib import Path
 
-        STORAGE = Path("/home/opc/crypto-trading-bot/storage")
+        STORAGE = Path(__file__).resolve().parent.parent / "storage"
         AGENTS = [
             # Tier 3 specialist agents
             {"id": "edge_validator",     "name": "Edge Validator (auto-revert)",     "tier": "T3 Research", "cadence_min": 30,    "globs": ["auto_responder/actions.log"], "log_tag": "auto_revert"},
@@ -1944,7 +1944,7 @@ class DashboardServer:
         storage/chief_quant/latest.md every 30 min.
         """
         from pathlib import Path
-        path = Path("/home/opc/crypto-trading-bot/storage/chief_quant/latest.md")
+        path = Path(__file__).resolve().parent.parent / "storage" / "chief_quant" / "latest.md"
         if not path.exists():
             return web.Response(text="# Chief Quant briefing not yet generated\n\nFirst cron fires within 30 min.", content_type="text/markdown")
         try:
@@ -2658,7 +2658,7 @@ class DashboardServer:
         # 3. Try up to 2 attempts with 1s backoff
         # ML Lab host: ML_SERVER_URL env (e.g. http://127.0.0.1:8091 for a local
         # ml_training/run_trainer.py). Defaults to the legacy VM4 private IP.
-        _ml_base = os.getenv("ML_SERVER_URL", "http://10.0.2.4:8081").rstrip("/")
+        _ml_base = os.getenv("ML_SERVER_URL", "http://127.0.0.1:8091").rstrip("/")
         vm4_url = f"{_ml_base}{path}"
         if qs:
             vm4_url += f"?{qs}"
@@ -4791,7 +4791,7 @@ class DashboardServer:
                     if regime in ("high_volatility", "sideways", "ranging", "quiet", "mean_reversion"):
                         buckets["chop_regime"].append(L); matched_count += 1
                     # ML WEAK that lost
-                    if ml_verdict == "WEAK":
+                    if ml_verdict in ("MARGINAL", "WEAK"):
                         buckets["ml_weak"].append(L); matched_count += 1
                     # Slippage > 30bps
                     if slippage_bps > 30:

@@ -44,18 +44,23 @@ logger = logging.getLogger("ml_training.auto_retrainer")
 # ──────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_FILE = PROJECT_ROOT / "storage" / "auto_retrain_state.json"
-RETRAIN_LOG = PROJECT_ROOT / "auto_retrain.log"
-DEFAULT_DASHBOARD = "http://localhost:8081"
+RETRAIN_LOG = PROJECT_ROOT / "logs" / "ml_retrain.log"
+DEFAULT_DASHBOARD = "http://127.0.0.1:8091"  # local ML Lab (scripts/ml_lab.sh)
 DEFAULT_TRAINER_PORT = 8085
 
 # Symbols we'll retrain per family. Keeps symmetry with Phase 4.5
 # run_pair_family groupings. Updated here should be kept in sync with the
 # PAIR_FAMILIES constant in candidate_trainer.py.
-FAMILY_SYMBOLS: Dict[str, str] = {
-    "liquid_majors": "BTC/USDT,ETH/USDT,SOL/USDT",
-    "secondary":     "AVAX/USDT,LINK/USDT",
-    "high_beta":     "DOGE/USDT,WIF/USDT,SUI/USDT",
-}
+def _family_symbols() -> Dict[str, str]:
+    """Single source: candidate_trainer.PAIR_FAMILIES (what serving resolves)."""
+    try:
+        from ml_training.candidate_trainer import PAIR_FAMILIES
+        return {fam: ",".join(syms) for fam, syms in PAIR_FAMILIES.items()}
+    except Exception:  # pragma: no cover - import failure means nothing to train
+        return {}
+
+
+FAMILY_SYMBOLS: Dict[str, str] = _family_symbols()
 
 # Verdicts that trigger a retrain. DRIFTING means the model predicts something
 # different from what actually happens (cal_err > 0.15). NO_EDGE means the
@@ -181,6 +186,7 @@ class AutoRetrainer:
         cmd = [
             sys.executable, "-m", "ml_training.run_trainer",
             "--train",
+            "--no-dashboard",  # the serving dashboard already owns the port
             "--symbols", symbols,
             "--timeframes", "5m,15m,1h,4h",
             "--port", str(self.trainer_port),

@@ -969,15 +969,32 @@ class MLDashboard:
     #  Start Training
     # -------------------------------------------------------------------
     async def _handle_start_training(self, request):
-        if not self._trainer:
-            return _error_response("train_start", "No trainer configured", 400)
         try:
             body = await request.json() if request.content_length else {}
-            symbols = body.get("symbols", ["BTC/USDT", "ETH/USDT", "AVAX/USDT"])
-            timeframes = body.get("timeframes", ["1m", "5m", "15m"])
-            asyncio.create_task(self._trainer.run_full_pipeline(symbols, timeframes))
-            return web.json_response({"status": "started", "symbols": symbols,
-                                       "timeframes": timeframes, "_freshness": _freshness()})
+            symbols = body.get("symbols", ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT", "DOGE/USDT"])
+            timeframes = body.get("timeframes", ["5m", "15m", "1h", "4h"])
+            if self._trainer:
+                asyncio.create_task(self._trainer.run_full_pipeline(symbols, timeframes))
+                return web.json_response({"status": "started", "mode": "in_process", "symbols": symbols,
+                                           "timeframes": timeframes, "_freshness": _freshness()})
+            # The serving dashboard runs in its own process (run_trainer spawns
+            # it with trainer=None), so the UI buttons used to answer
+            # "No trainer configured". Spawn a training-only process instead —
+            # the same command auto_retrainer uses. Models are picked up by
+            # this server on mtime change.
+            import subprocess, sys as _sys
+            cmd = [_sys.executable, "-m", "ml_training.run_trainer", "--train", "--no-dashboard",
+                   "--symbols", ",".join(symbols), "--timeframes", ",".join(timeframes),
+                   "--port", str(self._port)]
+            log_path = PROJECT_ROOT / "logs" / "ml_retrain.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            logf = open(log_path, "a")
+            logf.write(f"\n=== {datetime.now(timezone.utc).isoformat()} UI-triggered training {symbols} {timeframes} ===\n")
+            logf.flush()
+            proc = subprocess.Popen(cmd, cwd=str(PROJECT_ROOT), stdout=logf, stderr=subprocess.STDOUT)
+            return web.json_response({"status": "started", "mode": "subprocess", "pid": proc.pid,
+                                       "symbols": symbols, "timeframes": timeframes,
+                                       "log": str(log_path), "_freshness": _freshness()})
         except Exception as e:
             return _error_response("train_start", str(e))
 
@@ -1261,7 +1278,10 @@ class MLDashboard:
             elif prob >= 0.50:
                 verdict = "TAKE"
             elif prob >= 0.40:
-                verdict = "WEAK"
+                # Renamed from "WEAK" (2026-09-10): "WEAK" is also an
+                # edge_verdict (OOS AUC 0.54-0.58) and a live-calibration
+                # verdict; three meanings for one word hid a real bug in P3.6.
+                verdict = "MARGINAL"
             else:
                 verdict = "SKIP"
 
@@ -1799,12 +1819,16 @@ class MLDashboard:
             calibration_error = abs(avg_pred - realized_wr)
             edge_delta_pct = (realized_wr - 0.5) * 100
 
+            # Live-calibration vocabulary (distinct from the score verdicts
+            # STRONG_TAKE/TAKE/MARGINAL/SKIP and the training edge_verdicts
+            # HOLDS/WEAK/UNCLEAR/NO_EDGE): CALIBRATED, THIN_EDGE, DRIFTING,
+            # NO_EDGE. auto_retrainer keys on DRIFTING / NO_EDGE.
             if n < min_n:
                 verdict = "INSUFFICIENT_DATA"
             elif calibration_error <= 0.08 and realized_wr >= 0.55:
-                verdict = "HOLDS"
+                verdict = "CALIBRATED"
             elif realized_wr >= 0.52:
-                verdict = "WEAK"
+                verdict = "THIN_EDGE"
             elif calibration_error > 0.15:
                 verdict = "DRIFTING"
             else:

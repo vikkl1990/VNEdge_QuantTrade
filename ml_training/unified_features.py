@@ -399,6 +399,17 @@ def build_live_row(
         logger.warning("mkt_row index %d out of range (len=%d)", idx, len(market_features_df))
         return gate_feats
 
+    return assemble_row(gate_feats, mkt_row)
+
+
+def assemble_row(gate_feats: Dict[str, float], mkt_row: "pd.Series") -> Dict[str, float]:
+    """Merge gate features with an `mkt_`-prefixed market row.
+
+    The ONE place the training/serving row is assembled. candidate_trainer
+    calls this with a row sliced from its pre-computed build_features()
+    frame; build_live_row calls it with the live frame's last row. Any
+    change to prefixing or NaN handling therefore reaches both sides.
+    """
     mkt_dict: Dict[str, float] = {}
     for col in mkt_row.index:
         try:
@@ -409,9 +420,7 @@ def build_live_row(
                 mkt_dict[f"mkt_{col}"] = 0.0
         except (TypeError, ValueError):
             continue
-
-    combined = {**gate_feats, **mkt_dict}
-    return combined
+    return {**gate_feats, **mkt_dict}
 
 
 def get_expected_feature_names(

@@ -1312,9 +1312,20 @@ class SignalTracker:
                 # Once trade shows 0.15R profit, move SL to entry (zero risk)
                 # This prevents the 0.1-0.3R gap where profit evaporates
                 if ts.peak_mfe_r >= 0.20 and _trade_age >= min_hold and not ts.breakeven_set:
-                    fee_buffer = max(ts.entry_price * 0.0003, ts.entry_price * 0.0040)  # min 0.40% buffer
+                    # "Breakeven" = entry plus the round-trip taker fee (0.118% incl. GST).
+                    # BUG (fixed 2026-09-10): this was 0.40% of entry, i.e. 0.5-0.9R
+                    # for a 5m-ATR stop. The stop landed BEYOND the current price the
+                    # moment MFE touched 0.2R, the stop-hit branch then "honoured the
+                    # locked level" and booked a +0.40% fill that price never reached.
+                    # 24 of 29 paper trades exited this way inside 2 minutes.
+                    try:
+                        from execution.fees import get_fee_model
+                        fee_buffer = ts.entry_price * get_fee_model().round_trip_pct("taker", "taker", ts.symbol) / 100.0
+                    except Exception:
+                        fee_buffer = ts.entry_price * 0.0012
                     if is_long:
-                        be_sl = ts.entry_price + fee_buffer
+                        # never place a protective stop above the market
+                        be_sl = min(ts.entry_price + fee_buffer, price)
                         if be_sl > ts.stop_loss:
                             ts.stop_loss = be_sl
                             ts.breakeven_set = True
@@ -1324,7 +1335,8 @@ class SignalTracker:
                                 "symbol": ts.symbol, "side": ts.side,
                                 "new_sl": be_sl, "old_sl": 0, "peak_mfe_r": ts.peak_mfe_r})
                     else:
-                        be_sl = ts.entry_price - fee_buffer
+                        # never place a protective stop below the market
+                        be_sl = max(ts.entry_price - fee_buffer, price)
                         if be_sl < ts.stop_loss:
                             ts.stop_loss = be_sl
                             ts.breakeven_set = True
@@ -1351,10 +1363,11 @@ class SignalTracker:
                         lock_pct = 0.40  # lock 40% at 0.4R (was 0 → chandelier only)
                     elif ts.peak_mfe_r >= 0.3:
                         lock_pct = 0.75  # lock 75% at 0.3R (prevent trail=loss)
-                    elif ts.peak_mfe_r >= 0.2:
-                        lock_pct = 0.60  # lock 60% at 0.2R (cover fees + small profit)
                     else:
-                        lock_pct = 0  # below 0.2R: breakeven handles it, no lock_pct
+                        # below 0.3R: breakeven (entry + fees) is the only protection.
+                        # The old 60%-of-0.2R lock closed trades a minute after entry
+                        # for +0.1R and captured 20% of MFE on average.
+                        lock_pct = 0
 
                     # ── TIME-BASED TIGHTENING ──
                     # If MFE hasn't improved in 8 min, tighten lock by 10%
@@ -1377,10 +1390,12 @@ class SignalTracker:
                     fee_cover = ts.entry_price * 0.0028
                     lock_dist = max(lock_dist, fee_cover)
 
+                    # A trailing stop is always on the far side of the market;
+                    # clamp so a lock can never book a fill price never traded.
                     if is_long:
-                        new_sl = ts.entry_price + lock_dist
+                        new_sl = min(ts.entry_price + lock_dist, price)
                     else:
-                        new_sl = ts.entry_price - lock_dist
+                        new_sl = max(ts.entry_price - lock_dist, price)
 
                     should_update = (
                         (is_long and new_sl > ts.stop_loss) or
@@ -1495,9 +1510,9 @@ class SignalTracker:
                     if _mfe_lock_r > 0:
                         _lock_dist = ts.initial_risk * _mfe_lock_r
                         if is_long:
-                            _defender_floor = ts.entry_price + _lock_dist
+                            _defender_floor = min(ts.entry_price + _lock_dist, price)
                         else:
-                            _defender_floor = ts.entry_price - _lock_dist
+                            _defender_floor = max(ts.entry_price - _lock_dist, price)
 
                         # Only tighten — never loosen
                         _should_update = (

@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_training.feature_builder import build_features, compute_indicators, build_mfe_labels
+from ml_training.unified_features import _compute_gate_block, assemble_row
 
 logger = logging.getLogger(__name__)
 
@@ -853,29 +854,15 @@ class CandidateTrainer:
             if atr <= 0:
                 continue
 
-            # Phase 4.1b: Use the UNIFIED feature builder (same code path as live serving)
-            # This guarantees zero training-serving skew. The old code called
-            # _compute_gate_veto_features + manual mkt_ prefixing separately, which
-            # matched training internally but not live. Now both use build_live_row().
-            #
-            # market_features is already pre-computed above via build_features() with
-            # all HTFs so we can slice it directly to avoid rebuilding per candidate.
-            gate_feats = _compute_gate_veto_features(df, i, side, symbol)
-
-            mkt_row = market_features.iloc[i]
-            mkt_dict = {}
-            for col in mkt_row.index:
-                try:
-                    val = float(mkt_row[col])
-                    if not np.isnan(val) and not np.isinf(val):
-                        mkt_dict[f"mkt_{col}"] = val
-                    else:
-                        mkt_dict[f"mkt_{col}"] = 0.0
-                except (TypeError, ValueError):
-                    continue
-
-            combined = {**gate_feats, **mkt_dict}
-            rows.append(combined)
+            # Training/serving parity (2026-09-10): the gate block and the row
+            # assembly are the SAME functions build_live_row() uses at scoring
+            # time. The comment that used to sit here claimed parity while
+            # calling a private _compute_gate_veto_features copy; that copy is
+            # now only used for the veto flag below. market_features is the
+            # same build_features() output, pre-computed once for speed.
+            gate_feats = _compute_gate_block(df, i, side, symbol)
+            rows.append(assemble_row(gate_feats, market_features.iloc[i]))
+            veto_feats = _compute_gate_veto_features(df, i, side, symbol)
 
             # Label based on mode
             if label_mode == "mfe":
@@ -889,7 +876,7 @@ class CandidateTrainer:
                 outcome = _simulate_trade_outcome(df, i, side, entry_price, atr, symbol)
                 labels.append(1 if outcome["won"] else 0)
 
-            veto_flags.append(_would_veto_block(gate_feats))
+            veto_flags.append(_would_veto_block(veto_feats))
 
         if not rows:
             return pd.DataFrame(), pd.Series(dtype=int), pd.Series(dtype=bool)
@@ -1727,7 +1714,9 @@ class CandidateTrainer:
         cal_verdict = bucket_eval.get("verdict", "NOT_USEFUL")
         cal_rank = bucket_eval.get("rank_correlation", 0)
         agg_auc = train_result.get("aggregate_oos", {}).get("auc_roc", 0.5)
-        if self._model is not None and (cal_verdict != "NOT_USEFUL" or agg_auc >= 0.55):
+        if not save_models:
+            logger.info("Per-symbol run: not persisting model_%s.joblib (family models are the served ones)", scanner_name)
+        elif self._model is not None and (cal_verdict != "NOT_USEFUL" or agg_auc >= 0.55):
             self.save_model(scanner_name)
             logger.info("Saved per-scanner model: %s (calibration=%s, AUC=%.3f)", scanner_name, cal_verdict, agg_auc)
         elif self._model is not None:
@@ -1824,8 +1813,14 @@ class CandidateTrainer:
         htf_4h_df: Optional[pd.DataFrame] = None,
         btc_df: Optional[pd.DataFrame] = None,  # Phase 5.0a
         exclude_scanners: Optional[set] = None,
+        save_models: bool = True,
     ) -> Dict:
         """Run candidate training for ALL scanners and produce comparison.
+
+        save_models=False keeps the results/metrics but does not write
+        model_{scanner}.joblib. trainer.py passes False from its per-symbol
+        loop: that file is symbol-agnostic, so each symbol used to overwrite
+        the previous one and serving silently got whichever trained last.
 
         Phase 4.1a: Added htf_1h_df + htf_4h_df for multi-timeframe features.
 

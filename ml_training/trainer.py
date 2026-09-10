@@ -569,13 +569,18 @@ class TrainingOrchestrator:
                 result = ct.run_all_scanners(
                     df, symbol, SCANNERS,
                     n_splits=5, n_estimators=50, max_depth=6,
-                    label_mode="mfe",
+                    # 2026-09-10: label = "did the live exit engine book a
+                    # profit" (LiveTrackerRunner replay), not "did price
+                    # touch 0.3R within 100 min". The MFE label predicted
+                    # something the bot never let happen (median hold 1.2 min).
+                    label_mode="won",
                     mfe_threshold_r=0.3,
                     mfe_max_bars=20,
                     htf_df=htf_df,
                     htf_1h_df=htf_1h_df,
                     htf_4h_df=htf_4h_df,
                     btc_df=btc_df_5m,  # Phase 5.0a
+                    save_models=False,  # family models are the served ones
                 )
                 candidate_results[symbol] = result
 
@@ -632,7 +637,7 @@ class TrainingOrchestrator:
                     family_results = ct_family.run_pair_family(
                         symbol_data_all, SCANNERS,
                         n_splits=5, n_estimators=50, max_depth=6,
-                        label_mode="mfe",
+                        label_mode="won",  # live-exit replay label (see per-symbol note)
                         mfe_threshold_r=0.3,
                         mfe_max_bars=20,
                         htf_data=htf_data_all,
@@ -662,7 +667,7 @@ class TrainingOrchestrator:
             # threshold_r=0.3 and max_bars=20. Audit trail was misleading.
             self._tracker.record_run(
                 run_config={"symbols": symbols, "timeframes": timeframes,
-                            "label_mode": "mfe", "mfe_threshold_r": 0.3,
+                            "label_mode": "won", "mfe_threshold_r": 0.3,
                             "mfe_max_bars": 20, "candidate_tf": "5m"},
                 scanner_results=all_results,
                 ml_results=candidate_results,

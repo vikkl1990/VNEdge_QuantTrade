@@ -226,7 +226,15 @@ class LiveTrackerRunner:
 
         # Signal dict matching live track_signal() contract
         trade_id = f"bt_{uuid.uuid4().hex[:10]}"
-        entry_ts = df.index[entry_idx]
+        # The signal fires on the COMPLETED entry bar, so the fill time is that
+        # bar's close (= next bar's open), not its open. With the open as entry
+        # time every trade was already one bar old at its first tick and the
+        # 90 s early-kill fired on the next bar's open before any MFE existed
+        # (15m backtests showed a 0.0% win rate).
+        try:
+            entry_ts = df.index[entry_idx] + (df.index[entry_idx] - df.index[entry_idx - 1])
+        except Exception:
+            entry_ts = df.index[entry_idx]
         signal_dict = {
             "trade_id": trade_id,
             "symbol": symbol,
@@ -311,7 +319,12 @@ class LiveTrackerRunner:
                 _bar_len = (df.index[j] - df.index[j - 1]).to_pytimedelta()
             except Exception:
                 _bar_open, _bar_len = _sim_now["t"], None
-            _offsets = [0.0, 0.5, 0.5, 1.0] if len(seq) == 4 else [1.0]
+            # Open and both extremes are stamped at the bar OPEN and only the
+            # close tick advances the clock. OHLC cannot say when inside the
+            # bar the extremes happened, so time rules (90 s early kill, min
+            # hold) are judged at bar close with the bar's full MFE known —
+            # the fairest reading of a 5-minute bar for a 90-second rule.
+            _offsets = [0.0, 0.0, 0.0, 1.0] if len(seq) == 4 else [1.0]
             for price, _off in zip(seq, _offsets):
                 if _bar_len is not None:
                     _sim_now["t"] = _bar_open + _bar_len * _off

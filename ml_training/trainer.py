@@ -15,6 +15,7 @@ Runs on VM2 (backtest server).
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -530,7 +531,13 @@ class TrainingOrchestrator:
                 btc_df_5m = None
 
             candidate_results = {}
-            for symbol in symbols:
+            # Per-symbol models are no longer persisted (family models are
+            # what serving uses), and with the live-exit replay label this
+            # phase costs hours per symbol. Skip it unless explicitly asked.
+            _skip_per_symbol = os.environ.get("ML_SKIP_PER_SYMBOL", "1") == "1"
+            if _skip_per_symbol:
+                logger.info("PHASE 5 per-symbol candidate training skipped (ML_SKIP_PER_SYMBOL=1)")
+            for symbol in ([] if _skip_per_symbol else symbols):
                 # Phase 4.1a: load 5m + 15m + 1h + 4h so ML can learn HTF context
                 logger.info("Loading 5m/15m/1h/4h data for candidate training: %s", symbol)
                 collector = CandleCollector(self._exchange, [symbol], ["5m", "15m", "1h", "4h"])

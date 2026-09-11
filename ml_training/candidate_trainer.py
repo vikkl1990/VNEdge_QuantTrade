@@ -843,10 +843,20 @@ class CandidateTrainer:
         veto_flags = []
         start_idx = 200
 
+        # Collect candidates first so replay-labelled runs can be capped to the
+        # most recent N (the live-exit replay costs ~1 s per candidate; a
+        # scanner with 10k candidates is a day of training for no extra edge).
+        _cands = []
         for i in range(start_idx, len(df) - mfe_max_bars):
             result = scanner_func(i, df, symbol)
-            if result is None:
-                continue
+            if result is not None:
+                _cands.append((i, result))
+        _cap = int(_os.environ.get("ML_MAX_CANDIDATES", "1500") or 0)
+        if label_mode != "mfe" and _cap > 0 and len(_cands) > _cap:
+            logger.info("Capping %d candidates to the most recent %d for replay labelling", len(_cands), _cap)
+            _cands = _cands[-_cap:]
+
+        for i, result in _cands:
 
             side = result["side"]
             entry_price = result["entry_price"]

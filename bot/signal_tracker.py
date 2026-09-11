@@ -26,6 +26,18 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Clock ──────────────────────────────────────────────────────────────
+# Every age / hold / expiry check reads the clock through _utcnow() so a
+# replay (backtest/live_tracker_runner.py) can drive the tracker with BAR
+# time instead of wall time. Before this, a replayed trade opened "days ago"
+# and every time-based exit fired on its first tick.
+_CLOCK = lambda: datetime.now(timezone.utc)  # noqa: E731 — replaced by replays
+
+
+def _utcnow() -> datetime:
+    return _CLOCK()
+
+
 _STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 _ACTIVE_FILE = _STORAGE_DIR / "active_signals.json"
 _CLOSED_FILE = _STORAGE_DIR / "closed_signals.json"
@@ -708,7 +720,7 @@ class TrackedSignal:
             leverage_cap_source=lev_cap_source,
             initial_risk=abs(entry - sl) if entry > 0 and sl > 0 else 0.0,
             metadata=meta,  # preserve full metadata (ML scores, scanner config, etc.)
-            entry_time=sig.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            entry_time=sig.get("timestamp", _utcnow().isoformat()),
             highest_price=entry,
             lowest_price=entry,
             # Slippage: signal_price = intended entry, fill_price = actual fill
@@ -868,7 +880,7 @@ class SignalTracker:
         # Winner-adjacent re-entries remain allowed (legit momentum continuation).
         from datetime import datetime, timedelta, timezone
         try:
-            now_dt = datetime.now(timezone.utc)
+            now_dt = _utcnow()
             _new_entry = float(ts.entry_price or 0)
             _price_band = _new_entry * 0.001  # 0.1% band
             for recent in self._closed[-50:]:  # check last 50 closed
@@ -1039,7 +1051,7 @@ class SignalTracker:
                             ts.symbol, ts.side, est_slip_bps, max_slip_bps,
                         )
                         ts.exit_price = ts.signal_price
-                        ts.exit_time = datetime.now(timezone.utc).isoformat()
+                        ts.exit_time = _utcnow().isoformat()
                         ts.pnl_pct = 0.0
                         ts.pnl_usd = 0.0
                         ts.exit_reason = "no_fill"
@@ -1101,7 +1113,7 @@ class SignalTracker:
                     adv = (ts.highest_price - ts.entry_price) / ts.initial_risk
                 ts.mfe_r = round(max(ts.mfe_r, fav), 4)
                 ts.mae_r = round(max(ts.mae_r, adv), 4)
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = _utcnow().isoformat()
 
             # -- Early Invalidation Exit: Hard Loss Cap (-1.2R) --
             # Force close if adverse excursion exceeds 1.2R (tightened from 2R)
@@ -1291,7 +1303,7 @@ class SignalTracker:
                 # ── FIX #1: MFE MEMORY TRAIL ──
                 # Never give back more than X% of peak profit.
                 # Track peak MFE and set SL as percentage of peak.
-                now_ts = time.time()
+                now_ts = _utcnow().timestamp()
                 if current_r_trail > ts.peak_mfe_r:
                     ts.peak_mfe_r = current_r_trail
                     ts.last_mfe_update_time = now_ts
@@ -1324,7 +1336,7 @@ class SignalTracker:
                 min_hold = getattr(self, "_min_trail_hold_sec", 15)
                 try:
                     _entry_dt = datetime.fromisoformat(ts.entry_time)
-                    _trade_age = (datetime.now(timezone.utc) - _entry_dt).total_seconds()
+                    _trade_age = (_utcnow() - _entry_dt).total_seconds()
                 except (ValueError, TypeError):
                     _trade_age = 999  # fallback: allow trail
                 # --- BREAKEVEN at 0.15R MFE ---
@@ -1759,7 +1771,7 @@ class SignalTracker:
             if ts.status == "active" and not ts.tp1_hit:
                 try:
                     entry_dt = datetime.fromisoformat(ts.entry_time)
-                    age_sec = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                    age_sec = (_utcnow() - entry_dt).total_seconds()
                     risk = abs(ts.entry_price - ts.stop_loss)
 
                     # Calculate max favorable excursion in R
@@ -1962,7 +1974,7 @@ class SignalTracker:
             # -- Check expiry — trade-type-aware max age --
             try:
                 entry_dt = datetime.fromisoformat(ts.entry_time)
-                age = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                age = (_utcnow() - entry_dt).total_seconds()
                 _tt_expiry = getattr(ts, 'trade_type', TRADE_TYPE_SCALP)
                 _tt_max = TRADE_TYPE_CONFIG.get(_tt_expiry, {}).get("max_age_sec", MAX_SIGNAL_AGE)
                 if age > _tt_max and ts.status in ("active", "tp1_hit", "tp2_hit"):
@@ -2103,7 +2115,7 @@ class SignalTracker:
             duration_sec = 0
             try:
                 entry_dt = datetime.fromisoformat(ts.entry_time)
-                exit_dt = datetime.fromisoformat(ts.exit_time) if ts.exit_time else datetime.now(timezone.utc)
+                exit_dt = datetime.fromisoformat(ts.exit_time) if ts.exit_time else _utcnow()
                 duration_sec = int((exit_dt - entry_dt).total_seconds())
             except (ValueError, TypeError):
                 pass
@@ -2150,7 +2162,7 @@ class SignalTracker:
 
             meta = ts.metadata if isinstance(ts.metadata, dict) else {}
             feedback = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": _utcnow().isoformat(),
                 "trade_id": ts.trade_id,
                 "symbol": ts.symbol,
                 "side": ts.side,
@@ -2232,7 +2244,7 @@ class SignalTracker:
                             import gzip
                             _archive_dir = _STORAGE_DIR / "feedback_archive"
                             _archive_dir.mkdir(parents=True, exist_ok=True)
-                            _ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                            _ts_str = _utcnow().strftime("%Y%m%d_%H%M%S")
                             _archive_path = _archive_dir / f"feedback_{_ts_str}.jsonl.gz"
                             # Archive everything EXCEPT the last 8000 lines we're keeping
                             _to_archive = lines[:-8000]
@@ -2698,7 +2710,7 @@ class SignalTracker:
             if ts.exit_time:
                 exit_dt = datetime.fromisoformat(ts.exit_time) if isinstance(ts.exit_time, str) else ts.exit_time
             else:
-                exit_dt = datetime.now(timezone.utc)
+                exit_dt = _utcnow()
             trade_duration_sec = (exit_dt - entry_dt).total_seconds()
         except (ValueError, TypeError):
             pass

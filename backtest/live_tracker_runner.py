@@ -89,6 +89,15 @@ def _isolate_signal_tracker_module(sandbox_dir: Path):
     st._ACTIVE_FILE = sandbox_dir / "active_signals.json"
     st._CLOSED_FILE = sandbox_dir / "closed_signals.json"
     st._STATS_FILE = sandbox_dir / "signal_stats.json"
+    # The tracker stamps every trade into bot.signal_journey, whose journal
+    # path is cwd-relative "storage/signal_journeys.jsonl" — i.e. the LIVE
+    # bot's Pipeline Trace. Replayed "bt_*" trades were showing up there.
+    try:
+        import bot.signal_journey as sj
+        sj._STORAGE_DIR = sandbox_dir
+        sj._JOURNAL_FILE = sandbox_dir / "signal_journeys.jsonl"
+    except Exception:
+        pass
     _patch_latent_bugs(st)
     return st
 
@@ -126,13 +135,37 @@ class LiveTrackerRunner:
             if p.exists():
                 p.unlink()
         SignalTracker = self._st_module.SignalTracker
-        tracker = SignalTracker(config={"execution": {"order_type": "maker",
-                                                        "max_entry_slip_bps": 0,
-                                                        "min_trail_hold_sec": 0}})
+        # Exact mirror of live: the replay must run the SAME execution knobs
+        # the bot runs (min hold, slip cap, order type). It used to hardcode
+        # min_trail_hold_sec=0 / slip cap 0, so labels came from an exit
+        # engine that does not exist in production.
+        tracker = SignalTracker(config={"execution": dict(self._live_execution_cfg())})
         # Belt-and-braces: block ml feedback writes by pointing them at a dead path
         tracker._live_feedback_file = self._sandbox_dir / "_disabled_feedback.jsonl"
         tracker._training_dataset = None
+        # Speed: the tracker fsyncs its JSON files on every event. In a replay
+        # nothing reads them, and a single candidate used to cost ~9 s.
+        for _name in ("_save_active", "_save_closed", "_save_stats"):
+            try:
+                setattr(tracker, _name, lambda *a, **k: None)
+            except Exception:
+                pass
         return tracker
+
+    @staticmethod
+    def _live_execution_cfg() -> dict:
+        """execution: section of config/settings.yaml (the live bot's knobs)."""
+        defaults = {"order_type": "auto", "max_entry_slip_bps": 30,
+                    "min_trail_hold_sec": 300, "retry_taker_on_reject": True}
+        try:
+            import yaml
+            root = Path(__file__).resolve().parent.parent
+            with open(root / "config" / "settings.yaml") as f:
+                cfg = (yaml.safe_load(f) or {}).get("execution", {}) or {}
+            defaults.update({k: v for k, v in cfg.items() if v is not None})
+        except Exception:
+            pass
+        return defaults
 
     def simulate_trade(
         self,
@@ -203,6 +236,28 @@ class LiveTrackerRunner:
                 "atr": atr,   # TrackedSignal.from_signal reads metadata["atr"] (line 476 of signal_tracker)
             },
         }
+        # Drive the tracker with BAR time, not wall time: every age / hold /
+        # expiry check in signal_tracker reads _utcnow(), which we point at
+        # the bar being replayed. Restored to the wall clock in `finally`.
+        _st = self._st_module
+        _real_clock = _st._CLOCK
+
+        def _to_utc_dt(ts):
+            t = pd.Timestamp(ts)
+            t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+            return t.to_pydatetime()
+
+        _sim_now = {"t": _to_utc_dt(entry_ts)}
+        _st._CLOCK = lambda: _sim_now["t"]
+        try:
+            return self._replay(tracker, df, entry_idx, symbol, side, entry_price, stop_loss,
+                                initial_risk, trade_id, signal_dict, max_bars_forward,
+                                _sim_now, _to_utc_dt)
+        finally:
+            _st._CLOCK = _real_clock
+
+    def _replay(self, tracker, df, entry_idx, symbol, side, entry_price, stop_loss,
+                initial_risk, trade_id, signal_dict, max_bars_forward, _sim_now, _to_utc_dt):
         tracker.track_signal(signal_dict)
 
         # Feed bars forward until tracker closes the trade or we hit max_bars
@@ -212,6 +267,11 @@ class LiveTrackerRunner:
 
         for j in range(entry_idx + 1, end_idx):
             row = df.iloc[j]
+            # bar close time = bar open + one bar; ages are measured from it
+            try:
+                _sim_now["t"] = _to_utc_dt(df.index[j]) + (df.index[j] - df.index[j - 1]).to_pytimedelta()
+            except Exception:
+                _sim_now["t"] = _to_utc_dt(df.index[j])
             if self._feed_ohlc:
                 # Order: open → high→low (long-favorable first) or low→high (short-favorable first)
                 # Use intrabar sequence that won't accidentally hit SL before TP for longs
@@ -228,7 +288,30 @@ class LiveTrackerRunner:
             else:
                 seq = [float(row["close"])]
 
-            for price in seq:
+            # Intra-bar clock: open at bar open, extremes mid-bar, close at bar
+            # close, so 60-90 s time rules fire inside the bar as they do live.
+            try:
+                _bar_open = _to_utc_dt(df.index[j])
+                _bar_len = (df.index[j] - df.index[j - 1]).to_pytimedelta()
+            except Exception:
+                _bar_open, _bar_len = _sim_now["t"], None
+            _offsets = [0.0, 0.5, 0.5, 1.0] if len(seq) == 4 else [1.0]
+            for price, _off in zip(seq, _offsets):
+                if _bar_len is not None:
+                    _sim_now["t"] = _bar_open + _bar_len * _off
+                # A stop order fills at (about) its level, not at the bar's
+                # extreme. When the extreme crosses the current stop, feed the
+                # stop level so the tracker books the fill there — the same
+                # crossing-tick rule the live 100 ms feed produces.
+                try:
+                    _ts = tracker._active.get(trade_id)
+                    if _ts is not None and _ts.stop_loss > 0:
+                        if side == "long" and price < _ts.stop_loss:
+                            price = _ts.stop_loss
+                        elif side == "short" and price > _ts.stop_loss:
+                            price = _ts.stop_loss
+                except Exception:
+                    pass
                 events = tracker.update_prices({symbol: price})
                 # Did our trade close? Check if trade_id is no longer active
                 if trade_id not in tracker._active:
@@ -259,8 +342,13 @@ class LiveTrackerRunner:
         # Normalize outcome to trade_simulator.simulate_trade's return shape
         exit_price = float(closed_outcome.get("exit_price", entry_price))
         exit_reason = closed_outcome.get("exit_reason", "?")
-        # Compute pnl_r from exit_price and initial_risk
-        if side == "long":
+        # pnl_r mirrors the live ledger: net of fees and partial exits, from
+        # the tracker's own pnl_pct. Falls back to the gross price move only
+        # if the record has no pnl_pct.
+        _net_pct = closed_outcome.get("pnl_pct")
+        if _net_pct is not None:
+            pnl_r = (float(_net_pct) / 100.0 * entry_price) / initial_risk
+        elif side == "long":
             pnl_r = (exit_price - entry_price) / initial_risk
         else:
             pnl_r = (entry_price - exit_price) / initial_risk

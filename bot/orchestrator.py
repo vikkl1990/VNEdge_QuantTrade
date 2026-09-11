@@ -1692,8 +1692,17 @@ class BotOrchestrator:
             try:
                 _pdf = candles_dict.get(_analysis_tf)
                 if _pdf is not None and len(_pdf) > 0:
-                    _last_ts = _pdf.index[-1]
-                    _last_ms = int(pd.Timestamp(_last_ts).value // 1_000_000) if not isinstance(_last_ts, (int, float)) else int(_last_ts)
+                    # Frames carry bar time in a "timestamp" column (RangeIndex),
+                    # the same field _completed_bars_only reads. Reading the
+                    # index here turned every frame into "5,963,825 bars old"
+                    # and skipped all analysis for two cycles on 2026-09-11.
+                    if "timestamp" in _pdf.columns:
+                        _last_ts = pd.to_datetime(_pdf["timestamp"].iloc[-1], utc=True)
+                    else:
+                        _last_ts = pd.Timestamp(_pdf.index[-1])
+                        if _last_ts.tzinfo is None:
+                            _last_ts = _last_ts.tz_localize("UTC")
+                    _last_ms = int((_last_ts - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta(milliseconds=1))
                     _tf_ms = _TF_MS.get(_analysis_tf, 300_000)
                     _bars_behind = (_now_ms - (_last_ms + _tf_ms)) / _tf_ms
                     if _bars_behind > 2:

@@ -42,3 +42,4 @@ backtest/results/
 .bot.pid
 .ml_lab.pid
 ml_training.log
+.ml_retrain.pid

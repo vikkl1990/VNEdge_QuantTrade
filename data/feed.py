@@ -804,7 +804,6 @@ class DataFeed:
         self._subscriptions.pop(symbol, None)
         logger.info("Unsubscribed from %s", symbol)
 
-    @property
     def freshness(self) -> Dict[str, Any]:
         """Per-symbol data age, for the dashboard health chip and the
         staleness gates in the orchestrator.
@@ -847,5 +846,6 @@ class DataFeed:
         out["worst_age_s"] = round(out["worst_age_s"], 1)
         return out
 
+    @property
     def subscribed_symbols(self) -> Set[str]:
         return set(self._subscriptions.keys())

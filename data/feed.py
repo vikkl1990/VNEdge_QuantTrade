@@ -835,7 +835,9 @@ class DataFeed:
                     # age of the bar that should currently be forming
                     age = now_s - ts_s - _tf_s(tf)
                     candles[tf] = {"last_open_ts": ts_s, "age_s": round(age, 1), "bars_behind": round(age / _tf_s(tf), 2)}
-                    if tf in ("1m", "5m"):
+                    # worst-age tracks the analysis frame only; 1m is REST-polled
+                    # once a minute and would keep the chip permanently amber.
+                    if tf == "5m":
                         worst = max(worst, age)
                 else:
                     candles[tf] = None

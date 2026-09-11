@@ -75,7 +75,9 @@
     if (fr && fr.symbols) {
       const worst = Number(fr.worst_age_s || 0), stale = (fr.stale || []).concat(fr.excluded || []);
       const nStale = new Set(stale).size;
-      feedCls = worst > 600 || nStale > 3 ? "off" : (worst > 90 || nStale > 0) ? "warn" : "";
+      // worst = age of the newest completed 5m bar beyond its close: amber past
+      // one bar (300 s), red past two (the orchestrator's stale-frame gate).
+      feedCls = worst > 600 || nStale > 3 ? "off" : (worst > 300 || nStale > 0) ? "warn" : "";
       feedTxt = "Feed " + (worst < 60 ? worst.toFixed(0) + "s" : Math.round(worst / 60) + "m") + (nStale ? " · " + nStale + " stale" : "");
       feedTitle = "Worst symbol age " + worst.toFixed(0) + "s" + (nStale ? " · stale: " + [...new Set(stale)].map(s => s.replace("/USDT", "")).join(", ") : " · all " + Object.keys(fr.symbols).length + " symbols fresh");
     } else {

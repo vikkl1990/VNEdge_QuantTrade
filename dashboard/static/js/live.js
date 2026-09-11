@@ -29,10 +29,11 @@
 
   async function refresh() {
     if (!$("lv-kpis")) return;
-    const [summary, active, closed, signals, status, funnel, taxonomy, scanners, infra, ml, sup] = await Promise.all([
+    const [summary, active, closed, signals, status, funnel, taxonomy, scanners, infra, ml, sup, fresh] = await Promise.all([
       get("/api/paper/summary"), get("/api/tracker/active"), get("/api/tracker/closed"), get("/api/signals"),
       get("/api/status"), get("/api/pipeline/overview"), get("/api/pipeline/loss_taxonomy?hours=24"),
       get("/api/scanner-health"), get("/api/infra/health"), get("/api/ml/health"), get("/api/supervisor/status"),
+      get("/api/feed/freshness"),
     ]);
     const D = {
       summary: summary && summary.available !== false ? summary : lastGood.summary,
@@ -42,6 +43,7 @@
       status: status || lastGood.status || {}, funnel: (funnel && funnel.funnel) || lastGood.funnel || {},
       taxonomy: taxonomy || lastGood.taxonomy || {}, scanners: Array.isArray(scanners) ? scanners : lastGood.scanners || [],
       infra: infra || lastGood.infra || {}, ml: ml || lastGood.ml || {}, sup: sup || lastGood.sup || {},
+      fresh: fresh || lastGood.fresh || null,
     };
     lastGood = D;
     if (!D.summary) return;
@@ -66,15 +68,27 @@
       const m = /(\d{2}):(\d{2}):(\d{2})/.exec(st.last_data_update || "");
       if (m) { const now = new Date(); const ist = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"})); const t = new Date(ist); t.setHours(+m[1], +m[2], +m[3], 0); feedAge = Math.max(0, Math.round((ist - t) / 1000)); }
     } catch (e) {}
-    const feedCls = feedAge == null ? "off" : feedAge > 600 ? "off" : feedAge > 90 ? "warn" : "";
-    const feedTxt = feedAge == null ? "Feed --" : feedAge < 60 ? "Feed " + feedAge + "s" : "Feed " + Math.round(feedAge / 60) + "m";
+    // Per-symbol freshness wins over the global stamp: a dead LTC feed hid
+    // behind a fresh BTC one for 17 minutes on 2026-09-11.
+    let feedCls, feedTxt, feedTitle = "Age of the newest candle";
+    const fr = D.fresh;
+    if (fr && fr.symbols) {
+      const worst = Number(fr.worst_age_s || 0), stale = (fr.stale || []).concat(fr.excluded || []);
+      const nStale = new Set(stale).size;
+      feedCls = worst > 600 || nStale > 3 ? "off" : (worst > 90 || nStale > 0) ? "warn" : "";
+      feedTxt = "Feed " + (worst < 60 ? worst.toFixed(0) + "s" : Math.round(worst / 60) + "m") + (nStale ? " · " + nStale + " stale" : "");
+      feedTitle = "Worst symbol age " + worst.toFixed(0) + "s" + (nStale ? " · stale: " + [...new Set(stale)].map(s => s.replace("/USDT", "")).join(", ") : " · all " + Object.keys(fr.symbols).length + " symbols fresh");
+    } else {
+      feedCls = feedAge == null ? "off" : feedAge > 600 ? "off" : feedAge > 90 ? "warn" : "";
+      feedTxt = feedAge == null ? "Feed --" : feedAge < 60 ? "Feed " + feedAge + "s" : "Feed " + Math.round(feedAge / 60) + "m";
+    }
     const mlOk = D.ml && D.ml.summary ? D.ml.summary.ok + "/" + D.ml.summary.total_expected : "--";
     const mlCls = mlp.cb_open ? "off" : (D.ml && D.ml.overall_health === "OK") ? "" : "warn";
     const supCls = D.sup && D.sup.running ? ((D.sup.anomaly_count || 0) > 0 ? "warn" : "") : "off";
     const paused = st.paused;
     el.innerHTML =
       '<span class="chip mode" title="Production Delta India market data, simulated fills, real money off">Paper &middot; live data</span>' +
-      '<span class="chip ' + feedCls + '" title="Age of the newest candle"><span class="dot"></span>' + feedTxt + '</span>' +
+      '<span class="chip ' + feedCls + '" title="' + esc(feedTitle) + '"><span class="dot"></span>' + feedTxt + '</span>' +
       '<span class="chip ' + (ob.running ? "" : "off") + '" title="Orderbook cache: ' + (ob.cached || 0) + ' of ' + (ob.symbols || 0) + ' symbols"><span class="dot"></span>Book ' + (ob.cached || 0) + '/' + (ob.symbols || 0) + '</span>' +
       '<span class="chip ' + mlCls + '" title="ML models loaded on the local ML Lab"><span class="dot"></span>ML ' + mlOk + '</span>' +
       '<span class="chip ' + supCls + '" title="Supervisor"><span class="dot"></span>' + (D.sup && D.sup.running ? (D.sup.anomaly_count || 0) + " alerts" : "Supervisor off") + '</span>' +

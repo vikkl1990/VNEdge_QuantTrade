@@ -832,6 +832,7 @@ class DashboardServer:
         app.router.add_get("/api/r-metrics", self._handle_r_metrics)
         app.router.add_get("/api/scanner-health", self._handle_scanner_health)
         app.router.add_get("/api/config/effective", self._handle_effective_config)
+        app.router.add_get("/api/feed/freshness", self._handle_feed_freshness)
         app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
         app.router.add_get("/api/regime", self._handle_regime)
         app.router.add_get("/api/decision", self._handle_decision)
@@ -2363,6 +2364,23 @@ class DashboardServer:
             "round_trip_taker": round(taker * 2, 6),
             "round_trip_maker_entry": round(maker + taker, 6),
         }
+
+    async def _handle_feed_freshness(self, request: web.Request) -> web.Response:
+        """Per-symbol data age: candle feed ages, WS tick ages, and the set of
+        symbols the orchestrator is currently refusing to trade on."""
+        out: Dict[str, Any] = {"ts": datetime.now(timezone.utc).isoformat()}
+        orch = getattr(self, "_orchestrator", None)
+        feed = getattr(orch, "_data_feed", None) if orch is not None else None
+        try:
+            out.update(feed.freshness() if feed is not None and hasattr(feed, "freshness") else {"symbols": {}, "worst_age_s": None, "stale": []})
+        except Exception as exc:
+            out["feed_error"] = str(exc)
+        if orch is not None:
+            now = time.time()
+            pts = getattr(orch, "_price_ts", {}) or {}
+            out["ws_tick_age_s"] = {s: round(now - t, 1) for s, t in pts.items()}
+            out["excluded"] = sorted(getattr(orch, "_stale_symbols", set()) or [])
+        return web.json_response(out, dumps=_safe_dumps)
 
     async def _handle_effective_config(self, request: web.Request) -> web.Response:
         """What the running bot actually uses, for the Config tab.

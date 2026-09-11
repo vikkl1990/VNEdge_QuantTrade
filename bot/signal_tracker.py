@@ -38,6 +38,25 @@ def _utcnow() -> datetime:
     return _CLOCK()
 
 
+def _json_default(o):
+    """json.dumps fallback for numpy scalars / anything non-native.
+
+    2026-09-11: a numpy bool in signal metadata made every ledger save fail
+    ("Object of type bool is not JSON serializable") for 14 hours; ten
+    closed trades lived only in memory. Never let a stray dtype block
+    persistence again.
+    """
+    item = getattr(o, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            pass
+    if isinstance(o, (set, frozenset)):
+        return list(o)
+    return str(o)
+
+
 _STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
 _ACTIVE_FILE = _STORAGE_DIR / "active_signals.json"
 _CLOSED_FILE = _STORAGE_DIR / "closed_signals.json"
@@ -3300,7 +3319,7 @@ class SignalTracker:
     def _save_active(self) -> None:
         try:
             data = [ts.to_dict() for ts in self._active.values()]
-            self._safe_write(_ACTIVE_FILE, json.dumps(data, indent=1))
+            self._safe_write(_ACTIVE_FILE, json.dumps(data, indent=1, default=_json_default))
         except Exception as exc:
             logger.warning("Failed to save active signals: %s", exc)
 
@@ -3308,7 +3327,7 @@ class SignalTracker:
         try:
             # Keep last 5000 closed signals in main file (was 1000 — lost data)
             self._closed = self._closed[-5000:]
-            self._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1))
+            self._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1, default=_json_default))
             # APPEND-ONLY ARCHIVE: never lose a trade — but write each close
             # once. _save_closed() can run more than once per close, which
             # duplicated 10 of 15 trades in the 2026-09-09 archive.
@@ -3325,6 +3344,6 @@ class SignalTracker:
 
     def _save_stats(self) -> None:
         try:
-            self._safe_write(_STATS_FILE, json.dumps(self._stats, indent=1))
+            self._safe_write(_STATS_FILE, json.dumps(self._stats, indent=1, default=_json_default))
         except Exception as exc:
             logger.warning("Failed to save stats: %s", exc)

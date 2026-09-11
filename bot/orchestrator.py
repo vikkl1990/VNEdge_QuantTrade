@@ -307,6 +307,8 @@ class BotOrchestrator:
             # 3c. Start WebSocket for real-time prices (reduces latency 5000ms → 100ms)
             self._delta_ws = None
             self._ws_prices: Dict[str, float] = {}
+            self._price_ts: Dict[str, float] = {}      # wall time of the last WS tick per symbol
+            self._stale_symbols: set = set()           # symbols currently excluded for stale data
             # Phase 4.3 diag — use warning level so init path is visible in
             # journald without depending on logging-config propagation quirks.
             self._log.warning("WS_INIT: _HAS_DELTA_WS=%s symbols=%d", _HAS_DELTA_WS, len(self._symbols))
@@ -675,9 +677,57 @@ class BotOrchestrator:
         except Exception as exc:
             self._log.debug("ws candle ingest failed %s/%s: %s", symbol, tf, exc)
 
+    def _fresh_prices(self, max_ws_age: float = 90.0, max_candle_age: float = 720.0) -> dict:
+        """Prices that are safe to judge trades on.
+
+        WS tick if it is younger than max_ws_age; otherwise the latest candle
+        close if the symbol's feed delivered data within max_candle_age;
+        otherwise NOTHING for that symbol — a trade waits rather than being
+        stopped, killed or filled on a frozen number. Symbols excluded here
+        are published in self._stale_symbols for the health chip and logs.
+
+        2026-09-11: the candle feed died for 17 min and the WS dropped ten
+        times; ten trades were opened and closed on frozen prices (LTC
+        high == low == fill for 15 min, then 1-2% 'slippage' on resume).
+        """
+        now = time.time()
+        prices: dict = {}
+        stale: set = set()
+        feed_ages: dict = {}
+        try:
+            fr = self._data_feed.freshness() if hasattr(self._data_feed, "freshness") else {}
+            for sym, info in (fr.get("symbols") or {}).items():
+                feed_ages[sym] = info.get("data_age_s")
+        except Exception:
+            pass
+        for sym in self._symbols:
+            ws_px = self._ws_prices.get(sym) if hasattr(self, "_ws_prices") else None
+            ws_age = now - float(self._price_ts.get(sym, 0.0) or 0.0) if hasattr(self, "_price_ts") else 1e9
+            if ws_px and ws_age <= max_ws_age:
+                prices[sym] = ws_px
+                continue
+            age = feed_ages.get(sym)
+            if age is not None and age <= max_candle_age:
+                px = self._data_manager.get_latest_price(sym)
+                if px is not None:
+                    prices[sym] = px
+                    continue
+            stale.add(sym)
+        if stale != self._stale_symbols:
+            newly = stale - self._stale_symbols
+            recovered = self._stale_symbols - stale
+            if newly:
+                self._log.warning("STALE PRICES: %s excluded from trade evaluation (no WS tick <%ds, no candle <%ds)",
+                                  sorted(newly), int(max_ws_age), int(max_candle_age))
+            if recovered:
+                self._log.warning("STALE PRICES: %s recovered", sorted(recovered))
+            self._stale_symbols = stale
+        return prices
+
     async def _on_ws_price(self, symbol: str, last: float, bid: float, ask: float, mark: float) -> None:
         """WebSocket price callback — fires every ~100ms per symbol."""
         self._ws_prices[symbol] = last
+        self._price_ts[symbol] = time.time()
 
         # If we have active trades, update them immediately (real-time!)
         if self._signal_tracker.active_count > 0:
@@ -1023,15 +1073,9 @@ class BotOrchestrator:
                         time_since_last, interval,
                     )
 
-                # Gather current prices — prefer WebSocket, fallback to REST
-                prices: dict = {}
-                if ws_active and self._ws_prices:
-                    prices = dict(self._ws_prices)
-                else:
-                    for sym in self._symbols:
-                        price = self._data_manager.get_latest_price(sym)
-                        if price is not None:
-                            prices[sym] = price
+                # Gather current prices — fresh WS tick, else fresh candle close,
+                # else the symbol is left out (see _fresh_prices).
+                prices: dict = self._fresh_prices()
 
                 if not prices:
                     continue
@@ -1363,12 +1407,8 @@ class BotOrchestrator:
             except Exception as exc:
                 self._log.warning("Balance fetch failed: %s", exc)
 
-        # Gather current prices from the data manager
-        prices: dict = {}
-        for sym in self._symbols:
-            price = self._data_manager.get_latest_price(sym)
-            if price is not None:
-                prices[sym] = price
+        # Gather current prices — only symbols with fresh data (see _fresh_prices)
+        prices: dict = self._fresh_prices()
 
         if prices:
             await self._dashboard.update_prices(prices)
@@ -1643,6 +1683,29 @@ class BotOrchestrator:
                 df = self._data_manager.get_candles(symbol, tf)
                 if df is not None and len(df) > 0:
                     candles_dict[tf] = _completed_bars_only(df, tf, _now_ms)
+
+            # ── STALE-FRAME GATE (2026-09-11) ──
+            # Never scan a frame whose newest completed primary bar is more
+            # than two bars old: the scanner would price a signal off a dead
+            # frame and the fill would land 1-2% away when data resumed
+            # (LTC signalled twice at exactly 53.37, 80 minutes apart).
+            try:
+                _pdf = candles_dict.get(_analysis_tf)
+                if _pdf is not None and len(_pdf) > 0:
+                    _last_ts = _pdf.index[-1]
+                    _last_ms = int(pd.Timestamp(_last_ts).value // 1_000_000) if not isinstance(_last_ts, (int, float)) else int(_last_ts)
+                    _tf_ms = _TF_MS.get(_analysis_tf, 300_000)
+                    _bars_behind = (_now_ms - (_last_ms + _tf_ms)) / _tf_ms
+                    if _bars_behind > 2:
+                        self._log.warning("STALE FRAME: %s %s last completed bar is %.1f bars old — analysis skipped",
+                                          symbol, _analysis_tf, _bars_behind)
+                        try:
+                            self._strategy._scalp._funnel["blocked_stale"] = self._strategy._scalp._funnel.get("blocked_stale", 0) + 1
+                        except Exception:
+                            pass
+                        return
+            except Exception as _sg_exc:
+                self._log.debug("stale-frame gate failed for %s: %s", symbol, _sg_exc)
 
             # 3. Run strategy analysis (sync method)
             # Upgrade 2: feed candles to signal tracker for Chandelier Exit

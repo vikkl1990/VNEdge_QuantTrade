@@ -805,5 +805,47 @@ class DataFeed:
         logger.info("Unsubscribed from %s", symbol)
 
     @property
+    def freshness(self) -> Dict[str, Any]:
+        """Per-symbol data age, for the dashboard health chip and the
+        staleness gates in the orchestrator.
+
+        2026-09-11: the whole candle feed died for 17 minutes and the WS
+        dropped ten times in a day; trades were opened on frozen frames and
+        judged on frozen prices, with 1-2% "slippage" when data resumed. A
+        single global last_data_update hid all of it.
+        """
+        now_mono = time.monotonic()
+        now_s = time.time()
+
+        def _tf_s(tf: str) -> int:
+            try:
+                n, u = int(tf[:-1]), tf[-1]
+                return n * {"m": 60, "h": 3600, "d": 86400}[u]
+            except Exception:
+                return 300
+
+        out: Dict[str, Any] = {"symbols": {}, "worst_age_s": 0.0, "stale": []}
+        for sym, sub in self._subscriptions.items():
+            data_age = (now_mono - sub.last_data_time) if sub.last_data_time else None
+            candles = {}
+            worst = data_age or 0.0
+            for tf in sub.timeframes:
+                ts = sub.last_candle_ts.get(tf)
+                if ts:
+                    ts_s = float(ts) / (1000.0 if float(ts) > 1e11 else 1.0)
+                    # age of the bar that should currently be forming
+                    age = now_s - ts_s - _tf_s(tf)
+                    candles[tf] = {"last_open_ts": ts_s, "age_s": round(age, 1), "bars_behind": round(age / _tf_s(tf), 2)}
+                    if tf in ("1m", "5m"):
+                        worst = max(worst, age)
+                else:
+                    candles[tf] = None
+            out["symbols"][sym] = {"data_age_s": round(data_age, 1) if data_age is not None else None, "candles": candles}
+            if worst > 2 * 300:  # more than two 5m bars behind
+                out["stale"].append(sym)
+            out["worst_age_s"] = max(out["worst_age_s"], worst)
+        out["worst_age_s"] = round(out["worst_age_s"], 1)
+        return out
+
     def subscribed_symbols(self) -> Set[str]:
         return set(self._subscriptions.keys())

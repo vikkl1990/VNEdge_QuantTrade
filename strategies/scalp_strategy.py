@@ -1970,11 +1970,13 @@ class ScalpStrategy(BaseStrategy):
                 if confirm_df is not None and len(confirm_df) >= 30:
                     result = scanner(symbol, confirm_df, htf_bias, confirm_bias)
                     if result is not None:
-                        # 15m signal gets a quality bonus
+                        # (2026-09-12) This frame is the 5m CONFIRM frame, not
+                        # 15m, and the flat +10 it used to add lifted every
+                        # setup a grade for nothing. Tag only, no bonus.
                         result = _SetupResult(
                             name=result.name, side=result.side,
-                            confidence=min(result.confidence + 10, 100),
-                            confirmations=result.confirmations + ["15m timeframe (+10 quality)"],
+                            confidence=result.confidence,
+                            confirmations=result.confirmations + [f"{self.confirm_tf} confirm frame"],
                             entry_price=result.entry_price, stop_loss=result.stop_loss, atr=result.atr,
                         )
 
@@ -2977,8 +2979,15 @@ class ScalpStrategy(BaseStrategy):
             _grade_p311 = str(getattr(_g, "value", _g))
         except Exception:
             _grade_p311 = "A+" if int(getattr(best, 'confidence', 0) or 0) >= 90 else ""
+        # (2026-09-12) structure_bounce is exempt from the chop-long traps.
+        # 47k historical setups: its LONGS are the only half with a positive
+        # forward move (+0.35 ATR at 4h) and its SHORTS lose (-0.51 ATR).
+        # These gates made the live bot short-only in sideways markets
+        # (26 of 28 archived trades, 11 of 11 last night) — the worse half.
+        _is_sb_setup = (getattr(best, "name", "") == "structure_bounce")
         _chop_long_trap = (
             self._p3_11_chop_long_gate
+            and not _is_sb_setup
             and _side_str_p311 == "long"
             and _regime_lower_p311 in _chop_regimes_p311
             and htf_bias <= 0  # no bullish HTF support
@@ -3041,7 +3050,10 @@ class ScalpStrategy(BaseStrategy):
                 pass
 
         # ── P3.7: fire sideways scanner-specific gate ──
-        if _p37_sideways_trap:
+        # (2026-09-12) P3.7 only ever targeted structure_bounce longs in
+        # sideways regimes. History says those are the scanner's best side;
+        # the gate was built on the phantom-fill ledger. Disabled.
+        if _p37_sideways_trap and not _is_sb_setup:
             hard_vetos.append(
                 f"P3.7 SIDEWAYS SB LONG: regime=sideways "
                 f"conf={_conf_p37} ml={_ml_prob_p311:.2f} grade={_grade_p311} [P3_7_SIDEWAYS_SB_HARD]"
@@ -3168,7 +3180,9 @@ class ScalpStrategy(BaseStrategy):
             is_long = side_str == "long"
             regime_str = str(regime).lower()
             # Penalty for longs in quiet/ranging/unknown regimes
-            if is_long and regime_str not in ("trending_up", "breakout"):
+            # structure_bounce exempt (2026-09-12): its longs outperform its shorts
+            # in every regime bucket of the 47k-setup history.
+            if is_long and regime_str not in ("trending_up", "breakout") and getattr(best, "name", "") != "structure_bounce":
                 _long_adj = -8
                 best = _SetupResult(
                     name=best.name, side=best.side,
@@ -4966,6 +4980,20 @@ class ScalpStrategy(BaseStrategy):
         if len(df) < 4:
             return None
 
+        # ── Session window (2026-09-12) ──
+        # 47k historical setups: only 07:00-15:00 UTC shows a positive
+        # forward move (+0.19 / +0.09 ATR at 4h); 00-07 and 15-19 UTC are
+        # the worst buckets (-0.2 ATR). Outside the window the scanner
+        # does not fire.
+        try:
+            _win = getattr(self, "structure_bounce_hours_utc", (7, 15))
+            _t = df["timestamp"].iloc[-1] if "timestamp" in df.columns else df.index[-1]
+            _hour = pd.to_datetime(_t, utc=True).hour
+            if not (_win[0] <= _hour < _win[1]):
+                return None
+        except Exception:
+            pass
+
         last = df.iloc[-1]
         close = float(last["close"])
         open_ = float(last["open"])
@@ -4999,7 +5027,9 @@ class ScalpStrategy(BaseStrategy):
                 continue
 
             # Check SUPPORT bounce (LONG)
-            if sm.nearest_support:
+            # order_block levels excluded (2026-09-12): -1.05 ATR at 4h and a
+            # 41% barrier win rate over 335 setups, the worst level type by far.
+            if sm.nearest_support and getattr(sm.nearest_support, "level_type", "") != "order_block":
                 lvl = sm.nearest_support
                 in_zone = lvl.zone_low <= bar_low <= lvl.zone_high
                 dist_pct = (bar_low - lvl.price) / bar_close * 100 if bar_close > 0 else 999
@@ -5022,11 +5052,16 @@ class ScalpStrategy(BaseStrategy):
                             score += 10
                         if in_zone:
                             confs.append("Inside structure zone")
-                            score += 5
+                            # no score (2026-09-12): in-zone setups did worse (-0.18 vs 0.00 ATR)
                         break
 
             # Check RESISTANCE rejection (SHORT)
-            if sm.nearest_resistance:
+            # Shorts OFF by default (2026-09-12): across 47k historical
+            # setups SB shorts lose -0.5 to -0.9 ATR at 4h in every slice
+            # while longs gain; set self.structure_bounce_shorts = True to
+            # re-enable for research.
+            if (sm.nearest_resistance and getattr(sm.nearest_resistance, "level_type", "") != "order_block"
+                    and getattr(self, "structure_bounce_shorts", False)):
                 lvl = sm.nearest_resistance
                 in_zone = lvl.zone_low <= bar_high <= lvl.zone_high
                 dist_pct = (lvl.price - bar_high) / bar_close * 100 if bar_close > 0 else 999
@@ -5048,7 +5083,7 @@ class ScalpStrategy(BaseStrategy):
                             score += 10
                         if in_zone:
                             confs.append("Inside structure zone")
-                            score += 5
+                            # no score (2026-09-12): in-zone setups did worse (-0.18 vs 0.00 ATR)
                         break
 
         if side is None or target_level is None:
@@ -5067,7 +5102,7 @@ class ScalpStrategy(BaseStrategy):
 
         if best_vol > 1.5:
             confs.append(f"Volume spike {best_vol:.1f}×")
-            score += 15
+            score += 5   # was +15: spikes did WORSE than 1.2-1.5x volume (-0.15 vs +0.11 ATR)
         elif best_vol > 1.2:
             confs.append(f"Volume {best_vol:.1f}×")
             score += 10
@@ -5105,18 +5140,36 @@ class ScalpStrategy(BaseStrategy):
         score += min(target_level.strength // 5, 15)
         if target_level.touch_count >= 3:
             confs.append(f"{target_level.touch_count} touches")
-            score += 10
+            # no score (2026-09-12): 3+ touches did slightly worse than fewer
 
-        # HTF alignment
+        # ── Trend context (2026-09-12) ──
+        # structure_bounce is a fade. Against the 5m EMA21 slope the setup
+        # showed +0.5 ATR at 4h and a 52.8% barrier win; WITH the slope it
+        # lost (-0.13 ATR, 46.6%). The old "+15 HTF aligned" bonus rewarded
+        # the losing configuration.
+        try:
+            _e21 = df["ema_21"].astype(float).values
+            _slope = (_e21[-1] - _e21[-21]) / atr if len(_e21) >= 21 and atr > 0 else 0.0
+            _counter = (side == OrderSide.LONG and _slope < -1.0) or (side == OrderSide.SHORT and _slope > 1.0)
+            _with = (side == OrderSide.LONG and _slope > 1.0) or (side == OrderSide.SHORT and _slope < -1.0)
+            if _counter:
+                confs.append(f"Counter-trend fade (EMA21 slope {_slope:+.1f} ATR/20b)")
+                score += 10
+            elif _with:
+                confs.append(f"With-trend bounce (EMA21 slope {_slope:+.1f} ATR/20b, -10)")
+                score -= 10
+        except Exception:
+            pass
+
+        # HTF alignment — informational only, no longer scored
         if htf_bias == (1 if side == OrderSide.LONG else -1):
             confs.append("HTF aligned")
-            score += 15
 
         # Confluence: multiple structure types at same level
         nearby = [l for l in sm.levels if abs(l.price - target_level.price) / close < 0.003 and l != target_level]
         if nearby:
             confs.append(f"Multi-structure confluence ({len(nearby)+1} levels)")
-            score += 10
+            # no score (2026-09-12): 95% of setups carry this tag; it separates nothing
 
         confidence = min(score, 100)
 
@@ -5160,7 +5213,11 @@ class ScalpStrategy(BaseStrategy):
             side=side,
             confidence=confidence,
             confirmations=confs,
-            entry_price=target_level.price,
+            # entry = last close (2026-09-12). It used to be the LEVEL price,
+            # a number the market had already left; the paper fill then
+            # landed at the real price and the difference was booked as
+            # "slippage" on every trade.
+            entry_price=close,
             stop_loss=sl,
             atr=atr,
         )

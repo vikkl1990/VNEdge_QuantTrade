@@ -1299,6 +1299,19 @@ class ScalpStrategy(BaseStrategy):
         # --- Compute indicators on primary TF ---
         df = self._compute_indicators(primary_df)
 
+        # --- Indicators on the confirm (5m) frame too (2026-09-11 audit) ---
+        # The scan loop calls every scanner on confirm_df first and routes six
+        # of them to df_5m. Both arrived as raw OHLCV, so 11 scanners raised
+        # KeyError('atr') on every scan, the loop swallowed it at debug level,
+        # and only structure_bounce + liquidity_sweep ever traded.
+        try:
+            if confirm_df is not None and len(confirm_df) >= 30:
+                confirm_df = self._compute_indicators(confirm_df)
+            if df_5m is not None and len(df_5m) >= 50:
+                df_5m = confirm_df if (self.confirm_tf == "5m" and confirm_df is not None) else self._compute_indicators(df_5m)
+        except Exception as _ind_exc:
+            logger.warning("Confirm-frame indicator computation failed for %s: %s", symbol, _ind_exc)
+
         # --- Compute 5m ATR for SL calculation (1m ATR is too noisy/tight) ---
         # 5m ATR captures real volatility; 1m ATR gets noise-stopped constantly
         self._confirm_atr: float = 0.0
@@ -1454,6 +1467,11 @@ class ScalpStrategy(BaseStrategy):
             primary_df["stoch_k"] = _sk
             primary_df["stoch_d"] = _sd
             primary_df["obv_slope"] = calc_obv_slope(primary_df)
+            # Scanners read `df` (the indicator frame), not primary_df — without
+            # this the stochastic / OBV filters always saw the 50 / 0 defaults.
+            df["stoch_k"] = _sk.values if len(_sk) == len(df) else _sk.reindex(df.index).values
+            df["stoch_d"] = _sd.values if len(_sd) == len(df) else _sd.reindex(df.index).values
+            df["obv_slope"] = primary_df["obv_slope"].values if len(primary_df) == len(df) else primary_df["obv_slope"].reindex(df.index).values
             indicators["stoch_k"] = round(float(_sk.iloc[-1]), 1)
             indicators["stoch_d"] = round(float(_sd.iloc[-1]), 1)
             indicators["obv_slope"] = round(float(primary_df["obv_slope"].iloc[-1]), 3)
@@ -2947,8 +2965,18 @@ class ScalpStrategy(BaseStrategy):
         _chop_regimes_p311 = ("high_volatility", "mean_reversion", "sideways")
         _side_str_p311 = best.side.value if best.side else ""
         _regime_lower_p311 = str(regime).lower() if regime else ""
-        _ml_prob_p311 = float(getattr(best, 'ml_probability', 0) or indicators.get('ml_probability', 0) or 0)
-        _grade_p311 = getattr(best, 'grade', '') or ''
+        # (2026-09-11 audit) _SetupResult has neither ml_probability nor grade,
+        # and ML is scored further down the pipeline, so both escapes were
+        # inert: ml_prob was always 0.0 and grade always ''. Grade is derived
+        # from confidence exactly as _build_signal will (A+ = conf >= 90).
+        # The ML-bless escape cannot exist at this point in the pipeline.
+        _ml_prob_p311 = 0.0
+        try:
+            from config.constants import confidence_to_grade as _c2g
+            _g = _c2g(int(getattr(best, 'confidence', 0) or 0))
+            _grade_p311 = str(getattr(_g, "value", _g))
+        except Exception:
+            _grade_p311 = "A+" if int(getattr(best, 'confidence', 0) or 0) >= 90 else ""
         _chop_long_trap = (
             self._p3_11_chop_long_gate
             and _side_str_p311 == "long"
@@ -2991,7 +3019,10 @@ class ScalpStrategy(BaseStrategy):
         )
 
         hard_vetos = []
-        soft_vetos = []
+        # (2026-09-11 audit) this used to re-initialise soft_vetos, silently
+        # discarding the 5m-momentum, 15m-structure, counter-trend and 1H-macro
+        # penalties appended above. Keep what was collected.
+        soft_vetos = soft_vetos if isinstance(soft_vetos, list) else []
         conf_penalty = 0
 
         # ── P3.11: fire chop-long gate BEFORE veto loop (synthetic hard veto) ──
@@ -5120,6 +5151,9 @@ class ScalpStrategy(BaseStrategy):
             elif side == OrderSide.SHORT and _prev_k >= _stk_d and _stk < _stk_d:
                 confs.append("Stoch bearish cross (+5)")
                 score += 5
+        # confidence was finalised above the stochastic block, so the +5 never
+        # reached it (2026-09-11 audit) — recompute here.
+        confidence = min(score, 100)
 
         return _SetupResult(
             name="structure_bounce",
@@ -6059,6 +6093,9 @@ class ScalpStrategy(BaseStrategy):
             elif side == OrderSide.SHORT and _prev_k >= _stk_d and _stk < _stk_d:
                 confs.append("Stoch bearish cross (+5)")
                 score += 5
+        # confidence was finalised above the stochastic block, so the +5 never
+        # reached it (2026-09-11 audit) — recompute here.
+        confidence = min(score, 100)
 
         return _SetupResult(
             name="vwap_mean_revert",
@@ -6781,7 +6818,20 @@ class ScalpStrategy(BaseStrategy):
         # STEP 2: COMPUTE STRUCTURE-BASED SL (swing high/low)
         # ══════════════════════════════════════════════════════
         struct_sl_dist = vol_sl_dist  # default = same as volatility
-        if primary_df is not None and len(primary_df) >= 20:
+        # (2026-09-11 audit) every scanner computes an invalidation level
+        # (sweep wick, structure zone, order block, BB mid) and this function
+        # threw all of them away in favour of a generic 20-bar swing. The
+        # scanner's own stop is now the structure component; the volatility
+        # floor and the min/max clamp below still apply.
+        _scanner_sl = float(getattr(setup, "stop_loss", 0.0) or 0.0)
+        _scanner_sl_ok = (
+            _scanner_sl > 0 and entry > 0 and
+            ((setup.side == OrderSide.LONG and _scanner_sl < entry) or
+             (setup.side != OrderSide.LONG and _scanner_sl > entry))
+        )
+        if _scanner_sl_ok:
+            struct_sl_dist = abs(entry - _scanner_sl) + entry * 0.001  # +0.1% buffer
+        elif primary_df is not None and len(primary_df) >= 20:
             try:
                 recent = primary_df.iloc[-20:]
                 if setup.side == OrderSide.LONG:

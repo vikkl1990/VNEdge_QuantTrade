@@ -138,23 +138,24 @@ class ScannerBacktester:
           - Hardcoded TP at 1.5×ATR — didn't scale with actual risk
           - Resulting R-multiple math made every scanner look like a 17% WR loser
         """
-        from bot.trade_simulator import simulate_trade, SimulatorConfig
-
-        # Get config from live TRADE_TYPE_CONFIG
-        config = SimulatorConfig.from_trade_type(trade_type)
-        # Override fee rate to match backtester's setting
-        config.fee_rate_per_side = self._fee_rate
-
-        # Call the unified simulator
-        outcome = simulate_trade(
-            df=df,
-            entry_idx=entry_idx,
-            side=side,
-            entry_price=entry_price,
-            atr=atr,
-            regime=regime,
-            config=config,
-            trade_type=trade_type,
+        # (2026-09-11) Replay through the LIVE tracker (backtest/live_tracker_runner):
+        # live-sized stops (structure / 2xATR clamped 0.55-0.95%), live exit
+        # rules, fees and partials, bar-time clock. bot.trade_simulator used a
+        # 1xATR stop and its own breakeven/trail port, which made every scanner
+        # look like a 14% win-rate loser on 5m for a bot that does not exist.
+        global _LIVE_RUNNER
+        try:
+            _LIVE_RUNNER
+        except NameError:
+            _LIVE_RUNNER = None
+        if _LIVE_RUNNER is None:
+            from backtest.live_tracker_runner import LiveTrackerRunner
+            _LIVE_RUNNER = LiveTrackerRunner()
+        outcome = _LIVE_RUNNER.simulate_trade(
+            df=df, entry_idx=entry_idx, symbol=symbol, side=side,
+            entry_price=entry_price, atr=atr, scanner="",
+            confidence=65, grade="B", regime=regime, trade_type=trade_type,
+            max_bars_forward=120,
         )
 
         # Populate SimTrade with outcome fields

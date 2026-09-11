@@ -1416,6 +1416,21 @@ class MLDashboard:
                     stat = model_path.stat()
                     entry["model_size_bytes"] = stat.st_size
                     entry["age_hours"] = round((now_ts - stat.st_mtime) / 3600, 1)
+                # (2026-09-11) Serving prefers the family models
+                # (model_{scanner}_family_*.joblib) and per-symbol runs no
+                # longer rewrite the generic file, so age must be the NEWEST
+                # of scanner + family files. Otherwise the scanner file's age
+                # crosses the bot's 48 h kill switch and every score comes back
+                # STALE_MODEL / 0.5 while freshly trained family models sit
+                # unused beside it.
+                try:
+                    newest = max((p.stat().st_mtime for p in MODELS_DIR.glob(f"model_{scanner}*.joblib")), default=None)
+                    if newest is not None:
+                        entry["age_hours"] = round((now_ts - newest) / 3600, 1)
+                        entry["newest_variant_age_hours"] = entry["age_hours"]
+                        entry["model_file_exists"] = True
+                except Exception:
+                    pass
                 if meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())

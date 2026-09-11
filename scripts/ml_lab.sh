@@ -45,7 +45,7 @@ kill_port_orphans() {
     for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
     kill -9 "$pid" 2>/dev/null || true
   fi
-  pkill -f "run_trainer.py.*--port $PORT" 2>/dev/null || true
+  pkill -f "run_trainer.py --port $PORT" 2>/dev/null || true
 }
 
 start_server() {

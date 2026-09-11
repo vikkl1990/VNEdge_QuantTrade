@@ -111,13 +111,20 @@ class MLScorer:
                     if _hr.status_code == 200:
                         _hd = _hr.json()
                         _scanners = _hd.get("scanners", {})
+                        _ages = {}
                         _max_age_h = 0
                         for _sn, _sv in _scanners.items():
-                            _max_age_h = max(_max_age_h, float(_sv.get("age_hours", 0) or 0))
-                        self._last_health_check = {"ts": time.time(), "max_age_h": _max_age_h}
+                            _a = float(_sv.get("age_hours", 0) or 0)
+                            _ages[_sn] = _a
+                            _max_age_h = max(_max_age_h, _a)
+                        self._last_health_check = {"ts": time.time(), "max_age_h": _max_age_h, "ages": _ages}
                 except Exception:
                     pass
-            _model_age_h = float((getattr(self, '_last_health_check', {}) or {}).get("max_age_h", 0) or 0)
+            # Judge the model that will actually score THIS scanner. Using the
+            # max across all scanners made one untrained scanner (bos_choch at
+            # 48.9 h) return STALE_MODEL / 0.5 for every other scanner too.
+            _hc = getattr(self, '_last_health_check', {}) or {}
+            _model_age_h = float((_hc.get("ages") or {}).get(scanner_name, _hc.get("max_age_h", 0)) or 0)
             if _model_age_h > _stale_threshold_h:
                 logger.warning(
                     "MODEL STALE: oldest model is %.1fh old (threshold=%dh) — returning neutral 0.5",

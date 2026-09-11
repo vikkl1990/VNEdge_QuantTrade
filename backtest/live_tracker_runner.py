@@ -199,8 +199,24 @@ class LiveTrackerRunner:
                 "order_block_entry": 1.0, "liquidity_sweep": 1.2,
                 "simple_bias": 1.5, "bos_choch": 1.2,
             }
-            sl_mult = SCANNER_SL_ATR.get(scanner, 2.0)  # 2.0 is scalp_strategy default
-            sl_distance = atr * sl_mult
+            # Mirror scalp_strategy._build_signal STEP 3 (2026-09-11): the live
+            # stop is max(structure swing +0.1%, 2.0 x 5m ATR), clamped to
+            # [min_sl_pct, max_sl_pct] of entry, plus a 0.1% execution buffer.
+            # The old 1 x ATR stop here was 8-16x tighter than live on majors
+            # (5m ATR ~0.1% vs a 0.55% floor), so replayed labels came from
+            # trades the live bot never places.
+            vol_sl = atr * 2.0
+            try:
+                recent = df.iloc[max(0, entry_idx - 20):entry_idx + 1]
+                if side == "long":
+                    struct_sl = max(entry_price - float(recent["low"].min()), 0) + entry_price * 0.001
+                else:
+                    struct_sl = max(float(recent["high"].max()) - entry_price, 0) + entry_price * 0.001
+            except Exception:
+                struct_sl = 0.0
+            sl_distance = max(struct_sl, vol_sl)
+            sl_distance = max(entry_price * 0.55 / 100, min(sl_distance, entry_price * 0.95 / 100))
+            sl_distance += entry_price * 0.001
             stop_loss = (entry_price - sl_distance) if side == "long" else (entry_price + sl_distance)
 
         initial_risk = abs(entry_price - stop_loss)

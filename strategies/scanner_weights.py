@@ -88,9 +88,44 @@ class ScannerWeightManager:
     SHADOW_FULL_RECOVERY_EXPECTANCY = 0.3
 
     # Manual overrides: scanners forced into specific states
+    #
+    # 2026-09-12 two-fold validation gate: every routed scanner run
+    # unconditioned over the full cached history (Apr-Sep, 6 symbols,
+    # ~187k candidates), split by date into two disjoint multi-month folds
+    # (old: before the tuning window; new: the tuning window itself). A
+    # scanner only counts as real if BOTH folds clear +0.15 ATR forward
+    # return at 48 bars, in the same direction -- not tuned on one fold
+    # and hoped-for on the other. Only rsi_divergence passed (+0.204/+0.152
+    # ATR, 50.8%/51.9% win rate vs a 0.65% barrier, n=20,291/27,498, broad
+    # across all 6 symbols -- not one driving it). Every scanner below
+    # failed: negative in at least one fold, or flips sign between them,
+    # the same overfitting pattern structure_bounce showed on three
+    # separate rebuild attempts. Shadowed here rather than disabled so
+    # candidate signals keep logging for research; promote back only on
+    # fresh evidence from a rerun of this same gate, never on live P&L
+    # alone (see scratchpad/scanner_gate.py for the harness).
     FORCED_STATES: Dict[str, str] = {
-        "supertrend_flip": STATUS_SHADOW,   # 26% WR, -9.62 total R
-        "momentum_surge": STATUS_SHADOW,     # 39% WR, -0.41 total R
+        "supertrend_flip": STATUS_SHADOW,   # 26% WR, -9.62 total R (pre-existing)
+        "momentum_surge": STATUS_SHADOW,     # 39% WR, -0.41 total R (pre-existing)
+        "ema_momentum": STATUS_SHADOW,        # -0.124 / +0.117 ATR -- flips sign between folds
+        "vwap_bounce": STATUS_SHADOW,         # n=54/18 -- far too small to mean anything
+        "trend_continuation": STATUS_SHADOW,  # -0.200 / +0.034 ATR -- negative, then flat
+        "bb_squeeze": STATUS_SHADOW,          # -0.430 / -0.154 ATR -- negative in both folds
+        "structure_bounce": STATUS_SHADOW,    # -0.172 / +1.122 ATR -- flips sign, 3rd failed rebuild
+        "liquidity_sweep": STATUS_SHADOW,     # +0.009 / -0.021 ATR -- flat/noise in both folds
+        "bos_choch": STATUS_SHADOW,           # +0.692 / -0.455 ATR -- flips sign, small n
+        "cvd_divergence": STATUS_SHADOW,      # +0.175 / +0.003 ATR -- new fold is flat, fails bar
+        "simple_bias": STATUS_SHADOW,         # -0.082 / -0.084 ATR -- negative in both folds
+        "order_block_entry": STATUS_SHADOW,   # n=32/33 -- far too small to mean anything
+        "vwap_mean_revert": STATUS_SHADOW,    # -0.117 / -0.337 ATR -- negative in both folds
+        "rsi_extreme": STATUS_SHADOW,         # +0.499 / -0.001 ATR -- old fold only, flat in new
+        "momentum_ride": STATUS_SHADOW,       # -0.367 / -0.125 ATR -- negative in both folds
+        "bb_band_walk": STATUS_SHADOW,        # -0.344 / -0.140 ATR -- negative in both folds
+        "post_impulse": STATUS_SHADOW,        # -0.340 / -0.157 ATR -- negative in both folds
+        # rsi_divergence: NOT overridden -- the one scanner that passed.
+        # Edge is real but small (~0.02-0.03% at 48 bars vs 0.118% standard
+        # round-trip fees) -- likely needs a confidence-threshold filter to
+        # clear costs before trusting it with meaningful size.
     }
 
     def __init__(self) -> None:

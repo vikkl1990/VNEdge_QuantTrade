@@ -76,35 +76,52 @@ TRADE_TYPE_RUNNER = "RUNNER"        # High conviction trend, wide SL/TP, no time
 
 # Per-type exit parameters
 TRADE_TYPE_CONFIG = {
+    # HOLD profile (2026-09-12): the time kills (early kill 60-90 s, dead
+    # market 3 min, RUNNER no-momentum 10 min, max age 15-20 min) closed the
+    # median trade after 2 bars. Replaying 5,127 scanner candidates through
+    # this tracker (scratch A/B, same fills and fees) with those rules off,
+    # max age 8 h and the chandelier gated until 0.3R MFE cut the mean loss
+    # per trade from -0.104R to -0.077R (net -7,686 -> -5,713 USD at $100 x
+    # 20) and moved the median hold from 2 to 4 bars. Time rules are kept as
+    # config keys (0 = off) so they can be re-tested, not re-invented.
+    #
+    # Shared time-rule keys (per type, defaults shown in the code):
+    #   dead_market_sec   quiet/low-liquidity regime kill after N s (180; 0 = off)
+    #   no_momentum_sec   kill after N s if MFE < 0.20R (RUNNER 600; 0 = off)
+    #   chandelier_min_mfe_r  chandelier may move the stop only after this MFE (0 = first tick)
     TRADE_TYPE_SCALP: {
         "sl_atr_mult": 0.8,       # initial SL reference (strategy uses 2.0x 5m ATR for actual SL)
         "tp1_rr": 0.8,            # quick TP1
         "tp2_rr": 1.2,            # small TP2
         "tp3_rr": 0.0,            # NO TP3 for scalps
-        "early_kill_sec": 60,     # 60s early kill
-        "early_kill_mfe": 0.10,   # need to show life quickly
-        "max_age_sec": 15 * 60,   # 15 min base
-        "extension_trigger_r": 0.15,    # extend if MFE >= 0.15R
-        "extended_age_sec": int(22.5 * 60),  # extended to 22.5 min
-        "full_extend_r": 0.3,           # full extend if MFE >= 0.3R + still growing
-        "full_extended_age_sec": 30 * 60,    # full extension to 30 min
+        "early_kill_sec": 0,      # was 60 s (see HOLD note above)
+        "early_kill_mfe": 0.0,
+        "dead_market_sec": 0,     # was 180 s
+        "max_age_sec": 8 * 3600,  # was 15 min
+        "extension_trigger_r": 0.15,
+        "extended_age_sec": 12 * 3600,
+        "full_extend_r": 0.3,
+        "full_extended_age_sec": 16 * 3600,
         "chandelier_mult_ranging": 0.8,  # risk multiplier for ranging (tighter)
         "chandelier_mult_trending": 1.0, # risk multiplier for trending (give room)
+        "chandelier_min_mfe_r": 0.3,     # signal stop is the risk until 0.3R MFE
     },
     TRADE_TYPE_INTRADAY: {
         "sl_atr_mult": 1.0,       # initial SL reference (strategy uses 2.0x 5m ATR for actual SL)
         "tp1_rr": 1.2,            # TP1 at 1.2R
         "tp2_rr": 2.0,            # TP2 at 2R
         "tp3_rr": 3.0,            # TP3 at 3R
-        "early_kill_sec": 90,     # 90s early kill
-        "early_kill_mfe": 0.08,   # need momentum signal
-        "max_age_sec": 20 * 60,   # 20 min base
+        "early_kill_sec": 0,      # was 90 s (see HOLD note above)
+        "early_kill_mfe": 0.0,
+        "dead_market_sec": 0,     # was 180 s
+        "max_age_sec": 8 * 3600,  # was 20 min
         "extension_trigger_r": 0.15,
-        "extended_age_sec": 30 * 60,
+        "extended_age_sec": 12 * 3600,
         "full_extend_r": 0.3,
-        "full_extended_age_sec": 40 * 60,
+        "full_extended_age_sec": 16 * 3600,
         "chandelier_mult_ranging": 0.8,  # INTRADAY ranging
-        "chandelier_mult_trending": 1.2,  # RUNNER trending
+        "chandelier_mult_trending": 1.2,  # INTRADAY trending
+        "chandelier_min_mfe_r": 0.3,
     },
     TRADE_TYPE_RUNNER: {
         "sl_atr_mult": 0.6,       # initial SL
@@ -113,6 +130,8 @@ TRADE_TYPE_CONFIG = {
         "tp3_rr": 5.0,            # TP3 at 5R — let it run
         "early_kill_sec": 0,      # no early kill
         "early_kill_mfe": 0.0,    # disabled
+        "no_momentum_sec": 0,     # was 600 s (see HOLD note above)
+        "dead_market_sec": 0,     # was 180 s
         "max_age_sec": 8 * 3600,  # 8 hours base
         "extension_trigger_r": 0.15,
         "extended_age_sec": 12 * 3600,
@@ -120,6 +139,7 @@ TRADE_TYPE_CONFIG = {
         "full_extended_age_sec": 16 * 3600,
         "chandelier_mult_ranging": 1.0,  # RUNNER ranging
         "chandelier_mult_trending": 1.2,  # RUNNER trending
+        "chandelier_min_mfe_r": 0.3,
     },
 }
 
@@ -1871,13 +1891,15 @@ class SignalTracker:
 
                     # ── PHASE 1b: Momentum Check (catch dead trades before max_age) ──
                     # RUNNER at 10min with MFE < 0.20R → not a real runner
-                    if not dead_trade and tt == TRADE_TYPE_RUNNER and age_sec >= 600:
+                    _nm_sec = tt_cfg.get("no_momentum_sec", 0)
+                    if not dead_trade and _nm_sec > 0 and age_sec >= _nm_sec:
                         if max_fav_r < 0.20:
                             dead_trade = True
                             kill_reason = "no_momentum"
 
                     # Any type at 3min in quiet/dead regime with no MFE and losing
-                    if not dead_trade and age_sec >= 180:
+                    _dm_sec = tt_cfg.get("dead_market_sec", 180)
+                    if not dead_trade and _dm_sec > 0 and age_sec >= _dm_sec:
                         _regime_exit = getattr(ts, 'metadata', {}).get('regime', '') if isinstance(getattr(ts, 'metadata', None), dict) else ''
                         if _regime_exit in ('quiet', 'low_liquidity', 'mean_reversion', ''):
                             if max_fav_r < 0.08 and current_r < -0.10:
@@ -2453,17 +2475,21 @@ class SignalTracker:
                 if ts.chandelier_stop > _mfe_floor or ts.chandelier_stop == 0:
                     ts.chandelier_stop = _mfe_floor
 
-        # Also move the actual stop_loss if chandelier is tighter
-        # Enforce minimum SL distance: 0.15% from entry (safety net)
-        _min_sl_dist = ts.entry_price * 0.0040  # 0.40% floor (match baseline 0.43%)
-        if is_long:
-            _sl_floor = ts.entry_price - _min_sl_dist
-            if ts.chandelier_stop > 0 and ts.chandelier_stop < _sl_floor:
-                ts.chandelier_stop = _sl_floor  # don't go below floor
-        else:
-            _sl_ceil = ts.entry_price + _min_sl_dist
-            if ts.chandelier_stop > 0 and ts.chandelier_stop > _sl_ceil:
-                ts.chandelier_stop = _sl_ceil  # don't go above floor
+        # Also move the actual stop_loss if chandelier is tighter.
+        # (2026-09-12) The old "0.40% minimum SL distance floor" here was
+        # inverted: it pulled any chandelier level further than 0.40% from
+        # entry UP to entry-0.40%, and since that is always tighter than the
+        # signal stop (0.55-0.95% + buffer, or the scanner's structure stop)
+        # every trade's stop was overwritten to 0.40% on its first tick. The
+        # recorded initial_risk stayed at the signal stop, so a full stop-out
+        # was booked as -0.4R. The initial stop is the safety net; the
+        # chandelier may only tighten from it as MFE builds.
+
+        # Optional gate: the chandelier may not move the live stop until the
+        # trade has earned this much MFE; before that the signal stop is the
+        # operative risk (0 = move from the first tick, the legacy behaviour).
+        if ts.peak_mfe_r < tt_config.get("chandelier_min_mfe_r", 0.0):
+            return None
 
         if is_long and ts.chandelier_stop > ts.stop_loss:
             old_sl = ts.stop_loss

@@ -175,11 +175,12 @@ class TestTradeTypeConfig:
             assert required.issubset(set(cfg.keys())), f"{tt} missing keys"
 
     def test_max_age_ordering(self):
-        """SCALP max_age < INTRADAY max_age < RUNNER max_age."""
+        """HOLD profile: every type gets at least 8 h; RUNNER is never shorter."""
         s = TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP]["max_age_sec"]
         i = TRADE_TYPE_CONFIG[TRADE_TYPE_INTRADAY]["max_age_sec"]
         r = TRADE_TYPE_CONFIG[TRADE_TYPE_RUNNER]["max_age_sec"]
-        assert s < i < r
+        assert min(s, i, r) >= 8 * 3600
+        assert r >= i and r >= s
 
     def test_scalp_vs_runner_sl(self):
         """SCALP and RUNNER both have positive SL multipliers.

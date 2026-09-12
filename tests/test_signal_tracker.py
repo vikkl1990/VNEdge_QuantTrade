@@ -105,13 +105,21 @@ def test_trade_type_config():
         assert cfg["max_age_sec"] > 0
 
 
-def test_scalp_timeout_values():
-    """SCALP should have tighter timeouts than INTRADAY."""
-    from bot.signal_tracker import TRADE_TYPE_CONFIG, TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY
-    scalp = TRADE_TYPE_CONFIG[TRADE_TYPE_SCALP]
-    intra = TRADE_TYPE_CONFIG[TRADE_TYPE_INTRADAY]
-    assert scalp["max_age_sec"] < intra["max_age_sec"]
-    assert scalp["early_kill_sec"] <= intra["early_kill_sec"]
+def test_hold_profile_time_rules_off():
+    """HOLD profile (2026-09-12): no time kills, 8h+ max age, chandelier gated.
+
+    The old 15-20 min max age and 60-90 s early kill closed the median trade
+    after 2 bars; the replay A/B showed they only added losses.
+    """
+    from bot.signal_tracker import TRADE_TYPE_CONFIG
+    for tt, cfg in TRADE_TYPE_CONFIG.items():
+        assert cfg["early_kill_sec"] == 0, tt
+        assert cfg.get("no_momentum_sec", 0) == 0, tt
+        assert cfg.get("dead_market_sec", 180) == 0, tt
+        assert cfg["max_age_sec"] >= 8 * 3600, tt
+        assert cfg["extended_age_sec"] >= cfg["max_age_sec"], tt
+        assert cfg["full_extended_age_sec"] >= cfg["extended_age_sec"], tt
+        assert cfg["chandelier_min_mfe_r"] >= 0.3, tt
 
 
 if __name__ == "__main__":

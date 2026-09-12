@@ -2644,9 +2644,21 @@ class DashboardServer:
         return web.json_response(data, dumps=_safe_dumps)
 
     async def _handle_grid_status(self, request: web.Request) -> web.Response:
-        """Return Grid Bot status."""
+        """Return Grid Bot status.
+
+        GridBot.get_status() hardcodes "enabled": True unconditionally — it
+        has no way to know the orchestrator has a separate runtime kill
+        switch (_grid_bot_enabled, off since inception here) that gates
+        whether it ever receives a price via seed_history()/update(). Left
+        alone, this endpoint would claim the grid bot is running (and any
+        future UI panel would show it as active) while it has never placed
+        an order. Override with the orchestrator's actual flag; default to
+        False (not the object's claim) if that flag was never wired.
+        """
         if hasattr(self, '_grid_bot') and self._grid_bot:
-            return web.json_response(self._grid_bot.get_status(), dumps=_safe_dumps)
+            status = self._grid_bot.get_status()
+            status["enabled"] = bool(getattr(self, '_grid_bot_enabled', False))
+            return web.json_response(status, dumps=_safe_dumps)
         return web.json_response({"enabled": False})
 
     async def _handle_grid_positions(self, request: web.Request) -> web.Response:

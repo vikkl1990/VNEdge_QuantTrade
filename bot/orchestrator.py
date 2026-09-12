@@ -447,6 +447,7 @@ class BotOrchestrator:
                 self._log.warning("ML feedback loop NOT wired: no _training_dataset found on strategy")
             self._dashboard._decision_engine = self._decision_engine
             self._dashboard._grid_bot = self._grid_bot
+            self._dashboard._grid_bot_enabled = self._grid_bot_enabled
             dash_cfg = self._config.get("dashboard", {})
             if not isinstance(dash_cfg, dict):
                 dash_cfg = {}

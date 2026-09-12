@@ -2470,11 +2470,31 @@ class DashboardServer:
         return web.json_response([], dumps=_safe_dumps)
 
     async def _handle_opportunity_funnel(self, request: web.Request) -> web.Response:
-        """Return opportunity funnel counters + near-misses."""
-        data = {"funnel": {}, "near_misses": {}}
+        """Return opportunity funnel counters + near-misses.
+
+        `funnel` is summed across every symbol's own counters (scalp._funnels,
+        one dict per symbol, reset hourly per symbol). It used to return
+        scalp._funnel — a single dict re-pointed at whichever symbol's
+        analyze() call happened to run last — so most reads landed on a
+        symbol that had just been reset or blocked before its scanner loop
+        ran, showing "scanned: 0" while the fleet was actively scanning
+        (dashboard/static/js/app.js reads exactly that field to decide
+        whether to show "No candles processed yet"). Per-symbol breakdown
+        is included as `funnel_by_symbol` for anyone who wants it.
+        """
+        data = {"funnel": {}, "funnel_by_symbol": {}, "near_misses": {}}
         if self._strategy and hasattr(self._strategy, '_scalp'):
             scalp = self._strategy._scalp
-            if hasattr(scalp, '_funnel'):
+            funnels = getattr(scalp, '_funnels', None)
+            if funnels:
+                data["funnel_by_symbol"] = {sym: dict(f) for sym, f in funnels.items()}
+                agg: Dict[str, int] = {}
+                for f in funnels.values():
+                    for k, v in f.items():
+                        agg[k] = agg.get(k, 0) + v
+                data["funnel"] = agg
+            elif hasattr(scalp, '_funnel'):
+                # Fallback for a strategy instance with no per-symbol funnels yet
                 data["funnel"] = dict(scalp._funnel)
             # Veto stats debug info
             if hasattr(scalp, '_veto_stats'):

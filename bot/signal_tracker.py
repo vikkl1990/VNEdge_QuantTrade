@@ -124,6 +124,13 @@ TRADE_TYPE_CONFIG = {
 }
 
 
+# Scanners whose measured holding horizon dictates the trade type regardless
+# of ML probability (see classify_trade). Keys are setup_type names.
+SCANNER_TRADE_TYPE = {
+    "structure_bounce": TRADE_TYPE_RUNNER,   # edge appears at ~4h; RUNNER = no early kill, 8h max age, TP1 1.5R
+}
+
+
 def classify_trade(signal_dict: dict) -> str:
     """Classify a trade into SCALP / INTRADAY / RUNNER before execution.
 
@@ -131,6 +138,20 @@ def classify_trade(signal_dict: dict) -> str:
     Context boosters: trend_strength, vwap_distance, atr_ratio, regime, HTF alignment
     """
     meta = signal_dict.get("metadata", {})
+
+    # ── Per-scanner horizon override (2026-09-12) ──
+    # structure_bounce longs measured on 47k historical setups: +0.44 ATR at
+    # 2h but +1.18 ATR (~0.19% of price, above the 0.118% round trip) only
+    # at 4h, with mean MFE of 6 ATR ≈ 1.0% ≈ the RUNNER TP1 (1.5R on a
+    # 0.65% stop). SCALP / INTRADAY rules (90 s early kill, 20 min decay)
+    # close it before the move exists. Classify by scanner first; ML
+    # probability keeps deciding for everything else.
+    _setup = str(meta.get("setup_type") or signal_dict.get("setup_type") or signal_dict.get("scanner") or "")
+    _forced = SCANNER_TRADE_TYPE.get(_setup)
+    if _forced:
+        logger.info("TRADE TYPE: %s %s → %s (scanner horizon override for %s)",
+                    signal_dict.get("symbol", ""), signal_dict.get("side", ""), _forced, _setup)
+        return _forced
 
     # Primary: ML probability
     ml_prob = float(meta.get("ml_probability", 0.5))

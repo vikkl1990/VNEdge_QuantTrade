@@ -863,20 +863,35 @@ class SignalTracker:
             logger.info("TRACK_SKIP: %s already in _active", ts.trade_id[:8])
             return  # already tracking
 
-        # Note: conf=0 trades (fee check) are allowed — 80.8% WR proves they are profitable
-        # The fee check was using wrong fee model (standard vs scalper)
-
         logger.info("TRACK_PASS_DEDUP: %s %s entry=%.4f sl=%.4f", ts.trade_id[:8], ts.symbol, ts.entry_price, ts.stop_loss)
         logger.info(
             "TRACK_DEBUG: %s %s %s | score=%s grade=%s conf=%s | checking filters...",
             ts.trade_id[:8], ts.symbol, ts.side,
             signal_dict.get("metadata", {}).get("weighted_score", "N/A"),
-            signal_dict.get("grade", "?"), signal_dict.get("confidence", "?"),
+            signal_dict.get("grade", "?"), ts.confidence,
         )
 
         # ── MINIMUM CONFIDENCE GATE (block REJECT grade / conf < 45) ──
+        # (2026-09-13 review of the ledger) This used to read
+        # signal_dict.get("confidence") — the confidence the AI learner
+        # computed BEFORE the fee-viability check in from_signal() ran, not
+        # what that check decided. from_signal()'s fee-drag hard blocks
+        # (>0.8, >0.6 soft, the P4 chop-regime cap, the universal 0.50 cap)
+        # each try to signal rejection by zeroing a LOCAL `confidence`
+        # variable and passing it into the returned TrackedSignal — but
+        # this gate was checking the original dict, never ts.confidence, so
+        # the zero never reached here and every one of those "hard blocks"
+        # was cosmetic: it stamped metadata (p4_fee_block, fee_cap_block)
+        # and persisted confidence=0 next to whatever grade the AI learner
+        # had already assigned, then opened the trade anyway. A comment
+        # here previously blessed this as intentional ("conf=0 trades
+        # allowed — 80.8% WR proves they are profitable"), an unverified,
+        # undated claim. On the actual ledger, the 7 trades this gate tried
+        # and failed to block net -$5.35; the 7 it correctly let through
+        # net -$2.47 — the opposite of what the comment claimed. Reading
+        # ts.confidence makes the block real.
         _grade = signal_dict.get("grade", "")
-        _conf = float(signal_dict.get("confidence", 0))
+        _conf = float(ts.confidence)
         if _grade == "REJECT" or _conf < 45:
             logger.info(
                 "TRACK_BLOCKED: %s %s %s | grade=%s conf=%.0f < 45 — too weak to trade",

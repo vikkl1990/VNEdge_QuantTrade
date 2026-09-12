@@ -380,6 +380,50 @@ class TestFeeCalculation:
         assert ts.fee_type == "taker_entry"
 
 
+class TestFeeViabilityActuallyBlocksTheTrade:
+    """(2026-09-13 ledger review) track_signal()'s minimum-confidence gate
+    used to read signal_dict.get("confidence") — the AI learner's value,
+    computed BEFORE the fee-viability check inside from_signal() ran — not
+    ts.confidence, which is what that check actually sets to 0 to signal
+    rejection. The zero never reached the gate, so every fee-viability
+    "hard block" (>0.6 soft, >0.8 hard, the P4 chop-regime cap, the
+    universal 0.50 cap) was cosmetic: it stamped metadata and persisted
+    confidence=0 next to whatever grade the trade already had, then let it
+    open anyway. Confirmed against the real paper ledger: 7 of 14 closed
+    trades carried this exact signature (confidence=0, grade A/A+/B) and
+    together lost more than the 7 the gate correctly allowed through. The
+    gate must read ts.confidence.
+    """
+
+    def test_fee_unviable_signal_is_not_tracked(self):
+        # Tight stop relative to fees + slippage -> fee_drag_r > 0.6 (not
+        # viable). Confidence/grade look strong (86/A) exactly like the
+        # real LINK/USDT trades this bug let through.
+        sig = _make_signal(
+            symbol="LINK/USDT", side="long", entry_price=11.50, stop_loss=11.455,
+            take_profits=[11.60, 11.70, 11.85], confidence=86, grade="A",
+            ml_probability=0.5, regime="sideways", htf_bias=0,
+        )
+        sig["_order_type"] = "maker"
+        assert classify_trade(sig) in (TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY)
+        tracker = _make_full_tracker()
+        tracker.track_signal(sig)
+        assert len(tracker._active) == 0, "fee-unviable trade must not be tracked"
+
+    def test_a_normal_viable_signal_still_tracks(self):
+        # Same shape, wide enough stop to be viable -- must NOT be
+        # collateral damage from the fix.
+        sig = _make_signal(
+            symbol="BTCUSD", side="long", entry_price=66000.0, stop_loss=65000.0,
+            take_profits=[67000.0, 68000.0, 69500.0], confidence=80, grade="A",
+            ml_probability=0.6, regime="trending_up", htf_bias=1,
+        )
+        sig["_order_type"] = "maker"
+        tracker = _make_full_tracker()
+        tracker.track_signal(sig)
+        assert len(tracker._active) == 1, "a genuinely viable signal must still be tracked"
+
+
 # ═══════════════════════════════════════════════════════════════
 # TEST 8: Price Sanity Check
 # ═══════════════════════════════════════════════════════════════

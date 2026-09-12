@@ -61,9 +61,16 @@ logger = logging.getLogger(__name__)
 RESULTS_DIR = PROJECT_ROOT / "storage" / "ml_models"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Fee rate: 0.047% per side with Scalper tier (round trip = 0.094%)
-SCALPER_FEE_PER_SIDE = 0.00047
-SCALPER_FEE_ROUND_TRIP = SCALPER_FEE_PER_SIDE * 2
+# Fee rate for the fallback simulator path only (bot.trade_simulator; the
+# default ML_SIM_BACKEND="tracker" path prices fees itself via the live
+# FeeModel). Conservative on purpose: taker round trip incl. GST, no Scalper
+# Offer credit, because this default has no hold-time to check the window
+# against (execution/fees.py has the real per-leg accounting).
+try:
+    from execution.fees import get_fee_model as _gfm
+    SCALPER_FEE_ROUND_TRIP = _gfm().round_trip_pct("taker", "taker") / 100.0
+except Exception:
+    SCALPER_FEE_ROUND_TRIP = 0.00118
 
 # Regimes used in one-hot encoding (matching live strategy regime_filter.py)
 REGIME_CATEGORIES = [
@@ -531,126 +538,6 @@ def _simulate_trade_outcome(
     }
 
 
-# ──────────────────────────────────────────────────────────────────────
-# LEGACY SIMULATOR (kept for reference — not used after Phase 4.0)
-# ──────────────────────────────────────────────────────────────────────
-
-def _legacy_simulate_trade_outcome_DEPRECATED(
-    df: pd.DataFrame, entry_idx: int, side: str,
-    entry_price: float, atr: float, symbol: str,
-    fee_rate: float = SCALPER_FEE_ROUND_TRIP,
-) -> Dict[str, float]:
-    """DEPRECATED: Legacy buggy simulator. Kept for regression comparison only.
-    Uses hardcoded 0.65% SL + 1.5×ATR TP.
-    """
-    sl_pct = 0.0065
-    if side == "long":
-        sl = entry_price * (1 - sl_pct)
-        tp1 = entry_price + 1.5 * atr
-    else:
-        sl = entry_price * (1 + sl_pct)
-        tp1 = entry_price - 1.5 * atr
-
-    initial_risk = abs(entry_price - sl)
-    if initial_risk <= 0:
-        return {"pnl_r": 0.0, "won": False, "exit_reason": "zero_risk"}
-
-    # Scalper window
-    scalper_window_sec = 27 * 60 if "BTC" in symbol else 12 * 60
-
-    # Detect timeframe from index
-    tf_seconds = 60
-    if len(df) > 1:
-        idx_diff = df.index[1] - df.index[0]
-        if hasattr(idx_diff, "total_seconds"):
-            tf_seconds = max(int(idx_diff.total_seconds()), 1)
-
-    max_bars = max(10, scalper_window_sec // tf_seconds)
-
-    highest = entry_price
-    lowest = entry_price
-    exit_price = 0.0
-    exit_reason = ""
-
-    for j in range(entry_idx + 1, min(entry_idx + max_bars + 1, len(df))):
-        h_j = float(df.iloc[j]["high"])
-        l_j = float(df.iloc[j]["low"])
-        c_j = float(df.iloc[j]["close"])
-        age_sec = (j - entry_idx) * tf_seconds
-
-        highest = max(highest, h_j)
-        lowest = min(lowest, l_j)
-
-        if side == "long":
-            current_r = (c_j - entry_price) / initial_risk
-            mfe = (highest - entry_price) / initial_risk
-            mae = (entry_price - lowest) / initial_risk
-        else:
-            current_r = (entry_price - c_j) / initial_risk
-            mfe = (entry_price - lowest) / initial_risk
-            mae = (highest - entry_price) / initial_risk
-
-        # Dynamic trail
-        trail_floor = None
-        if mfe >= 1.5:
-            trail_floor = mfe * 0.75
-        elif mfe >= 1.0:
-            trail_floor = mfe * 0.65
-        elif mfe >= 0.5:
-            trail_floor = mfe * 0.50
-        elif mfe >= 0.3:
-            trail_floor = 0.15
-
-        if trail_floor is not None and current_r <= trail_floor:
-            exit_price = c_j
-            exit_reason = "trail"
-            break
-
-        # Stop loss
-        sl_hit = (l_j <= sl) if side == "long" else (h_j >= sl)
-        if sl_hit:
-            exit_price = sl
-            exit_reason = "stop_loss"
-            break
-
-        # Early kill
-        if age_sec >= 300 and mfe < 0.15 and current_r < -0.15:
-            exit_price = c_j
-            exit_reason = "early_kill"
-            break
-
-        # Scalper timeout
-        if age_sec >= scalper_window_sec:
-            exit_price = c_j
-            exit_reason = "scalper_timeout"
-            break
-
-    # End of data
-    if exit_price == 0.0 and entry_idx + 1 < len(df):
-        last_j = min(entry_idx + max_bars, len(df) - 1)
-        exit_price = float(df.iloc[last_j]["close"])
-        exit_reason = "end_of_data"
-
-    # PnL in R (after fees)
-    if side == "long":
-        raw_r = (exit_price - entry_price) / initial_risk
-    else:
-        raw_r = (entry_price - exit_price) / initial_risk
-
-    fee_r = (fee_rate * entry_price) / initial_risk
-    pnl_r = raw_r - fee_r
-
-    return {
-        "pnl_r": pnl_r,
-        "won": pnl_r > 0,
-        "exit_reason": exit_reason,
-        "mfe_r": mfe if "mfe" in dir() else 0.0,
-        "mae_r": mae if "mae" in dir() else 0.0,
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Rule-based veto simulation (mirrors live veto logic)
 # ──────────────────────────────────────────────────────────────────────
 
 def _would_veto_block(gate_features: Dict[str, float]) -> bool:

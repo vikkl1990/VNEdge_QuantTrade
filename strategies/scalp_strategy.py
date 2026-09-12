@@ -320,14 +320,13 @@ class ScalpStrategy(BaseStrategy):
             0:   3,   # Low confidence fallback
         }
 
-        # --- Tier 1: Edge vs Cost thresholds ---
-        # Scalper offer: entry maker 0.02% + settlement 0.06% = 0.08% total
-        self.scalper_cost_pct = 0.047   # entry maker only (exit free under Scalper)
-
         # --- Fee Viability Constants (Upgrade 1) ---
         # Round-trip fractions from the shared FeeModel (entry + taker exit,
-        # GST included). The old values counted the entry leg only, on the
-        # assumption of a free-exit "scalper offer" the exchange does not run.
+        # GST included). Deliberately conservative: FeeModel.round_trip_pct()
+        # never credits the Scalper Offer (confirmed live + joined on this
+        # account, 2026-09-12) here because pre-trade we don't know whether
+        # this trade will close inside the free window — the offer is
+        # credited honestly, per leg, at close time in signal_tracker.
         try:
             from execution.fees import get_fee_model as _gfm
             _fm = _gfm(config)
@@ -3346,30 +3345,18 @@ class ScalpStrategy(BaseStrategy):
                     return []
 
         # ══════════════════════════════════════════════════════
-        # PROJECTED DURATION VETO
-        # Reject if ATR suggests trade won't complete in Scalper window
-        # BTC window: 27 min, others: 12 min
-        # Estimate: bars_to_tp = TP1_dist / (ATR_1bar × directional_factor)
+        # PROJECTED DURATION VETO — REMOVED (2026-09-12)
+        # This rejected any signal projected to take longer than ~1.5x the
+        # Scalper free-close window (22.5 min) to reach TP1, on the theory
+        # that a trade outside the window "isn't viable". It directly
+        # contradicted the HOLD exit profile (all trade types now get an 8h
+        # max age with no time kill — see bot/signal_tracker.TRADE_TYPE_CONFIG)
+        # and a replay of 1,457 trades that reached the free-close boundary
+        # showed holding past it changes net R by ~0 either way (scratch A/B,
+        # 2026-09-12). The Scalper Offer is now credited honestly per leg at
+        # trade close (execution/fees.py) instead of gated on a pre-trade
+        # duration guess.
         # ══════════════════════════════════════════════════════
-        if _edge_atr > 0 and best.entry_price > 0:
-            scalper_window_min = 30 if ("BTC" in symbol or "ETH" in symbol) else 15
-            risk_dist = abs(best.entry_price - best.stop_loss)
-            tp1_dist = risk_dist * self.tp1_rr
-            # ATR per 5m bar → estimated bars to reach TP1
-            # Directional factor: ~40% of ATR is directional on average
-            directional_atr = _edge_atr * 0.4
-            if directional_atr > 0:
-                est_bars_to_tp = tp1_dist / directional_atr
-                est_minutes_to_tp = est_bars_to_tp * 5  # 5m bars
-                if est_minutes_to_tp > scalper_window_min * 1.5:  # 50% buffer
-                    if not self._is_learning and not is_sb:
-                        self.last_scan_status[symbol] = {
-                            "time": now_iso, "signal": False,
-                            "reason": f"DURATION VETO: est {est_minutes_to_tp:.0f}m to TP1 > {scalper_window_min}m window",
-                            "indicators": indicators, "setups_checked": setups_checked,
-                            "funnel": dict(self._funnel),
-                        }
-                        return []
 
         # ══════════════════════════════════════════════════════
         

@@ -607,11 +607,18 @@ class TrackedSignal:
                 lev_cap_source = f"final_safety_cap_{max_lev}x"
 
         # ── FEE VIABILITY CHECK ──
-        # Use realistic fee assumption: SCALP trades get scalper window rates,
-        # INTRADAY/RUNNER get standard rates (they typically exceed the window).
-        # This prevents 173 outside-scalper trades averaging only $0.32/trade.
+        # Conservative by design: as of the HOLD exit profile (2026-09-12)
+        # every trade type gets an 8h max age with no time-based kill, so a
+        # trade's eventual hold time cannot be guessed from its trade_type
+        # (the old "SCALP/INTRADAY close within the Scalper window" guess,
+        # and its unverified "71% of INTRADAY" claim, no longer hold — a
+        # replay of 1,457 trades that reached the free-close boundary showed
+        # holding past it changes the outcome by ~0R either way). Assume the
+        # standard (non-Scalper) fee here so this gate never passes a trade
+        # on a fee credit that may not materialize; the credit is applied
+        # after the fact, per leg, in SignalTracker._calc_pnl.
         pre_trade_type = classify_trade(sig)
-        within_scalper = pre_trade_type in (TRADE_TYPE_SCALP, TRADE_TYPE_INTRADAY)  # 71% of INTRADAY close within scalper window too
+        within_scalper = False
         # Fee check needs SignalTracker instance — defer to track_signal if in classmethod
         _order_type = sig.get("_order_type", "maker")
         fee_check = SignalTracker.get_min_viable_move(
@@ -1539,36 +1546,33 @@ class SignalTracker:
                     ts.momentum_decay_count = 0
 
                 # ══════════════════════════════════════════════════════════════
-                # PHASE 4.7 — PROFIT DEFENDER
+                # PHASE 4.7 — PROFIT DEFENDER (MFE RATCHET LOCK)
                 # ══════════════════════════════════════════════════════════════
-                # Two gaps exposed by live trade tracking (XRP long at 6:42 past
-                # the 6:00 scalper window, MFE peak 0.76R but stop only locking 0.4R):
+                # The lock_pct system above tops out at peak_mfe_r=0.4R and
+                # hands off to chandelier. Chandelier uses a generic ATR
+                # multiple that doesn't ratchet with peak — a trade that
+                # reached 1.5R and retraced to 0.8R could still hit the same
+                # chandelier stop as one that peaked at 0.5R. This ratchet
+                # floor guarantees that as peak_mfe_r grows, the stop floor
+                # grows monotonically.
                 #
-                # Gap A — SCALPER WINDOW EXPIRY DEFENDER
-                #   When the Scalper fee window has expired AND the trade is
-                #   profitable, every additional second increases the round-trip
-                #   fee drag (0.094% → 0.120%) and reduces expected net-R on
-                #   exit. Tighten the stop to capture more of the earned profit
-                #   before the fee meter ticks further.
+                # (2026-09-12) Removed "Gap A", a second floor that tightened
+                # the stop further once the trade aged past the Scalper free-
+                # close window, on the theory that fees "doubled" past it and
+                # profit should be defended sooner. That assumed the exit fee
+                # was a fixed, unavoidable step function; it is now charged
+                # exactly, per leg, at close (execution/fees.py), and a replay
+                # of 1,457 trades that reached the window boundary showed
+                # continuing past it changes net R by ~0 on average — so
+                # tightening the stop specifically because the window closed
+                # was an unsupported bias, not a real edge. Stop-tightening
+                # now stays purely price/MFE-driven.
                 #
-                # Gap B — MFE RATCHET LOCK
-                #   The existing lock_pct system tops out at peak_mfe_r=0.4R and
-                #   hands off to chandelier. Chandelier uses a generic ATR
-                #   multiple that doesn't ratchet with peak — a trade that
-                #   reached 1.5R and retraced to 0.8R could still hit the same
-                #   chandelier stop as one that peaked at 0.5R. This ratchet
-                #   floor guarantees that as peak_mfe_r grows, the stop floor
-                #   grows monotonically.
-                #
-                # Both gates are STOP-TIGHTENING-ONLY (max with current stop),
-                # never loosen — zero WR risk, can only increase booked profit.
-                # Gated on min_hold to avoid spurious 5-second trail exits.
+                # Stop-tightening-only (max with current stop), never loosen —
+                # zero WR risk, can only increase booked profit. Gated on
+                # min_hold to avoid spurious 5-second trail exits.
                 # ══════════════════════════════════════════════════════════════
                 if ts.peak_mfe_r >= 0.30 and _trade_age >= min_hold:
-                    _defender_floor = None
-                    _defender_reason = ""
-
-                    # ── Gap B: MFE ratchet floor ──
                     # lock floor rises as peak_mfe_r rises above 0.15R
                     # (0.15R is the breakeven trigger — we always at least break even)
                     # Scaling: lock = (peak - 0.15) * 0.6 capped at peak - 0.1
@@ -1579,23 +1583,6 @@ class SignalTracker:
                     #   peak 2.00R → lock 1.11R
                     _mfe_lock_r = max(0.0, (ts.peak_mfe_r - 0.15) * 0.6)
                     _mfe_lock_r = min(_mfe_lock_r, ts.peak_mfe_r - 0.10)  # never lock above peak-0.1
-
-                    # ── Gap A: scalper window expiry → tighter lock ──
-                    # Pull scalper_window_sec from metadata (default 6 min)
-                    _scalper_window = float(ts.metadata.get("scalper_window_sec", 360)) if ts.metadata else 360
-                    _scalper_expired = _trade_age > _scalper_window
-                    if _scalper_expired and ts.peak_mfe_r >= 0.40:
-                        # Scalper fees doubled → defend 70% of peak instead of 60%
-                        # Also bump the base floor so it overrides Gap B when expired
-                        _scalper_lock_r = max(0.0, (ts.peak_mfe_r - 0.10) * 0.70)
-                        _scalper_lock_r = min(_scalper_lock_r, ts.peak_mfe_r - 0.05)
-                        if _scalper_lock_r > _mfe_lock_r:
-                            _mfe_lock_r = _scalper_lock_r
-                            _defender_reason = "scalper_expiry"
-                        else:
-                            _defender_reason = "mfe_ratchet"
-                    elif _mfe_lock_r > 0:
-                        _defender_reason = "mfe_ratchet"
 
                     # Convert R floor to price level
                     if _mfe_lock_r > 0:
@@ -1616,12 +1603,11 @@ class SignalTracker:
                             if not ts.breakeven_set:
                                 ts.breakeven_set = True
                             logger.info(
-                                "PROFIT_DEFENDER [%s]: %s %s @ %.4f | peak=%.2fR cur=%.2fR | "
-                                "lock=%.2fR age=%.0fs scalper_win=%.0fs expired=%s | SL %.4f → %.4f",
-                                _defender_reason,
+                                "PROFIT_DEFENDER [mfe_ratchet]: %s %s @ %.4f | peak=%.2fR cur=%.2fR | "
+                                "lock=%.2fR age=%.0fs | SL %.4f → %.4f",
                                 ts.symbol, ts.side, price,
                                 ts.peak_mfe_r, current_r_trail,
-                                _mfe_lock_r, _trade_age, _scalper_window, _scalper_expired,
+                                _mfe_lock_r, _trade_age,
                                 _old_sl, ts.stop_loss,
                             )
                             events.append({
@@ -1632,7 +1618,7 @@ class SignalTracker:
                                 "new_sl": ts.stop_loss,
                                 "old_sl": _old_sl,
                                 "peak_mfe_r": ts.peak_mfe_r,
-                                "defender_reason": _defender_reason,
+                                "defender_reason": "mfe_ratchet",
                             })
 
             # -- Check TP levels (in order) --
@@ -2771,6 +2757,7 @@ class SignalTracker:
 
         # Trade duration (kept for analytics; funding is optional in the model)
         trade_duration_sec = 0
+        entry_dt = None
         try:
             entry_dt = datetime.fromisoformat(ts.entry_time)
             if ts.exit_time:
@@ -2785,29 +2772,49 @@ class SignalTracker:
         # Entry is maker when the order rested at the signal price (no slippage
         # captured), taker when it crossed the spread or config is taker-only.
         # Every exit leg (TP partials, trail, stop) is a market order → taker.
+        # Each leg is timestamped from position OPEN so the Scalper Offer
+        # (free close within 30m BTC/ETH, 15m others — see execution/fees.py)
+        # is credited per leg when enabled, exactly as the exchange applies it.
         from execution.fees import FeeLeg, get_fee_model
         _fm = get_fee_model()
         _entry_liq = _fm.entry_liquidity(order_type, getattr(ts, "slippage_bps", 0.0))
+
+        def _elapsed(leg_time: str) -> float:
+            if not leg_time or entry_dt is None:
+                return trade_duration_sec
+            try:
+                _lt = datetime.fromisoformat(leg_time)
+                return max(0.0, (_lt - entry_dt).total_seconds())
+            except (ValueError, TypeError):
+                return trade_duration_sec
+
+        _tp1_es, _tp2_es, _tp3_es = _elapsed(ts.tp1_time), _elapsed(ts.tp2_time), _elapsed(ts.tp3_time)
         _legs = []
         if ts.tp1_pnl_locked != 0 or ts.tp2_pnl_locked != 0:
             _closed = 1.0 - ts.position_remaining_pct
             if ts.tp1_hit:
-                _legs.append(FeeLeg(min(_closed, 0.35), ts.tp1))
+                _legs.append(FeeLeg(min(_closed, 0.35), ts.tp1, elapsed_sec=_tp1_es))
             if ts.tp2_hit:
-                _legs.append(FeeLeg(max(0.0, _closed - 0.35), ts.tp2))
-            _legs.append(FeeLeg(ts.position_remaining_pct, exit_price))
+                _legs.append(FeeLeg(max(0.0, _closed - 0.35), ts.tp2, elapsed_sec=_tp2_es))
+            _legs.append(FeeLeg(ts.position_remaining_pct, exit_price, elapsed_sec=trade_duration_sec))
         elif ts.tp3_hit:
-            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.35, ts.tp2), FeeLeg(0.30, ts.tp3)]
+            _legs = [FeeLeg(0.35, ts.tp1, elapsed_sec=_tp1_es), FeeLeg(0.35, ts.tp2, elapsed_sec=_tp2_es),
+                     FeeLeg(0.30, ts.tp3, elapsed_sec=_tp3_es)]
         elif ts.tp2_hit:
-            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.35, ts.tp2), FeeLeg(0.30, exit_price)]
+            _legs = [FeeLeg(0.35, ts.tp1, elapsed_sec=_tp1_es), FeeLeg(0.35, ts.tp2, elapsed_sec=_tp2_es),
+                     FeeLeg(0.30, exit_price, elapsed_sec=trade_duration_sec)]
         elif ts.tp1_hit:
-            _legs = [FeeLeg(0.35, ts.tp1), FeeLeg(0.65, exit_price)]
+            _legs = [FeeLeg(0.35, ts.tp1, elapsed_sec=_tp1_es), FeeLeg(0.65, exit_price, elapsed_sec=trade_duration_sec)]
         else:
-            _legs = [FeeLeg(1.0, exit_price)]
+            _legs = [FeeLeg(1.0, exit_price, elapsed_sec=trade_duration_sec)]
         _fees = _fm.trade_fees(ts.entry_price, _entry_liq, _legs, symbol=ts.symbol,
                                hold_seconds=trade_duration_sec)
         fee_pct = _fees.total_pct
         ts.fee_type = f"{_entry_liq}_entry"
+        # Honest record of what actually happened (was a pre-trade guess by
+        # trade_type that was never updated with the real outcome).
+        ts.within_scalper = trade_duration_sec <= _fm.scalper_window_sec(ts.symbol)
+        ts.scalper_window_sec = _fm.scalper_window_sec(ts.symbol)
         ts.trade_duration_sec = trade_duration_sec
 
         # Net PnL = Gross PnL - fees
@@ -2889,7 +2896,7 @@ class SignalTracker:
         from execution.fees import get_fee_model
         _fm = get_fee_model()
         entry_fee = _fm.side_pct("maker" if order_type in ("maker", "auto") else "taker", symbol)
-        exit_fee = 0.0 if _fm.free_exit else _fm.side_pct("taker", symbol)
+        exit_fee = 0.0 if (_fm.free_exit or (within_scalper and _fm.scalper_offer)) else _fm.side_pct("taker", symbol)
         settlement = 0.0
 
         total_fees_pct = entry_fee + exit_fee + settlement + entry_slip + exit_slip
@@ -3151,6 +3158,9 @@ class SignalTracker:
                 "settlement_pct": 0.0,
                 "round_trip_standard_pct": round(fm.round_trip_pct("taker", "taker"), 4),
                 "round_trip_maker_entry_pct": round(fm.round_trip_pct("maker", "taker"), 4),
+                "scalper_offer_enabled": fm.scalper_offer,
+                "scalper_window_btc_eth_sec": fm.scalper_window_sec("BTC/USDT"),
+                "scalper_window_default_sec": fm.scalper_window_sec("XYZ/USDT"),
             }
         except Exception:
             return {

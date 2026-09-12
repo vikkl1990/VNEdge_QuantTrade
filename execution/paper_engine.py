@@ -234,6 +234,7 @@ class PaperExecutionEngine:
         from execution.fees import get_fee_model
         fee = get_fee_model().leg_fee_usd(
             fill_price * position_size, "maker" if use_maker else "taker", symbol,
+            is_entry=True,
         )
 
         if notional > self.balance:
@@ -314,8 +315,12 @@ class PaperExecutionEngine:
 
         exit_size = trade.remaining_size * close_pct
         # Exits are market orders → taker, charged on the leg's full notional
+        # (Scalper Offer credit needs elapsed time since the position opened)
         from execution.fees import get_fee_model
-        fee = get_fee_model().leg_fee_usd(fill_price * exit_size, "taker", trade.symbol)
+        fee = get_fee_model().leg_fee_usd(
+            fill_price * exit_size, "taker", trade.symbol,
+            elapsed_sec=trade.duration_seconds or 0.0,
+        )
 
         if close_pct >= 1.0:
             pnl = trade.mark_closed(fill_price, fee, reason)

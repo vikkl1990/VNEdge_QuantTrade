@@ -2355,14 +2355,21 @@ class DashboardServer:
             fm = get_fee_model()
             maker = fm.side_pct("maker") / 100.0
             taker = fm.side_pct("taker") / 100.0
+            scalper_enabled = fm.scalper_offer
+            scalper_windows = {"btc_eth_sec": fm.scalper_window_sec("BTC/USDT"),
+                               "default_sec": fm.scalper_window_sec("XYZ/USDT")}
         except Exception:
             maker, taker = 0.000236, 0.00059
+            scalper_enabled = False
+            scalper_windows = {"btc_eth_sec": 1800, "default_sec": 900}
         return {
             "maker": round(maker, 6),
             "taker": round(taker, 6),
             "settlement": 0.0,
             "round_trip_taker": round(taker * 2, 6),
             "round_trip_maker_entry": round(maker + taker, 6),
+            "scalper_offer_enabled": scalper_enabled,
+            "scalper_offer_windows": scalper_windows,
         }
 
     async def _handle_feed_freshness(self, request: web.Request) -> web.Response:

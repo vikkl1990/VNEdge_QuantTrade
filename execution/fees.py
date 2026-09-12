@@ -21,6 +21,18 @@ orders → taker. Entries are maker when the resting limit order fills at the
 signal price, taker when the order had to cross the spread (slippage > 0)
 or the strategy is configured taker-only.
 
+Scalper Offer (Delta Exchange India, confirmed live 2026-09-12): once an
+account has opted in (irreversible, done once on the Futures page), every
+closing leg of a Futures position — full or partial, maker or taker — is
+free of charge PROVIDED that leg executes within a window measured from
+when the position was OPENED: 30 minutes for BTCUSD/ETHUSD, 15 minutes for
+every other Future. Liquidations never qualify. The entry leg always pays.
+Each leg is judged independently on its own elapsed time (FeeLeg.elapsed_sec)
+— a TP1 partial inside the window and a later stop-out outside it are priced
+differently on the same trade. This is OFF by default (fees.scalper_offer.
+enabled: false) because it is a per-account opt-in the exchange API cannot
+report; it must be confirmed on the account and turned on deliberately.
+
 Funding (8-hourly, paid/received on notional) is exposed for completeness
 but not applied by default: scalp holds are minutes and funding is applied
 at fixed timestamps, so charging it pro-rata would be wrong more often than
@@ -31,9 +43,9 @@ Usage::
     from execution.fees import get_fee_model
     fm = get_fee_model()                       # from settings.yaml `fees:`
     fm.side_pct("maker")                       # 0.0236 (% of notional)
-    fm.round_trip_pct("maker", "taker")        # 0.0826
-    legs = [FeeLeg(fraction=0.35, price=tp1, liquidity="taker"), ...]
-    res = fm.trade_fees(entry_price, entry_liquidity="maker", exit_legs=legs)
+    fm.round_trip_pct("maker", "taker")        # 0.0826 (conservative: no offer credit)
+    legs = [FeeLeg(fraction=0.35, price=tp1, liquidity="taker", elapsed_sec=612), ...]
+    res = fm.trade_fees(entry_price, entry_liquidity="maker", exit_legs=legs, symbol="BTC/USDT")
     res.total_pct                              # % of ENTRY notional
 """
 
@@ -50,6 +62,15 @@ DEFAULT_MAKER_RATE = 0.0002
 DEFAULT_TAKER_RATE = 0.0005
 DEFAULT_GST_RATE = 0.18
 
+# Scalper Offer free-close windows in seconds, keyed by base asset; "_default"
+# covers everything not listed. Confirmed live 2026-09-12 (Delta Exchange
+# India support article + account opt-in).
+DEFAULT_SCALPER_WINDOWS: Dict[str, float] = {
+    "BTC": 30 * 60,
+    "ETH": 30 * 60,
+    "_default": 15 * 60,
+}
+
 Liquidity = str  # "maker" | "taker"
 
 
@@ -57,14 +78,22 @@ Liquidity = str  # "maker" | "taker"
 class FeeLeg:
     """One executed leg of a trade.
 
-    fraction : share of the ORIGINAL position closed by this leg (0-1).
-               For the entry leg this is 1.0.
-    price    : execution price of the leg.
-    liquidity: "maker" or "taker".
+    fraction    : share of the ORIGINAL position closed by this leg (0-1).
+                  For the entry leg this is 1.0.
+    price       : execution price of the leg.
+    liquidity   : "maker" or "taker".
+    elapsed_sec : seconds from position OPEN to this leg's execution. Used
+                  only for exit legs, only when the Scalper Offer is enabled,
+                  to decide whether this specific leg falls inside the free
+                  window. Irrelevant for the entry leg.
+    liquidation : True if this leg was a forced liquidation, which never
+                  qualifies for the Scalper Offer regardless of timing.
     """
     fraction: float
     price: float
     liquidity: Liquidity = "taker"
+    elapsed_sec: float = 0.0
+    liquidation: bool = False
 
 
 @dataclass
@@ -91,17 +120,25 @@ class FeeModel:
         funding_rate_8h: float = 0.0001,
         apply_funding: bool = False,
         per_product: Optional[Dict[str, Dict[str, float]]] = None,
+        scalper_offer: bool = False,
+        scalper_windows: Optional[Dict[str, float]] = None,
     ) -> None:
         self.maker_rate = float(maker_rate)
         self.taker_rate = float(taker_rate)
         self.gst_rate = float(gst_rate)
-        # "Scalper offer" style promotions (free closing fee). Off unless the
-        # exchange actually offers it — it did NOT on 2026-09-10.
+        # Unconditional "every exit is free" override — kept for tests and
+        # for estimation contexts with no timing info. NOT the Scalper Offer
+        # (which is time-windowed); use scalper_offer for that.
         self.free_exit = bool(free_exit)
         self.funding_rate_8h = float(funding_rate_8h)
         self.apply_funding = bool(apply_funding)
         # optional per-product override: {"BTC/USDT": {"maker": .., "taker": ..}}
         self.per_product: Dict[str, Dict[str, float]] = dict(per_product or {})
+        # Scalper Offer (see module docstring). OFF by default — this is a
+        # per-account opt-in the exchange API cannot report; confirm on the
+        # account before enabling in settings.yaml.
+        self.scalper_offer = bool(scalper_offer)
+        self.scalper_windows: Dict[str, float] = dict(scalper_windows or DEFAULT_SCALPER_WINDOWS)
 
     # ------------------------------------------------------------------
     # Construction
@@ -110,6 +147,7 @@ class FeeModel:
     def from_config(cls, config: Optional[Dict[str, Any]]) -> "FeeModel":
         cfg = (config or {}).get("fees", {}) or {}
         funding = cfg.get("funding", {}) or {}
+        scalper = cfg.get("scalper_offer", {}) or {}
         return cls(
             maker_rate=cfg.get("maker_rate", DEFAULT_MAKER_RATE),
             taker_rate=cfg.get("taker_rate", DEFAULT_TAKER_RATE),
@@ -118,6 +156,8 @@ class FeeModel:
             funding_rate_8h=funding.get("rate_8h", 0.0001),
             apply_funding=funding.get("apply", False),
             per_product=cfg.get("per_product"),
+            scalper_offer=scalper.get("enabled", False),
+            scalper_windows=scalper.get("windows"),
         )
 
     def update_from_products(self, products: Iterable[Dict[str, Any]],
@@ -163,9 +203,28 @@ class FeeModel:
 
     def round_trip_pct(self, entry: Liquidity = "maker", exit: Liquidity = "taker",
                        symbol: Optional[str] = None) -> float:
-        """Entry + one full exit, in percent of notional."""
+        """Entry + one full exit, in percent of notional.
+
+        Conservative by design: this has no hold-time to check against the
+        Scalper Offer window, so it never credits the offer even when
+        enabled. Used for pre-trade estimates (EV gates, breakeven buffers,
+        fee-schedule display) where the eventual hold time is unknown.
+        """
         exit_pct = 0.0 if self.free_exit else self.side_pct(exit, symbol)
         return self.side_pct(entry, symbol) + exit_pct
+
+    def scalper_window_sec(self, symbol: Optional[str] = None) -> float:
+        """Free-close window for `symbol`'s base asset (seconds)."""
+        base = (symbol or "").split("/")[0].upper()
+        return self.scalper_windows.get(base, self.scalper_windows.get("_default", 15 * 60))
+
+    def exit_leg_is_free(self, leg: "FeeLeg", symbol: Optional[str] = None) -> bool:
+        """Whether this specific exit leg pays no closing fee."""
+        if self.free_exit:
+            return True
+        if not self.scalper_offer or leg.liquidation:
+            return False
+        return leg.elapsed_sec <= self.scalper_window_sec(symbol)
 
     # ------------------------------------------------------------------
     # Per-trade accounting
@@ -204,12 +263,14 @@ class FeeModel:
         for leg in (exit_legs or []):
             if leg.fraction <= 0 or leg.price <= 0:
                 continue
-            pct = 0.0 if self.free_exit else (
+            free = self.exit_leg_is_free(leg, symbol)
+            pct = 0.0 if free else (
                 self.side_pct(leg.liquidity, symbol) * leg.fraction * (leg.price / entry_price)
             )
             exit_pct += pct
             legs_out.append({"leg": "exit", "fraction": leg.fraction, "price": leg.price,
-                             "liquidity": leg.liquidity, "pct": round(pct, 5)})
+                             "liquidity": leg.liquidity, "elapsed_sec": leg.elapsed_sec,
+                             "scalper_free": free, "pct": round(pct, 5)})
         funding_pct = 0.0
         if self.apply_funding and hold_seconds > 0:
             funding_pct = self.funding_rate_8h * 100.0 * (hold_seconds / (8 * 3600.0))
@@ -217,16 +278,31 @@ class FeeModel:
         return FeeBreakdown(round(entry_pct, 5), round(exit_pct, 5), round(funding_pct, 5),
                             round(total, 5), legs_out)
 
-    def leg_fee_usd(self, notional_usd: float, liquidity: Liquidity, symbol: Optional[str] = None) -> float:
-        """Fee in USD for one leg executed on `notional_usd` (full notional, not margin)."""
-        if liquidity != "maker" and self.free_exit:
-            return 0.0
+    def leg_fee_usd(self, notional_usd: float, liquidity: Liquidity, symbol: Optional[str] = None,
+                    elapsed_sec: float = 0.0, is_entry: bool = False,
+                    liquidation: bool = False) -> float:
+        """Fee in USD for one leg executed on `notional_usd` (full notional, not margin).
+
+        `elapsed_sec` (time since position open) and `is_entry` let this
+        credit the Scalper Offer the same way trade_fees() does; omit them
+        (defaults) for a pre-trade estimate, which is always charged.
+        """
+        if not is_entry:
+            leg = FeeLeg(1.0, 0.0, liquidity, elapsed_sec=elapsed_sec, liquidation=liquidation)
+            if self.exit_leg_is_free(leg, symbol):
+                return 0.0
         return notional_usd * self.side_rate(liquidity, symbol)
 
     def describe(self) -> str:
+        promo = ""
+        if self.free_exit:
+            promo = " (FREE exit promo ON — unconditional)"
+        elif self.scalper_offer:
+            promo = (f" (Scalper Offer ON — free close within "
+                     f"{self.scalper_windows.get('BTC', 1800)/60:.0f}m BTC/ETH, "
+                     f"{self.scalper_windows.get('_default', 900)/60:.0f}m others)")
         return (f"maker {self.side_pct('maker'):.4f}% / taker {self.side_pct('taker'):.4f}% per side incl. "
-                f"{self.gst_rate:.0%} GST; round-trip maker→taker {self.round_trip_pct():.4f}%"
-                + (" (FREE exit promo ON)" if self.free_exit else ""))
+                f"{self.gst_rate:.0%} GST; round-trip maker→taker {self.round_trip_pct():.4f}%" + promo)
 
 
 # ----------------------------------------------------------------------

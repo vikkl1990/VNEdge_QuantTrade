@@ -163,7 +163,17 @@ fees:
   maker_rate: 0.0002      # 0.02 %
   taker_rate: 0.0005      # 0.05 %
   gst_rate: 0.18          # India GST on commissions → maker 0.0236 %, taker 0.059 %
-  free_exit: false        # "scalper offer" style free closing fee — not offered
+  free_exit: false        # unconditional free-exit override — not offered, keep off
+  # Delta Exchange India Scalper Offer (confirmed live + joined on this
+  # account, 2026-09-12): closing legs are free, per leg, when that leg
+  # executes within `windows` seconds of the position OPENING. Liquidations
+  # never qualify. See execution/fees.py for the per-leg accounting.
+  scalper_offer:
+    enabled: true
+    windows:
+      BTC: 1800           # 30 min
+      ETH: 1800           # 30 min
+      _default: 900       # 15 min, every other Future
   funding:
     apply: false          # 8-hourly funding is not charged pro-rata by default
     rate_8h: 0.0001

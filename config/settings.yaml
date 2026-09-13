@@ -12,26 +12,26 @@ symbols:
 - LTC/USDT
 - ADA/USDT
 - DOT/USDT
-- TAO/USDT
 - DOGE/USDT
 - LINK/USDT
 - AVAX/USDT
 # Meme / high-beta alts.
-# ccxt_client now handles 1000x name mapping (PEPE->1000PEPE etc.) natively.
-# Depth snapshot 2026-04-16 (top-5 USD) informs keep/drop:
-#   TRUMP ~$400K, WIF ~$82K, POPCAT ~$73K → real liquidity
-#   SUI/NEAR — tradeable via ccxt path, regime gate manages thin windows
-#   PEPE/SHIB/BONK ~$12-$29 top-5 depth → low_liquidity regime will veto
-#   them automatically; kept in list for ML observation
-- PEPE/USDT
-- SHIB/USDT
-- WIF/USDT
+# ccxt_client handles 1000x name mapping (PEPE->1000PEPE etc.) natively.
+#
+# (2026-09-13) Cut against a 2026-04-16 orderbook-depth snapshot: depth is a
+# resting-liquidity proxy, not a measure of whether trades actually happen.
+# Measured directly against the last ~24h of 5m bars from the live candle
+# cache (% of bars with exactly zero volume — genuine exchange data, not a
+# feed gap: BTC/ETH/SOL/DOGE/LINK/ADA show 0-20% over the same window):
+#   TAO 61.6%, PEPE 62.1%, MEME 70.5%, POPCAT 81.2%, WIF 81.3%,
+#   BONK 83.4%, SHIB 84.8% zero-volume bars — removed. These were almost
+#   never going to clear the regime gate; scanning them was pure overhead
+#   (funnel noise, wasted cycles) with no realistic path to a trade.
+#   TRUMP 45.1%, SUI 40.2%, AVAX 37.9%, NEAR 33.5% — thin but a real
+#   majority of bars have volume; kept, same as before.
 - SUI/USDT
 - NEAR/USDT
-- BONK/USDT
 - TRUMP/USDT
-- POPCAT/USDT
-- MEME/USDT
 exchange:
   name: delta
   region: india

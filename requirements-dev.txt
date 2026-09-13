@@ -1,0 +1,6 @@
+# Test-only dependencies, kept separate from requirements.txt's pinned
+# production set (see that file's own "DO NOT loosen" note). Versions match
+# what's already installed and passing in .venv as of 2026-09-13.
+-r requirements.txt
+pytest==9.1.1
+pytest-asyncio==1.4.0

@@ -1,0 +1,47 @@
+name: CI
+
+# (2026-09-13) Replaces .github/ci.yml.template, which was written for the
+# old cloud-VM era: a Postgres service this file-based local build doesn't
+# use, test paths (tests/unit, tests/integration) that don't match the flat
+# tests/ layout actually in use, and a deploy job rsyncing to a decommissioned
+# VM with secrets that no longer exist. This bot has no remote deployment
+# target -- it runs on one machine -- so there is no deploy job here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: AST parse every Python file
+        run: |
+          python -c "
+          import ast, glob, sys
+          bad = []
+          for f in glob.glob('**/*.py', recursive=True):
+              if '.venv' in f:
+                  continue
+              try:
+                  ast.parse(open(f).read())
+              except SyntaxError as e:
+                  bad.append(f'{f}: {e}')
+          if bad:
+              print('\n'.join(bad)); sys.exit(1)
+          print('All Python files parse cleanly')
+          "
+
+      - name: Run tests (ratchet gate — see scripts/ci_test_gate.py)
+        run: python scripts/ci_test_gate.py

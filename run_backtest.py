@@ -2,6 +2,20 @@
 """
 Backtest Runner — Validates strategy over historical data.
 
+*** DO NOT use this to judge whether a scanner has edge. ***
+(2026-09-13) This engine has its own standalone fill/exit simulation and
+does not go through backtest/live_tracker_runner.LiveTrackerRunner — the
+engine every honest result this session came from (the structure_bounce
+rebuilds, the 18-scanner two-fold validation gate, the fee-model checks).
+Running this file exercises different, older simulation logic and can give
+a different, more optimistic answer than the real one. For "does X have
+edge", use scratchpad/scanner_gate.py's two-fold methodology (old vs new
+disjoint history, same-direction-in-both-folds required) against
+LiveTrackerRunner, not this.
+
+What this file is still fine for: fetching historical candles and printing
+descriptive stats where the exact fill/exit model doesn't matter.
+
 Usage:
     python3 run_backtest.py                            # Last 30 days, BTC+ETH
     python3 run_backtest.py --start 2026-02-01 --end 2026-03-17
@@ -984,4 +998,11 @@ async def main():
 
 
 if __name__ == "__main__":
+    print(
+        "\n*** WARNING: this engine does not use LiveTrackerRunner. Its "
+        "numbers can disagree with the real, honest paper results. See "
+        "the module docstring before trusting anything it prints as edge. "
+        "***\n",
+        file=sys.stderr,
+    )
     asyncio.run(main())

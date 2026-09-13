@@ -33,10 +33,18 @@ logger = logging.getLogger("bot.real_trading")
 
 STATE_FILE = Path("storage/real_trading_state.json")
 
-# Delta India fee structure (GST-inclusive)
-# Taker: 0.059%, Maker: 0.0236%, Settlement: 0.059%
-# Round-trip worst case (taker entry + taker exit): 0.059% × 2 = 0.118%
-DELTA_ROUND_TRIP_FEE_PCT = 0.00118
+# Delta India fee structure (GST-inclusive), sourced from the single fee
+# model (execution/fees.py) instead of a second hardcoded constant that
+# nothing keeps in sync with it. (2026-09-13) This was a bare 0.00118
+# literal, correct as of the rates in fees.py today but with no connection
+# to it — if Delta's rates or the GST rate ever change there, this is the
+# real-money path and would silently keep using the stale number. The
+# 0.00118 fallback only fires if the import itself fails.
+try:
+    from execution.fees import get_fee_model as _gfm
+    DELTA_ROUND_TRIP_FEE_PCT = _gfm().round_trip_pct("taker", "taker") / 100.0
+except Exception:
+    DELTA_ROUND_TRIP_FEE_PCT = 0.00118
 
 
 def _normalize_side(side) -> str:
@@ -1670,7 +1678,11 @@ class RealTradingManager:
                             _notional_usd = lots * _cs * fill_price
                         except Exception:
                             _notional_usd = 0  # give up — will record $0 PnL
-                    _approx_fee = _notional_usd * 0.0005 * 2  # 2x = entry + close (taker both sides)
+                    # 2x = entry + close (taker both sides); DELTA_ROUND_TRIP_FEE_PCT
+                    # is already the GST-inclusive round-trip rate (was a raw
+                    # 0.0005*2 here, missing the 18% GST every other fee
+                    # calculation in the system applies -- 2026-09-13).
+                    _approx_fee = _notional_usd * DELTA_ROUND_TRIP_FEE_PCT
                     _est_pnl = -_approx_fee  # no PnL movement, just fees
                     _record = {
                         "trade_id": f"silent_{int(time.time() * 1000)}",

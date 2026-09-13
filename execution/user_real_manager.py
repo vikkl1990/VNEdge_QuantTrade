@@ -1787,7 +1787,17 @@ class UserRealManager:
                         entry_exec_mode = "market_taker"
                         entry_fee_usd = abs(float(mkt_resp.get("paid_commission") or mkt_resp.get("commission") or 0))
                         if entry_fee_usd <= 0:
-                            entry_fee_usd = fill_price * lots * trade_contract_size * 0.0005
+                            # Fallback taker rate, GST-inclusive (was a raw
+                            # 0.0005, missing the 18% GST -- 2026-09-13).
+                            # Only used when Delta doesn't report its own
+                            # commission, which is the more authoritative
+                            # number whenever it's available.
+                            try:
+                                from execution.fees import get_fee_model as _gfm
+                                _taker_pct = _gfm().side_pct("taker") / 100.0
+                            except Exception:
+                                _taker_pct = 0.00059
+                            entry_fee_usd = fill_price * lots * trade_contract_size * _taker_pct
                 except Exception as mkt_exc:
                     logger.error("USER %s: market fallback failed: %s",
                                  self.user_id[:8], mkt_exc)
@@ -3407,9 +3417,15 @@ class UserRealManager:
             else:
                 gross_pnl = (trade.entry_price - actual_exit) * trade.position_size * _cs
 
-            # Fallback fee estimate if Delta didn't return commission
+            # Fallback fee estimate if Delta didn't return commission.
+            # GST-inclusive taker rate (was a raw 0.0005 -- 2026-09-13).
             if exit_fee_usd <= 0:
-                exit_fee_usd = actual_exit * trade.position_size * _cs * 0.0005
+                try:
+                    from execution.fees import get_fee_model as _gfm
+                    _taker_pct = _gfm().side_pct("taker") / 100.0
+                except Exception:
+                    _taker_pct = 0.00059
+                exit_fee_usd = actual_exit * trade.position_size * _cs * _taker_pct
             total_fees = float(trade.entry_fee_usd or 0) + exit_fee_usd
 
             # Phase 5.3 / T4.1 — FUNDING ACCOUNTING.

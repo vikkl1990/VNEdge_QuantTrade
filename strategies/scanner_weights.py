@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -263,7 +265,18 @@ class ScannerWeightManager:
     # ------------------------------------------------------------------
 
     def record_shadow_trade(self, scanner_name: str, r_value: float) -> None:
-        """Record a shadow trade result for a suppressed/shadow scanner."""
+        """Record a shadow trade result for a suppressed/shadow scanner.
+
+        (2026-09-13) Not called anywhere in the codebase -- a shadowed
+        scanner's signals are logged for research but nothing replays them
+        to fill shadow_r_values, so the non-forced auto-recovery path below
+        (SHADOW_MIN_TRADES / SHADOW_RECOVERY_EXPECTANCY) is dead in practice,
+        same as the FORCED_STATES branch in check_shadow_recovery() was.
+        Wiring this up would need a real shadow-simulation pass (replay what
+        a shadowed scanner's signal would have done against live prices),
+        not just calling this method with a guess. Left in place as the
+        intended shape of that feature, not as working code.
+        """
         state = self._states.get(scanner_name)
         if state is None:
             state = ScannerState(name=scanner_name)
@@ -282,17 +295,19 @@ class ScannerWeightManager:
             if state.status not in (STATUS_SUPPRESSED, STATUS_SHADOW):
                 continue
             if name in self.FORCED_STATES:
-                # Check if forced state should be lifted
-                shadow = state.shadow_r_values
-                if len(shadow) >= self.SHADOW_FULL_RECOVERY_TRADES:
-                    avg = sum(shadow[-self.SHADOW_FULL_RECOVERY_TRADES:]) / self.SHADOW_FULL_RECOVERY_TRADES
-                    if avg >= self.SHADOW_FULL_RECOVERY_EXPECTANCY:
-                        state.status = STATUS_REDUCED
-                        state.weight = self.REDUCED_WEIGHT
-                        state.reason = f"Shadow recovery: {avg:+.3f}R over {self.SHADOW_FULL_RECOVERY_TRADES} shadow trades"
-                        state.recovery_stage = "probation"
-                        actions[name] = f"SHADOW→REDUCED (shadow exp={avg:+.3f}R)"
-                        logger.info("Scanner %s promoted from shadow to reduced: %s", name, state.reason)
+                # (2026-09-13) Never auto-promote a FORCED_STATES scanner from
+                # shadow_r_values. Two problems with the code this replaced:
+                # record_shadow_trade() -- the only thing that fills
+                # shadow_r_values -- is never called anywhere in the codebase,
+                # so this branch has been dead since it was written; and even
+                # working, promoting past a validation-gate shadow (15 of 18
+                # scanners, 2026-09-12 two-fold test) on nothing but a small
+                # rolling-R sample would be the exact small-sample overfitting
+                # that gate exists to catch -- structure_bounce alone failed
+                # that pattern on three separate hand-tuned rebuilds. A
+                # FORCED_STATES entry only comes off by re-running the gate
+                # (scratchpad/scanner_gate.py) and editing FORCED_STATES with
+                # the new evidence, never by live or shadow P&L alone.
                 continue
 
             shadow = state.shadow_r_values
@@ -385,9 +400,26 @@ class ScannerWeightManager:
             logger.warning("Failed to load scanner weights: %s", exc)
 
     def _save(self) -> None:
+        # (2026-09-13) Rewritten every ~5s by the live tracker tick -- the
+        # most frequently written file in the system and, until this fix,
+        # the least protected: a plain write_text() truncates the file
+        # before writing the new content, so a crash mid-write (or a killed
+        # bot process) mid-tick left a 0-byte or half-written
+        # scanner_weights.json, which get_status()/is_tradeable() would then
+        # fail to parse on the next boot. Same write-then-rename pattern as
+        # SignalTracker._safe_write: temp file in the same directory,
+        # fsync'd, then an atomic os.replace so a reader never sees a
+        # partial file and a crash never leaves a corrupt one.
         try:
             data = {name: state.to_dict() for name, state in self._states.items()}
-            _WEIGHTS_FILE.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            payload = json.dumps(data, indent=1)
+            fd, tmp_path = tempfile.mkstemp(dir=str(_WEIGHTS_FILE.parent), suffix=".tmp")
+            try:
+                os.write(fd, payload.encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_path, str(_WEIGHTS_FILE))
         except Exception as exc:
             logger.warning("Failed to save scanner weights: %s", exc)
 

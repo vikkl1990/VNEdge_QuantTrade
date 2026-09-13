@@ -849,10 +849,16 @@ class DashboardServer:
         app.router.add_get("/api/csrf", self._handle_csrf_token)
         app.router.add_get("/api/latency", self._handle_latency)
 
-        # Phase 5.17 — PPP dashboard panel API
+        # Phase 5.17 — PPP dashboard panel API.
+        # (2026-09-13) dashboard.ppp_api was never built; this logged a
+        # WARNING on every boot for a planned-but-absent module, burying
+        # real warnings in the same noise. Downgraded to debug.
         try:
             from dashboard.ppp_api import make_ppp_handler
             app.router.add_get("/api/ppp", make_ppp_handler(self._db_pool))
+        except ModuleNotFoundError:
+            import logging as _log
+            _log.getLogger("dashboard").debug("PPP api not implemented yet (dashboard.ppp_api absent)")
         except Exception as _e:
             import logging as _log
             _log.getLogger("dashboard").warning("PPP api wiring failed: %s", _e)

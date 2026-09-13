@@ -3329,7 +3329,7 @@ class SignalTracker:
                         t["status"] = "trail_win"
                         fixed += 1
                 if fixed:
-                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    SignalTracker._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1, default=_json_default))
                     logger.info("Auto-fixed %d exit reasons (stop_loss → trail_profit/partial_win)", fixed)
 
                 # ── AUTO-DEDUP: Remove duplicate entries (same trade_id) ──
@@ -3344,7 +3344,7 @@ class SignalTracker:
                 removed = len(self._closed) - len(deduped)
                 if removed > 0:
                     self._closed = deduped
-                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    SignalTracker._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1, default=_json_default))
                     logger.info("Auto-deduped: removed %d duplicate trades, %d remaining", removed, len(self._closed))
 
                 # ── AUTO-CLEAN: Remove dead trades (MFE=0, time_stop) ──
@@ -3356,7 +3356,7 @@ class SignalTracker:
                 dead_removed = len(self._closed) - len(cleaned)
                 if dead_removed > 0:
                     self._closed = cleaned
-                    _CLOSED_FILE.write_text(json.dumps(self._closed, indent=1))
+                    SignalTracker._safe_write(_CLOSED_FILE, json.dumps(self._closed, indent=1, default=_json_default))
                     logger.info("Auto-cleaned: removed %d dead trades (MFE=0), %d remaining", dead_removed, len(self._closed))
 
                 logger.info("Loaded %d closed tracked signals", len(self._closed))

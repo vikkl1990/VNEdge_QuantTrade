@@ -401,16 +401,26 @@ class BotOrchestrator:
             # Phase 2.5 B2: wire orchestrator itself for current_action lookup
             self._dashboard._orchestrator = self
 
-            # RL Shadow Agent — logs sizing/trail suggestions (shadow mode)
+            # RL Shadow Agent — logs sizing/trail suggestions (shadow mode).
+            # (2026-09-13) ml_training.rl_shadow_agent was never built; this
+            # was logging a WARNING on every single boot for a module that
+            # doesn't exist and isn't a regression, which buries a real
+            # warning in the same noise. Downgraded to debug until the
+            # module exists; self._rl_agent stays None either way.
             try:
                 from ml_training.rl_shadow_agent import RLShadowAgent
                 self._rl_agent = RLShadowAgent()
                 self._log.info("RL Shadow Agent loaded (shadow_mode=%s)", self._rl_agent.shadow_mode)
+            except ModuleNotFoundError:
+                self._rl_agent = None
+                self._log.debug("RL Shadow Agent not implemented yet (ml_training.rl_shadow_agent absent)")
             except Exception as _rl_err:
                 self._rl_agent = None
-                self._log.warning("RL Shadow Agent not available: %s", _rl_err)
+                self._log.warning("RL Shadow Agent failed to load: %s", _rl_err)
 
-            # RCA Agent — monitors performance and auto-tunes parameters
+            # RCA Agent — monitors performance and auto-tunes parameters.
+            # (2026-09-13) bot.rca_agent was never built; same noise issue
+            # as RL Shadow Agent above. Downgraded to debug.
             try:
                 from bot.rca_agent import RCAAgent
                 self._rca_agent = RCAAgent(
@@ -418,9 +428,12 @@ class BotOrchestrator:
                     suggest_only=False,  # auto-apply within safe bounds
                 )
                 self._log.info("RCA Agent loaded (auto-tune enabled)")
+            except ModuleNotFoundError:
+                self._rca_agent = None
+                self._log.debug("RCA Agent not implemented yet (bot.rca_agent absent)")
             except Exception as _rca_err:
                 self._rca_agent = None
-                self._log.warning("RCA Agent not available: %s", _rca_err)
+                self._log.warning("RCA Agent failed to load: %s", _rca_err)
             # Wire signal tracker to real manager for smart WR lookup
             if hasattr(self, "_real_manager") and self._real_manager:
                 self._real_manager._signal_tracker_ref = self._signal_tracker

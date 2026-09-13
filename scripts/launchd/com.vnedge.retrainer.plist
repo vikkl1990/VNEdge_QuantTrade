@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.vnedge.retrainer</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/scorpion/Desktop/ReConstructBOT/crypto-trading-bot/.venv/bin/python</string>
+        <string>-m</string>
+        <string>ml_training.auto_retrainer</string>
+        <string>--dashboard-url</string>
+        <string>http://127.0.0.1:8091</string>
+        <string>--check-interval</string>
+        <string>3600</string>
+        <string>--min-n</string>
+        <string>50</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/scorpion/Desktop/ReConstructBOT/crypto-trading-bot</string>
+    <key>StandardOutPath</key>
+    <string>/Users/scorpion/Desktop/ReConstructBOT/crypto-trading-bot/logs/ml_retrain.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/scorpion/Desktop/ReConstructBOT/crypto-trading-bot/logs/ml_retrain.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -124,10 +124,20 @@ class ScannerWeightManager:
         "momentum_ride": STATUS_SHADOW,       # -0.367 / -0.125 ATR -- negative in both folds
         "bb_band_walk": STATUS_SHADOW,        # -0.344 / -0.140 ATR -- negative in both folds
         "post_impulse": STATUS_SHADOW,        # -0.340 / -0.157 ATR -- negative in both folds
-        # rsi_divergence: NOT overridden -- the one scanner that passed.
-        # Edge is real but small (~0.02-0.03% at 48 bars vs 0.118% standard
-        # round-trip fees) -- likely needs a confidence-threshold filter to
-        # clear costs before trusting it with meaningful size.
+        # (2026-09-13) rsi_divergence: shadowed too. It's the one scanner
+        # that passed the two-fold direction test -- real, not noise -- but
+        # a confidence-threshold follow-up (scratchpad/rsi_div_confidence_
+        # gate.py, same old/new fold split, 47,789 candidates) found no
+        # cut where the edge clears round-trip fees: 0.15-0.20 ATR raw edge
+        # against a 0.62-0.73 ATR fee cost at every confidence band in both
+        # folds, and confidence isn't even monotonic with quality through
+        # the middle of the range (60-70 conf shows a SMALLER edge than
+        # 0-50). Statistically real and economically worthless are
+        # different bars; this clears the first and fails the second.
+        # Net effect: 0 of 18 routed scanners currently clear costs.
+        # Promotion back needs new evidence a cut exists, not a rerun of
+        # the same conclusion.
+        "rsi_divergence": STATUS_SHADOW,
     }
 
     def __init__(self) -> None:

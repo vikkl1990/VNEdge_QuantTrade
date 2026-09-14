@@ -16,6 +16,11 @@ aiohttp==3.13.3
 aiohttp-jinja2==1.6
 jinja2==3.1.6
 
+# AI chat (Sniper AI equivalent) — needs ANTHROPIC_API_KEY in .env, degrades
+# gracefully (reports "not configured") without it. See dashboard/server.py
+# _handle_ai_ask.
+anthropic==1.5.0
+
 # Database
 aiosqlite==0.22.1
 asyncpg==0.31.0

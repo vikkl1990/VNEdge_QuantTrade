@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VN Edge · Chart</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/css/terminal.css">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  body{background:var(--bg-base);color:var(--text-primary);font-family:var(--font-sans);margin:0;-webkit-font-smoothing:antialiased}
+  .mono{font-family:var(--font-mono)}
+  .wrap{max-width:1240px;margin:0 auto;padding:24px 24px 48px}
+  a.backlink{color:var(--text-secondary);text-decoration:none;font-size:var(--text-sm);display:inline-flex;align-items:center;gap:6px}
+  a.backlink:hover{color:var(--text-primary)}
+  header{margin:12px 0 16px;display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between}
+  .titlewrap .eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--info);margin:0 0 4px}
+  .titlewrap h1{font-size:1.4rem;margin:0;font-weight:600}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  select{background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 10px;font-family:var(--font-mono);font-size:var(--text-sm);cursor:pointer}
+  .pricebar{display:flex;gap:14px;align-items:baseline;margin-bottom:14px;flex-wrap:wrap}
+  .pricebar .px{font-family:var(--font-mono);font-size:1.6rem;font-weight:600;font-variant-numeric:tabular-nums}
+  .pricebar .chg{font-family:var(--font-mono);font-size:1rem;font-weight:600}
+  .pricebar .chg.up{color:var(--success)} .pricebar .chg.down{color:var(--danger)}
+  .pricebar .meta{color:var(--text-dim);font-size:var(--text-xs);font-family:var(--font-mono)}
+
+  .chartcard{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px;position:relative}
+  .chartrow{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px}
+  .togglebtn{font-family:var(--font-mono);font-size:var(--text-xs);padding:5px 11px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--bg-card-alt);color:var(--text-secondary);cursor:pointer}
+  .togglebtn.active{background:var(--info-dim);color:var(--info);border-color:var(--info-border)}
+  #mainChart{width:100%;height:420px}
+  #rsiChart{width:100%;height:120px;margin-top:6px}
+  .panelabel{font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin:8px 0 2px}
+  .loadingnote{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:var(--text-sm);background:var(--bg-card);z-index:5}
+  .loginwall{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:24px;text-align:center;color:var(--text-secondary)}
+  .loginwall a{color:var(--info)}
+  footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--border);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-dim);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="backlink" href="/static/scanner.html">&larr; Scanner</a>
+  <header>
+    <div class="titlewrap">
+      <p class="eyebrow">VN Edge &middot; Chart</p>
+      <h1>Real candlesticks, real indicators</h1>
+    </div>
+    <div class="controls">
+      <select id="symbolSel"></select>
+      <select id="intervalSel">
+        <option value="1m">1m</option>
+        <option value="5m" selected>5m</option>
+        <option value="15m">15m</option>
+        <option value="1h">1h</option>
+        <option value="4h">4h</option>
+      </select>
+    </div>
+  </header>
+
+  <div id="loginwall" class="loginwall" style="display:none">
+    Not logged in to this dashboard session &mdash; <a href="/">log in here</a>, then reload this page.
+  </div>
+
+  <div id="mainbody" style="display:none">
+    <div class="pricebar">
+      <span class="px" id="pxNow">&mdash;</span>
+      <span class="chg" id="pxChg"></span>
+      <span class="meta" id="pxMeta"></span>
+    </div>
+
+    <div class="chartcard">
+      <div class="chartrow">
+        <button class="togglebtn active" data-ov="ema">EMA 20/50</button>
+        <button class="togglebtn active" data-ov="bb">Bollinger</button>
+        <button class="togglebtn active" data-ov="vol">Volume</button>
+      </div>
+      <div id="mainChart"></div>
+      <div class="panelabel">RSI (14)</div>
+      <div id="rsiChart"></div>
+      <div id="loadingNote" class="loadingnote" style="display:none">Loading candles&hellip;</div>
+    </div>
+  </div>
+
+  <footer>
+    <span>Live from this bot's own in-memory candle store &middot; auto-refresh 15s</span>
+    <span id="lastUpdate">&mdash;</span>
+  </footer>
+</div>
+
+<script>
+const SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","LTC/USDT","ADA/USDT","DOT/USDT","DOGE/USDT","LINK/USDT","AVAX/USDT","SUI/USDT","NEAR/USDT","TRUMP/USDT"];
+const urlParams = new URLSearchParams(location.search);
+let curSymbol = urlParams.get('symbol') || "BTC/USDT";
+let curInterval = urlParams.get('interval') || "5m";
+let overlays = {ema: true, bb: true, vol: true};
+
+const symbolSel = document.getElementById('symbolSel');
+symbolSel.innerHTML = SYMBOLS.map(s => `<option value="${s}" ${s===curSymbol?'selected':''}>${s}</option>`).join('');
+document.getElementById('intervalSel').value = curInterval;
+
+const chartOpts = {
+  layout: { background: { color: 'transparent' }, textColor: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#9ba3b5' },
+  grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+  timeScale: { timeVisible: true, secondsVisible: false },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+};
+
+const mainChartEl = document.getElementById('mainChart');
+const mainChart = LightweightCharts.createChart(mainChartEl, {
+  ...chartOpts, width: mainChartEl.clientWidth, height: 420,
+});
+const candleSeries = mainChart.addCandlestickSeries({
+  upColor: '#00ff9d', downColor: '#ff3b5c', borderVisible: false,
+  wickUpColor: '#00ff9d', wickDownColor: '#ff3b5c',
+});
+const volSeries = mainChart.addHistogramSeries({
+  priceFormat: { type: 'volume' }, priceScaleId: 'vol',
+  color: 'rgba(122,142,168,0.4)',
+});
+mainChart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+const ema20Series = mainChart.addLineSeries({ color: '#00d4ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+const ema50Series = mainChart.addLineSeries({ color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+const bbUpperSeries = mainChart.addLineSeries({ color: 'rgba(255,215,0,0.5)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+const bbLowerSeries = mainChart.addLineSeries({ color: 'rgba(255,215,0,0.5)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+
+const rsiChartEl = document.getElementById('rsiChart');
+const rsiChart = LightweightCharts.createChart(rsiChartEl, {
+  ...chartOpts, width: rsiChartEl.clientWidth, height: 120,
+});
+const rsiSeries = rsiChart.addLineSeries({ color: '#f97316', lineWidth: 2, priceLineVisible: false });
+rsiChart.priceScale('right').applyOptions({ autoScale: true });
+
+// Chart libraries that read container width at construction time can get 0
+// if layout hasn't fully settled yet (external stylesheet still applying,
+// fonts loading, etc.) — resize once more after everything's definitely
+// painted, and keep both charts in sync with the window afterwards.
+function resizeCharts() {
+  mainChart.resize(mainChartEl.clientWidth, 420);
+  rsiChart.resize(rsiChartEl.clientWidth, 120);
+}
+window.addEventListener('load', resizeCharts);
+window.addEventListener('resize', resizeCharts);
+setTimeout(resizeCharts, 200);
+
+mainChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  rsiChart.timeScale().setVisibleLogicalRange(range);
+});
+rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  mainChart.timeScale().setVisibleLogicalRange(range);
+});
+
+function toLineData(times, values) {
+  const out = [];
+  for (let i = 0; i < times.length; i++) {
+    if (values[i] != null) out.push({ time: times[i], value: values[i] });
+  }
+  return out;
+}
+
+async function loadChart() {
+  document.getElementById('loadingNote').style.display = 'flex';
+  try {
+    const r = await fetch(`/api/candles?symbol=${encodeURIComponent(curSymbol)}&interval=${curInterval}&limit=300`, { credentials: 'same-origin' });
+    if (r.status === 401) {
+      document.getElementById('loginwall').style.display = '';
+      document.getElementById('mainbody').style.display = 'none';
+      return;
+    }
+    const d = await r.json();
+    document.getElementById('loginwall').style.display = 'none';
+    document.getElementById('mainbody').style.display = '';
+    if (d.error) { document.getElementById('loadingNote').textContent = d.error; return; }
+
+    const candles = d.time.map((t, i) => ({ time: t, open: d.open[i], high: d.high[i], low: d.low[i], close: d.close[i] })).filter(c => c.open != null);
+    const vols = d.time.map((t, i) => ({ time: t, value: d.volume[i], color: d.close[i] >= d.open[i] ? 'rgba(0,255,157,0.35)' : 'rgba(255,59,92,0.35)' })).filter(v => v.value != null);
+    candleSeries.setData(candles);
+    volSeries.setData(overlays.vol ? vols : []);
+    ema20Series.setData(overlays.ema ? toLineData(d.time, d.ema20) : []);
+    ema50Series.setData(overlays.ema ? toLineData(d.time, d.ema50) : []);
+    bbUpperSeries.setData(overlays.bb ? toLineData(d.time, d.bb_upper) : []);
+    bbLowerSeries.setData(overlays.bb ? toLineData(d.time, d.bb_lower) : []);
+    rsiSeries.setData(toLineData(d.time, d.rsi));
+    mainChart.timeScale().fitContent();
+    rsiChart.timeScale().fitContent();
+
+    const last = d.close[d.close.length - 1];
+    const first = d.close[0];
+    const chg = first ? ((last - first) / first * 100) : 0;
+    document.getElementById('pxNow').textContent = last != null ? last.toLocaleString(undefined, {maximumFractionDigits: 8}) : '—';
+    const chgEl = document.getElementById('pxChg');
+    chgEl.textContent = `${chg>=0?'+':''}${chg.toFixed(2)}% (window)`;
+    chgEl.className = 'chg ' + (chg >= 0 ? 'up' : 'down');
+    document.getElementById('pxMeta').textContent = `${curSymbol} · ${curInterval} · ${d.n} bars`;
+    document.getElementById('lastUpdate').textContent = 'updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.error('chart load failed', e);
+  } finally {
+    document.getElementById('loadingNote').style.display = 'none';
+  }
+}
+
+symbolSel.addEventListener('change', () => { curSymbol = symbolSel.value; loadChart(); });
+document.getElementById('intervalSel').addEventListener('change', (e) => { curInterval = e.target.value; loadChart(); });
+document.querySelectorAll('.togglebtn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const k = btn.dataset.ov;
+    overlays[k] = !overlays[k];
+    btn.classList.toggle('active', overlays[k]);
+    loadChart();
+  });
+});
+
+loadChart();
+setInterval(loadChart, 15000);
+</script>
+</body>
+</html>

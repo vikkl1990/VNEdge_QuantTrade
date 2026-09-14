@@ -131,6 +131,18 @@
   .rsbar{display:inline-block;height:6px;border-radius:3px;background:var(--bg-elevated);width:80px;position:relative;vertical-align:middle;margin-right:8px}
   .rsbar i{position:absolute;top:0;bottom:0;border-radius:3px}
   .newhigh{font-family:var(--font-mono);font-size:9px;padding:1px 5px;border-radius:var(--radius-xs);background:var(--success-dim);color:var(--success);border:1px solid var(--success-border);margin-left:6px}
+
+  .scanbuilder{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px}
+  .condrow{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+  .condrow select,.condrow input{background:var(--bg-card-alt);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 9px;font-family:var(--font-mono);font-size:var(--text-sm)}
+  .condrow input[type=number]{width:100px}
+  .condrow .rmbtn{background:none;border:none;color:var(--danger);cursor:pointer;font-size:var(--text-base);padding:2px 8px}
+  #addCondBtn{margin-top:2px;margin-right:8px}
+  .runbtn{font-family:var(--font-mono);font-size:var(--text-xs);padding:6px 16px;border-radius:var(--radius-full);border:1px solid var(--success-border);background:var(--success-dim);color:var(--success);cursor:pointer;font-weight:600}
+
+  .treemaptile{position:absolute;border:1px solid var(--bg-base);display:flex;flex-direction:column;justify-content:flex-end;padding:6px 8px;box-sizing:border-box;overflow:hidden}
+  .treemaptile .tsym{font-weight:600;font-size:var(--text-sm);color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.4)}
+  .treemaptile .tchg{font-family:var(--font-mono);font-size:var(--text-xs);color:rgba(255,255,255,.9);text-shadow:0 1px 2px rgba(0,0,0,.4)}
   .cattabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
   .cattab{font-family:var(--font-mono);font-size:var(--text-xs);padding:6px 12px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);cursor:pointer}
   .cattab.active{background:var(--info-dim);color:var(--info);border-color:var(--info-border)}
@@ -152,6 +164,9 @@
     <div class="viewtabs">
       <button class="viewtab active" data-view="table">Scanner table</button>
       <button class="viewtab" data-view="heat">Heatmap</button>
+      <button class="viewtab" data-view="treemap">Treemap</button>
+      <a class="viewtab" href="/static/chart.html" style="text-decoration:none;display:inline-block">Chart &rarr;</a>
+      <a class="viewtab" href="/static/ai_chat.html" style="text-decoration:none;display:inline-block">Ask AI &rarr;</a>
     </div>
     <div class="ticker" id="ticker"></div>
   </header>
@@ -210,6 +225,31 @@
           <div class="heatgrid" id="heatgrid"></div>
         </section>
       </div>
+
+      <div class="view" data-view="treemap">
+        <section>
+          <h2>Market treemap</h2>
+          <p class="section-note">Box size = relative trading activity (summed volume over the live window, not a dollar figure &mdash; see footnote). Colour = price change over that same window. No market-cap feed exists for these pairs, so size is activity, not valuation.</p>
+          <div id="treemapBox" style="height:360px;position:relative"></div>
+          <p class="section-note" style="margin-top:10px">Footnote: an earlier version multiplied volume by price and got an implausible ~$800B/24h figure for BTC alone &mdash; the exchange's volume units for these contracts aren't confirmed to be base-asset-denominated, so this stays an unlabelled relative-size metric rather than a wrong dollar claim.</p>
+        </section>
+      </div>
+
+      <section>
+        <h2>Custom scan builder</h2>
+        <p class="section-note">Compose your own filter from real live indicator values &mdash; no Python required. Runs against this cycle's actual snapshot for all 13 pairs.</p>
+        <div class="scanbuilder">
+          <div id="condList"></div>
+          <button class="togglebtn" id="addCondBtn" type="button">+ Add condition</button>
+          <button class="runbtn" id="runScanBtn" type="button">Run scan</button>
+        </div>
+        <div class="tablewrap" style="margin-top:12px">
+          <table class="scan">
+            <thead><tr><th>Symbol</th><th>Price</th><th>Matched on</th></tr></thead>
+            <tbody id="builderResults"><tr><td colspan="3" class="rtext" style="padding:12px">Add a condition and click Run scan.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
 
       <section>
         <h2>How a setup actually gets scored</h2>
@@ -328,12 +368,13 @@ function fmtPrice(p){ return (p == null) ? "&mdash;" : (p >= 100 ? p.toLocaleStr
 
 async function loadAll(){
   try {
-    const [status, regime, funnel, signal, scannerHealth, priceChange, validatedEdge, quantMetrics, relStrength] = await Promise.all([
+    const [status, regime, funnel, signal, scannerHealth, priceChange, validatedEdge, quantMetrics, relStrength, volumeRank] = await Promise.all([
       fetchJSON('/api/status'), fetchJSON('/api/regime'), fetchJSON('/api/opportunity-funnel'),
       fetchJSON('/api/signal-status'), fetchJSON('/api/scanner-health'), fetchJSON('/api/price-change'),
       fetchJSON('/api/validated-edge').catch(() => null),
       fetchJSON('/api/quant-metrics?days=365').catch(() => null),
       fetchJSON('/api/relative-strength').catch(() => null),
+      fetchJSON('/api/volume-rank').catch(() => null),
     ]);
     document.getElementById('loginwall').style.display = 'none';
     document.getElementById('mainbody').style.display = '';
@@ -363,7 +404,7 @@ async function loadAll(){
         rel_vol: ind.rel_vol, regime: reg.regime || cand.regime || 'unknown',
         reason: cand.reason || sig.reason, signal: sig.signal || false,
         best_setup: bestSetup, best_score: bestScore,
-        funnel: fun,
+        funnel: fun, indicators: ind,
       };
     });
 
@@ -373,6 +414,7 @@ async function loadAll(){
       fleet_funnel: funnel.funnel || {},
       veto_stats: funnel.veto_stats || {},
       quant_metrics: quantMetrics,
+      volume_rank: volumeRank,
       rel_strength: relStrength,
       validated_edge: validatedEdge,
     };
@@ -631,10 +673,117 @@ function renderRelativeStrength(){
   }).join('');
 }
 
+// ---- Treemap: simple slice-and-dice layout (13 items, doesn't need a
+// full squarified algorithm to look reasonable) ----
+function renderTreemap(){
+  const box = document.getElementById('treemapBox');
+  const vr = DATA.volume_rank || {};
+  const items = DATA.symbols
+    .map(s => ({ symbol: s.symbol, size: vr[s.symbol] || 0, chg: s.chg24h }))
+    .filter(it => it.size > 0)
+    .sort((a,b) => b.size - a.size);
+  if (!items.length) {
+    box.innerHTML = `<div class="rtext" style="padding:12px">Not enough live volume data yet to size a treemap.</div>`;
+    return;
+  }
+  const total = items.reduce((s,it) => s + it.size, 0);
+  const H = box.clientHeight || 360;
+  // Single-column layout, row height proportional to share of total
+  // activity — a 1D treemap. Reads cleanly at 13 items; a full 2D
+  // squarified layout isn't worth the complexity at this scale.
+  let acc = 0;
+  const maxAbs = Math.max(...items.map(it => Math.abs(it.chg||0)), 1);
+  box.innerHTML = items.map((it, idx) => {
+    const hFrac = it.size / total;
+    const h = Math.round(H * hFrac);
+    const top = acc;
+    acc += h;
+    const chg = it.chg || 0;
+    const t = Math.min(Math.abs(chg) / maxAbs, 1);
+    const bg = chg >= 0
+      ? `rgba(0,255,157,${0.15 + t*0.55})`
+      : `rgba(255,59,92,${0.15 + t*0.55})`;
+    return `<div class="treemaptile" style="left:0;top:${top}px;width:100%;height:${Math.max(h,26)}px;background:${bg}">
+      <div class="tsym">${it.symbol.split('/')[0]}</div>
+      <div class="tchg">${chg>0?'+':''}${chg}%</div>
+    </div>`;
+  }).join('');
+}
+
+// ---- Custom scan builder ----
+const INDICATOR_FIELDS = [
+  ["rsi", "RSI"], ["ema_8", "EMA 8"], ["ema_21", "EMA 21"], ["ema_50", "EMA 50"],
+  ["macd", "MACD"], ["macd_signal", "MACD signal"], ["atr", "ATR"],
+  ["rel_vol", "Rel. Volume"], ["close", "Price"], ["stoch_k", "Stoch %K"],
+  ["stoch_d", "Stoch %D"], ["obv_slope", "OBV slope"], ["supertrend_dir", "Supertrend dir"],
+];
+const OPS = [[">", ">"], ["<", "<"], [">=", "≥"], ["<=", "≤"], ["==", "="]];
+let conditions = [{ field: "rsi", op: "<", value: 30 }];
+
+function renderConditions(){
+  document.getElementById('condList').innerHTML = conditions.map((c, i) => `
+    <div class="condrow" data-i="${i}">
+      <select class="cf-field">${INDICATOR_FIELDS.map(([k,l]) => `<option value="${k}" ${k===c.field?'selected':''}>${l}</option>`).join('')}</select>
+      <select class="cf-op">${OPS.map(([k,l]) => `<option value="${k}" ${k===c.op?'selected':''}>${l}</option>`).join('')}</select>
+      <input class="cf-val" type="number" step="any" value="${c.value}">
+      ${conditions.length > 1 ? `<button class="rmbtn" type="button">&times;</button>` : ''}
+    </div>`).join('');
+}
+
+function runScan(){
+  document.querySelectorAll('.condrow').forEach((row, i) => {
+    conditions[i].field = row.querySelector('.cf-field').value;
+    conditions[i].op = row.querySelector('.cf-op').value;
+    conditions[i].value = parseFloat(row.querySelector('.cf-val').value);
+  });
+  const results = [];
+  DATA.symbols.forEach(s => {
+    const ind = s.indicators || {};
+    const matched = [];
+    const passAll = conditions.every(c => {
+      const v = ind[c.field];
+      if (v == null || isNaN(v)) return false;
+      let ok;
+      if (c.op === ">") ok = v > c.value;
+      else if (c.op === "<") ok = v < c.value;
+      else if (c.op === ">=") ok = v >= c.value;
+      else if (c.op === "<=") ok = v <= c.value;
+      else ok = Math.abs(v - c.value) < 1e-9;
+      if (ok) matched.push(`${c.field} ${c.op} ${c.value} (${Number(v).toFixed(4)})`);
+      return ok;
+    });
+    if (passAll) results.push({ symbol: s.symbol, price: s.price, matched });
+  });
+  const tbody = document.getElementById('builderResults');
+  if (!results.length) {
+    tbody.innerHTML = `<tr><td colspan="3" class="rtext" style="padding:12px">No pairs match this cycle's live snapshot.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = results.map(r => `<tr>
+    <td class="sym">${r.symbol.split('/')[0]}</td>
+    <td class="num">${fmtPrice(r.price)}</td>
+    <td class="setupname">${r.matched.join(' AND ')}</td>
+  </tr>`).join('');
+}
+
+document.getElementById('addCondBtn').addEventListener('click', () => {
+  conditions.push({ field: "rel_vol", op: ">", value: 1.5 });
+  renderConditions();
+});
+document.getElementById('runScanBtn').addEventListener('click', runScan);
+document.getElementById('condList').addEventListener('click', (e) => {
+  if (e.target.classList.contains('rmbtn')) {
+    const idx = parseInt(e.target.closest('.condrow').dataset.i, 10);
+    conditions.splice(idx, 1);
+    renderConditions();
+  }
+});
+renderConditions();
+
 function render(){
   renderTicker(); renderTable(); renderHeat(); renderFlow(); renderScanners();
   renderBrief(); renderLibrary(); renderValidation(); renderAlerts();
-  renderRisk(); renderRelativeStrength();
+  renderRisk(); renderRelativeStrength(); renderTreemap();
   document.getElementById('fmode').textContent = DATA.mode;
   document.getElementById('fuptime').textContent = DATA.uptime;
 }

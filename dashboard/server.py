@@ -141,10 +141,13 @@ class DashboardServer:
         self._price_change_cache_ts: float = 0.0
         self._rel_strength_cache: Dict[str, Any] = {}
         self._rel_strength_cache_ts: float = 0.0
+        self._volume_rank_cache: Dict[str, Any] = {}
+        self._volume_rank_cache_ts: float = 0.0
         self._signal_tracker = None  # set externally by orchestrator
         self._signal_learner = None  # set externally by orchestrator
         self._trade_monitor = None   # set externally by orchestrator
         self._strategy = None        # set externally by orchestrator
+        self._data_manager = None    # set externally by orchestrator — live in-memory candles
         self._decision_engine = None # set externally by orchestrator
 
         self._daily_pnl: float = 0.0
@@ -842,6 +845,10 @@ class DashboardServer:
         app.router.add_get("/api/price-change", self._handle_price_change)
         app.router.add_get("/api/validated-edge", self._handle_validated_edge)
         app.router.add_get("/api/relative-strength", self._handle_relative_strength)
+        app.router.add_get("/api/volume-rank", self._handle_volume_rank)
+        app.router.add_get("/api/candles", self._handle_candles)
+        app.router.add_get("/api/ai/status", self._handle_ai_status)
+        app.router.add_post("/api/ai/ask", self._handle_ai_ask)
         app.router.add_get("/api/decision", self._handle_decision)
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
         app.router.add_get("/api/grid/status", self._handle_grid_status)
@@ -2678,39 +2685,58 @@ class DashboardServer:
                 data.setdefault("early_exit_stats", {})["shadow_recoveries"] = recoveries
         return web.json_response(data, dumps=_safe_dumps)
 
-    # 24h %-change cache for /api/price-change — recomputed at most once a
-    # minute since it reads a ~40k-row CSV per symbol; every poll would be
-    # wasted disk I/O for a number that only moves meaningfully over minutes.
+    # (2026-09-14 fix) All of price-change/volume-rank/relative-strength
+    # originally tail-read storage/candle_cache/*.csv. Those CSVs turned out
+    # to be a ONE-TIME research export from 2026-09-11 (used by the offline
+    # two-fold validation scripts), not a live-updating file — every number
+    # built on them was silently stale by days, not hours. Fixed to read
+    # self._data_manager.get_candles(), the same live in-memory store the
+    # bot's own strategy scans against (wired in by the orchestrator
+    # alongside _strategy/_signal_tracker). Discovered while building the
+    # chart endpoint, whose whole point is showing current price action —
+    # a stale chart would have been immediately, obviously wrong.
     _PRICE_CHANGE_CACHE_SEC = 60.0
+    _VOLUME_RANK_CACHE_SEC = 60.0
+    _REL_STRENGTH_CACHE_SEC = 60.0
 
-    def _read_pct_change_24h(self, symbol: str) -> Optional[float]:
-        """Read storage/candle_cache/{BASE}_USDT_5m.csv and compute the
-        close-to-close %% change over the last ~288 bars (24h at 5m)."""
-        base = symbol.split("/")[0]
-        path = Path("storage/candle_cache") / f"{base}_USDT_5m.csv"
-        if not path.is_file():
+    # Below this, a window is too short to mean anything (~2h at 5m);
+    # above it, use whatever's actually in memory rather than demand
+    # exactly 289 bars — a freshly-restarted bot legitimately has less
+    # than 24h of live history yet, and that's a real, honest state to
+    # report (via window_bars), not a reason to return null everywhere.
+    _MIN_WINDOW_BARS = 24
+
+    def _read_ohlcv_window(self, symbol: str, n: int = 289):
+        """Up to the last n 5m candles for symbol from the live in-memory
+        DataManager, or None if unavailable / too short. Shared by
+        price-change, volume-rank and relative-strength so all three read
+        the same live window the same way. May return FEWER than n rows
+        (e.g. right after a restart) — callers that report a %% change
+        should treat the window length as informational, not assume 24h."""
+        if self._data_manager is None:
             return None
         try:
-            from collections import deque
-            with open(path, newline="") as f:
-                header = f.readline().strip().split(",")
-                close_idx = header.index("close")
-                window = deque(f, maxlen=289)
-            if len(window) < 289:
-                return None
-            then_close = float(window[0].split(",")[close_idx])
-            now_close = float(window[-1].split(",")[close_idx])
-            if then_close <= 0:
-                return None
-            return round((now_close - then_close) / then_close * 100, 2)
+            df = self._data_manager.get_candles(symbol, "5m", limit=n)
         except Exception:
             return None
+        if df is None or len(df) < self._MIN_WINDOW_BARS:
+            return None
+        return df
+
+    def _read_pct_change_24h(self, symbol: str) -> Optional[float]:
+        """Close-to-close %% change over the last ~288 live bars (24h at 5m)."""
+        df = self._read_ohlcv_window(symbol)
+        if df is None:
+            return None
+        then_close, now_close = float(df["close"].iloc[0]), float(df["close"].iloc[-1])
+        if then_close <= 0:
+            return None
+        return round((now_close - then_close) / then_close * 100, 2)
 
     async def _handle_price_change(self, request: web.Request) -> web.Response:
-        """Return {symbol: pct_change_24h} for every configured symbol,
-        read straight from the candle cache (same data source the scanner
-        page's other panels use). Cached for _PRICE_CHANGE_CACHE_SEC since
-        this is disk I/O, not in-memory state like the rest of the API."""
+        """Return {symbol: pct_change_24h} for every configured symbol, read
+        from the bot's own live candle store. Cached for _PRICE_CHANGE_CACHE_SEC
+        purely to avoid re-copying the same DataFrames on every poll."""
         now = time.time()
         if now - self._price_change_cache_ts > self._PRICE_CHANGE_CACHE_SEC or not self._price_change_cache:
             self._price_change_cache = {
@@ -2719,28 +2745,38 @@ class DashboardServer:
             self._price_change_cache_ts = now
         return web.json_response(self._price_change_cache, dumps=_safe_dumps)
 
-    # Relative-strength cache — same rationale/interval as price-change.
-    _REL_STRENGTH_CACHE_SEC = 60.0
+    def _read_volume_activity_24h(self, symbol: str) -> Optional[float]:
+        """Sum of raw exchange-reported `volume` over the recent live 5m
+        window, for the treemap's box-SIZE metric only (relative ranking
+        between our 13 pairs, not a dollar figure). Deliberately NOT
+        multiplied by price: Delta's OHLCV volume units for these perpetual
+        contracts aren't confirmed to be base-asset-denominated (an early
+        version did close*volume and produced an implausible ~$800B/24h
+        figure for BTC alone — wrong by orders of magnitude), so this stays
+        an honest "relative activity" number, not a fabricated notional."""
+        df = self._read_ohlcv_window(symbol)
+        if df is None:
+            return None
+        return round(float(df["volume"].sum()), 4)
+
+    async def _handle_volume_rank(self, request: web.Request) -> web.Response:
+        """GET /api/volume-rank — relative trading-activity ranking per
+        symbol (raw summed volume, NOT a USD/notional figure — see
+        _read_volume_activity_24h for why), for the treemap heatmap's box-size
+        metric (colour still comes from price-change). Cached like the
+        other live-candle reads."""
+        now = time.time()
+        if now - self._volume_rank_cache_ts > self._VOLUME_RANK_CACHE_SEC or not self._volume_rank_cache:
+            self._volume_rank_cache = {sym: self._read_volume_activity_24h(sym) for sym in self._symbols}
+            self._volume_rank_cache_ts = now
+        return web.json_response(self._volume_rank_cache, dumps=_safe_dumps)
 
     def _read_close_window(self, symbol: str, n: int = 289) -> Optional[List[float]]:
-        """Tail-read the last n closes for symbol from the 5m candle cache,
-        oldest-first. Shared by price-change and relative-strength so both
-        read the same window the same way."""
-        base = symbol.split("/")[0]
-        path = Path("storage/candle_cache") / f"{base}_USDT_5m.csv"
-        if not path.is_file():
+        """Tail-read the last n live closes for symbol, oldest-first."""
+        df = self._read_ohlcv_window(symbol, n)
+        if df is None:
             return None
-        try:
-            from collections import deque
-            with open(path, newline="") as f:
-                header = f.readline().strip().split(",")
-                close_idx = header.index("close")
-                window = deque(f, maxlen=n)
-            if len(window) < n:
-                return None
-            return [float(row.split(",")[close_idx]) for row in window]
-        except Exception:
-            return None
+        return [float(c) for c in df["close"]]
 
     def _compute_relative_strength(self) -> Dict[str, Any]:
         """Relative strength vs BTC (our benchmark, same role NIFTY plays
@@ -2785,6 +2821,214 @@ class DashboardServer:
             self._rel_strength_cache = self._compute_relative_strength()
             self._rel_strength_cache_ts = now
         return web.json_response(self._rel_strength_cache, dumps=_safe_dumps)
+
+    _CANDLES_ALLOWED_INTERVALS = {"1m", "5m", "15m", "1h", "4h"}
+
+    async def _handle_candles(self, request: web.Request) -> web.Response:
+        """GET /api/candles?symbol=BTC/USDT&interval=5m&limit=300 — OHLCV
+        plus a few overlay indicators, from the bot's own live in-memory
+        candle store (DataManager) — the same data the strategy scans
+        against, not a static file. This is the data source for the chart
+        page; nothing in the dashboard rendered an actual candlestick chart
+        before this endpoint existed.
+        """
+        symbol = request.query.get("symbol", "BTC/USDT")
+        interval = request.query.get("interval", "5m")
+        try:
+            limit = max(50, min(1000, int(request.query.get("limit", "300"))))
+        except Exception:
+            limit = 300
+        if interval not in self._CANDLES_ALLOWED_INTERVALS:
+            return web.json_response({"error": f"interval must be one of {sorted(self._CANDLES_ALLOWED_INTERVALS)}"}, status=400)
+
+        if self._data_manager is None:
+            return web.json_response({"error": "data_manager not ready"}, status=503)
+        try:
+            df = self._data_manager.get_candles(symbol, interval, limit=limit)
+            if df is None or len(df) == 0:
+                return web.json_response({"error": f"no cached candles for {symbol} @ {interval}"}, status=404)
+            df = df.set_index("timestamp").sort_index()[["open", "high", "low", "close", "volume"]]
+
+            import pandas as pd
+            from data.indicators import calc_ema, calc_rsi, calc_macd, calc_bollinger_bands
+            ema20 = calc_ema(df, 20)
+            ema50 = calc_ema(df, 50)
+            rsi = calc_rsi(df, 14)
+            macd_df = calc_macd(df)
+            bb = calc_bollinger_bands(df)
+
+            def series(s):
+                return [None if pd.isna(v) else round(float(v), 8) for v in s]
+
+            times = [int(ts.timestamp()) for ts in df.index]
+            out = {
+                "symbol": symbol, "interval": interval, "n": len(df),
+                "time": times,
+                "open": series(df["open"]), "high": series(df["high"]),
+                "low": series(df["low"]), "close": series(df["close"]),
+                "volume": series(df["volume"]),
+                "ema20": series(ema20), "ema50": series(ema50),
+                "rsi": series(rsi),
+                "macd": series(macd_df["macd"]),
+                "macd_signal": series(macd_df["macd_signal"]),
+                "bb_upper": series(bb["bb_upper"]),
+                "bb_lower": series(bb["bb_lower"]),
+            }
+            return web.json_response(out, dumps=_safe_dumps)
+        except Exception as e:
+            return web.json_response({"error": str(e)[:300]}, status=500)
+
+    # ------------------------------------------------------------------
+    # AI chat ("Sniper AI" equivalent) — real tool-use over our own live
+    # data, not a canned response generator. Needs ANTHROPIC_API_KEY.
+    # ------------------------------------------------------------------
+
+    async def _json_from_handler(self, coro) -> Any:
+        """Await an existing GET handler (that ignores request.query) and
+        parse its response body back to a dict, so AI tools reuse the exact
+        same aggregation code every other endpoint uses — no second copy
+        of the same logic to drift out of sync."""
+        resp = await coro
+        return json.loads(resp.body.decode("utf-8"))
+
+    _AI_TOOLS = [
+        {
+            "name": "get_fleet_status",
+            "description": "Current scan funnel counts (scanned/valid/near_miss/rejected/blocked_*), veto stats, and per-symbol regime for all 13 tracked pairs, this scan window.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "get_scanner_health",
+            "description": "Live expectancy (R-multiple), win rate, and trade count for every scanner that has closed at least one real paper trade.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "get_symbol_detail",
+            "description": "Full detail for one symbol: current price, regime, indicators (RSI/EMA/MACD/ATR/rel_vol/etc), why it did or didn't fire this cycle, and every scanner checked against it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"symbol": {"type": "string", "description": "e.g. BTC/USDT"}},
+                "required": ["symbol"],
+            },
+        },
+        {
+            "name": "get_relative_strength",
+            "description": "Every pair ranked by how its price has moved relative to BTC over the last ~24h.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "get_validated_edge",
+            "description": "The real two-fold historical validation results for all 18 original scanners (forward return, win rate, pass/fail) plus the NO-VOLUME-veto and P3.11-chop-trap research findings.",
+            "input_schema": {"type": "object", "properties": {}},
+        },
+    ]
+
+    async def _run_ai_tool(self, name: str, tool_input: dict) -> Any:
+        if name == "get_fleet_status":
+            funnel = await self._json_from_handler(self._handle_opportunity_funnel(None))
+            regime = await self._json_from_handler(self._handle_regime(None))
+            return {"funnel": funnel.get("funnel"), "veto_stats": funnel.get("veto_stats"),
+                    "per_symbol_regime": {k: v.get("regime") for k, v in (regime.get("per_symbol") or {}).items()}}
+        if name == "get_scanner_health":
+            return await self._json_from_handler(self._handle_scanner_health(None))
+        if name == "get_symbol_detail":
+            sym = tool_input.get("symbol", "")
+            signal = await self._json_from_handler(self._handle_signal_status(None))
+            status = await self._json_from_handler(self._handle_status(None))
+            cand = next((c for c in status.get("setup_candidates", []) if c.get("symbol") == sym), {})
+            sig = (signal.get(sym) or {}).get("scalp", {})
+            return {
+                "symbol": sym, "price": (status.get("prices") or {}).get(sym),
+                "regime": cand.get("regime"), "reason": cand.get("reason") or sig.get("reason"),
+                "indicators": sig.get("indicators"), "setups_checked": sig.get("setups_checked"),
+            }
+        if name == "get_relative_strength":
+            return await self._json_from_handler(self._handle_relative_strength(None))
+        if name == "get_validated_edge":
+            return await self._json_from_handler(self._handle_validated_edge(None))
+        return {"error": f"unknown tool {name}"}
+
+    async def _handle_ai_status(self, request: web.Request) -> web.Response:
+        """GET /api/ai/status — cheap config check for the chat UI, so it
+        can show the "not configured" notice without burning a real model
+        call just to find out."""
+        configured = bool(os.environ.get("ANTHROPIC_API_KEY", ""))
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            configured = False
+        return web.json_response({"configured": configured})
+
+    async def _handle_ai_ask(self, request: web.Request) -> web.Response:
+        """POST /api/ai/ask {"question": str, "history": [...]} — a real
+        conversational answer grounded in this bot's own live data via tool
+        use, not a canned template. Mirrors scanner.mrchartist.com's Sniper
+        AI ("every answer names its source") using our own scan/regime/
+        validation data as the source instead of theirs.
+        """
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return web.json_response({
+                "error": "not_configured",
+                "message": "ANTHROPIC_API_KEY is not set in .env. Add your own key to enable this — nothing else to build, the endpoint is fully wired.",
+            }, status=200)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        question = (body.get("question") or "").strip()
+        if not question:
+            return web.json_response({"error": "missing 'question'"}, status=400)
+        history = body.get("history") or []
+
+        try:
+            import anthropic
+        except ImportError:
+            return web.json_response({"error": "not_configured", "message": "pip install anthropic (see requirements.txt)"}, status=200)
+
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        system = (
+            "You are VN Edge's own market-brief assistant, embedded in a crypto paper-trading "
+            "bot's dashboard. Answer using ONLY the tools provided — every one of them reads "
+            "this bot's real, live state (paper trading, not investment advice). Never invent "
+            "numbers. Name which tool/data a claim came from. Keep answers to 2-4 sentences "
+            "unless the question needs a list."
+        )
+        messages = list(history) + [{"role": "user", "content": question}]
+        sources_used: List[str] = []
+
+        try:
+            for _ in range(4):  # bound tool-call rounds
+                resp = await client.messages.create(
+                    model="claude-sonnet-5", max_tokens=800,
+                    system=system, tools=self._AI_TOOLS, messages=messages,
+                )
+                if resp.stop_reason != "tool_use":
+                    final_text = "".join(b.text for b in resp.content if b.type == "text")
+                    return web.json_response({
+                        "answer": final_text, "sources": sources_used,
+                    }, dumps=_safe_dumps)
+
+                messages.append({"role": "assistant", "content": resp.content})
+                tool_results = []
+                for block in resp.content:
+                    if block.type != "tool_use":
+                        continue
+                    sources_used.append(block.name)
+                    try:
+                        result = await self._run_ai_tool(block.name, block.input or {})
+                    except Exception as e:
+                        result = {"error": str(e)[:200]}
+                    tool_results.append({
+                        "type": "tool_result", "tool_use_id": block.id,
+                        "content": json.dumps(result, default=str)[:6000],
+                    })
+                messages.append({"role": "user", "content": tool_results})
+
+            return web.json_response({"error": "tool_loop_exceeded", "sources": sources_used}, status=200)
+        except Exception as e:
+            return web.json_response({"error": "ai_call_failed", "message": str(e)[:300]}, status=502)
 
     async def _handle_validated_edge(self, request: web.Request) -> web.Response:
         """Serve the persisted two-fold validation results (real historical

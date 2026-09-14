@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VN Edge · Ask AI</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/css/terminal.css">
+<style>
+  body{background:var(--bg-base);color:var(--text-primary);font-family:var(--font-sans);margin:0;-webkit-font-smoothing:antialiased}
+  .mono{font-family:var(--font-mono)}
+  .wrap{max-width:820px;margin:0 auto;padding:24px 24px 32px;display:flex;flex-direction:column;height:100vh;box-sizing:border-box}
+  a.backlink{color:var(--text-secondary);text-decoration:none;font-size:var(--text-sm)}
+  a.backlink:hover{color:var(--text-primary)}
+  header{margin:12px 0 16px;flex:none}
+  .eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--purple);margin:0 0 6px}
+  h1{font-size:1.4rem;margin:0 0 6px;font-weight:600}
+  .sub{color:var(--text-secondary);font-size:var(--text-sm);margin:0}
+
+  .notconfigured{background:var(--bg-card);border:1px solid var(--warning-border);border-left:3px solid var(--warning);border-radius:0 var(--radius-md) var(--radius-md) 0;padding:16px 18px;margin-bottom:16px;font-size:var(--text-sm);color:var(--text-secondary);display:none}
+  .notconfigured code{background:var(--bg-elevated);padding:1px 6px;border-radius:var(--radius-xs)}
+
+  .messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:4px 2px 16px}
+  .msg{max-width:82%;padding:11px 14px;border-radius:var(--radius-md);font-size:var(--text-base);line-height:1.55}
+  .msg.user{align-self:flex-end;background:var(--info-dim);color:var(--text-primary);border:1px solid var(--info-border)}
+  .msg.ai{align-self:flex-start;background:var(--bg-card);border:1px solid var(--border)}
+  .msg.ai.pending{color:var(--text-dim)}
+  .sources{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  .srctag{font-family:var(--font-mono);font-size:9px;padding:2px 7px;border-radius:var(--radius-full);background:var(--purple-dim);color:var(--purple);border:1px solid var(--purple-border)}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;flex:none}
+  .chip{font-family:var(--font-mono);font-size:var(--text-xs);padding:6px 12px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);cursor:pointer}
+  .chip:hover{border-color:var(--border-hover);color:var(--text-primary)}
+
+  .inputrow{display:flex;gap:8px;flex:none}
+  #questionInput{flex:1;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;font-family:var(--font-sans);font-size:var(--text-base);resize:none}
+  #sendBtn{font-family:var(--font-mono);font-size:var(--text-sm);padding:0 20px;border-radius:var(--radius-md);border:1px solid var(--info-border);background:var(--info-dim);color:var(--info);cursor:pointer;font-weight:600}
+  #sendBtn:disabled{opacity:.5;cursor:default}
+  .disclaimer{font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-dim);text-align:center;margin-top:10px;flex:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="backlink" href="/static/scanner.html">&larr; Scanner</a>
+  <header>
+    <p class="eyebrow">VN Edge &middot; Ask AI</p>
+    <h1>Ask anything about this bot's real state</h1>
+    <p class="sub">Grounded in live tool calls against our own scanner/regime/validation data &mdash; every answer names which tools it used. Paper trading, not investment advice.</p>
+  </header>
+
+  <div class="notconfigured" id="notConfigured">
+    <b>Not connected yet.</b> This needs <code>ANTHROPIC_API_KEY</code> set in <code>.env</code>. The endpoint (<code>/api/ai/ask</code>) is fully built and wired to real tools, it just needs your own API key to actually call the model.
+  </div>
+
+  <div class="messages" id="messages"></div>
+
+  <div class="chips" id="chips">
+    <button class="chip" data-q="What's the fleet status right now?">Fleet status</button>
+    <button class="chip" data-q="Which scanners have real validated edge?">Validated edge</button>
+    <button class="chip" data-q="Tell me about BTC/USDT right now">BTC/USDT detail</button>
+    <button class="chip" data-q="Which pair has the strongest relative strength vs BTC?">Relative strength leader</button>
+    <button class="chip" data-q="Which scanners are actually earning their live weight?">Scanner health</button>
+  </div>
+
+  <div class="inputrow">
+    <textarea id="questionInput" rows="1" placeholder="Ask a scrip, a level, a scan, a concept..."></textarea>
+    <button id="sendBtn">Send</button>
+  </div>
+  <p class="disclaimer">Educational, not investment advice · answers are only as good as the tools' underlying data</p>
+</div>
+
+<script>
+let history = [];
+let configured = true;
+
+function addMessage(role, text, sources) {
+  const box = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div>${text.replace(/\n/g,'<br>')}</div>` +
+    (sources && sources.length ? `<div class="sources">${[...new Set(sources)].map(s => `<span class="srctag">${s}</span>`).join('')}</div>` : '');
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+async function ask(question) {
+  if (!question.trim()) return;
+  addMessage('user', question);
+  const pending = addMessage('ai pending', 'Thinking…');
+  document.getElementById('sendBtn').disabled = true;
+  try {
+    const r = await fetch('/api/ai/ask', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ question, history }),
+    });
+    if (r.status === 401) {
+      pending.remove();
+      addMessage('ai', 'Not logged in to this dashboard session — log in at the main page, then reload this tab.');
+      return;
+    }
+    const d = await r.json();
+    pending.remove();
+    if (d.error === 'not_configured') {
+      configured = false;
+      document.getElementById('notConfigured').style.display = 'block';
+      addMessage('ai', d.message);
+      return;
+    }
+    if (d.error) {
+      addMessage('ai', `Error: ${d.message || d.error}`);
+      return;
+    }
+    addMessage('ai', d.answer, d.sources);
+    history.push({ role: 'user', content: question });
+    history.push({ role: 'assistant', content: d.answer });
+  } catch (e) {
+    pending.remove();
+    addMessage('ai', 'Request failed: ' + e.message);
+  } finally {
+    document.getElementById('sendBtn').disabled = false;
+  }
+}
+
+document.getElementById('sendBtn').addEventListener('click', () => {
+  const inp = document.getElementById('questionInput');
+  const q = inp.value;
+  inp.value = '';
+  ask(q);
+});
+document.getElementById('questionInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    document.getElementById('sendBtn').click();
+  }
+});
+document.getElementById('chips').addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if (chip) ask(chip.dataset.q);
+});
+
+// Check configuration up front via the cheap status endpoint (no model
+// call), so the notice shows before the user even asks anything.
+(async () => {
+  try {
+    const r = await fetch('/api/ai/status', { credentials: 'same-origin' });
+    const d = await r.json();
+    if (!d.configured) {
+      configured = false;
+      document.getElementById('notConfigured').style.display = 'block';
+    }
+  } catch (e) { /* ignore probe failure */ }
+})();
+</script>
+</body>
+</html>

@@ -440,6 +440,7 @@ class BotOrchestrator:
             self._dashboard._signal_learner = self._signal_learner
             self._dashboard._trade_monitor = self._trade_monitor
             self._dashboard._strategy = self._strategy
+            self._dashboard._data_manager = self._data_manager
 
             # Wire ML feedback: trade outcomes → training dataset
             # MultiStrategy wraps ScalpStrategy, so traverse sub-strategies

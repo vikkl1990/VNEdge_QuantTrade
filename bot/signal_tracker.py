@@ -407,81 +407,26 @@ class TrackedSignal:
         sl_dist_pct = abs(entry - sl) / entry * 100 if entry > 0 else 1.0
         grade = str(sig.get("grade", "C"))
 
-        # ── FIXED FRACTIONAL RISK MODEL ──
-        # Risk 0.75% of account per trade (constant dollar risk)
-        # This automatically sizes positions based on SL distance
-        ACCOUNT_SIZE = 1000.0  # paper account base
-        MAX_MARGIN_PER_TRADE = 100.0  # max $100 margin (stake) per trade
-        RISK_PCT = 0.75        # risk 0.75% per trade
-        risk_amount = ACCOUNT_SIZE * RISK_PCT / 100  # $7.50 risk per trade
-
-        # Position size = risk / SL_distance
-        # If SL is 0.5% away, position = $7.50 / 0.005 = $1500
-        # If SL is 1.0% away, position = $7.50 / 0.01 = $750
-        if sl_dist_pct > 0:
-            position_usd = risk_amount / (sl_dist_pct / 100)
-        else:
-            position_usd = risk_amount * 100  # fallback
-
-        # ── SUPER SCALP LEVERAGE (10x-50x, $100-$200 margin) ──
-        # Minimum $200 position to survive fee drag. Fewer but larger trades.
-        # Liquidation safety checked separately in strategy
-        if confidence >= 90:
-            max_lev = 75
-            paper_stake = 100.0
-            lev_cap_source = "super_scalp_90+_75x"
-        elif confidence >= 80:
-            max_lev = 60
-            paper_stake = 100.0
-            lev_cap_source = "super_scalp_80+_60x"
-        elif confidence >= 70:
-            max_lev = 45
-            paper_stake = 80.0
-            lev_cap_source = "super_scalp_70+_45x"
-        elif confidence >= 60:
-            max_lev = 30
-            paper_stake = 60.0
-            lev_cap_source = "super_scalp_60+_30x"
-        else:
-            max_lev = 20
-            paper_stake = 50.0
-            lev_cap_source = "super_scalp_base_20x"
-
-        # Derive effective leverage from position size
-        derived_lev = position_usd / paper_stake
-        lev = min(int(derived_lev), max_lev)
-        lev = max(1, lev)  # minimum 1x
-
-        if derived_lev > max_lev:
-            # Position was too large — cap it
-            position_usd = paper_stake * max_lev
-            risk_amount = position_usd * sl_dist_pct / 100
-            lev_cap_source = f"lev_capped_{max_lev}x"
-
-        # ── DEMO MIN LEVERAGE FLOOR: 20x minimum ──
-        # In demo/paper mode, enforce minimum 20x leverage for realistic testing
-        MIN_DEMO_LEV = 20
-        if lev < MIN_DEMO_LEV:
-            lev = MIN_DEMO_LEV
-            position_usd = paper_stake * lev
-            risk_amount = position_usd * sl_dist_pct / 100
-            lev_cap_source = f"demo_min_floor_{MIN_DEMO_LEV}x"
-            logger.info(
-                "DEMO LEV FLOOR: %s derived=%dx < %dx min → lev=%dx pos=$%.0f",
-                sig.get("symbol", ""), int(derived_lev), MIN_DEMO_LEV, lev, position_usd,
-            )
-
-        # ── HARD MARGIN CAP: max $100 margin per trade ──
-        margin_used = position_usd / max(lev, 1)
-        if margin_used > MAX_MARGIN_PER_TRADE:
-            position_usd = MAX_MARGIN_PER_TRADE * lev
-            risk_amount = position_usd * sl_dist_pct / 100
-            lev_cap_source = f"margin_capped_{int(MAX_MARGIN_PER_TRADE)}"
-            logger.info(
-                "MARGIN CAP: %s margin=$%.0f > $%d max → pos=$%.0f @ %dx",
-                sig.get("symbol", ""), margin_used, int(MAX_MARGIN_PER_TRADE),
-                position_usd, lev,
-            )
+        # ── FIXED MARGIN / FIXED LEVERAGE MODEL (2026-09-14) ──
+        # Replaced the confidence-tiered "SUPER SCALP" ladder (5 stake/max-lev
+        # brackets by confidence, a derived-leverage calc, a 20x demo floor,
+        # and a $100 hard margin cap layered on top of each other) with one
+        # flat rule at the user's explicit direction: every paper trade uses
+        # $100 margin at 30x leverage, full stop. That also means position
+        # size is no longer derived from a fixed $ risk ÷ stop-distance (the
+        # prior "Fixed Fractional Risk Model") — it's now a fixed notional
+        # ($100 × 30x = $3000), so $ risk per trade varies with stop width
+        # instead of being pinned to a constant. Regime/confidence size
+        # multipliers and the drawdown-defense leverage cap below still
+        # apply on top of this base.
+        PAPER_MARGIN = 100.0
+        FIXED_LEVERAGE = 30
+        paper_stake = PAPER_MARGIN
+        lev = FIXED_LEVERAGE
+        max_lev = FIXED_LEVERAGE  # still referenced by the safety-cap blocks below
+        position_usd = paper_stake * lev
+        risk_amount = position_usd * sl_dist_pct / 100
+        lev_cap_source = f"fixed_{int(PAPER_MARGIN)}usd_{FIXED_LEVERAGE}x"
 
         # ── Regime-based position sizing ──
         regime_size_mult = float(meta.get("regime_size_mult", 1.0))
@@ -3147,7 +3092,7 @@ class SignalTracker:
             "exchange_balance": self._exchange_balance,         # Real exchange balance (for live mode)
             "paper_start_balance": self._paper_start_balance,  # Paper starting capital
             "is_paper_mode": True,  # TODO: read from mode_manager when live
-            "paper_stake_per_trade": 100.0,  # max $100, min $50 (fee-viable sizing)
+            "paper_stake_per_trade": 100.0,  # fixed $100 margin @ 30x (see TrackedSignal.from_signal)
             # Daily P&L breakdown
             "daily_pnl": self._calc_daily_pnl(),
             "fee_schedule": self._fee_schedule_summary(),

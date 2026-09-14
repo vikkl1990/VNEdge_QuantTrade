@@ -100,8 +100,16 @@ class HeartbeatMonitor:
             "message": message[:500],  # cap length
         })
 
-    # One-time events that should not be checked for staleness
-    _IGNORE_STALE = frozenset({"monitor_start"})
+    # One-time events that should not be checked for staleness.
+    # (2026-09-14) "heartbeat_log" is only touched every HEARTBEAT_LOG_INTERVAL
+    # (300s, orchestrator.py) but was being checked against the default 120s
+    # stale_timeout on every 60s health cycle — guaranteed to read "stale" for
+    # 180 of every 300 seconds regardless of actual bot health, spamming
+    # "Heartbeat DEGRADED" continuously. It's a print-cadence marker, not a
+    # liveness signal (main_loop already covers real liveness — see its own
+    # "record every cycle to avoid false stale" comment); ignore it here
+    # rather than give it a longer override, same fix class as candle_close.
+    _IGNORE_STALE = frozenset({"monitor_start", "heartbeat_log"})
 
     # Phase E.7 — per-prefix stale timeout override.
     # Illiquid pairs (LTC, ADA, DOGE, LINK, TAO on Delta India) have sparse 1m

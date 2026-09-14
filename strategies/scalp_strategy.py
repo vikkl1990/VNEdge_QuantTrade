@@ -2984,14 +2984,23 @@ class ScalpStrategy(BaseStrategy):
         # These gates made the live bot short-only in sideways markets
         # (26 of 28 archived trades, 11 of 11 last night) — the worse half.
         _is_sb_setup = (getattr(best, "name", "") == "structure_bounce")
+        # (2026-09-14) Two-fold gate (158k candidates, 6 symbols, full cached
+        # history, old/new fold split) on the exact P3.11 population:
+        # non-SB LONG in a chop regime with htf_bias<=0, sliced by grade.
+        # A+ was the ONLY grade to clear +/-0.15 ATR at 48 bars in BOTH folds
+        # — ret48 -0.598 (new) / -0.196 (old), both negative, both well past
+        # the bar. A/B/C/REJECT did not clear it in both folds (sign or
+        # magnitude disagreed) so they're left as-is. The A+ override was
+        # meant to preserve high-conviction trades; on this exact slice it's
+        # instead the single worst-performing subgroup in the whole gate —
+        # removed. See scratchpad note from tonight's veto/P3.11 gate run.
         _chop_long_trap = (
             self._p3_11_chop_long_gate
             and not _is_sb_setup
             and _side_str_p311 == "long"
             and _regime_lower_p311 in _chop_regimes_p311
             and htf_bias <= 0  # no bullish HTF support
-            and _grade_p311 != "A+"  # A+ override
-            and _ml_prob_p311 < 0.55  # ML not strongly bullish
+            and _ml_prob_p311 < 0.55  # ML not strongly bullish (currently always true; see audit above)
         )
 
         # ── P3.7 SIDEWAYS SCANNER-SPECIFIC GATE (DATA-DRIVEN 2026-04-10) ──

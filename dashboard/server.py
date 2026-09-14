@@ -137,6 +137,8 @@ class DashboardServer:
         self._trades: List[Dict[str, Any]] = []
         self._alerts: List[Dict[str, Any]] = []
         self._prices: Dict[str, float] = {}
+        self._price_change_cache: Dict[str, Any] = {}
+        self._price_change_cache_ts: float = 0.0
         self._signal_tracker = None  # set externally by orchestrator
         self._signal_learner = None  # set externally by orchestrator
         self._trade_monitor = None   # set externally by orchestrator
@@ -835,6 +837,7 @@ class DashboardServer:
         app.router.add_get("/api/feed/freshness", self._handle_feed_freshness)
         app.router.add_get("/api/opportunity-funnel", self._handle_opportunity_funnel)
         app.router.add_get("/api/regime", self._handle_regime)
+        app.router.add_get("/api/price-change", self._handle_price_change)
         app.router.add_get("/api/decision", self._handle_decision)
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
         app.router.add_get("/api/grid/status", self._handle_grid_status)
@@ -2578,6 +2581,47 @@ class DashboardServer:
                                if isinstance(s, dict) and s.get("recovery_stage") == "probation")
                 data.setdefault("early_exit_stats", {})["shadow_recoveries"] = recoveries
         return web.json_response(data, dumps=_safe_dumps)
+
+    # 24h %-change cache for /api/price-change — recomputed at most once a
+    # minute since it reads a ~40k-row CSV per symbol; every poll would be
+    # wasted disk I/O for a number that only moves meaningfully over minutes.
+    _PRICE_CHANGE_CACHE_SEC = 60.0
+
+    def _read_pct_change_24h(self, symbol: str) -> Optional[float]:
+        """Read storage/candle_cache/{BASE}_USDT_5m.csv and compute the
+        close-to-close %% change over the last ~288 bars (24h at 5m)."""
+        base = symbol.split("/")[0]
+        path = Path("storage/candle_cache") / f"{base}_USDT_5m.csv"
+        if not path.is_file():
+            return None
+        try:
+            from collections import deque
+            with open(path, newline="") as f:
+                header = f.readline().strip().split(",")
+                close_idx = header.index("close")
+                window = deque(f, maxlen=289)
+            if len(window) < 289:
+                return None
+            then_close = float(window[0].split(",")[close_idx])
+            now_close = float(window[-1].split(",")[close_idx])
+            if then_close <= 0:
+                return None
+            return round((now_close - then_close) / then_close * 100, 2)
+        except Exception:
+            return None
+
+    async def _handle_price_change(self, request: web.Request) -> web.Response:
+        """Return {symbol: pct_change_24h} for every configured symbol,
+        read straight from the candle cache (same data source the scanner
+        page's other panels use). Cached for _PRICE_CHANGE_CACHE_SEC since
+        this is disk I/O, not in-memory state like the rest of the API."""
+        now = time.time()
+        if now - self._price_change_cache_ts > self._PRICE_CHANGE_CACHE_SEC or not self._price_change_cache:
+            self._price_change_cache = {
+                sym: self._read_pct_change_24h(sym) for sym in self._symbols
+            }
+            self._price_change_cache_ts = now
+        return web.json_response(self._price_change_cache, dumps=_safe_dumps)
 
     async def _handle_r_metrics(self, request: web.Request) -> web.Response:
         """Return R-multiple performance metrics per scanner and global."""

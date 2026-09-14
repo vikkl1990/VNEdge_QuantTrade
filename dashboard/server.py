@@ -139,6 +139,8 @@ class DashboardServer:
         self._prices: Dict[str, float] = {}
         self._price_change_cache: Dict[str, Any] = {}
         self._price_change_cache_ts: float = 0.0
+        self._rel_strength_cache: Dict[str, Any] = {}
+        self._rel_strength_cache_ts: float = 0.0
         self._signal_tracker = None  # set externally by orchestrator
         self._signal_learner = None  # set externally by orchestrator
         self._trade_monitor = None   # set externally by orchestrator
@@ -839,6 +841,7 @@ class DashboardServer:
         app.router.add_get("/api/regime", self._handle_regime)
         app.router.add_get("/api/price-change", self._handle_price_change)
         app.router.add_get("/api/validated-edge", self._handle_validated_edge)
+        app.router.add_get("/api/relative-strength", self._handle_relative_strength)
         app.router.add_get("/api/decision", self._handle_decision)
         app.router.add_get("/api/exit-quality", self._handle_exit_quality)
         app.router.add_get("/api/grid/status", self._handle_grid_status)
@@ -1422,10 +1425,100 @@ class DashboardServer:
             return web.json_response(out, status=500, dumps=_safe_dumps)
         return web.json_response(out, dumps=_safe_dumps)
 
+    @staticmethod
+    def _compute_quant_stats(pnls: List[float]) -> Dict[str, Any]:
+        """Shared Sharpe/Sortino/PF/MaxDD math for a flat list of realised
+        per-trade PnL, independent of where the trades came from (Postgres
+        user_trades or the local paper-trade ledger)."""
+        import math
+        n = len(pnls)
+        result: Dict[str, Any] = {
+            "n": n, "sharpe": None, "sortino": None, "pf": None, "win_rate": None,
+            "avg_win": None, "avg_loss": None, "expectancy": None,
+            "max_dd_usd": None, "max_dd_pct": None,
+            "total_pnl": None, "best_trade": None, "worst_trade": None,
+        }
+        if n == 0:
+            return result
+
+        mean = sum(pnls) / n
+        variance = sum((p - mean) ** 2 for p in pnls) / n if n > 1 else 0.0
+        std = math.sqrt(variance) if variance > 0 else 0.0
+        downside_returns = [p for p in pnls if p < 0]
+        downside_var = sum(p ** 2 for p in downside_returns) / n if n > 0 else 0.0
+        downside_std = math.sqrt(downside_var) if downside_var > 0 else 0.0
+
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        gross_w = sum(wins)
+        gross_l = abs(sum(losses))
+        win_rate = (len(wins) / n * 100.0) if n else None
+        pf = (gross_w / gross_l) if gross_l > 0 else (float("inf") if gross_w > 0 else None)
+        avg_win = (gross_w / len(wins)) if wins else None
+        avg_loss = (-gross_l / len(losses)) if losses else None  # negative number
+
+        sharpe = (mean / std) if std > 0 else None
+        sortino = (mean / downside_std) if downside_std > 0 else None
+
+        # Max drawdown (peak-to-trough on cumulative PnL)
+        cum = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for p in pnls:
+            cum += p
+            if cum > peak:
+                peak = cum
+            dd = peak - cum
+            if dd > max_dd:
+                max_dd = dd
+        max_dd_pct = (max_dd / peak * 100.0) if peak > 0 else None
+
+        result.update({
+            "sharpe": sharpe, "sortino": sortino,
+            "pf": (pf if pf != float("inf") else None),
+            "win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss,
+            "expectancy": mean, "max_dd_usd": max_dd, "max_dd_pct": max_dd_pct,
+            "total_pnl": sum(pnls), "best_trade": max(pnls), "worst_trade": min(pnls),
+        })
+        return result
+
+    def _quant_metrics_from_paper_ledger(self, days: int, clean: bool) -> Dict[str, Any]:
+        """Fallback data source for /api/quant-metrics when there's no
+        db_pool (single-user local deployments — the common case for this
+        bot). Same statistics, sourced from the local paper-trade ledger
+        (closed_signals.json) instead of the multi-user Postgres table."""
+        _CLEANUP_REASONS = {
+            "auto_responder_stuck_60m", "restart_orphan_cleanup", "reconcile_overaged_close",
+        }
+        signals = self._load_paper_signals("closed")
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        excluded_n = 0
+        pnls = []
+        for s in signals:
+            exit_time = s.get("exit_time")
+            if not exit_time:
+                continue
+            ts = self._parse_iso_safe(exit_time)
+            if ts is None or ts < cutoff:
+                continue
+            pnl = s.get("pnl_usd", s.get("pnl"))
+            if pnl is None:
+                continue
+            if clean and (s.get("exit_reason") in _CLEANUP_REASONS):
+                excluded_n += 1
+                continue
+            pnls.append(float(pnl))
+        stats = self._compute_quant_stats(pnls)
+        stats["excluded_n"] = excluded_n
+        stats["source"] = "paper_local"
+        return stats
+
     async def _handle_quant_metrics(self, request: web.Request) -> web.Response:
         """Phase 3: quant-grade hero metrics (Sharpe, Sortino, PF, MaxDD).
-        Computed server-side from user_trades. Single endpoint replaces
-        the fitness-app dollar cards.
+        Computed server-side from user_trades when a db_pool is available,
+        falling back to the local paper-trade ledger otherwise (single-user
+        deployments, including this bot's default setup, have no Postgres
+        pool at all — that shouldn't mean these metrics just don't exist).
 
         Query: ?days=N (default 30) ?mode=paper|real|shadow|all (default all)
                ?clean=true|false (default true) — when true, excludes the
@@ -1436,7 +1529,6 @@ class DashboardServer:
                Also excludes phase2_virtual fan-out trades from the
                aggregate (they're tracked separately via leaderboard).
         """
-        import math
         days = max(1, min(365, int(request.query.get("days", "30"))))
         mode = request.query.get("mode", "all").lower()
         clean = request.query.get("clean", "true").lower() == "true"
@@ -1449,7 +1541,10 @@ class DashboardServer:
             "total_pnl": None, "best_trade": None, "worst_trade": None,
         }
         if not self._db_pool:
-            out["error"] = "db_pool_not_ready"
+            if mode in ("all", "paper"):
+                out.update(self._quant_metrics_from_paper_ledger(days, clean))
+            # mode == real/shadow with no db_pool: genuinely no data source
+            # for those — leave as zeros/nulls rather than fabricate.
             return web.json_response(out, dumps=_safe_dumps)
         try:
             mode_filter = ""
@@ -2623,6 +2718,73 @@ class DashboardServer:
             }
             self._price_change_cache_ts = now
         return web.json_response(self._price_change_cache, dumps=_safe_dumps)
+
+    # Relative-strength cache — same rationale/interval as price-change.
+    _REL_STRENGTH_CACHE_SEC = 60.0
+
+    def _read_close_window(self, symbol: str, n: int = 289) -> Optional[List[float]]:
+        """Tail-read the last n closes for symbol from the 5m candle cache,
+        oldest-first. Shared by price-change and relative-strength so both
+        read the same window the same way."""
+        base = symbol.split("/")[0]
+        path = Path("storage/candle_cache") / f"{base}_USDT_5m.csv"
+        if not path.is_file():
+            return None
+        try:
+            from collections import deque
+            with open(path, newline="") as f:
+                header = f.readline().strip().split(",")
+                close_idx = header.index("close")
+                window = deque(f, maxlen=n)
+            if len(window) < n:
+                return None
+            return [float(row.split(",")[close_idx]) for row in window]
+        except Exception:
+            return None
+
+    def _compute_relative_strength(self) -> Dict[str, Any]:
+        """Relative strength vs BTC (our benchmark, same role NIFTY plays
+        for an equity screener): for each pair, track close/BTC_close over
+        the last ~24h (288 bars) and report how that RATIO moved, not just
+        raw price — a pair can be red in absolute terms while still gaining
+        ground on BTC, which is the whole point of a relative-strength read.
+        rs_new_high mirrors the classic "RS line at a new high" signal.
+        """
+        btc_closes = self._read_close_window("BTC/USDT")
+        if not btc_closes:
+            return {"benchmark": "BTC/USDT", "ranked": [], "error": "no BTC candle window"}
+
+        rows = []
+        for sym in self._symbols:
+            if sym == "BTC/USDT":
+                continue
+            closes = self._read_close_window(sym)
+            if not closes or len(closes) != len(btc_closes):
+                continue
+            ratio = [c / b for c, b in zip(closes, btc_closes) if b > 0]
+            if len(ratio) < 2 or ratio[0] <= 0:
+                continue
+            rs_change_pct = round((ratio[-1] - ratio[0]) / ratio[0] * 100, 2)
+            rs_new_high = ratio[-1] >= max(ratio)
+            rows.append({
+                "symbol": sym, "rs_change_pct": rs_change_pct,
+                "rs_new_high": rs_new_high, "rs_ratio_now": round(ratio[-1], 8),
+            })
+        rows.sort(key=lambda r: r["rs_change_pct"], reverse=True)
+        for i, r in enumerate(rows, start=1):
+            r["rank"] = i
+        return {"benchmark": "BTC/USDT", "window_bars": len(btc_closes), "ranked": rows}
+
+    async def _handle_relative_strength(self, request: web.Request) -> web.Response:
+        """GET /api/relative-strength — every pair ranked by how its price
+        has moved relative to BTC over the last ~24h, plus whether that
+        ratio just made a new high (the classic RS-line breakout signal).
+        Real computation from the candle cache, cached 60s like price-change."""
+        now = time.time()
+        if now - self._rel_strength_cache_ts > self._REL_STRENGTH_CACHE_SEC or not self._rel_strength_cache:
+            self._rel_strength_cache = self._compute_relative_strength()
+            self._rel_strength_cache_ts = now
+        return web.json_response(self._rel_strength_cache, dumps=_safe_dumps)
 
     async def _handle_validated_edge(self, request: web.Request) -> web.Response:
         """Serve the persisted two-fold validation results (real historical

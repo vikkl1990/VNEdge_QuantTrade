@@ -122,6 +122,15 @@
   .brieftext{margin:0;font-size:var(--text-base);color:var(--text-primary);line-height:1.6}
 
   .countbadge{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0}
+
+  .risktiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  .risktile{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 14px;text-align:center}
+  .risktile .rv{font-family:var(--font-mono);font-size:var(--text-xl);font-weight:600;font-variant-numeric:tabular-nums}
+  .risktile .rv.up{color:var(--success)} .risktile .rv.down{color:var(--danger)}
+  .risktile .rl{font-size:var(--text-2xs);color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-top:4px}
+  .rsbar{display:inline-block;height:6px;border-radius:3px;background:var(--bg-elevated);width:80px;position:relative;vertical-align:middle;margin-right:8px}
+  .rsbar i{position:absolute;top:0;bottom:0;border-radius:3px}
+  .newhigh{font-family:var(--font-mono);font-size:9px;padding:1px 5px;border-radius:var(--radius-xs);background:var(--success-dim);color:var(--success);border:1px solid var(--success-border);margin-left:6px}
   .cattabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
   .cattab{font-family:var(--font-mono);font-size:var(--text-xs);padding:6px 12px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);cursor:pointer}
   .cattab.active{background:var(--info-dim);color:var(--info);border-color:var(--info-border)}
@@ -159,6 +168,24 @@
           <p class="brieftext" id="briefText">Loading&hellip;</p>
         </div>
       </section>
+
+      <section>
+        <h2>Risk metrics <span class="countbadge" id="riskSrc"></span></h2>
+        <p class="section-note">Real Sharpe/Sortino/Profit Factor/Max Drawdown from the paper-trade ledger &mdash; not a backtest claim, this is what actually closed.</p>
+        <div class="risktiles" id="riskTiles"></div>
+      </section>
+
+      <section>
+        <h2>Relative strength vs BTC</h2>
+        <p class="section-note">Each pair's close/BTC-close ratio over the last ~24h &mdash; a pair can be red in dollar terms and still gaining on BTC. "New high" mirrors the classic RS-line breakout signal.</p>
+        <div class="tablewrap">
+          <table class="scan">
+            <thead><tr><th>Rank</th><th>Symbol</th><th>RS change (24h)</th><th>RS line</th></tr></thead>
+            <tbody id="rsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <div class="view active" data-view="table">
         <section>
           <h2>Live scanner table</h2>
@@ -301,10 +328,12 @@ function fmtPrice(p){ return (p == null) ? "&mdash;" : (p >= 100 ? p.toLocaleStr
 
 async function loadAll(){
   try {
-    const [status, regime, funnel, signal, scannerHealth, priceChange, validatedEdge] = await Promise.all([
+    const [status, regime, funnel, signal, scannerHealth, priceChange, validatedEdge, quantMetrics, relStrength] = await Promise.all([
       fetchJSON('/api/status'), fetchJSON('/api/regime'), fetchJSON('/api/opportunity-funnel'),
       fetchJSON('/api/signal-status'), fetchJSON('/api/scanner-health'), fetchJSON('/api/price-change'),
       fetchJSON('/api/validated-edge').catch(() => null),
+      fetchJSON('/api/quant-metrics?days=365').catch(() => null),
+      fetchJSON('/api/relative-strength').catch(() => null),
     ]);
     document.getElementById('loginwall').style.display = 'none';
     document.getElementById('mainbody').style.display = '';
@@ -343,6 +372,8 @@ async function loadAll(){
       mode: status.mode, uptime: status.uptime,
       fleet_funnel: funnel.funnel || {},
       veto_stats: funnel.veto_stats || {},
+      quant_metrics: quantMetrics,
+      rel_strength: relStrength,
       validated_edge: validatedEdge,
     };
     render();
@@ -488,6 +519,10 @@ function renderBrief(){
   } else {
     parts.push(`No scanner has enough real trades yet for a live expectancy read.`);
   }
+  const rsLeader = (DATA.rel_strength && DATA.rel_strength.ranked && DATA.rel_strength.ranked[0]);
+  if (rsLeader) {
+    parts.push(`Strongest vs BTC over 24h: <b>${rsLeader.symbol.split('/')[0]}</b> (${rsLeader.rs_change_pct>0?'+':''}${rsLeader.rs_change_pct}% on the ratio)${rsLeader.rs_new_high?', a new RS high':''}.`);
+  }
   document.getElementById('briefText').innerHTML = parts.join(' ');
   document.getElementById('briefTime').textContent = 'auto-generated from live data · ' + new Date().toLocaleTimeString();
 }
@@ -550,9 +585,56 @@ function renderAlerts(){
     </div>`;
 }
 
+function renderRisk(){
+  const qm = DATA.quant_metrics;
+  const src = document.getElementById('riskSrc');
+  const grid = document.getElementById('riskTiles');
+  if (!qm || qm.n === 0) {
+    src.textContent = '';
+    grid.innerHTML = `<div class="risktile" style="grid-column:1/-1;opacity:.7">Not enough closed paper trades yet to compute these (need at least a handful of exits).</div>`;
+    return;
+  }
+  src.textContent = qm.source === 'paper_local' ? `(from ${qm.n} closed paper trades)` : `(from ${qm.n} trades)`;
+  const fmt = (v, d=2, suffix='') => v == null ? '&mdash;' : Number(v).toFixed(d) + suffix;
+  const tiles = [
+    ['Sharpe', fmt(qm.sharpe, 3), qm.sharpe>0?'up':qm.sharpe<0?'down':''],
+    ['Sortino', fmt(qm.sortino, 3), qm.sortino>0?'up':qm.sortino<0?'down':''],
+    ['Profit Factor', fmt(qm.pf, 2), qm.pf>1?'up':qm.pf<1?'down':''],
+    ['Win Rate', fmt(qm.win_rate, 1, '%'), ''],
+    ['Expectancy', fmt(qm.expectancy, 2, ' USD'), qm.expectancy>0?'up':qm.expectancy<0?'down':''],
+    ['Max Drawdown', fmt(qm.max_dd_usd, 2, ' USD'), qm.max_dd_usd>0?'down':''],
+    ['Total PnL', fmt(qm.total_pnl, 2, ' USD'), qm.total_pnl>0?'up':qm.total_pnl<0?'down':''],
+    ['Best / Worst', `${fmt(qm.best_trade,2)} / ${fmt(qm.worst_trade,2)}`, ''],
+  ];
+  grid.innerHTML = tiles.map(([l,v,cls]) => `<div class="risktile"><div class="rv ${cls}">${v}</div><div class="rl">${l}</div></div>`).join('');
+}
+
+function renderRelativeStrength(){
+  const rs = DATA.rel_strength;
+  const tbody = document.getElementById('rsBody');
+  if (!rs || !rs.ranked || !rs.ranked.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="rtext" style="padding:12px">Not enough candle history to compute this for any pair right now.</td></tr>`;
+    return;
+  }
+  const maxAbs = Math.max(...rs.ranked.map(r => Math.abs(r.rs_change_pct)), 1);
+  tbody.innerHTML = rs.ranked.map(r => {
+    const pct = Math.min(Math.abs(r.rs_change_pct) / maxAbs * 100, 100);
+    const up = r.rs_change_pct >= 0;
+    const barColor = up ? 'var(--success)' : 'var(--danger)';
+    const barStyle = up ? `left:50%;width:${pct/2}%;background:${barColor}` : `right:50%;width:${pct/2}%;background:${barColor}`;
+    return `<tr>
+      <td class="num">#${r.rank}</td>
+      <td class="sym">${r.symbol.split('/')[0]}</td>
+      <td class="num chg ${up?'up':'down'}">${up?'+':''}${r.rs_change_pct}%</td>
+      <td><span class="rsbar"><i style="${barStyle}"></i></span>${r.rs_new_high?'<span class="newhigh">NEW HIGH</span>':''}</td>
+    </tr>`;
+  }).join('');
+}
+
 function render(){
   renderTicker(); renderTable(); renderHeat(); renderFlow(); renderScanners();
   renderBrief(); renderLibrary(); renderValidation(); renderAlerts();
+  renderRisk(); renderRelativeStrength();
   document.getElementById('fmode').textContent = DATA.mode;
   document.getElementById('fuptime').textContent = DATA.uptime;
 }

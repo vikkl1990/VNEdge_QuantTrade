@@ -1558,6 +1558,8 @@ class ScalpStrategy(BaseStrategy):
             "_scan_supertrend_flip": "Supertrend Flip",
             "_scan_bb_squeeze": "BB Squeeze",
             "_scan_momentum_surge": "Momentum Surge",
+            "_scan_volume_surge": "Volume Surge",
+            "_scan_candlestick_reversal": "Candlestick Reversal",
             "_scan_structure_bounce": "Structure Bounce",
             "_scan_liquidity_sweep": "Liquidity Sweep",
             "_scan_order_block_entry": "Order Block",
@@ -1745,6 +1747,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_post_impulse,             # P5: catch re-entry after impulse
                 self._scan_bb_squeeze,               # P5: squeeze breakout in trend
                 self._scan_rsi_extreme,              # P5: extreme RSI reversal
+                self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
             ],
             "trending_down": [
                 self._scan_trend_continuation,
@@ -1757,6 +1760,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_rsi_divergence,
                 self._scan_bb_squeeze,               # P5: squeeze breakout
                 self._scan_rsi_extreme,              # P5: extreme RSI
+                self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
             ],
             # --- BREAKOUT: momentum + structure ---
             "breakout": [
@@ -1767,6 +1771,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_liquidity_sweep,
                 self._scan_bb_squeeze,               # P5: squeeze = breakout signal
                 self._scan_trend_continuation,       # P1: trend starts from breakout
+                self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
             ],
             # --- RANGING: P1 expanded from 4 → 9 scanners ---
             "ranging": [
@@ -1779,6 +1784,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_order_block_entry,        # P1: institutional levels work always
                 self._scan_rsi_extreme,              # P5: extreme RSI reversal at range edges
                 self._scan_bb_squeeze,               # P5: squeeze breakout = range exit
+                self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
             ],
             # --- SIDEWAYS: same as ranging ---
             "sideways": [
@@ -1791,6 +1797,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_order_block_entry,
                 self._scan_rsi_extreme,
                 self._scan_bb_squeeze,
+                self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
             ],
             # --- VOLATILE: P5 expanded ---
             "volatile": [
@@ -1800,6 +1807,8 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_liquidity_sweep,
                 self._scan_rsi_extreme,              # P5: extreme RSI in volatile = strong
                 self._scan_rsi_divergence,           # P5: divergence in volatile
+                self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
+                self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
             ],
             "high_volatility": [
                 self._scan_structure_bounce,
@@ -1808,8 +1817,13 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_liquidity_sweep,
                 self._scan_rsi_extreme,
                 self._scan_rsi_divergence,
+                self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
+                self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
             ],
             # --- MEAN_REVERSION: very limited — data: 7.7% WR with full set ---
+            # Deliberately NOT adding the new scanners here — this regime is
+            # already known to be the worst-performing and isn't the place
+            # to test unvalidated logic.
             "mean_reversion": [
                 self._scan_liquidity_sweep,          # only sweep setups in dead markets
                 self._scan_structure_bounce,          # strong S/R only
@@ -1819,6 +1833,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_liquidity_sweep,          # sweeps work in quiet
                 self._scan_structure_bounce,         # S/R still valid
                 self._scan_rsi_extreme,              # P5: extreme RSI in quiet
+                self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
             ],
             "low_liquidity": [],  # NO TRADING — volume too thin
         }
@@ -1869,6 +1884,8 @@ class ScalpStrategy(BaseStrategy):
                     "bb_band_walk": self._scan_bb_band_walk,
                     "post_impulse": self._scan_post_impulse,
                     "momentum_surge": self._scan_momentum_surge,
+                    "volume_surge": self._scan_volume_surge,
+                    "candlestick_reversal": self._scan_candlestick_reversal,
                 }
                 allowed_scanners = self._apply_regime_whitelist_variants(
                     regime=regime,
@@ -6830,6 +6847,201 @@ class ScalpStrategy(BaseStrategy):
 
         return _SetupResult(
             name="momentum_surge",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP: Volume Surge Breakout
+    # ==================================================================
+
+    def _scan_volume_surge(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Range breakout driven purely by a volume spike, independent of
+        MACD/RSI (that combo is already covered by _scan_momentum_surge).
+
+        LONG:  close breaks above the prior 20-bar high on rel_vol > 2.5x
+               with a real-bodied candle (not a wick poke).
+        SHORT: mirror at the prior 20-bar low.
+        """
+        lookback = 20
+        if len(df) < lookback + 2:
+            return None
+
+        last = df.iloc[-1]
+        atr = last["atr"]
+        close = last["close"]
+        open_ = last["open"]
+        high = last["high"]
+        low = last["low"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        rel_vol = last.get("rel_vol", 1.0)
+        if np.isnan(rel_vol) or rel_vol < 2.5:
+            return None
+
+        prior = df.iloc[-(lookback + 1):-1]
+        prior_high = prior["high"].max()
+        prior_low = prior["low"].min()
+
+        body = abs(close - open_)
+        body_frac = body / atr if atr > 0 else 0
+
+        confs = []
+        score = 0
+        side = None
+
+        if close > prior_high and close > open_:
+            side = OrderSide.LONG
+            confs.append(f"Breaks {lookback}-bar high on {rel_vol:.1f}x volume")
+            score += 35
+        elif close < prior_low and close < open_:
+            side = OrderSide.SHORT
+            confs.append(f"Breaks {lookback}-bar low on {rel_vol:.1f}x volume")
+            score += 35
+
+        if side is None:
+            return None
+
+        # Require a real-bodied breakout candle, not a thin wick poke through
+        # the level — this is the difference between conviction and noise.
+        if body_frac < 0.5:
+            return None
+        confs.append(f"Body {body_frac:.1f}x ATR")
+        score += 15
+
+        if rel_vol > 4.0:
+            confs.append(f"Extreme volume {rel_vol:.1f}x")
+            score += 15
+        elif rel_vol > 3.0:
+            score += 8
+
+        # Displacement beyond the level (not just barely clearing it)
+        displacement = (close - prior_high) / atr if side == OrderSide.LONG else (prior_low - close) / atr
+        if displacement > 0.3:
+            confs.append(f"Displacement {displacement:.1f}x ATR beyond level")
+            score += 15
+
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+        if confirm_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("5m aligned")
+            score += 5
+
+        confidence = min(score, 100)
+        sl = min(open_, low) - atr * 0.3 if side == OrderSide.LONG else max(open_, high) + atr * 0.3
+
+        return _SetupResult(
+            name="volume_surge",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=close,
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # SETUP: Candlestick Reversal (engulfing / hammer / shooting star)
+    # ==================================================================
+
+    def _scan_candlestick_reversal(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Classic single/two-candle reversal patterns, gated on occurring
+        AT a local extreme — pattern-only candlestick signals have weak
+        standalone edge; requiring context (near the recent swing high/low)
+        is what the rest of this file's scanners all do, so this one does
+        too rather than trading the pattern in isolation.
+        """
+        lookback = 10
+        if len(df) < lookback + 2:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        atr = last["atr"]
+        close, open_, high, low = last["close"], last["open"], last["high"], last["low"]
+        p_close, p_open = prev["close"], prev["open"]
+
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        window = df.iloc[-(lookback + 1):-1]
+        near_low = (low - window["low"].min()) / atr < 0.4
+        near_high = (window["high"].max() - high) / atr < 0.4
+
+        body = abs(close - open_)
+        upper_wick = high - max(close, open_)
+        lower_wick = min(close, open_) - low
+        p_body = abs(p_close - p_open)
+
+        confs = []
+        score = 0
+        side = None
+
+        # --- Bullish engulfing at a local low ---
+        if (p_close < p_open and close > open_ and close >= p_open and open_ <= p_close
+                and body > p_body and near_low):
+            side = OrderSide.LONG
+            confs.append("Bullish engulfing at local low")
+            score += 35
+        # --- Bearish engulfing at a local high ---
+        elif (p_close > p_open and close < open_ and close <= p_open and open_ >= p_close
+                and body > p_body and near_high):
+            side = OrderSide.SHORT
+            confs.append("Bearish engulfing at local high")
+            score += 35
+        # --- Hammer at a local low ---
+        elif (near_low and body > 0 and lower_wick > body * 2 and upper_wick < body * 0.5):
+            side = OrderSide.LONG
+            confs.append("Hammer at local low")
+            score += 30
+        # --- Shooting star at a local high ---
+        elif (near_high and body > 0 and upper_wick > body * 2 and lower_wick < body * 0.5):
+            side = OrderSide.SHORT
+            confs.append("Shooting star at local high")
+            score += 30
+
+        if side is None:
+            return None
+
+        rel_vol = last.get("rel_vol", 1.0)
+        if not np.isnan(rel_vol) and rel_vol > 1.5:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 15
+        elif not np.isnan(rel_vol) and rel_vol > 1.0:
+            score += 5
+
+        rsi = last.get("rsi", 50)
+        if not np.isnan(rsi):
+            if side == OrderSide.LONG and rsi < 40:
+                confs.append(f"RSI oversold ({rsi:.0f})")
+                score += 10
+            elif side == OrderSide.SHORT and rsi > 60:
+                confs.append(f"RSI overbought ({rsi:.0f})")
+                score += 10
+
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 10
+        if confirm_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("5m aligned")
+            score += 5
+
+        confidence = min(score, 100)
+        sl = low - atr * 0.2 if side == OrderSide.LONG else high + atr * 0.2
+
+        return _SetupResult(
+            name="candlestick_reversal",
             side=side,
             confidence=confidence,
             confirmations=confs,

@@ -1,0 +1,323 @@
+{
+ "generated_at": "2026-09-14T07:01:28+05:30",
+ "methodology": "Two-fold no-cherry-pick gate: full cached history (Apr-Sep 2026, 6 symbols BTC/ETH/SOL/AVAX/LINK/DOGE), split old/new at 2026-06-16 22:25 UTC. A scanner only counts as validated if BOTH folds independently clear +0.15 ATR forward return at 48 bars, same direction, n>=100 per fold.",
+ "scanner_gate": [
+  {
+   "scanner": "rsi_divergence",
+   "n_old": 20291,
+   "n_new": 27498,
+   "ret48_old": 0.204,
+   "ret48_new": 0.152,
+   "winR_old": 50.759,
+   "winR_new": 51.89,
+   "pass": true
+  },
+  {
+   "scanner": "bos_choch",
+   "n_old": 69,
+   "n_new": 123,
+   "ret48_old": 0.692,
+   "ret48_new": -0.455,
+   "winR_old": 58.065,
+   "winR_new": 52.577,
+   "pass": false
+  },
+  {
+   "scanner": "rsi_extreme",
+   "n_old": 1368,
+   "n_new": 1677,
+   "ret48_old": 0.499,
+   "ret48_new": -0.001,
+   "winR_old": 48.889,
+   "winR_new": 48.086,
+   "pass": false
+  },
+  {
+   "scanner": "order_block_entry",
+   "n_old": 32,
+   "n_new": 33,
+   "ret48_old": 0.221,
+   "ret48_new": -0.248,
+   "winR_old": 50.0,
+   "winR_new": 52.174,
+   "pass": false
+  },
+  {
+   "scanner": "cvd_divergence",
+   "n_old": 7604,
+   "n_new": 10256,
+   "ret48_old": 0.175,
+   "ret48_new": 0.003,
+   "winR_old": 51.185,
+   "winR_new": 51.803,
+   "pass": false
+  },
+  {
+   "scanner": "liquidity_sweep",
+   "n_old": 4450,
+   "n_new": 5832,
+   "ret48_old": 0.009,
+   "ret48_new": -0.021,
+   "winR_old": 49.292,
+   "winR_new": 48.748,
+   "pass": false
+  },
+  {
+   "scanner": "simple_bias",
+   "n_old": 29871,
+   "n_new": 40050,
+   "ret48_old": -0.082,
+   "ret48_new": -0.084,
+   "winR_old": 48.78,
+   "winR_new": 48.429,
+   "pass": false
+  },
+  {
+   "scanner": "momentum_surge",
+   "n_old": 769,
+   "n_new": 1117,
+   "ret48_old": -0.097,
+   "ret48_new": -0.061,
+   "winR_old": 48.499,
+   "winR_new": 47.575,
+   "pass": false
+  },
+  {
+   "scanner": "vwap_mean_revert",
+   "n_old": 5209,
+   "n_new": 7170,
+   "ret48_old": -0.117,
+   "ret48_new": -0.337,
+   "winR_old": 47.751,
+   "winR_new": 46.311,
+   "pass": false
+  },
+  {
+   "scanner": "ema_momentum",
+   "n_old": 199,
+   "n_new": 295,
+   "ret48_old": -0.124,
+   "ret48_new": 0.117,
+   "winR_old": 41.611,
+   "winR_new": 48.319,
+   "pass": false
+  },
+  {
+   "scanner": "structure_bounce",
+   "n_old": 2603,
+   "n_new": 3677,
+   "ret48_old": -0.172,
+   "ret48_new": 1.122,
+   "winR_old": 47.384,
+   "winR_new": 51.571,
+   "pass": false
+  },
+  {
+   "scanner": "trend_continuation",
+   "n_old": 1029,
+   "n_new": 1284,
+   "ret48_old": -0.2,
+   "ret48_new": 0.034,
+   "winR_old": 48.12,
+   "winR_new": 48.543,
+   "pass": false
+  },
+  {
+   "scanner": "supertrend_flip",
+   "n_old": 1347,
+   "n_new": 1809,
+   "ret48_old": -0.215,
+   "ret48_new": -0.15,
+   "winR_old": 49.041,
+   "winR_new": 47.558,
+   "pass": false
+  },
+  {
+   "scanner": "vwap_bounce",
+   "n_old": 54,
+   "n_new": 18,
+   "ret48_old": -0.243,
+   "ret48_new": 1.099,
+   "winR_old": 58.974,
+   "winR_new": 57.143,
+   "pass": false
+  },
+  {
+   "scanner": "post_impulse",
+   "n_old": 1418,
+   "n_new": 1870,
+   "ret48_old": -0.34,
+   "ret48_new": -0.157,
+   "winR_old": 48.697,
+   "winR_new": 47.202,
+   "pass": false
+  },
+  {
+   "scanner": "bb_band_walk",
+   "n_old": 1760,
+   "n_new": 2416,
+   "ret48_old": -0.344,
+   "ret48_new": -0.14,
+   "winR_old": 50.573,
+   "winR_new": 48.607,
+   "pass": false
+  },
+  {
+   "scanner": "momentum_ride",
+   "n_old": 459,
+   "n_new": 637,
+   "ret48_old": -0.367,
+   "ret48_new": -0.125,
+   "winR_old": 45.104,
+   "winR_new": 50.32,
+   "pass": false
+  },
+  {
+   "scanner": "bb_squeeze",
+   "n_old": 1212,
+   "n_new": 1595,
+   "ret48_old": -0.43,
+   "ret48_new": -0.154,
+   "winR_old": 46.046,
+   "winR_new": 45.847,
+   "pass": false
+  }
+ ],
+ "rsi_divergence_confidence_note": "Follow-up two-fold test at every confidence threshold found rsi_divergence fails a fee-viability check at every level tested -- passes the direction test above but the edge is too small to clear round-trip costs. Currently shadowed (FORCED_STATES was populated, then fully reverted to all-18-active at user's explicit direction on 2026-09-13).",
+ "no_volume_veto_test": {
+  "conclusion": "No fold-consistent edge found at ANY rel_vol threshold (all buckets near-flat, 48-51% win rate, no bucket clears +/-0.15 ATR in both folds). The current 1.0 cutoff is not data-validated but also not shown to be wrong -- left unchanged.",
+  "buckets": [
+   {
+    "bucket": "<0.4",
+    "n_old": 14529,
+    "n_new": 20559,
+    "ret48_old": -0.033,
+    "ret48_new": -0.036
+   },
+   {
+    "bucket": "0.4-0.6",
+    "n_old": 8882,
+    "n_new": 12083,
+    "ret48_old": 0.014,
+    "ret48_new": 0.072
+   },
+   {
+    "bucket": "0.6-0.8",
+    "n_old": 8238,
+    "n_new": 10847,
+    "ret48_old": -0.022,
+    "ret48_new": 0.194
+   },
+   {
+    "bucket": "0.8-1.0",
+    "n_old": 6397,
+    "n_new": 8484,
+    "ret48_old": 0.073,
+    "ret48_new": 0.077
+   },
+   {
+    "bucket": "1.0-1.3",
+    "n_old": 6993,
+    "n_new": 9219,
+    "ret48_old": 0.048,
+    "ret48_new": 0.08
+   },
+   {
+    "bucket": "1.3-1.7",
+    "n_old": 5753,
+    "n_new": 8228,
+    "ret48_old": 0.015,
+    "ret48_new": -0.013
+   },
+   {
+    "bucket": "1.7-2.5",
+    "n_old": 6548,
+    "n_new": 8431,
+    "ret48_old": -0.053,
+    "ret48_new": -0.003
+   },
+   {
+    "bucket": ">2.5",
+    "n_old": 8112,
+    "n_new": 10903,
+    "ret48_old": -0.144,
+    "ret48_new": -0.125
+   }
+  ]
+ },
+ "p3_11_chop_trap_test": {
+  "conclusion": "The A+ grade escape was the ONLY subgroup to clear +/-0.15 ATR in BOTH folds -- both negative (ret48 -0.598 new / -0.196 old). Removed 2026-09-14 (see strategies/scalp_strategy.py P3.11 gate).",
+  "by_grade": [
+   {
+    "grade": "A",
+    "fold": "new",
+    "n": 1261,
+    "ret48": 0.006,
+    "winR": 46.702
+   },
+   {
+    "grade": "A",
+    "fold": "old",
+    "n": 902,
+    "ret48": -0.079,
+    "winR": 46.22
+   },
+   {
+    "grade": "A+",
+    "fold": "new",
+    "n": 993,
+    "ret48": -0.598,
+    "winR": 45.219
+   },
+   {
+    "grade": "A+",
+    "fold": "old",
+    "n": 714,
+    "ret48": -0.196,
+    "winR": 46.029
+   },
+   {
+    "grade": "B",
+    "fold": "new",
+    "n": 4359,
+    "ret48": -0.056,
+    "winR": 47.464
+   },
+   {
+    "grade": "B",
+    "fold": "old",
+    "n": 3393,
+    "ret48": -0.27,
+    "winR": 45.21
+   },
+   {
+    "grade": "C",
+    "fold": "new",
+    "n": 10980,
+    "ret48": -0.002,
+    "winR": 47.047
+   },
+   {
+    "grade": "C",
+    "fold": "old",
+    "n": 8469,
+    "ret48": -0.187,
+    "winR": 44.744
+   },
+   {
+    "grade": "REJECT",
+    "fold": "new",
+    "n": 4680,
+    "ret48": 0.477,
+    "winR": 52.861
+   },
+   {
+    "grade": "REJECT",
+    "fold": "old",
+    "n": 3493,
+    "ret48": -0.043,
+    "winR": 43.59
+   }
+  ]
+ }
+}

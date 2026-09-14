@@ -115,6 +115,21 @@
   .loginwall{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:24px;text-align:center;color:var(--text-secondary)}
   .loginwall a{color:var(--info)}
 
+  .briefcard{background:linear-gradient(180deg,var(--bg-card),var(--bg-card-alt));border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 18px}
+  .briefhead{font-family:var(--font-mono);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.05em;color:var(--purple);display:flex;align-items:center;gap:7px;margin-bottom:7px}
+  .briefdot{width:6px;height:6px;border-radius:50%;background:var(--purple)}
+  .brieftime{color:var(--text-dim);text-transform:none;letter-spacing:0;font-weight:400;margin-left:auto}
+  .brieftext{margin:0;font-size:var(--text-base);color:var(--text-primary);line-height:1.6}
+
+  .countbadge{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0}
+  .cattabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .cattab{font-family:var(--font-mono);font-size:var(--text-xs);padding:6px 12px;border-radius:var(--radius-full);border:1px solid var(--border);background:var(--bg-card);color:var(--text-secondary);cursor:pointer}
+  .cattab.active{background:var(--info-dim);color:var(--info);border-color:var(--info-border)}
+  .newtag{font-family:var(--font-mono);font-size:9px;padding:1px 5px;border-radius:var(--radius-xs);background:var(--purple-dim);color:var(--purple);border:1px solid var(--purple-border);margin-left:6px;vertical-align:middle}
+  .passtag{font-family:var(--font-mono);font-size:var(--text-xs);padding:2px 8px;border-radius:var(--radius-full)}
+  .passtag.yes{background:var(--success-dim);color:var(--success)}
+  .passtag.no{background:var(--bg-elevated);color:var(--text-dim)}
+
   footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--border);font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-dim);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
 </style>
 </head>
@@ -138,6 +153,12 @@
     </div>
 
     <div id="mainbody" style="display:none">
+      <section style="margin-top:0">
+        <div class="briefcard">
+          <div class="briefhead"><span class="briefdot"></span>Market brief <span class="brieftime" id="briefTime"></span></div>
+          <p class="brieftext" id="briefText">Loading&hellip;</p>
+        </div>
+      </section>
       <div class="view active" data-view="table">
         <section>
           <h2>Live scanner table</h2>
@@ -200,6 +221,37 @@
       </section>
 
       <section>
+        <h2>Scan library <span class="countbadge" id="libCount"></span></h2>
+        <p class="section-note">Every routed scanner, grouped the way scanner.mrchartist.com groups theirs. A scanner can sit in more than one category &mdash; ours do too. <b style="color:var(--text-primary)">NEW</b> tags are unvalidated: added to paper trading tonight, no live-expectancy history yet.</p>
+        <div class="cattabs" id="catTabs"></div>
+        <div class="scangrid" id="libGrid"></div>
+      </section>
+
+      <section>
+        <h2>Historical validation (two-fold)</h2>
+        <p class="section-note" id="validNote">Loading&hellip;</p>
+        <div class="tablewrap">
+          <table class="scan" id="validTable">
+            <thead><tr>
+              <th>Scanner</th><th>N (old)</th><th>N (new)</th><th>Fwd ret48 (old)</th><th>Fwd ret48 (new)</th>
+              <th>Win% (old)</th><th>Win% (new)</th><th>Pass</th>
+            </tr></thead>
+            <tbody id="validBody"></tbody>
+          </table>
+        </div>
+        <div class="ledgerwrap" style="margin-top:14px">
+          <div class="ledger">
+            <div class="lh">NO VOLUME veto (rel_vol threshold)</div>
+            <p class="section-note" style="margin-bottom:8px" id="noVolNote"></p>
+          </div>
+          <div class="ledger">
+            <div class="lh">P3.11 chop trap, by grade</div>
+            <p class="section-note" style="margin-bottom:8px" id="p311Note"></p>
+          </div>
+        </div>
+      </section>
+
+      <section>
         <h2>Alerts</h2>
         <div class="alertbox" id="alertbox"></div>
       </section>
@@ -249,9 +301,10 @@ function fmtPrice(p){ return (p == null) ? "&mdash;" : (p >= 100 ? p.toLocaleStr
 
 async function loadAll(){
   try {
-    const [status, regime, funnel, signal, scannerHealth, priceChange] = await Promise.all([
+    const [status, regime, funnel, signal, scannerHealth, priceChange, validatedEdge] = await Promise.all([
       fetchJSON('/api/status'), fetchJSON('/api/regime'), fetchJSON('/api/opportunity-funnel'),
       fetchJSON('/api/signal-status'), fetchJSON('/api/scanner-health'), fetchJSON('/api/price-change'),
+      fetchJSON('/api/validated-edge').catch(() => null),
     ]);
     document.getElementById('loginwall').style.display = 'none';
     document.getElementById('mainbody').style.display = '';
@@ -289,6 +342,8 @@ async function loadAll(){
       symbols, scanner_health: scannerHealth,
       mode: status.mode, uptime: status.uptime,
       fleet_funnel: funnel.funnel || {},
+      veto_stats: funnel.veto_stats || {},
+      validated_edge: validatedEdge,
     };
     render();
     document.getElementById('flast').textContent = new Date().toLocaleTimeString();
@@ -395,6 +450,97 @@ function renderScanners(){
     </div>`).join('');
 }
 
+// Category groupings for the "Scan library" section -- organizes the real
+// routed scanners the way scanner.mrchartist.com groups theirs. A scanner
+// can legitimately sit in more than one category (theirs do too).
+const CATEGORIES = {
+  "MVP Picks": ["structure_bounce", "rsi_divergence"],
+  "Breakout": ["bos_choch", "order_block_entry", "bb_squeeze", "trend_continuation", "volume_surge"],
+  "Volume": ["volume_surge", "cvd_divergence", "liquidity_sweep"],
+  "Candlestick": ["candlestick_reversal", "post_impulse"],
+  "Momentum": ["ema_momentum", "momentum_ride", "momentum_surge", "rsi_extreme", "supertrend_flip"],
+  "Structure": ["structure_bounce", "bos_choch", "order_block_entry", "liquidity_sweep"],
+  "Pro Strategies": ["simple_bias", "vwap_mean_revert", "vwap_bounce"],
+};
+const NEW_SCANNERS = new Set(["volume_surge", "candlestick_reversal"]);
+let activeCat = "MVP Picks";
+
+function renderBrief(){
+  const ff = DATA.fleet_funnel;
+  const regimes = {};
+  DATA.symbols.forEach(s => { regimes[s.regime] = (regimes[s.regime]||0) + 1; });
+  const topRegime = Object.entries(regimes).sort((a,b)=>b[1]-a[1])[0];
+  const vetoes = Object.entries(DATA.veto_stats||{}).sort((a,b)=>b[1]-a[1]);
+  const topVeto = vetoes[0];
+  const active = DATA.scanner_health.filter(s => s.trades > 0);
+  const best = [...active].sort((a,b)=>b.expectancy_r-a.expectancy_r)[0];
+
+  const parts = [];
+  if (topRegime) {
+    parts.push(`${topRegime[1]} of ${DATA.symbols.length} pairs are reading <b>${topRegime[0].replace(/_/g,' ')}</b> this cycle.`);
+  }
+  parts.push(`${ff.scanned||0} scans this window: ${ff.valid||0} reached valid tier, ${ff.near_miss||0} near-miss, ${ff.rejected||0} rejected.`);
+  if (topVeto) {
+    parts.push(`Most common block: <b>${topVeto[0]}</b> (${topVeto[1]}&times;).`);
+  }
+  if (best) {
+    parts.push(`Only <b>${active.length}</b> of ${DATA.scanner_health.length} scanners have enough real trades for live expectancy &mdash; best so far is <b>${best.scanner.replace(/_/g,' ')}</b> at ${Number(best.expectancy_r).toFixed(3)}R.`);
+  } else {
+    parts.push(`No scanner has enough real trades yet for a live expectancy read.`);
+  }
+  document.getElementById('briefText').innerHTML = parts.join(' ');
+  document.getElementById('briefTime').textContent = 'auto-generated from live data · ' + new Date().toLocaleTimeString();
+}
+
+function renderLibrary(){
+  const healthMap = {}; DATA.scanner_health.forEach(sc => healthMap[sc.scanner] = sc);
+  const allNames = new Set(Object.values(CATEGORIES).flat());
+  document.getElementById('libCount').textContent = `(${allNames.size} routed, ${DATA.scanner_health.length} with real trades)`;
+  document.getElementById('catTabs').innerHTML = Object.keys(CATEGORIES).map(cat =>
+    `<button class="cattab ${cat===activeCat?'active':''}" data-cat="${cat}">${cat} <span style="opacity:.6">${CATEGORIES[cat].length}</span></button>`
+  ).join('');
+  const names = CATEGORIES[activeCat] || [];
+  document.getElementById('libGrid').innerHTML = names.map(name => {
+    const sc = healthMap[name];
+    const isNew = NEW_SCANNERS.has(name);
+    if (sc) {
+      return `<div class="scard">
+        <div class="top"><span class="name">${name.replace(/_/g,' ')}${isNew?'<span class="newtag">NEW</span>':''}</span><span class="pill">${sc.status}</span></div>
+        <div class="metrics">
+          <div class="m"><div class="v ${sc.expectancy_r>=0?'up':'down'}">${Number(sc.expectancy_r).toFixed(3)}R</div><div class="l">expectancy</div></div>
+          <div class="m"><div class="v">${Number(sc.win_rate).toFixed(1)}%</div><div class="l">win rate</div></div>
+          <div class="m"><div class="v">${sc.trades}</div><div class="l">trades</div></div>
+        </div>
+        <div class="reason">${sc.reason}</div>
+      </div>`;
+    }
+    return `<div class="scard" style="opacity:.7">
+      <div class="top"><span class="name">${name.replace(/_/g,' ')}${isNew?'<span class="newtag">NEW</span>':''}</span><span class="pill" style="background:var(--bg-elevated);color:var(--text-dim);border:none">no trades yet</span></div>
+      <div class="reason">Routed and live in paper mode, no closed trades yet to compute expectancy from.</div>
+    </div>`;
+  }).join('');
+}
+
+function renderValidation(){
+  const ve = DATA.validated_edge;
+  if (!ve) {
+    document.getElementById('validNote').textContent = 'No validation results on disk (storage/validation/two_fold_results.json missing).';
+    return;
+  }
+  document.getElementById('validNote').innerHTML = ve.methodology;
+  document.getElementById('validBody').innerHTML = ve.scanner_gate.map(r => `
+    <tr>
+      <td class="sym">${r.scanner.replace(/_/g,' ')}</td>
+      <td class="num">${r.n_old}</td><td class="num">${r.n_new}</td>
+      <td class="num chg ${r.ret48_old>0?'up':'down'}">${r.ret48_old}</td>
+      <td class="num chg ${r.ret48_new>0?'up':'down'}">${r.ret48_new}</td>
+      <td class="num">${r.winR_old}</td><td class="num">${r.winR_new}</td>
+      <td><span class="passtag ${r.pass?'yes':'no'}">${r.pass?'PASS':'fail'}</span></td>
+    </tr>`).join('');
+  document.getElementById('noVolNote').textContent = ve.no_volume_veto_test.conclusion;
+  document.getElementById('p311Note').textContent = ve.p3_11_chop_trap_test.conclusion;
+}
+
 function renderAlerts(){
   document.getElementById('alertbox').innerHTML = `
     <div class="ico">&#9888;</div>
@@ -405,7 +551,8 @@ function renderAlerts(){
 }
 
 function render(){
-  renderTicker(); renderTable(); renderHeat(); renderFlow(); renderScanners(); renderAlerts();
+  renderTicker(); renderTable(); renderHeat(); renderFlow(); renderScanners();
+  renderBrief(); renderLibrary(); renderValidation(); renderAlerts();
   document.getElementById('fmode').textContent = DATA.mode;
   document.getElementById('fuptime').textContent = DATA.uptime;
 }
@@ -422,6 +569,12 @@ document.addEventListener('click', (e) => {
   if (vt) {
     document.querySelectorAll('.viewtab').forEach(b => b.classList.toggle('active', b === vt));
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.dataset.view === vt.dataset.view));
+    return;
+  }
+  const ct = e.target.closest('.cattab');
+  if (ct) {
+    activeCat = ct.dataset.cat;
+    if (DATA) renderLibrary();
   }
 });
 

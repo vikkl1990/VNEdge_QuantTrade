@@ -1505,8 +1505,11 @@ class DashboardServer:
             exit_time = s.get("exit_time")
             if not exit_time:
                 continue
+            # _parse_iso_safe never returns None — it returns datetime.min on
+            # a parse failure, which always fails the cutoff check below, so
+            # unparseable timestamps are excluded the same as too-old ones.
             ts = self._parse_iso_safe(exit_time)
-            if ts is None or ts < cutoff:
+            if ts < cutoff:
                 continue
             pnl = s.get("pnl_usd", s.get("pnl"))
             if pnl is None:
@@ -1550,8 +1553,13 @@ class DashboardServer:
         if not self._db_pool:
             if mode in ("all", "paper"):
                 out.update(self._quant_metrics_from_paper_ledger(days, clean))
-            # mode == real/shadow with no db_pool: genuinely no data source
-            # for those — leave as zeros/nulls rather than fabricate.
+            else:
+                # mode == real/shadow with no db_pool: genuinely no data
+                # source for those — leave as zeros/nulls, but say so (this
+                # used to be unconditional for every no-db_pool response;
+                # don't drop the signal just because paper mode now has a
+                # real fallback).
+                out["error"] = "db_pool_not_ready"
             return web.json_response(out, dumps=_safe_dumps)
         try:
             mode_filter = ""
@@ -1597,59 +1605,13 @@ class DashboardServer:
                     )
                     out["excluded_n"] = int(excl or 0)
             pnls = [float(r["pnl"]) for r in rows]
-            n = len(pnls)
-            out["n"] = n
-            if n == 0:
+            if not pnls:
+                out["n"] = 0
                 return web.json_response(out, dumps=_safe_dumps)
-
-            mean = sum(pnls) / n
-            variance = sum((p - mean) ** 2 for p in pnls) / n if n > 1 else 0.0
-            std = math.sqrt(variance) if variance > 0 else 0.0
-            downside_returns = [p for p in pnls if p < 0]
-            downside_var = sum(p ** 2 for p in downside_returns) / n if n > 0 else 0.0
-            downside_std = math.sqrt(downside_var) if downside_var > 0 else 0.0
-
-            wins = [p for p in pnls if p > 0]
-            losses = [p for p in pnls if p < 0]
-            gross_w = sum(wins)
-            gross_l = abs(sum(losses))
-            win_rate = (len(wins) / n * 100.0) if n else None
-            pf = (gross_w / gross_l) if gross_l > 0 else (float("inf") if gross_w > 0 else None)
-            avg_win = (gross_w / len(wins)) if wins else None
-            avg_loss = (-gross_l / len(losses)) if losses else None  # negative number
-            expectancy = mean
-
-            # Sharpe (per-trade, no annualization — operator scale)
-            sharpe = (mean / std) if std > 0 else None
-            sortino = (mean / downside_std) if downside_std > 0 else None
-
-            # Max drawdown (peak-to-trough on cumulative PnL)
-            cum = 0.0
-            peak = 0.0
-            max_dd = 0.0
-            for p in pnls:
-                cum += p
-                if cum > peak:
-                    peak = cum
-                dd = peak - cum
-                if dd > max_dd:
-                    max_dd = dd
-            max_dd_pct = (max_dd / peak * 100.0) if peak > 0 else None
-
-            out.update({
-                "sharpe": sharpe,
-                "sortino": sortino,
-                "pf": (pf if pf != float("inf") else None),
-                "win_rate": win_rate,
-                "avg_win": avg_win,
-                "avg_loss": avg_loss,
-                "expectancy": expectancy,
-                "max_dd_usd": max_dd,
-                "max_dd_pct": max_dd_pct,
-                "total_pnl": sum(pnls),
-                "best_trade": max(pnls),
-                "worst_trade": min(pnls),
-            })
+            # Same math as the paper-ledger fallback (_compute_quant_stats) —
+            # was hand-duplicated here before, which is exactly the kind of
+            # drift the shared helper was extracted to prevent.
+            out.update(self._compute_quant_stats(pnls))
         except Exception as e:
             out["error"] = str(e)[:200]
         return web.json_response(out, dumps=_safe_dumps)
@@ -2723,20 +2685,25 @@ class DashboardServer:
             return None
         return df
 
-    def _read_pct_change_24h(self, symbol: str) -> Optional[float]:
-        """Close-to-close %% change over the last ~288 live bars (24h at 5m)."""
+    def _read_pct_change_24h(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Close-to-close %% change over the live window (up to ~288 bars,
+        24h at 5m). Returns {"pct": ..., "window_bars": ...} rather than a
+        bare number — right after a restart the window can be as short as
+        _MIN_WINDOW_BARS (~2h), and silently labelling that "24h" would be
+        misleading; callers decide how to display a degraded window."""
         df = self._read_ohlcv_window(symbol)
         if df is None:
             return None
         then_close, now_close = float(df["close"].iloc[0]), float(df["close"].iloc[-1])
         if then_close <= 0:
             return None
-        return round((now_close - then_close) / then_close * 100, 2)
+        return {"pct": round((now_close - then_close) / then_close * 100, 2), "window_bars": len(df)}
 
     async def _handle_price_change(self, request: web.Request) -> web.Response:
-        """Return {symbol: pct_change_24h} for every configured symbol, read
-        from the bot's own live candle store. Cached for _PRICE_CHANGE_CACHE_SEC
-        purely to avoid re-copying the same DataFrames on every poll."""
+        """Return {symbol: {pct, window_bars}} for every configured symbol,
+        read from the bot's own live candle store. Cached for
+        _PRICE_CHANGE_CACHE_SEC purely to avoid re-copying the same
+        DataFrames on every poll."""
         now = time.time()
         if now - self._price_change_cache_ts > self._PRICE_CHANGE_CACHE_SEC or not self._price_change_cache:
             self._price_change_cache = {
@@ -2795,9 +2762,16 @@ class DashboardServer:
             if sym == "BTC/USDT":
                 continue
             closes = self._read_close_window(sym)
-            if not closes or len(closes) != len(btc_closes):
+            if not closes:
                 continue
-            ratio = [c / b for c, b in zip(closes, btc_closes) if b > 0]
+            # Symbols with less live history than BTC (e.g. right after a
+            # restart, or a newer listing) used to be dropped entirely on
+            # an exact length mismatch — align on the shared trailing
+            # window instead of excluding the pair outright.
+            n = min(len(closes), len(btc_closes))
+            if n < self._MIN_WINDOW_BARS:
+                continue
+            ratio = [c / b for c, b in zip(closes[-n:], btc_closes[-n:]) if b > 0]
             if len(ratio) < 2 or ratio[0] <= 0:
                 continue
             rs_change_pct = round((ratio[-1] - ratio[0]) / ratio[0] * 100, 2)
@@ -2805,6 +2779,7 @@ class DashboardServer:
             rows.append({
                 "symbol": sym, "rs_change_pct": rs_change_pct,
                 "rs_new_high": rs_new_high, "rs_ratio_now": round(ratio[-1], 8),
+                "window_bars": n,
             })
         rows.sort(key=lambda r: r["rs_change_pct"], reverse=True)
         for i, r in enumerate(rows, start=1):
@@ -2887,9 +2862,20 @@ class DashboardServer:
         """Await an existing GET handler (that ignores request.query) and
         parse its response body back to a dict, so AI tools reuse the exact
         same aggregation code every other endpoint uses — no second copy
-        of the same logic to drift out of sync."""
-        resp = await coro
-        return json.loads(resp.body.decode("utf-8"))
+        of the same logic to drift out of sync.
+
+        These handlers are called with request=None; that's only safe
+        because none of them currently read request.query/headers. Isolated
+        here (rather than at each call site) so one handler picking up a
+        request-dependent feature later fails as a scoped {"error": ...}
+        for just that piece of AI-tool data, not an unhandled exception
+        that takes an entire multi-call tool (e.g. get_fleet_status, which
+        awaits two of these back to back) down with it."""
+        try:
+            resp = await coro
+            return json.loads(resp.body.decode("utf-8"))
+        except Exception as e:
+            return {"error": f"internal handler failed: {e}"[:200]}
 
     _AI_TOOLS = [
         {
@@ -3037,7 +3023,7 @@ class DashboardServer:
         the gitignored storage/ tree. Static file, read fresh each call —
         it's tiny and only regenerated by hand after a new validation pass,
         not worth caching."""
-        path = Path("docs/validation/two_fold_results.json")
+        path = _DASHBOARD_DIR.parent / "docs" / "validation" / "two_fold_results.json"
         if not path.is_file():
             return web.json_response({"error": "no validation results on disk yet"}, status=404)
         try:

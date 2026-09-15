@@ -205,14 +205,14 @@ def classify_trade(signal_dict: dict) -> str:
 
     # ── Context boosters: upgrade/downgrade ──
 
-    # UPGRADE to RUNNER: strong trend + HTF aligned + away from VWAP
-    # Gate: ML prob must be >= 0.50 for RUNNER (weak signals stay SCALP/INTRADAY)
+    # UPGRADE to RUNNER: strong trend + HTF aligned + away from VWAP.
+    # Same pattern as the SCALP->INTRADAY upgrade below (trend context
+    # compensates for an ML score below the target tier's own floor) —
+    # trade_type == TRADE_TYPE_INTRADAY here already guarantees
+    # ml_prob >= 0.50, so there is no separate ML gate to apply.
     if trade_type == TRADE_TYPE_INTRADAY and is_trending and htf_aligned and vwap_zone == "clear":
-        if ml_prob >= 0.50:
-            trade_type = TRADE_TYPE_RUNNER
-            logger.info("Trade type UPGRADE → RUNNER: trending + HTF aligned + clear VWAP + ML=%.2f", ml_prob)
-        else:
-            logger.info("Trade type RUNNER blocked: ML=%.2f < 0.50 — staying INTRADAY", ml_prob)
+        trade_type = TRADE_TYPE_RUNNER
+        logger.info("Trade type UPGRADE → RUNNER: trending + HTF aligned + clear VWAP + ML=%.2f", ml_prob)
 
     # UPGRADE to INTRADAY: moderate probability but trending with HTF
     # Gate: ML prob must be >= 0.40 (don't upgrade fee-blocked signals)

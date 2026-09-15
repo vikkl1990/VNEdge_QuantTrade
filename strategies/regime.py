@@ -54,6 +54,14 @@ class MarketRegimeDetector:
     # ----- configurable thresholds -----
     ADX_TREND_THRESHOLD: float = 30.0       # Raised from 25: ADX<30 is NOT a confirmed trend
     ADX_STRONG_TREND: float = 40.0
+    # Named 2026-09-15 (was a bare `28` literal at the expansion-breakout
+    # branch below) — deliberately NOT unified with ADX_TREND_THRESHOLD
+    # (30). They gate different branches (expansion-breakout vs. squeeze-
+    # breakout/named-trend); unifying the value would reclassify some
+    # ADX 28-29 + wide-band bars from BREAKOUT to SIDEWAYS, a real
+    # threshold change that needs a holdout, not a rename.
+    # See docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md.
+    ADX_EXPANSION_BREAKOUT_THRESHOLD: float = 28.0
     ATR_HIGH_VOL_PERCENTILE: float = 85.0
     ATR_LOW_VOL_PERCENTILE: float = 20.0
     EMA_SLOPE_THRESHOLD: float = 0.15       # % per 3 bars
@@ -222,7 +230,7 @@ class MarketRegimeDetector:
             return MarketRegime.BREAKOUT, 0.70
 
         # 4) BB expansion without strong ADX = breakout just starting
-        if bw_percentile >= self.BB_EXPANSION_PERCENTILE and adx_val > 28:
+        if bw_percentile >= self.BB_EXPANSION_PERCENTILE and adx_val > self.ADX_EXPANSION_BREAKOUT_THRESHOLD:
             return MarketRegime.BREAKOUT, 0.60
 
         # 5) Strong trend

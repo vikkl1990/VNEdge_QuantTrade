@@ -142,6 +142,15 @@ _CLUSTER_ALIAS = {"pattern": "structure"}
 # it must never out-rank one on raw score alone.
 _PAPER_UNVALIDATED_SCANNERS = frozenset({"volume_surge", "candlestick_reversal"})
 
+# Scanners designed to trade counter-trend (mean reversion), exempted from
+# the momentum-scanner counter-trend rules below. Unified 2026-09-15 from
+# three independently-declared tuples that had drifted apart (two identical,
+# one missing rsi_extreme) — rsi_extreme is the same mean-reversion family
+# as rsi_divergence/cvd_divergence/vwap_mean_revert and had already been
+# added to the VWAP noise-zone exemption; this brings Veto 10 and the P0.8
+# HTF-hard-veto into line with that.
+_REVERSION_SCANNERS = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert", "rsi_extreme")
+
 
 def _cluster_of(scanner_name: str) -> str:
     raw = SCANNER_CLUSTER.get(scanner_name, "unscored")
@@ -2701,8 +2710,7 @@ class ScalpStrategy(BaseStrategy):
         # it's the flagship (98% of live fills per the 2026-09-15 cluster
         # review) — changing its scoring belongs behind a holdout, not a
         # plausibility argument.
-        _reversion_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence", "rsi_extreme")
-        if best_sr.scanner_name in _reversion_names:
+        if best_sr.scanner_name in _REVERSION_SCANNERS:
             _pf_result = getattr(self, '_prefilter_result', {})
             _vwap_zone = _pf_result.get('context', {}).get('vwap_zone', 'clear')
             if _vwap_zone in ('noise', 'penalty'):
@@ -2815,8 +2823,7 @@ class ScalpStrategy(BaseStrategy):
         _pf_adj = getattr(self, '_prefilter_result', {}).get('confidence_adj', 0)
         _pf_ctx = getattr(self, '_prefilter_result', {}).get('context', {})
         # Exempt mean-reversion scanners from VWAP confidence penalty (same logic as weighted_score reversal)
-        _reversion_conf_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence", "rsi_extreme")
-        if best.name in _reversion_conf_names:
+        if best.name in _REVERSION_SCANNERS:
             _vwap_z = _pf_ctx.get('vwap_zone', 'clear')
             if _vwap_z == 'noise':
                 _pf_adj += 25  # undo the -25 noise penalty
@@ -3203,10 +3210,9 @@ class ScalpStrategy(BaseStrategy):
         # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md.
 
         # VETO 10: Regime-Side conflict — block counter-trend for momentum scanners
-        # Exception: mean-reversion scanners (rsi_divergence, cvd_divergence, vwap_mean_revert)
-        # are DESIGNED to trade counter-trend — don't block them
-        _reversion_scanners = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert")
-        if best_sr.scanner_name not in _reversion_scanners:
+        # Exception: mean-reversion scanners (_REVERSION_SCANNERS) are
+        # DESIGNED to trade counter-trend — don't block them
+        if best_sr.scanner_name not in _REVERSION_SCANNERS:
             if regime in ("trending_up",) and best.side == OrderSide.SHORT:
                 vetos.append(f"REGIME SIDE: SHORT blocked in {regime} — counter-trend")
             elif regime in ("trending_down",) and best.side == OrderSide.LONG:
@@ -3223,7 +3229,7 @@ class ScalpStrategy(BaseStrategy):
         # don't go LONG even if 1m/5m show a bounce (it's counter-macro).
         # Exception: reversion scanners get soft penalty instead
         _macro = indicators.get("macro_bias", 0)
-        if _macro != 0 and best_sr.scanner_name not in _reversion_scanners:
+        if _macro != 0 and best_sr.scanner_name not in _REVERSION_SCANNERS:
             if _macro < 0 and best.side == OrderSide.LONG:
                 soft_vetos.append(f"1H MACRO BEARISH: LONG against hourly trend (-15)")
             elif _macro > 0 and best.side == OrderSide.SHORT:
@@ -3337,12 +3343,11 @@ class ScalpStrategy(BaseStrategy):
         #   2. htf_bias clearly opposes side (not just != 0)
         #   3. pre-adjustment confidence < 75 (slightly higher threshold than P0)
         #
-        # Reversion scanners (rsi_divergence, cvd_divergence, vwap_mean_revert) are EXEMPT
-        # because they're designed to trade counter-trend.
+        # Reversion scanners (_REVERSION_SCANNERS) are EXEMPT because
+        # they're designed to trade counter-trend.
         if not hasattr(self, '_htf_strict_hard_for_momentum'):
             self._htf_strict_hard_for_momentum = True  # default ON
-        _reversion_scanners_p08 = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert")
-        _is_reversion = best_sr.scanner_name in _reversion_scanners_p08
+        _is_reversion = best_sr.scanner_name in _REVERSION_SCANNERS
         _is_momentum_scanner = (
             not _is_reversion
             and not is_sb  # SB has its own P0 rule

@@ -264,71 +264,98 @@ def detect_order_blocks(
 # 3. Liquidity Zones (stop-loss clusters)
 # ──────────────────────────────────────────────────────────────
 
+def _cluster_equal_pivots(
+    pivots: List[Tuple[int, float]],
+    equal_threshold_pct: float,
+) -> List[dict]:
+    """Greedy-merge pivots into price clusters (like find_horizontal_sr's ATR-based
+    merge, but tolerance is a percentage of the cluster's running center).
+
+    Fixes the all-pairs enumeration bug: the old find_liquidity_zones emitted one
+    StructureLevel per PAIR of near-equal swings within tolerance, so a run of n
+    mutually-close swings produced C(n,2) duplicate levels at the same price/zone
+    instead of one real cluster (confirmed empirically: 4 near-equal lows -> 6
+    duplicates). Downstream, _scan_structure_bounce's confluence check counted
+    each duplicate as an independent confirming level.
+    """
+    if len(pivots) < 2:
+        return []
+    zones: List[dict] = []
+    for idx, price in sorted(pivots, key=lambda x: x[1]):
+        merged = False
+        for zone in zones:
+            if abs(price - zone["center"]) / zone["center"] * 100 <= equal_threshold_pct:
+                zone["touches"].append((idx, price))
+                zone["center"] = sum(t[1] for t in zone["touches"]) / len(zone["touches"])
+                merged = True
+                break
+        if not merged:
+            zones.append({"center": price, "touches": [(idx, price)]})
+    return [z for z in zones if len(z["touches"]) >= 2]
+
+
 def find_liquidity_zones(
     df: pd.DataFrame,
     lookback: int = 100,
     equal_threshold_pct: float = 0.15,
 ) -> List[StructureLevel]:
-    """Find clusters of equal lows/highs (liquidity pools)."""
+    """Find clusters of equal lows/highs (liquidity pools) — one level per cluster."""
     swing_highs, swing_lows = find_swings(df, lookback)
     current_price = float(df["close"].iloc[-1])
     total_bars = len(df)
     levels = []
 
     # Equal lows (buy-side liquidity below)
-    if len(swing_lows) >= 2:
-        for i in range(len(swing_lows)):
-            for j in range(i + 1, len(swing_lows)):
-                idx_i, price_i = swing_lows[i]
-                idx_j, price_j = swing_lows[j]
-                pct_diff = abs(price_i - price_j) / price_i * 100
-                if pct_diff < equal_threshold_pct:
-                    level_price = min(price_i, price_j)
-                    bars_ago = total_bars - 1 - max(idx_i, idx_j)
-                    strength = 70 if pct_diff < 0.05 else 50
-                    if bars_ago < 20:
-                        strength += 15
+    for zone in _cluster_equal_pivots(swing_lows, equal_threshold_pct):
+        prices = [p for _, p in zone["touches"]]
+        idxs = [i for i, _ in zone["touches"]]
+        level_price = min(prices)
+        if level_price >= current_price:
+            continue  # already swept
 
-                    # Only add if price hasn't swept it yet
-                    if level_price < current_price:
-                        levels.append(StructureLevel(
-                            price=round(level_price, 2),
-                            level_type="liquidity",
-                            side="support",
-                            strength=strength,
-                            zone_high=round(max(price_i, price_j), 2),
-                            zone_low=round(level_price - current_price * 0.001, 2),
-                            touch_count=2,
-                            last_touch_bars_ago=bars_ago,
-                            extra={"liq_type": "equal_lows"},
-                        ))
+        spread_pct = (max(prices) - min(prices)) / level_price * 100 if level_price > 0 else 0
+        bars_ago = total_bars - 1 - max(idxs)
+        strength = 70 if spread_pct < 0.05 else 50
+        if bars_ago < 20:
+            strength += 15
+
+        levels.append(StructureLevel(
+            price=round(level_price, 2),
+            level_type="liquidity",
+            side="support",
+            strength=strength,
+            zone_high=round(max(prices), 2),
+            zone_low=round(level_price - current_price * 0.001, 2),
+            touch_count=len(zone["touches"]),
+            last_touch_bars_ago=bars_ago,
+            extra={"liq_type": "equal_lows"},
+        ))
 
     # Equal highs (sell-side liquidity above)
-    if len(swing_highs) >= 2:
-        for i in range(len(swing_highs)):
-            for j in range(i + 1, len(swing_highs)):
-                idx_i, price_i = swing_highs[i]
-                idx_j, price_j = swing_highs[j]
-                pct_diff = abs(price_i - price_j) / price_i * 100
-                if pct_diff < equal_threshold_pct:
-                    level_price = max(price_i, price_j)
-                    bars_ago = total_bars - 1 - max(idx_i, idx_j)
-                    strength = 70 if pct_diff < 0.05 else 50
-                    if bars_ago < 20:
-                        strength += 15
+    for zone in _cluster_equal_pivots(swing_highs, equal_threshold_pct):
+        prices = [p for _, p in zone["touches"]]
+        idxs = [i for i, _ in zone["touches"]]
+        level_price = max(prices)
+        if level_price <= current_price:
+            continue  # already swept
 
-                    if level_price > current_price:
-                        levels.append(StructureLevel(
-                            price=round(level_price, 2),
-                            level_type="liquidity",
-                            side="resistance",
-                            strength=strength,
-                            zone_high=round(level_price + current_price * 0.001, 2),
-                            zone_low=round(min(price_i, price_j), 2),
-                            touch_count=2,
-                            last_touch_bars_ago=bars_ago,
-                            extra={"liq_type": "equal_highs"},
-                        ))
+        spread_pct = (max(prices) - min(prices)) / level_price * 100 if level_price > 0 else 0
+        bars_ago = total_bars - 1 - max(idxs)
+        strength = 70 if spread_pct < 0.05 else 50
+        if bars_ago < 20:
+            strength += 15
+
+        levels.append(StructureLevel(
+            price=round(level_price, 2),
+            level_type="liquidity",
+            side="resistance",
+            strength=strength,
+            zone_high=round(level_price + current_price * 0.001, 2),
+            zone_low=round(min(prices), 2),
+            touch_count=len(zone["touches"]),
+            last_touch_bars_ago=bars_ago,
+            extra={"liq_type": "equal_highs"},
+        ))
 
     return levels
 

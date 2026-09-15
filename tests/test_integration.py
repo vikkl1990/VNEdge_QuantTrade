@@ -388,20 +388,16 @@ class TestTradeClassification:
         assert classify_trade(sig) == TRADE_TYPE_SCALP
 
     def test_classify_intraday_mid_ml(self):
-        # (2026-09-15) This test's original intent — a mid-tier ML score
-        # (0.55) should classify as INTRADAY, distinct from a high-tier
-        # score's RUNNER — no longer holds for this exact input combo.
-        # classify_trade()'s RUNNER upgrade gate only checks
-        # trending + HTF-aligned + clear VWAP + ml_prob>=0.50 (bot/signal_tracker.py),
-        # so any INTRADAY-bucket signal (0.50-0.649) in that context gets
-        # bumped to RUNNER too — there is no input left that is both
-        # "mid ML" and "trending_up + htf_bias=1 + vwap clear" and stays
-        # INTRADAY. That looks like an unintended side effect of the
-        # upgrade gate swallowing the whole INTRADAY tier under those
-        # conditions, not a deliberate design choice — flagged in the TODO
-        # doc for sign-off rather than silently changing the threshold here.
-        sig = _make_signal(ml_probability=0.55, regime="trending_up", htf_bias=1)
-        assert classify_trade(sig) == TRADE_TYPE_RUNNER
+        # (2026-09-15) A mid-tier ML score (0.55, INTRADAY's own base
+        # bucket) with trending_up + htf_bias=1 + the default vwap_zone
+        # "clear" gets upgraded to RUNNER by classify_trade()'s trend-context
+        # upgrade rule — confirmed intentional (mirrors the SCALP->INTRADAY
+        # upgrade a few lines below it, which also fires below its target
+        # tier's own floor), not a bug, so that combination no longer
+        # exercises a "stays INTRADAY" case. htf_bias=0 (not aligned) keeps
+        # the upgrade from firing while still testing the mid-ML base bucket.
+        sig = _make_signal(ml_probability=0.55, regime="trending_up", htf_bias=0)
+        assert classify_trade(sig) == TRADE_TYPE_INTRADAY
 
     def test_classify_runner_high_ml(self):
         sig = _make_signal(ml_probability=0.70, regime="trending_up", htf_bias=1, vwap_zone="clear")

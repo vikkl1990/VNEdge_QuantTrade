@@ -323,84 +323,92 @@ def _sweep_source(confirmations: List[str]) -> str:
 _JOINT_BAR_LOG_PATH = Path(__file__).resolve().parent.parent / "storage" / "joint_bar_log.jsonl"
 
 
-def _log_joint_bar(
+def _build_joint_bar_row(
     *, symbol: str, regime: str, scan_results: List["ScanResult"],
     sibling_blocked_this_bar: bool,
-) -> None:
-    """Append one record for this symbol-bar's structure_bounce vs
-    liquidity_sweep comparison. Written once scan_results is final and
-    before the confluence bonus can mutate either candidate's
+) -> Optional[dict]:
+    """Build (but don't write) one record for this symbol-bar's
+    structure_bounce vs liquidity_sweep comparison. Called once scan_results
+    is final and before the confluence bonus can mutate either candidate's
     weighted_score, so bounce_score/sweep_score are each scanner's own
     checklist output — exactly what step F compared them on, unmutated by
     cluster-mutex or same-side confluence.
+
+    Returns None if neither scanner was even routed this bar (e.g.
+    low_liquidity) — no eligibility, no row. veto10_fired starts null
+    (unknown) — the caller sets it to true/false once the veto-
+    classification loop actually runs, or leaves it null and flushes early
+    if the bar exits before that loop (cooldown, side-conflict, weak-setup,
+    etc.) — null there is correct: the check never happened, it isn't "no."
 
     filled_name/R/fees are intentionally left null: whether this bar's
     winner actually became a filled, closed trade is only known much later
     (bot/signal_tracker.py, on trade close) and isn't computed here — see
     docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md for the backfill this
-    still needs. Never raises — a logging failure must not affect trading.
+    still needs.
     """
+    by_name = {sr.scanner_name: sr for sr in scan_results}
+    bounce = by_name.get("structure_bounce")
+    sweep = by_name.get("liquidity_sweep")
+    if bounce is None and sweep is None:
+        return None
+
+    bounce_printed = bool(bounce and bounce.setup_result is not None)
+    sweep_printed = bool(sweep and sweep.setup_result is not None)
+
+    bounce_score = round(bounce.weighted_score, 1) if bounce_printed else None
+    sweep_score = round(sweep.weighted_score, 1) if sweep_printed else None
+    _ema21_slope_value, _ema21_slope_adj = (
+        _bounce_ema21_slope(bounce.confirmations) if bounce_printed else (None, None)
+    )
+
+    if bounce_printed and sweep_printed:
+        winner_F = "bounce" if bounce_score >= sweep_score else "sweep"
+        score_gap = round(abs(bounce_score - sweep_score), 1)
+    elif bounce_printed:
+        winner_F, score_gap = "bounce", None
+    elif sweep_printed:
+        winner_F, score_gap = "sweep", None
+    else:
+        winner_F, score_gap = "neither_printed", None
+
+    return {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
+        "regime": regime,
+        "bounce_printed": bounce_printed,
+        "bounce_score": bounce_score,
+        "bounce_side": bounce.setup_result.side.value if (bounce_printed and bounce.setup_result.side) else None,
+        "bounce_level_type": _bounce_level_type(bounce.confirmations) if bounce_printed else None,
+        "ema21_slope_value": _ema21_slope_value,
+        "ema21_slope_adj": _ema21_slope_adj,
+        "sweep_printed": sweep_printed,
+        "sweep_score": sweep_score,
+        "sweep_side": sweep.setup_result.side.value if (sweep_printed and sweep.setup_result.side) else None,
+        "sweep_source": _sweep_source(sweep.confirmations) if sweep_printed else "none",
+        "winner_F": winner_F,
+        "score_gap": score_gap,
+        "blocked_cluster_sibling": sibling_blocked_this_bar,
+        "veto10_fired": None,
+        "filled_name": None,
+        "R": None,
+        "fees": None,
+    }
+
+
+def _write_joint_bar_row(row: dict) -> None:
+    """Append one already-built joint-bar row to storage/joint_bar_log.jsonl.
+    Never raises — a logging failure must not affect trading."""
     try:
-        by_name = {sr.scanner_name: sr for sr in scan_results}
-        bounce = by_name.get("structure_bounce")
-        sweep = by_name.get("liquidity_sweep")
-        bounce_printed = bool(bounce and bounce.setup_result is not None)
-        sweep_printed = bool(sweep and sweep.setup_result is not None)
-
-        bounce_score = round(bounce.weighted_score, 1) if bounce_printed else None
-        sweep_score = round(sweep.weighted_score, 1) if sweep_printed else None
-        _ema21_slope_value, _ema21_slope_adj = (
-            _bounce_ema21_slope(bounce.confirmations) if bounce_printed else (None, None)
-        )
-
-        if bounce_printed and sweep_printed:
-            winner_F = "bounce" if bounce_score >= sweep_score else "sweep"
-            score_gap = round(abs(bounce_score - sweep_score), 1)
-        elif bounce_printed:
-            winner_F, score_gap = "bounce", None
-        elif sweep_printed:
-            winner_F, score_gap = "sweep", None
-        else:
-            winner_F, score_gap = "neither_printed", None
-
-        row = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "symbol": symbol,
-            "regime": regime,
-            "bounce_printed": bounce_printed,
-            "bounce_score": bounce_score,
-            "bounce_side": bounce.setup_result.side.value if (bounce_printed and bounce.setup_result.side) else None,
-            "bounce_level_type": _bounce_level_type(bounce.confirmations) if bounce_printed else None,
-            "ema21_slope_value": _ema21_slope_value,
-            "ema21_slope_adj": _ema21_slope_adj,
-            "sweep_printed": sweep_printed,
-            "sweep_score": sweep_score,
-            "sweep_side": sweep.setup_result.side.value if (sweep_printed and sweep.setup_result.side) else None,
-            "sweep_source": _sweep_source(sweep.confirmations) if sweep_printed else "none",
-            "winner_F": winner_F,
-            "score_gap": score_gap,
-            "blocked_cluster_sibling": sibling_blocked_this_bar,
-            "filled_name": None,
-            "R": None,
-            "fees": None,
-        }
         # Canary: if either scanner's confirmation-string format ever drifts,
-        # the regex extraction below goes silently null instead of erroring —
-        # this is the one place that would actually notice.
-        if bounce_printed and row["bounce_level_type"] is None:
+        # the regex extraction in _build_joint_bar_row goes silently null
+        # instead of erroring — this is the one place that would notice.
+        if row["bounce_printed"] and row["bounce_level_type"] is None:
             logger.warning("JOINT BAR LOG: bounce printed but level_type regex found nothing — "
-                           "confirmations format may have drifted: %r", bounce.confirmations)
-        if sweep_printed and row["sweep_source"] == "none":
+                           "confirmations format may have drifted (symbol=%s)", row["symbol"])
+        if row["sweep_printed"] and row["sweep_source"] == "none":
             logger.warning("JOINT BAR LOG: sweep printed but sweep_source regex found nothing — "
-                           "confirmations format may have drifted: %r", sweep.confirmations)
-
-        # Only bounce/sweep were eligible to run at all this bar? The row is
-        # still written even when neither printed (matches the spec: the
-        # denominator for print rate needs the "eligible but silent" bars
-        # too), but skip entirely if neither scanner was even routed for
-        # this regime (e.g. low_liquidity) — no eligibility, no row.
-        if bounce is None and sweep is None:
-            return
+                           "confirmations format may have drifted (symbol=%s)", row["symbol"])
         _JOINT_BAR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_JOINT_BAR_LOG_PATH, "a") as f:
             f.write(json.dumps(row) + "\n")
@@ -904,6 +912,25 @@ class ScalpStrategy(BaseStrategy):
             logger.info("SL/TP calibration: backtest file exists but no usable scanner data — using defaults")
 
         return calibrated
+
+    # ------------------------------------------------------------------
+    # Joint bar log flush (2026-09-15)
+    # ------------------------------------------------------------------
+
+    def _flush_pending_joint_bar_row(self) -> None:
+        """Write self._pending_joint_bar_row (built right after the cluster
+        mutex resolves) exactly once, at whichever comes first: one of the
+        several early-return points between the mutex and the veto-
+        classification loop (row stays veto10_fired=null — the check never
+        ran), or the classification loop itself (veto10_fired set true/false
+        by the caller before this runs). Idempotent: a bar that somehow hit
+        two flush call sites (it shouldn't) writes only the first time,
+        since the pending row is cleared right after.
+        """
+        row = getattr(self, "_pending_joint_bar_row", None)
+        if row is not None:
+            _write_joint_bar_row(row)
+        self._pending_joint_bar_row = None
 
     # ------------------------------------------------------------------
     # Structural Pre-Filter (runs BEFORE scanners)
@@ -2564,15 +2591,21 @@ class ScalpStrategy(BaseStrategy):
         _sibling_before = self._funnel.get("blocked_cluster_sibling", 0)
         tradeable = _apply_cluster_mutex(tradeable, self._funnel, is_learning=self._is_learning)
         # ── Joint bar log: structure_bounce vs liquidity_sweep (2026-09-15) ──
-        # Read-only instrument, logged from scan_results (every routed
+        # Read-only instrument, built from scan_results (every routed
         # scanner, triggered or not) so it reflects both candidates exactly
         # as F saw them — before the confluence bonus below can still mutate
-        # weighted_score for whichever one survived the mutex.
-        _log_joint_bar(
+        # weighted_score for whichever one survived the mutex. Built here,
+        # held pending, and flushed (written exactly once) at whichever
+        # comes first: one of the early-return points between here and the
+        # veto-classification loop (veto10_fired stays null), or that loop
+        # itself (veto10_fired set true/false there). See
+        # _flush_pending_joint_bar_row.
+        self._pending_joint_bar_row = _build_joint_bar_row(
             symbol=symbol, regime=regime, scan_results=scan_results,
             sibling_blocked_this_bar=self._funnel.get("blocked_cluster_sibling", 0) > _sibling_before,
         )
         if not tradeable:
+            self._flush_pending_joint_bar_row()
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": "CLUSTER MUTEX: only research/paper-only candidates this bar",
@@ -2628,12 +2661,14 @@ class ScalpStrategy(BaseStrategy):
         if best_sr.confidence <= 0 or best_sr.weighted_score <= 0:
             logger.warning("FUNNEL %s | ZERO CONF BLOCK | conf=%d score=%.0f — rejecting unscored signal",
                           symbol, best_sr.confidence, best_sr.weighted_score)
+            self._flush_pending_joint_bar_row()
             return []
 
         # ── Block momentum_trend / investment strategy signals ──
         if best_sr.scanner_name in ("momentum_trend", "simple_bias", "investment"):
             logger.info("FUNNEL %s | INVESTMENT BLOCK | scanner=%s — not allowed in scalp",
                        symbol, best_sr.scanner_name)
+            self._flush_pending_joint_bar_row()
             return []
 
         # ── Block empty regime (no regime = no trade) ──
@@ -2646,6 +2681,7 @@ class ScalpStrategy(BaseStrategy):
                 "indicators": {}, "setups_checked": setups_checked,
                 "funnel": dict(self._funnel),
             }
+            self._flush_pending_joint_bar_row()
             return []
 
         # bos_choch: re-enabled with strict quality (0.8 ATR displacement, 1.5x volume, 5m primary)
@@ -2772,6 +2808,7 @@ class ScalpStrategy(BaseStrategy):
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
                 logger.info("FUNNEL %s | WEAK SETUP VETO #%d | score=%.0f < %d — skipping weak entry",
                            symbol, pass_cnt, best_sr.weighted_score, MIN_SETUP_STRENGTH)
+            self._flush_pending_joint_bar_row()
             return []
 
         # ── Apply structural prefilter confidence adjustments ──
@@ -2865,6 +2902,7 @@ class ScalpStrategy(BaseStrategy):
                 scanner_weight=best_sr.scanner_weight,
                 scanner_expectancy=0, ev=0,
             )
+            self._flush_pending_joint_bar_row()
             return []
 
         # Block ema_momentum SHORTS entirely (33% WR historically)
@@ -2876,6 +2914,7 @@ class ScalpStrategy(BaseStrategy):
                     "indicators": indicators, "setups_checked": setups_checked,
                     "funnel": dict(self._funnel),
                 }
+                self._flush_pending_joint_bar_row()
                 return []
 
         # ══════════════════════════════════════════════════════
@@ -2900,6 +2939,7 @@ class ScalpStrategy(BaseStrategy):
                 "indicators": indicators, "setups_checked": setups_checked,
                 "funnel": dict(self._funnel),
             }
+            self._flush_pending_joint_bar_row()
             return []  # Hard block — no signal spam
 
         # VETO 1b: Side-conflict cooldown — prevent LONG→SHORT→LONG flip within 3 min
@@ -2917,6 +2957,7 @@ class ScalpStrategy(BaseStrategy):
                 "indicators": indicators, "setups_checked": setups_checked,
                 "funnel": dict(self._funnel),
             }
+            self._flush_pending_joint_bar_row()
             return []  # Hard block — no whipsaw
 
         # VETO 2: HTF STRICT alignment (Tier 2 upgrade — HARD veto, not soft)
@@ -3474,6 +3515,18 @@ class ScalpStrategy(BaseStrategy):
                 conf_penalty += 8
             else:
                 hard_vetos.append(v)
+
+        # Joint bar log: the veto-classification loop just ran, so we now
+        # know whether Veto 10 ("REGIME SIDE:") actually fired for this
+        # bar's winner — true/false, no longer null. Flush here regardless
+        # of whether hard_vetos ends up non-empty just below; that's a
+        # separate outcome (this bar's trade dies either way), the score/
+        # veto10_fired record is already final.
+        if getattr(self, "_pending_joint_bar_row", None) is not None:
+            self._pending_joint_bar_row["veto10_fired"] = any(
+                v.startswith("REGIME SIDE:") for v in vetos
+            )
+            self._flush_pending_joint_bar_row()
 
         # Track veto stats for debugging (exposed to dashboard)
         # Reset every 15 minutes so dashboard shows CURRENT blocks, not lifetime cumulative

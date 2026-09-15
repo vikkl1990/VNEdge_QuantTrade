@@ -2554,14 +2554,22 @@ class ScalpStrategy(BaseStrategy):
         # ── Regime-aware threshold adjustments ──
         # Specific scanners perform better in specific regimes — lower the bar
         # when the market context favors their setup type.
+        # (2026-09-15) "ranging" and "quiet" replaced with "sideways" —
+        # `regime` here always comes from MarketRegimeDetector._classify()
+        # (strategies/regime.py), whose enum (config/constants.py's
+        # MarketRegime) has exactly 7 values and neither "ranging" nor
+        # "quiet" among them; "sideways" is its actual chop/quiet catch-all.
+        # These four scanners' -5 discount in choppy regimes had never
+        # applied — the keys it checked were unreachable strings. See the
+        # regime_filter.py fallback-detector fix in the same commit.
         _REGIME_ADJ = {
             "bos_choch":          {"trending_up": -5, "trending_down": -5, "breakout": -5},
-            "liquidity_sweep":    {"ranging": -5, "quiet": -5},
+            "liquidity_sweep":    {"sideways": -5},
             "trend_continuation": {"trending_up": -5, "trending_down": -5},
             "ema_momentum":       {"trending_up": -5, "trending_down": -5},
-            "rsi_divergence":     {"ranging": -5, "quiet": -5},
-            "cvd_divergence":     {"ranging": -5, "quiet": -5},
-            "vwap_mean_revert":   {"ranging": -5, "quiet": -5},
+            "rsi_divergence":     {"sideways": -5},
+            "cvd_divergence":     {"sideways": -5},
+            "vwap_mean_revert":   {"sideways": -5},
         }
         _radj = _REGIME_ADJ.get(best_sr.scanner_name, {}).get(regime, 0)
         if _radj != 0 and not has_confluence:

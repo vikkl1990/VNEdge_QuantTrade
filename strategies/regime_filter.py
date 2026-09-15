@@ -203,16 +203,34 @@ class RegimeFilter:
             return "trending_down"
 
         # 3) High volatility
+        # (2026-09-15) Returns "high_volatility", not "volatile" — the two
+        # regime-routing tables (REGIME_SCANNER_ROUTING in scalp_strategy.py,
+        # REGIME_SCANNER_CONFIG above) carry a separate "volatile" key, but
+        # MarketRegime (config/constants.py) — the enum the PRIMARY detector
+        # below always returns from — has no such value and never will
+        # without a wider enum change. This fallback only runs when that
+        # primary detector throws, so its own output needs to land in the
+        # same 7-value vocabulary or "volatile"/"quiet"/"ranging" candidates
+        # get routed against dead table keys during exactly the fallback
+        # window they're meant to keep the bot trading through. Confirmed
+        # non-regressive: "volatile" and "high_volatility" are identical
+        # scanner lists in REGIME_SCANNER_ROUTING today.
         if is_volatile:
-            return "volatile"
+            return "high_volatility"
 
         # 4) Quiet: only if BB bandwidth is very tight AND no directional drift
         #    AND no EMA ordering. This is a truly dead, flat market.
+        # Mapped to "sideways" for the same reason as above — MarketRegime
+        # has no QUIET value. "sideways" is a strict superset of "quiet"'s
+        # scanner list (10 scanners vs. 4), so this widens access here
+        # rather than narrowing it.
         if is_quiet and not has_directional_drift and not partial_bull and not partial_bear:
-            return "quiet"
+            return "sideways"
 
         # 5) Everything else = ranging (has some movement, just no clear trend)
-        return "ranging"
+        # Mapped to "sideways" (see above) — identical scanner list today,
+        # and "sideways" is the string MarketRegime actually has.
+        return "sideways"
 
 
 def detect_regime_transition(current_regime: str, previous_regime: str, regime_age_bars: int) -> dict:

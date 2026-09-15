@@ -69,7 +69,7 @@ from strategies.base import BaseStrategy, Signal
 from strategies.scanner_weights import ScannerWeightManager, STATUS_ACTIVE, STATUS_REDUCED
 from strategies.regime_filter import (
     RegimeFilter, calc_confidence_size_multiplier,
-    is_scanner_allowed_in_regime, get_regime_scanner_boost,
+    get_regime_scanner_boost,
     detect_regime_transition,
 )
 from bot.ev_engine import EVEngine
@@ -116,6 +116,44 @@ def _tier_from_score(score: float) -> str:
     if score >= 35:
         return TIER_NEAR_MISS
     return TIER_REJECTED
+
+
+# ---------------------------------------------------------------------------
+# Funnel bucket for a fired hard veto (2026-09-15)
+# ---------------------------------------------------------------------------
+# Every hard veto used to land in one bucket — "blocked_regime" — regardless
+# of which of the 13 checks (or 4 data-driven hotfix gates) actually fired.
+# blocked_htf sat in the funnel schema initialized to 0 and was never
+# incremented anywhere: every HTF-alignment veto (a real, frequently-firing
+# check) was silently counted as "blocked_regime" instead, so the dashboard
+# could never show which gate was actually doing the blocking. This maps a
+# veto's own reason string to the bucket it should count against; anything
+# unrecognized still falls back to "blocked_regime" so nothing goes missing.
+_VETO_BUCKET_PREFIXES = (
+    ("HTF STRICT:", "blocked_htf"),
+    ("MTF ", "blocked_mtf"),                    # "MTF BLOCK:" / "MTF INTRADAY:" / "MTF RUNNER:" / "MTF SCALP:"
+    ("DEAD SESSION:", "blocked_session"),
+    ("SESSION VETO:", "blocked_session"),
+    ("LOW VOLATILITY:", "blocked_volatility"),
+    ("ATR DEAD:", "blocked_volatility"),
+    ("NO VOLUME:", "blocked_volume"),
+    ("CHOCH CONFLICT:", "blocked_choch"),
+    ("WEAK CANDLE:", "blocked_candle"),
+    ("NO CHASE:", "blocked_chase"),
+    ("REGIME MISMATCH:", "blocked_regime"),
+    ("REGIME SIDE:", "blocked_regime"),
+    ("VWAP HARD VETO:", "blocked_vwap_noise"),
+)
+
+
+def _funnel_bucket_for_veto(reason: str) -> str:
+    """Map a fired veto's reason string to a funnel counter bucket."""
+    if "[P0" in reason or "[P3" in reason:
+        return "blocked_hotfix"
+    for prefix, bucket in _VETO_BUCKET_PREFIXES:
+        if reason.startswith(prefix):
+            return bucket
+    return "blocked_regime"
 
 # ---------------------------------------------------------------------------
 # Setup result containers
@@ -1204,7 +1242,14 @@ class ScalpStrategy(BaseStrategy):
         # Per-symbol funnel
         _empty_funnel = {"scanned": 0, "strong": 0, "valid": 0, "weak": 0,
                          "near_miss": 0, "rejected": 0,
-                         "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0, "blocked_ev": 0}
+                         "blocked_regime": 0, "blocked_cost": 0, "blocked_htf": 0, "blocked_ev": 0,
+                         # Split out of the old single "blocked_regime" catch-all
+                         # (2026-09-15) so the dashboard can tell gates apart —
+                         # see _funnel_bucket_for_veto.
+                         "blocked_mtf": 0, "blocked_session": 0, "blocked_volatility": 0,
+                         "blocked_volume": 0, "blocked_choch": 0, "blocked_candle": 0,
+                         "blocked_chase": 0, "blocked_vwap_noise": 0, "blocked_hotfix": 0,
+                         "blocked_shadow_mode": 0}
         if symbol not in self._funnels:
             self._funnels[symbol] = dict(_empty_funnel)
         # Reset funnel every hour
@@ -1526,7 +1571,8 @@ class ScalpStrategy(BaseStrategy):
         # ══════════════════════════════════════════════════════
         prefilter = self._structural_prefilter(df, htf_df, symbol, regime)
         if not prefilter["pass"]:  # ALWAYS enforce — no learning bypass
-            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            _pf_bucket = _funnel_bucket_for_veto(prefilter.get("reason", ""))
+            self._funnel[_pf_bucket] = self._funnel.get(_pf_bucket, 0) + 1
             # Log every 10th block per symbol to avoid spam
             block_key = f"_prefilter_block_count_{symbol}"
             cnt = getattr(self, block_key, 0) + 1
@@ -2500,7 +2546,10 @@ class ScalpStrategy(BaseStrategy):
                 logger.info("FUNNEL %s | SCANNER SHADOW #%d | scanner=%s conf=%d min_conf=%d size=%.1f",
                            symbol, pass_cnt, best_sr.scanner_name, best.confidence,
                            self._sb_only_min_conf, scanner_size)
-            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            # Not a veto — this is "this scanner is intentionally shadow/ML-only
+            # right now" (structure_bounce_only mode, or a proven-negative
+            # scanner like simple_bias). Its own bucket, not blocked_regime.
+            self._funnel["blocked_shadow_mode"] = self._funnel.get("blocked_shadow_mode", 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"SCANNER SHADOW: {best_sr.scanner_name} is ML-only (no trade)",
@@ -3146,7 +3195,8 @@ class ScalpStrategy(BaseStrategy):
             if pass_cnt <= 5 or pass_cnt % 100 == 0:
                 logger.info("FUNNEL %s | HARD VETO #%d | scanner=%s | vetos=%s | soft=%s",
                            symbol, pass_cnt, best_sr.scanner_name, hard_vetos, soft_vetos)
-            self._funnel["blocked_regime"] = self._funnel.get("blocked_regime", 0) + 1
+            _hv_bucket = _funnel_bucket_for_veto(hard_vetos[0])
+            self._funnel[_hv_bucket] = self._funnel.get(_hv_bucket, 0) + 1
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,
                 "reason": f"VETO: {hard_vetos[0]}",
@@ -3261,7 +3311,10 @@ class ScalpStrategy(BaseStrategy):
                 best.confirmations.append(f"CHOCH conflict penalty -10")
 
         # Regime: boost/penalize (no block)
-        regime_boost = get_regime_scanner_boost(best_sr.scanner_name, regime)
+        regime_boost = get_regime_scanner_boost(
+            best_sr.scanner_name, regime,
+            routed_scanners=self._regime_routing_names.get(regime, []),
+        )
         if regime_boost > 0:
             best.confidence = min(best.confidence + regime_boost, 100)
             best.confirmations.append(f"Regime boost +{regime_boost} ({regime})")

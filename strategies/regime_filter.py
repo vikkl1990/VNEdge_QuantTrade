@@ -1,17 +1,27 @@
 """
-Regime Filter & Dynamic Position Sizing
+Regime Filter & Confidence Boost Table
 
-Maps market regime + signal properties to actionable decisions:
-- Should we trade in this regime?
-- What position size multiplier to use?
-- Should we tighten/widen stops?
-- Which scanners are allowed per regime?
+Maps market regime + scanner to a confidence boost for "preferred" scanners.
+
+(2026-09-15) This module used to also carry a per-regime scanner
+allow/block permission table (`REGIME_SCANNER_CONFIG["allowed"/"blocked"]`,
+`is_scanner_allowed_in_regime()`) and a size/SL/EV-adjustment `RegimeAction`
+matrix (`RegimeFilter.get_action()`). Neither was ever called from
+strategies/scalp_strategy.py — the actual live gate has always been
+`REGIME_SCANNER_ROUTING` (built per-analyze() call in scalp_strategy.py),
+and the two tables disagreed (e.g. this file listed `rsi_divergence` as
+"blocked" in volatile/high_volatility while the live router ran it there
+anyway). Removed rather than kept in sync, since a permission table that
+isn't the enforcement point is worse than no table — it looks authoritative
+without being true. `get_regime_scanner_boost()` below is the one surviving,
+actually-used piece, and now takes the live router's own allowed-scanner
+list as an argument so a boost can never apply to a scanner the router
+wouldn't run anyway.
 """
 
 from __future__ import annotations
 import logging
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Set, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -25,193 +35,84 @@ def _get_detector():
     return _advanced_detector
 
 
-@dataclass
-class RegimeAction:
-    """Action to take based on current regime."""
-    allow_trade: bool = True
-    size_multiplier: float = 1.0      # 0.0-1.5 position size adjustment
-    sl_multiplier: float = 1.0        # SL distance adjustment (>1 = wider)
-    min_confidence: int = 65          # Minimum confidence to accept
-    reason: str = ""
-    ev_threshold_adj: float = 0.0     # EV threshold adjustment for this regime
-
-
 # ──────────────────────────────────────────────────────────────────────
-# Per-Regime Scanner Permission Table
+# Per-Regime Preferred-Scanner Confidence Boost
 # ──────────────────────────────────────────────────────────────────────
-# Each regime maps to: allowed scanners, blocked scanners, and overrides.
-# If a scanner is not in the allowed set, it's blocked for that regime.
-# "*" = all scanners allowed (no restriction).
-#
-# This is the core quant control: different regimes → different strategies.
+# Scanners in a regime's "preferred" list get `confidence_boost` added when
+# they fire in that regime. This is a scoring nudge only — it never decides
+# whether a scanner is allowed to run at all; that's REGIME_SCANNER_ROUTING
+# in scalp_strategy.py. get_regime_scanner_boost() cross-checks against
+# that live list before applying anything (see below).
 # ──────────────────────────────────────────────────────────────────────
 
 REGIME_SCANNER_CONFIG: Dict[str, Dict[str, Any]] = {
     "trending_up": {
-        "allowed": "*",                    # All scanners can fire in trends
-        "preferred": [                     # These get a confidence boost
-            "ema_momentum", "momentum_ride", "post_impulse",
-        ],
-        "blocked": [],                     # None blocked in trend
+        # (2026-09-15) momentum_ride dropped from "preferred" here — it's
+        # not in REGIME_SCANNER_ROUTING for any regime (dead scanner), so a
+        # boost naming it was always inert. See module docstring.
+        "preferred": ["ema_momentum", "post_impulse"],
         "confidence_boost": 5,             # Preferred scanners get +5 conf
-        "size_mult": 1.0,
-        "sl_mult": 1.0,
-        "ev_threshold_adj": -0.05,         # Lower EV bar (trend adds edge)
     },
     "trending_down": {
-        "allowed": "*",
-        "preferred": [
-            "ema_momentum", "momentum_ride", "post_impulse",
-        ],
-        "blocked": [],
+        "preferred": ["ema_momentum"],
         "confidence_boost": 5,
-        "size_mult": 1.0,
-        "sl_mult": 1.0,
-        "ev_threshold_adj": -0.05,
     },
     "breakout": {
-        "allowed": "*",
-        "preferred": [
-            "bos_choch", "momentum_surge", "ema_momentum",
-        ],
-        "blocked": ["vwap_mean_revert"],       # VWAP less reliable in breakouts
+        # momentum_surge dropped — dead scanner, not routed anywhere live.
+        "preferred": ["bos_choch", "ema_momentum"],
         "confidence_boost": 8,
-        "size_mult": 1.1,
-        "sl_mult": 1.1,                    # Slightly wider for breakout volatility
-        "ev_threshold_adj": -0.03,
     },
     "ranging": {
-        "allowed": [                       # P1: expanded ranging scanners
-            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
-            "structure_bounce", "cvd_divergence", "bos_choch",
-            "order_block_entry", "vwap_mean_revert", "rsi_extreme",
-            "bb_squeeze",
-        ],
         "preferred": ["liquidity_sweep", "cvd_divergence", "rsi_extreme"],
-        "blocked": [
-            "momentum_ride", "momentum_surge", "supertrend_flip",
-        ],
         "confidence_boost": 3,
-        "size_mult": 0.7,
-        "sl_mult": 0.85,
-        "ev_threshold_adj": 0.0,
     },
     "sideways": {
-        "allowed": [                       # P1: same as ranging
-            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
-            "structure_bounce", "cvd_divergence", "bos_choch",
-            "order_block_entry", "vwap_mean_revert", "rsi_extreme",
-            "bb_squeeze",
-        ],
         "preferred": ["liquidity_sweep", "cvd_divergence", "rsi_extreme"],
-        "blocked": [
-            "momentum_ride", "momentum_surge", "supertrend_flip",
-        ],
         "confidence_boost": 3,
-        "size_mult": 0.7,
-        "sl_mult": 0.85,
-        "ev_threshold_adj": 0.0,
     },
     "volatile": {
-        "allowed": [                       # P5: expanded volatile scanners
-            "ema_momentum", "bos_choch", "structure_bounce",
-            "liquidity_sweep", "rsi_extreme", "rsi_divergence",
-        ],
         "preferred": [],
-        "blocked": [
-            "vwap_mean_revert", "rsi_divergence", "supertrend_flip",
-            "momentum_surge",
-        ],
         "confidence_boost": 0,
-        "size_mult": 0.5,
-        "sl_mult": 1.3,
-        "ev_threshold_adj": 0.05,          # Higher bar in volatile
     },
     "high_volatility": {
-        "allowed": [                       # P5: expanded high_vol scanners
-            "ema_momentum", "bos_choch", "structure_bounce",
-            "liquidity_sweep", "rsi_extreme", "rsi_divergence",
-        ],
         "preferred": [],
-        "blocked": [
-            "vwap_mean_revert", "rsi_divergence", "supertrend_flip",
-            "momentum_surge",
-        ],
         "confidence_boost": 0,
-        "size_mult": 0.5,
-        "sl_mult": 1.3,
-        "ev_threshold_adj": 0.05,
     },
     "mean_reversion": {
-        "allowed": [
-            "vwap_mean_revert", "rsi_divergence", "liquidity_sweep",
-            "structure_bounce",
-        ],
         "preferred": ["rsi_divergence", "liquidity_sweep"],
-        "blocked": [
-            "ema_momentum", "momentum_ride", "post_impulse",
-            "supertrend_flip",
-        ],
         "confidence_boost": 5,
-        "size_mult": 0.8,
-        "sl_mult": 0.9,
-        "ev_threshold_adj": 0.0,
     },
     "quiet": {
-        "allowed": [                       # Limited scanners in quiet
-            "liquidity_sweep", "structure_bounce", "rsi_extreme",
-        ],
         "preferred": ["liquidity_sweep"],
-        "blocked": [],
         "confidence_boost": 3,
-        "size_mult": 0.7,
-        "sl_mult": 1.0,
-        "ev_threshold_adj": 0.0,
     },
     "low_liquidity": {
-        "allowed": [],                     # No trading in thin markets
         "preferred": [],
-        "blocked": "*",
         "confidence_boost": 0,
-        "size_mult": 0.0,
-        "sl_mult": 1.0,
-        "ev_threshold_adj": 0.10,
     },
 }
 
 
-def is_scanner_allowed_in_regime(scanner_name: str, regime: str) -> bool:
-    """Check if a scanner is allowed to trade in the current regime.
+def get_regime_scanner_boost(
+    scanner_name: str,
+    regime: str,
+    routed_scanners: Optional[Iterable[str]] = None,
+) -> int:
+    """Get confidence boost for preferred scanners in this regime.
 
-    Returns True if the scanner can generate signals in this regime.
+    `routed_scanners` should be the live REGIME_SCANNER_ROUTING list for
+    this regime (scalp_strategy.py passes its own `_regime_routing_names`).
+    When given, a scanner that isn't actually routed for this regime never
+    gets a boost, even if it's still listed in `preferred` above — this is
+    what keeps this table from drifting out of sync with the real gate
+    the way the old allow/block table did.
     """
-    config = REGIME_SCANNER_CONFIG.get(regime, {})
-    allowed = config.get("allowed", "*")
-    blocked = config.get("blocked", [])
-
-    # Explicit block check
-    if blocked == "*" or scanner_name in blocked:
-        return False
-
-    # Allowed check
-    if allowed == "*":
-        return True
-
-    return scanner_name in allowed
-
-
-def get_regime_scanner_boost(scanner_name: str, regime: str) -> int:
-    """Get confidence boost for preferred scanners in this regime."""
+    if routed_scanners is not None and scanner_name not in routed_scanners:
+        return 0
     config = REGIME_SCANNER_CONFIG.get(regime, {})
     preferred = config.get("preferred", [])
     boost = config.get("confidence_boost", 0)
     return boost if scanner_name in preferred else 0
-
-
-def get_regime_ev_adjustment(regime: str) -> float:
-    """Get EV threshold adjustment for this regime."""
-    config = REGIME_SCANNER_CONFIG.get(regime, {})
-    return config.get("ev_threshold_adj", 0.0)
 
 
 class RegimeFilter:
@@ -312,136 +213,6 @@ class RegimeFilter:
 
         # 5) Everything else = ranging (has some movement, just no clear trend)
         return "ranging"
-
-    def get_action(self, regime: str, signal_side: str, signal_tier: str,
-                   scanner_name: str) -> RegimeAction:
-        """Map regime + signal + scanner to trading action.
-
-        Uses REGIME_SCANNER_CONFIG table for per-regime scanner permissions.
-
-        Regime-Action Matrix:
-        ┌────────────────┬──────────┬──────────┬───────────┬──────────┐
-        │ Regime         │ With     │ Against  │ Size      │ SL       │
-        ├────────────────┼──────────┼──────────┼───────────┼──────────┤
-        │ Trending Up    │ FULL     │ SKIP     │ 1.0-1.2x  │ normal   │
-        │ Trending Down  │ FULL     │ SKIP     │ 1.0-1.2x  │ normal   │
-        │ Ranging        │ REDUCED  │ REDUCED  │ 0.7x      │ tighter  │
-        │ Volatile       │ REDUCED  │ SKIP     │ 0.5x      │ wider    │
-        │ Quiet          │ FULL     │ FULL     │ 0.8x      │ normal   │
-        └────────────────┴──────────┴──────────┴───────────┴──────────┘
-        """
-        # ── Scanner-regime permission check (table-driven) ──
-        if not is_scanner_allowed_in_regime(scanner_name, regime):
-            return RegimeAction(
-                allow_trade=False,
-                reason=f"{scanner_name} not allowed in {regime} regime",
-            )
-
-        # Get regime config for size/SL multipliers
-        regime_cfg = REGIME_SCANNER_CONFIG.get(regime, {})
-        cfg_size = regime_cfg.get("size_mult", 1.0)
-        cfg_sl = regime_cfg.get("sl_mult", 1.0)
-        cfg_ev_adj = regime_cfg.get("ev_threshold_adj", 0.0)
-
-        # Determine if signal aligns with regime
-        with_trend = (
-            (regime == "trending_up" and signal_side == "long") or
-            (regime == "trending_down" and signal_side == "short")
-        )
-        against_trend = (
-            (regime == "trending_up" and signal_side == "short") or
-            (regime == "trending_down" and signal_side == "long")
-        )
-
-        if regime in ("trending_up", "trending_down"):
-            if against_trend:
-                return RegimeAction(
-                    allow_trade=False,
-                    reason=f"Against {regime} trend",
-                )
-            # With trend — use config multipliers, boost for strong tier
-            size_mult = cfg_size * (1.2 if signal_tier == "strong" else 1.0)
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=size_mult,
-                sl_multiplier=cfg_sl,
-                min_confidence=60,
-                ev_threshold_adj=cfg_ev_adj,
-                reason=f"With {regime} trend",
-            )
-
-        elif regime in ("ranging", "sideways"):
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=cfg_size,
-                sl_multiplier=cfg_sl,
-                min_confidence=70,
-                ev_threshold_adj=cfg_ev_adj,
-                reason=f"{regime.title()} market — reduced size, tighter stops",
-            )
-
-        elif regime in ("volatile", "high_volatility"):
-            if against_trend:
-                return RegimeAction(
-                    allow_trade=False,
-                    reason=f"Against trend in {regime} market",
-                )
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=cfg_size,
-                sl_multiplier=cfg_sl,
-                min_confidence=75,
-                ev_threshold_adj=cfg_ev_adj,
-                reason=f"{regime.title()} — reduced size, wider stops",
-            )
-
-        elif regime == "quiet":
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=cfg_size,
-                sl_multiplier=cfg_sl,
-                min_confidence=65,
-                ev_threshold_adj=cfg_ev_adj,
-                reason="Quiet market — normal rules",
-            )
-
-        elif regime == "low_liquidity":
-            return RegimeAction(
-                allow_trade=False,
-                size_multiplier=0.0,
-                ev_threshold_adj=0.10,
-                reason="Low liquidity — no trading",
-            )
-
-        elif regime == "breakout":
-            size_mult = cfg_size * (1.2 if signal_tier == "strong" else 1.0)
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=size_mult,
-                sl_multiplier=cfg_sl,
-                min_confidence=65,
-                ev_threshold_adj=cfg_ev_adj,
-                reason="Breakout — momentum favored",
-            )
-
-        elif regime == "mean_reversion":
-            return RegimeAction(
-                allow_trade=True,
-                size_multiplier=cfg_size,
-                sl_multiplier=cfg_sl,
-                min_confidence=68,
-                ev_threshold_adj=cfg_ev_adj,
-                reason="Mean reversion — reversal setups only",
-            )
-
-        # Unknown regime
-        return RegimeAction(
-            allow_trade=True,
-            size_multiplier=0.8,
-            min_confidence=70,
-            ev_threshold_adj=0.0,
-            reason=f"Unknown regime: {regime}",
-        )
 
 
 def detect_regime_transition(current_regime: str, previous_regime: str, regime_age_bars: int) -> dict:

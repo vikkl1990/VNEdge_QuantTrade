@@ -5828,22 +5828,16 @@ class ScalpStrategy(BaseStrategy):
         elif not np.isnan(rel_vol) and rel_vol > 1.0:
             score += 5
 
-        # ── Step 6: Sweep into structural zone ──
-        sm = self._structure_map
-        if sm is not None:
-            # Check if sweep touched an order block
-            if side == OrderSide.LONG:
-                for ob in getattr(sm, 'demand_zones', []):
-                    if isinstance(ob, dict) and low <= ob.get('high', 0) and low >= ob.get('low', float('inf')):
-                        score += 10
-                        confs.append("Sweep into demand zone/OB")
-                        break
-            else:
-                for ob in getattr(sm, 'supply_zones', []):
-                    if isinstance(ob, dict) and high >= ob.get('low', float('inf')) and high <= ob.get('high', 0):
-                        score += 10
-                        confs.append("Sweep into supply zone/OB")
-                        break
+        # ── Step 6: Sweep into structural zone — REMOVED (2026-09-15) ──
+        # Dead code: StructureMap (data/structure.py) has no demand_zones/
+        # supply_zones fields — only levels/nearest_support/nearest_
+        # resistance/vwap_*. getattr(sm, 'demand_zones', []) and its
+        # supply_zones twin could only ever see the empty-list default, so
+        # this "sweep into an OB" bonus never fired. Occupancy-neutral
+        # removal — confirmed via grep that nothing else in the codebase
+        # ever sets those attributes. See
+        # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md ("Structure map
+        # prior").
 
         # ── Step 7: HTF alignment ──
         if htf_bias == (1 if side == OrderSide.LONG else -1):

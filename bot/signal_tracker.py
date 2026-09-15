@@ -391,11 +391,15 @@ class TrackedSignal:
     def from_signal(cls, sig: Dict[str, Any]) -> "TrackedSignal":
         """Create a TrackedSignal from a signal dict.
 
-        Fixed Fractional Risk Model (Phase 2):
-        - Risk exactly 0.75% of account per trade
-        - Position size = risk_amount / SL_distance_pct
-        - Leverage is DERIVED (not input): lev = position_size / stake
-        - Max leverage capped by confidence grade for safety
+        Fixed Margin / Fixed Leverage Model (2026-09-14, replaced the old
+        Fixed Fractional Risk Model this docstring used to describe):
+        - Every paper trade: $100 margin x 30x leverage = $3000 notional
+        - Leverage is fixed, not derived — position size = margin x leverage
+        - risk_amount is now DERIVED from position size x stop-distance
+          (inverted from the old model, where risk was pinned and position
+          size was derived from it)
+        - Regime/confidence size multipliers and the drawdown-defense
+          leverage cap still apply on top of the fixed base (see below)
         """
         tps = sig.get("take_profits", [])
         meta = sig.get("metadata", {})
@@ -1590,7 +1594,7 @@ class SignalTracker:
                     ts.status = "tp1_hit"
                     ts.tp1_distance_r = abs(ts.tp1 - ts.entry_price) / ts.initial_risk if ts.initial_risk > 0 else 0
 
-                    # Book partial profit: 60% of position at TP1
+                    # Book partial profit: 35% of position at TP1
                     if is_long:
                         tp1_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
                     else:
@@ -1625,7 +1629,7 @@ class SignalTracker:
                         "signal": ts.to_dict(),
                         "message": (
                             f"TP1 HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
-                            f"60% booked ({ts.tp1_pnl_locked:+.2f}%) | "
+                            f"35% booked ({ts.tp1_pnl_locked:+.2f}%) | "
                             f"Trail started @ {ts.stop_loss:.2f} (1.0×ATR)"
                         ),
                     })
@@ -1637,7 +1641,7 @@ class SignalTracker:
                     ts.tp2_time = now_iso
                     ts.status = "tp2_hit"
 
-                    # Book 25% partial at TP2
+                    # Book 35% partial at TP2 (65% - 35% = 30% runner left)
                     if is_long:
                         tp2_pnl = ((price - ts.entry_price) / ts.entry_price) * 100
                     else:
@@ -1665,7 +1669,7 @@ class SignalTracker:
                         "signal": ts.to_dict(),
                         "message": (
                             f"TP2 HIT: {ts.symbol} {ts.side} @ {price:.2f} | "
-                            f"25% booked ({ts.tp2_pnl_locked:+.2f}%) | "
+                            f"35% booked ({ts.tp2_pnl_locked:+.2f}%) | "
                             f"Trail tightened @ {ts.atr_trail_price:.2f} (0.8×ATR)"
                         ),
                     })

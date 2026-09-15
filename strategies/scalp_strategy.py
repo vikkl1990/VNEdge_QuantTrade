@@ -1951,59 +1951,33 @@ class ScalpStrategy(BaseStrategy):
             else:
                 scanner_diagnostics["EMA Momentum"] = "EMAs converged, no cross yet"
 
-        # Trend Continuation: needs pullback to EMA zone
-        if _ema8 > _ema21:
-            _pb = _close <= _ema8 * 1.001 and _close > _ema21
-            _rsi_rec = 40 < _rsi < 58 and _rsi > _rsi_prev
-            _bull_candle = _close > _open
-            missing = []
-            if not _pb:
-                if _close > _ema8 * 1.001:
-                    missing.append(f"price({_close:.0f}) above EMA8({_ema8:.0f}), no pullback")
-                else:
-                    missing.append(f"price({_close:.0f}) below EMA21({_ema21:.0f})")
-            if not _rsi_rec:
-                if _rsi >= 58:
-                    missing.append(f"RSI({_rsi}) too high (need 40-58)")
-                elif _rsi <= 40:
-                    missing.append(f"RSI({_rsi}) too low (need 40-58)")
-                elif _rsi <= _rsi_prev:
-                    missing.append(f"RSI declining ({_rsi_prev}→{_rsi}), need rising")
-            if not _bull_candle:
-                missing.append("bearish candle (need bullish)")
-            scanner_diagnostics["Trend Continuation"] = " | ".join(missing) if missing else "Conditions met — checking score"
-        elif _ema8 < _ema21:
-            _pb = _close >= _ema8 * 0.999 and _close < _ema21
-            _rsi_rec = 42 < _rsi < 60 and _rsi < _rsi_prev
-            _bear_candle = _close < _open
-            missing = []
-            if not _pb:
-                if _close < _ema8 * 0.999:
-                    missing.append(f"price({_close:.0f}) below EMA8({_ema8:.0f}), no pullback")
-                else:
-                    missing.append(f"price({_close:.0f}) above EMA21({_ema21:.0f})")
-            if not _rsi_rec:
-                if _rsi >= 60:
-                    missing.append(f"RSI({_rsi}) too high for short (need 42-60)")
-                elif _rsi <= 42:
-                    missing.append(f"RSI({_rsi}) too low for short (need 42-60)")
-                elif _rsi >= _rsi_prev:
-                    missing.append(f"RSI rising ({_rsi_prev}→{_rsi}), need declining")
-            if not _bear_candle:
-                missing.append("bullish candle (need bearish)")
-            scanner_diagnostics["Trend Continuation"] = " | ".join(missing) if missing else "Conditions met — checking score"
+        # Trend Continuation: real gate is EMA8/21 direction + gap>=0.01%, then an
+        # 8-bar impulse->1-5bar pullback(<=1.5xATR depth, <=1 EMA21 violation)->
+        # directional trigger candle(rel_vol>=0.7, body>=0.2xATR) sequence — the
+        # multi-bar sequence isn't evaluated here (see _scan_trend_continuation).
+        # This diagnostic previously claimed an RSI 40-58/42-60 gate that does not
+        # exist anywhere in the real scanner (2026-09-15 audit) — replaced with the
+        # actual single-bar gate it can honestly check.
+        _tc_gap_pct = abs(_ema8 - _ema21) / _ema21 * 100 if _ema21 > 0 else 0
+        if _ema8 == _ema21 or _tc_gap_pct < 0.01:
+            scanner_diagnostics["Trend Continuation"] = f"EMA8/21 too close (gap {_tc_gap_pct:.3f}%, need >=0.01%) — no trend direction"
         else:
-            scanner_diagnostics["Trend Continuation"] = "EMAs flat, no trend"
+            _tc_dir = "Up" if _ema8 > _ema21 else "Down"
+            scanner_diagnostics["Trend Continuation"] = f"{_tc_dir}trend (EMA gap {_tc_gap_pct:.3f}%) — checking 8-bar impulse→pullback→trigger sequence"
 
-        # RSI Divergence: needs extreme RSI + price divergence
-        if 30 <= _rsi <= 60:
-            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) in neutral zone (need <40 for bullish div or >60 for bearish div)"
-        elif _rsi < 30:
-            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) oversold — looking for price lower-low with RSI higher-low"
-        elif _rsi > 60:
-            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) elevated — looking for price higher-high with RSI lower-high (need >60 + divergence)"
+        # RSI Divergence: real gate needs price near a recent swing extreme AND a
+        # 4+pt RSI gap vs RSI at that swing AND rsi_now on the right side of
+        # midpoint (bullish: rsi_now<52; bearish: rsi_now>48) AND the swing's own
+        # RSI past the original threshold (bullish: rsi_at_min<42; bearish:
+        # rsi_at_max>55) — this diagnostic previously quoted "<40"/">60" cutoffs
+        # that don't match the real code (2026-09-15 audit); corrected below.
+        # It still can't evaluate the multi-bar swing/gap condition itself.
+        if 42 <= _rsi <= 58:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) mid-range — divergence needs rsi_now<52 (bullish) or >48 (bearish) at a matching price swing, 4+pt RSI gap"
+        elif _rsi < 42:
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) — checking bullish divergence (price near recent low, RSI 4+pts above its low, that low was <42)"
         else:
-            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) — checking divergence patterns"
+            scanner_diagnostics["RSI Divergence"] = f"RSI({_rsi}) — checking bearish divergence (price near recent high, RSI 4+pts below its high, that high was >55)"
 
         # RSI Extreme: needs RSI < 35 turning up OR RSI > 65 turning down
         if _rsi < 35:
@@ -2073,10 +2047,44 @@ class ScalpStrategy(BaseStrategy):
         scanner_diagnostics["Post-Impulse"] = f"Scanning last 3-8 candles for impulse (body > 0.8x ATR) + current small candle + shallow pullback"
 
         # BOS/CHOCH: needs structural break with displacement
-        scanner_diagnostics["BOS/CHOCH"] = "Scanning for break of structure with displacement > 0.4x ATR"
+        scanner_diagnostics["BOS/CHOCH"] = "Scanning for break of structure with displacement > 0.6x ATR, then 2 consecutive 55%-body confirmation candles"
 
         # Liquidity Sweep: needs stop hunt at equal highs/lows with reclaim
         scanner_diagnostics["Liquidity Sweep"] = "Scanning for stop hunt at equal highs/lows with reclaim"
+
+        # VWAP Mean Revert: needs price beyond a VWAP band + reversal wick, then a
+        # silent stochastic/OBV filter that used to return None with no reason
+        # logged anywhere (2026-09-15 audit) — added here so scanner_funnel.jsonl
+        # stops recording an empty "" reason for this scanner.
+        _vwr_sm = self._structure_map
+        _vwr_vwap = getattr(_vwr_sm, "vwap", 0) if _vwr_sm else 0
+        if _vwr_vwap <= 0 and "vwap" in df.columns:
+            _vwr_vwap = float(last_row_diag.get("vwap", 0))
+        _vwr_atr = float(last_row_diag.get("atr", 0))
+        _vwr_upper = getattr(_vwr_sm, "vwap_upper_1", 0) if _vwr_sm else 0
+        _vwr_lower = getattr(_vwr_sm, "vwap_lower_1", 0) if _vwr_sm else 0
+        if _vwr_upper <= 0 and _vwr_atr > 0:
+            _vwr_upper = _vwr_vwap + _vwr_atr * 1.5
+        if _vwr_lower <= 0 and _vwr_atr > 0:
+            _vwr_lower = _vwr_vwap - _vwr_atr * 1.5
+        if _vwr_vwap <= 0:
+            scanner_diagnostics["VWAP Mean Revert"] = "No VWAP value available"
+        elif _vwr_lower > 0 and _close <= _vwr_lower:
+            _vwr_stk = float(last_row_diag.get("stoch_k", 50))
+            _vwr_obv = float(last_row_diag.get("obv_slope", 0))
+            if _vwr_stk > 80 or _vwr_obv < -1.5:
+                scanner_diagnostics["VWAP Mean Revert"] = f"At VWAP lower band but stoch/OBV filter would block LONG (stoch_k={_vwr_stk:.0f}>80 or obv_slope={_vwr_obv:.1f}<-1.5)"
+            else:
+                scanner_diagnostics["VWAP Mean Revert"] = f"At VWAP lower band (${_vwr_lower:.0f}) — checking reversal wick/candle"
+        elif _vwr_upper > 0 and _close >= _vwr_upper:
+            _vwr_stk = float(last_row_diag.get("stoch_k", 50))
+            _vwr_obv = float(last_row_diag.get("obv_slope", 0))
+            if _vwr_stk < 20 or _vwr_obv > 1.5:
+                scanner_diagnostics["VWAP Mean Revert"] = f"At VWAP upper band but stoch/OBV filter would block SHORT (stoch_k={_vwr_stk:.0f}<20 or obv_slope={_vwr_obv:.1f}>1.5)"
+            else:
+                scanner_diagnostics["VWAP Mean Revert"] = f"At VWAP upper band (${_vwr_upper:.0f}) — checking reversal wick/candle"
+        else:
+            scanner_diagnostics["VWAP Mean Revert"] = f"Price(${_close:.0f}) inside VWAP bands (${_vwr_lower:.0f}-${_vwr_upper:.0f}) — not at an extreme"
 
         # (funnel reset moved to per-symbol init above)
 

@@ -124,6 +124,7 @@ body::before, body::after { display: none !important; }
 .rung .d { color: var(--text-2); }
 .pos-foot { display: flex; gap: 14px; padding: 8px 12px 10px; font-size: 12px; color: var(--text-2); border-top: 1px solid var(--line); flex-wrap: wrap; }
 .pos-foot b { color: var(--text); font-weight: 500; font-family: var(--f-mono); }
+.pos-foot .sub { font-size: 11px; color: var(--muted); font-family: var(--f-mono); }
 .empty { padding: 22px 12px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; }
 
 /* tables (new + legacy) */

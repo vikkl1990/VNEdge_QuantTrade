@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import platform
 import secrets
@@ -54,8 +55,29 @@ class _SafeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _sanitize_nan(obj):
+    """Recursively replace NaN/Infinity floats with None.
+
+    json.dumps's default allow_nan=True emits the bare tokens NaN/Infinity
+    for these values — valid to Python's own json module but not valid JSON
+    (ECMA-404), so browser JSON.parse() throws on them. Pandas/numpy
+    computations (rolling averages, ratios) routinely produce NaN for
+    thinly-traded symbols or warm-up windows, so any endpoint that forwards
+    those values needs this pass or a single bad float breaks the whole
+    response for every client, not just the one symbol.
+    """
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_nan(v) for v in obj]
+    if isinstance(obj, (float, np.floating)):
+        f = float(obj)
+        return None if (math.isnan(f) or math.isinf(f)) else f
+    return obj
+
+
 def _safe_dumps(obj):
-    return json.dumps(obj, cls=_SafeEncoder)
+    return json.dumps(_sanitize_nan(obj), cls=_SafeEncoder)
 
 logger = logging.getLogger(__name__)
 

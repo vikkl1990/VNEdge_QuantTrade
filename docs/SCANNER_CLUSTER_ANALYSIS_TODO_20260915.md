@@ -118,7 +118,7 @@ All three assumed "quiet" is a *rare, more extreme* condition than ordinary chop
 
 Related, lower-priority cleanup noticed during the same string audit: most *other* regime-keyed dicts in the codebase (`bot/ev_engine.py`'s `REGIME_EV_ADJUSTMENTS`, several checks in `bot/signal_tracker.py` and `dashboard/server.py`) already OR "sideways"/"high_volatility" together with the dead "ranging"/"volatile"/"quiet" strings, so they were already safe by accident — no behavior fix needed there, just harmless dead dict keys. Not touched.
 
-## ADX thresholds inside `_classify` — verified reference, not touched
+## ADX thresholds inside `_classify` — the `28` literal is now named (see "Sign-off batch" below)
 
 An external review of the same `MarketRegimeDetector._classify` ladder (2026-09-15), checked line-by-line against the code and confirmed accurate in every claim. Captured here as reference for whoever next touches regime thresholds, since none of this is visible from the code's own comments in one place.
 
@@ -166,7 +166,7 @@ Three unrelated units (`0.30×ATR` vs `0.15%` vs `0.25×ATR`) means no shared sc
 
 **Explicitly not touched this session, with reasons** (same discipline as the quiet-regime and EV-ranking items above — each of these is a real behavior change, not a mechanical fix):
 - Deleting sweep's dead `demand_zones`/`supply_zones` getattr bonus would be occupancy-neutral (it never fired) — safe whenever someone wants to do routine cleanup, just not bundled into this pass.
-- Deduplicating `find_liquidity_zones`'s pairwise output changes scoring, not just occupancy — if the confluence bonus has been quietly inflated by counting duplicate levels as independent confirmation, removing that inflation could shift which candidates clear `MIN_SETUP_STRENGTH` or beat a cluster-mate at step F. Needs a before/after comparison, not a silent fix.
+- ~~Deduplicating `find_liquidity_zones`'s pairwise output~~ — **shipped, with sign-off** (see "Sign-off batch" below). A before/after comparison of confluence-bonus effect on live fills is still outstanding — this fixed the generator, it didn't measure the downstream scoring shift.
 - Excluding `vwap_band` from bounce the way `order_block` already is: a real product decision, not a bug fix — either VWAP is a valid S/R type for this scanner (in which case it shouldn't also eat the noise-zone penalty) or it isn't (in which case exclude it like OB). The current state — exemption for four scanners but not this one, while the map still offers VWAP as a nearest-level candidate to the one scanner not exempted — is the actual contradiction, and either resolution changes what the flagship scanner does.
 - Unifying the 15m-map-vs-5m-wick mismatch is a holdout-sized question (does forcing both onto one timeframe change fill rate or quality?), not a same-sitting change.
 
@@ -196,7 +196,7 @@ s_ATR = (EMA21[t] - EMA21[t-20]) / ATR      # same frame throughout — 15m if t
 
 **Known imprecision, found live**: `blocked_cluster_sibling` on the joint-bar row is a *global* funnel-counter delta ("did the mutex suppress a same-cluster sibling anywhere this bar"), not specifically "did bounce and sweep collide." The `"structure"` cluster has four members (`structure_bounce`, `liquidity_sweep`, `bos_choch`, `order_block_entry`) — a `bos_choch`-vs-`order_block_entry` (or either against sweep) collision would also set this field to `true` on a row where bounce/sweep themselves never printed. Observed exactly this in production: `blocked_cluster_sibling=true` fired 3 times with 0 bars showing both bounce and sweep printed, so those 3 events are almost certainly other structure-cluster pairs, not the bounce-vs-sweep contest this instrument exists to measure. A precise version would need the mutex itself to tag *which* scanner names collided, not just increment a count — not built yet. Until then, a non-zero `blocked_cluster_sibling` on a row where `bounce_printed` and `sweep_printed` aren't both `true` should be read as "some structure-cluster collision happened, not necessarily this one."
 
-## Reversion scanner membership is not one set
+## Reversion scanner membership — unified (see "Sign-off batch" below)
 
 A real product inconsistency, not a style nit — found while verifying Veto 10 (`strategies/scalp_strategy.py:3164`, the post-F "block counter-trend for momentum scanners" rule) against the code. There are three independently-declared "reversion scanners" tuples, two identical and one different:
 
@@ -246,3 +246,15 @@ Found because `tests/test_integration.py::TestTradeClassification::test_classify
 - If the intent was "only ML ≥0.65 gets pulled into RUNNER by trend context, INTRADAY should still exist as a real 0.50–0.649 outcome in trending markets" — the upgrade gate's `ml_prob >= 0.50` should be `>= 0.65` (or some other value above the INTRADAY floor), which is a real threshold change requiring the usual sign-off/holdout.
 
 Not touched pending that call.
+
+## Sign-off batch (`39916b1`) — resolved the RUNNER-gate question + 3 more items
+
+User reviewed all four open items above and confirmed a decision on each before any code changed:
+
+- **RUNNER upgrade gate — resolved as intentional, not a bug.** The inner `ml_prob >= 0.50` check was dead code (unreachable — `trade_type == TRADE_TYPE_INTRADAY` already guarantees it), but the upgrade rule itself mirrors the SCALP→INTRADAY upgrade a few lines below (which also fires below its target tier's own floor, at `ml_prob >= 0.40` vs. INTRADAY's 0.50 floor) — a deliberate "trend context compensates for a lower ML score" pattern applied consistently at both tiers, not an accidental threshold collision. Deleted the dead branch (cosmetic only, no behavior change). `test_classify_intraday_mid_ml` re-pointed at `htf_bias=0` (not aligned), which genuinely stays INTRADAY, instead of the `htf_bias=1` combo that the upgrade rule correctly claims.
+- **Reversion-scanner unification — shipped.** All three tuples (Veto 10's `_reversion_scanners`, P0.8's `_reversion_scanners_p08`, the VWAP-exemption's `_reversion_names`/`_reversion_conf_names`) replaced with one module-level `_REVERSION_SCANNERS = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert", "rsi_extreme")`. Real behavior change: `rsi_extreme` counter-trend trades now get Veto 10's soft penalty instead of the hard block, and the P0.8 HTF-hard-veto exemption — bringing it in line with the VWAP noise-zone exemption it already had.
+- **ADX `28` literal — named only, value untouched.** `strategies/regime.py`'s bare `28` at the expansion-breakout branch is now `ADX_EXPANSION_BREAKOUT_THRESHOLD`. Deliberately not unified with `ADX_TREND_THRESHOLD` (30) — user confirmed cosmetic-only for this pass; the value question still needs a holdout.
+- **Liquidity-zone dedup — shipped.** `find_liquidity_zones` replaced its all-pairs double loop with `_cluster_equal_pivots`, a greedy percentage-tolerance merge (same style as `find_horizontal_sr`'s ATR-based merge). Verified with a synthetic 4-near-equal-low test: 1 `StructureLevel` with `touch_count=4`, where the old code produced 6 (`C(4,2)`) duplicates at the same price/zone. User confirmed this despite it being a real scoring change (removes confluence-bonus inflation in `_scan_structure_bounce`).
+- **vwap_band exclusion — deliberately deferred, not part of this batch.** Checked `storage/joint_bar_log.jsonl` for enough data to decide empirically (the way `order_block`'s exclusion was data-backed, 41% WR / -1.05 ATR over 335 setups) — only 54 rows exist, 0 with `bounce_printed=true`. Revisit once the log has real `vwap_band` samples.
+
+Suite after this batch: 325 passed / 11 failed, unchanged from before (no regressions).

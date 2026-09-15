@@ -97,6 +97,106 @@ SCANNER_CATEGORY = {
 }
 
 # ---------------------------------------------------------------------------
+# Scanner clustering for the step-F mutex (2026-09-15)
+# ---------------------------------------------------------------------------
+# NOT the same thing as SCANNER_CATEGORY above — that's a "value vs momentum"
+# label used only for analytics tagging, and it puts liquidity_sweep/bos_choch
+# in "momentum" and structure_bounce in "value", which is a scoring taxonomy,
+# not a thesis grouping. This is a lock key: scanners in the same cluster
+# describe the same trade idea on the same bar (two structure prints, or
+# trend_continuation + ema_momentum + volume_surge all firing off the same
+# expansion candle, are one bet, not several), so at most one candidate per
+# cluster should ever reach the final pick. See _apply_cluster_mutex below.
+SCANNER_CLUSTER = {
+    "structure_bounce": "structure",
+    "liquidity_sweep": "structure",
+    "bos_choch": "structure",
+    "order_block_entry": "structure",
+    "rsi_divergence": "reversion",
+    "cvd_divergence": "reversion",
+    "vwap_mean_revert": "reversion",
+    "rsi_extreme": "reversion",
+    "vwap_bounce": "reversion",          # dead scanner, categorized for completeness
+    "trend_continuation": "momentum",
+    "ema_momentum": "momentum",
+    "bb_squeeze": "momentum",
+    "post_impulse": "momentum",
+    "volume_surge": "momentum",
+    "supertrend_flip": "momentum",       # dead
+    "momentum_ride": "momentum",         # dead
+    "bb_band_walk": "momentum",          # dead
+    "momentum_surge": "momentum",        # dead
+    "candlestick_reversal": "pattern",
+    "simple_bias": "unscored",
+}
+# pattern is rejection-at-an-extreme, the same thesis family as structure —
+# alias it to the same lock key by default. Split them only once an isolated
+# paper book proves candlestick_reversal doesn't just double-count structure.
+_CLUSTER_ALIAS = {"pattern": "structure"}
+
+# Scanners explicitly marked "new, unvalidated — paper only" in their own
+# routing comments. A paper-unvalidated scanner can win its own cluster (and
+# the bar) only when no live-validated peer triggered on the same close —
+# it must never out-rank one on raw score alone.
+_PAPER_UNVALIDATED_SCANNERS = frozenset({"volume_surge", "candlestick_reversal"})
+
+
+def _cluster_of(scanner_name: str) -> str:
+    raw = SCANNER_CLUSTER.get(scanner_name, "unscored")
+    return _CLUSTER_ALIAS.get(raw, raw)
+
+
+def _apply_cluster_mutex(tradeable, funnel: Dict[str, int], *, is_learning: bool):
+    """Collapse `tradeable` to at most one candidate per cluster (the intra-
+    cluster mutex), preferring a live-validated scanner over a paper-only one
+    within a cluster and across clusters. The existing max(weighted_score)
+    pick downstream then becomes the inter-cluster mutex for free, since its
+    input is now at most one row per cluster.
+
+    Every dropped candidate is tagged in `funnel` (mutated in place) so the
+    dashboard can measure a steal rate instead of losing candidates to a
+    silent max() — see blocked_cluster_sibling / blocked_cluster_paper /
+    blocked_cluster_research.
+    """
+    if not tradeable:
+        return tradeable
+
+    by_cluster: Dict[str, list] = {}
+    for sr in tradeable:
+        by_cluster.setdefault(_cluster_of(sr.scanner_name), []).append(sr)
+
+    champions = []
+    for cluster, rows in by_cluster.items():
+        if cluster == "unscored" and not is_learning:
+            for _ in rows:
+                funnel["blocked_cluster_research"] = funnel.get("blocked_cluster_research", 0) + 1
+            continue
+        live_rows = [sr for sr in rows if sr.scanner_name not in _PAPER_UNVALIDATED_SCANNERS]
+        paper_rows = [sr for sr in rows if sr.scanner_name in _PAPER_UNVALIDATED_SCANNERS]
+        pool = live_rows if live_rows else rows
+        if live_rows and paper_rows:
+            for _ in paper_rows:
+                funnel["blocked_cluster_paper"] = funnel.get("blocked_cluster_paper", 0) + 1
+        winner = max(pool, key=lambda s: s.weighted_score)
+        for sr in rows:
+            if sr is not winner:
+                funnel["blocked_cluster_sibling"] = funnel.get("blocked_cluster_sibling", 0) + 1
+        champions.append(winner)
+
+    # Cross-cluster: a champion whose own cluster had no live trigger this bar
+    # (it's paper-only by default, not by winning against a live cousin) still
+    # can't take the symbol's one ticket if any OTHER cluster's champion is
+    # live-validated.
+    live_champions = [c for c in champions if c.scanner_name not in _PAPER_UNVALIDATED_SCANNERS]
+    if live_champions and len(live_champions) != len(champions):
+        for c in champions:
+            if c.scanner_name in _PAPER_UNVALIDATED_SCANNERS:
+                funnel["blocked_cluster_paper"] = funnel.get("blocked_cluster_paper", 0) + 1
+        champions = live_champions
+
+    return champions
+
+# ---------------------------------------------------------------------------
 # Signal tiers (graduated output instead of binary pass/fail)
 # ---------------------------------------------------------------------------
 TIER_STRONG = "strong"         # Score >= 80: high confidence, take full size
@@ -1249,7 +1349,14 @@ class ScalpStrategy(BaseStrategy):
                          "blocked_mtf": 0, "blocked_session": 0, "blocked_volatility": 0,
                          "blocked_volume": 0, "blocked_choch": 0, "blocked_candle": 0,
                          "blocked_chase": 0, "blocked_vwap_noise": 0, "blocked_hotfix": 0,
-                         "blocked_shadow_mode": 0}
+                         "blocked_shadow_mode": 0,
+                         # Not a reject — how often the VWAP soft penalty (-20/-25 conf)
+                         # actually applied. blocked_vwap_noise stays a true hard-veto
+                         # count (0 today, honestly, since that branch is flag-disabled).
+                         "soft_penalty_vwap_noise": 0,
+                         # Cluster mutex (2026-09-15) — see _apply_cluster_mutex.
+                         "blocked_cluster_sibling": 0, "blocked_cluster_paper": 0,
+                         "blocked_cluster_research": 0}
         if symbol not in self._funnels:
             self._funnels[symbol] = dict(_empty_funnel)
         # Reset funnel every hour
@@ -1570,6 +1677,16 @@ class ScalpStrategy(BaseStrategy):
         # Light structural checks: ATR band, VWAP noise, MTF, regime blocks
         # ══════════════════════════════════════════════════════
         prefilter = self._structural_prefilter(df, htf_df, symbol, regime)
+        # (2026-09-15) VWAP noise-zone is currently soft-only — the hard veto
+        # branch below this is dead (_VWAP_HARD_VETO_ENFORCE=False), so a
+        # bucket that only incremented there would sit at 0 forever, exactly
+        # the blocked_htf lie this session already fixed once. Track the
+        # soft path (context["vwap_would_veto"] is set whenever price is
+        # within the noise zone, whether or not the hard veto is enforced)
+        # under its own counter — separate from blocked_vwap_noise, which
+        # keeps meaning "the hard veto actually fired."
+        if prefilter.get("context", {}).get("vwap_would_veto"):
+            self._funnel["soft_penalty_vwap_noise"] = self._funnel.get("soft_penalty_vwap_noise", 0) + 1
         if not prefilter["pass"]:  # ALWAYS enforce — no learning bypass
             _pf_bucket = _funnel_bucket_for_veto(prefilter.get("reason", ""))
             self._funnel[_pf_bucket] = self._funnel.get(_pf_bucket, 0) + 1
@@ -2301,6 +2418,23 @@ class ScalpStrategy(BaseStrategy):
                 }
                 return []
 
+        # ── Cluster mutex: at most one candidate per thesis cluster (2026-09-15) ──
+        # Must run BEFORE the confluence bonus below — confluence rewards
+        # same-side agreement, and applied on the raw (un-deduped) list that
+        # rewards CLUSTER DENSITY (two structure prints agreeing with
+        # themselves), which is exactly how one flagship scanner ends up
+        # owning nearly every fill. After this, "multiple scanners agree"
+        # can only mean multiple independent clusters agreeing.
+        tradeable = _apply_cluster_mutex(tradeable, self._funnel, is_learning=self._is_learning)
+        if not tradeable:
+            self.last_scan_status[symbol] = {
+                "time": now_iso, "signal": False,
+                "reason": "CLUSTER MUTEX: only research/paper-only candidates this bar",
+                "indicators": indicators, "setups_checked": setups_checked,
+                "funnel": dict(self._funnel),
+            }
+            return []
+
         # ── Confluence bonus: boost when multiple scanners agree on same side ──
         # Scale: 2 scanners = +18, 3 scanners = +22, 4+ scanners = +25
         # structure_bounce is already dominant (82% WR) — cap its bonus at +8
@@ -2375,7 +2509,17 @@ class ScalpStrategy(BaseStrategy):
         # These scanners WANT price near VWAP — penalizing them for being
         # in the noise/penalty zone is the opposite of what they need.
         # Uses stored prefilter context (vwap_zone) instead of string matching.
-        _reversion_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence")
+        # (2026-09-15) rsi_extreme added: it's a mean-reversion scanner by the
+        # same category this list already exists to protect (fires on RSI
+        # extremes turning back — exactly the kind of setup that lives near
+        # the session mean) and was excluded here with no comment explaining
+        # why, while its two closest cousins (rsi_divergence, cvd_divergence)
+        # were already exempt. structure_bounce is deliberately NOT added —
+        # unlike these four it isn't specifically a VWAP-proximity trade, and
+        # it's the flagship (98% of live fills per the 2026-09-15 cluster
+        # review) — changing its scoring belongs behind a holdout, not a
+        # plausibility argument.
+        _reversion_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence", "rsi_extreme")
         if best_sr.scanner_name in _reversion_names:
             _pf_result = getattr(self, '_prefilter_result', {})
             _vwap_zone = _pf_result.get('context', {}).get('vwap_zone', 'clear')
@@ -2480,7 +2624,7 @@ class ScalpStrategy(BaseStrategy):
         _pf_adj = getattr(self, '_prefilter_result', {}).get('confidence_adj', 0)
         _pf_ctx = getattr(self, '_prefilter_result', {}).get('context', {})
         # Exempt mean-reversion scanners from VWAP confidence penalty (same logic as weighted_score reversal)
-        _reversion_conf_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence")
+        _reversion_conf_names = ("vwap_mean_revert", "rsi_divergence", "cvd_divergence", "rsi_extreme")
         if best.name in _reversion_conf_names:
             _vwap_z = _pf_ctx.get('vwap_zone', 'clear')
             if _vwap_z == 'noise':

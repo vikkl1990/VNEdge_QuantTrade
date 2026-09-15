@@ -171,3 +171,25 @@ Three unrelated units (`0.30×ATR` vs `0.15%` vs `0.25×ATR`) means no shared sc
 - Unifying the 15m-map-vs-5m-wick mismatch is a holdout-sized question (does forcing both onto one timeframe change fill rate or quality?), not a same-sitting change.
 
 **What to measure on bounce's own fills before touching any generator** (mirrors the cluster-mutex "let it run and watch the counters" discipline above): `level_type` of `nearest_support`/`nearest_resistance` at signal time (`sr` / `order_block` / `liquidity` / `vwap_band`), `touch_count`, `last_touch_bars_ago`, whether `struct_source` was actually the 15m frame or the 5m fallback, and distance to the strongest level within 1 ATR (to see what swapping nearest-pick for max-strength-pick would have changed). Until that table exists, the honest description of the live edge is "fade whatever `build_structure_map` calls nearest on the confirmation frame" — the scanner's own checklist (wick %, body %, volume) decorates that prior; it doesn't independently establish the level.
+
+## Joint bar log — shipped, running (`b48d9d9`, `87fe22a`, `fbafbcd`)
+
+The instrument for steal rate, print rate, level-type select rate, and whether `blocked_cluster_sibling` actually fires: one JSONL row per symbol-bar to `storage/joint_bar_log.jsonl` (gitignored) whenever `structure_bounce`/`liquidity_sweep` were eligible to run, written from `scan_results` at the exact point step F resolves — before the confluence bonus can still mutate whichever candidate survived the cluster mutex. Read-only: no scoring, routing, or threshold changed to add it.
+
+**Score-at-F is provably clean**, not just empirically clean so far: bounce and sweep share the `"structure"` cluster, and `_apply_cluster_mutex` (which runs *before* confluence) collapses same-cluster candidates to one survivor via `max(pool, key=weighted_score)` — so the two can never both still be in `tradeable` when confluence's asymmetric boost (bounce capped at `min(8, bonus)`, sweep uncapped) would apply. The mutex has already decided between them using the same unmutated scores the log reads. Separately, the post-F soft vetoes (VWAP penalty, the 15m EMA21 −12) mutate `best`/`best.confidence` — a different variable, built only for whichever scanner wins the *whole* bar, populated well after the log call — with no path back to the `ScanResult` objects the logger reads. Both fields are structurally immune to post-F contamination.
+
+`weighted_score` can and does exceed 100 (seen live: 84 and 101) — that's expected. The scanner's own `confidence = max(min(score,100),0)` cap only applies to the scanner's internal 0–100 checklist output; `weighted_score` is a separate, uncapped value built by the outer scanner-normalization/confluence layer, and F ranks on `weighted_score`, not the capped `confidence`. Log both values as-is; the >100 reading is not a bug to fix.
+
+**The corrected EMA21-slope formula for bounce** (replaces any earlier "sign(slope)×10" shorthand — verified against `strategies/scalp_strategy.py:5481`):
+
+```
+s_ATR = (EMA21[t] - EMA21[t-20]) / ATR      # same frame throughout — 15m if that
+                                              # attempt triggered, 5m fallback if not
+Δ = +10   if s_ATR >  1.0  and slope direction agrees with the trade side
+    -10   if s_ATR < -1.0  and slope direction opposes the trade side
+     0    if |s_ATR| <= 1.0   (dead zone)
+```
+
+20 bars is a slow filter: ≈5h of drift if the 15m confirm attempt is what triggered, ≈100min if the 5m fallback did. Most sideways-regime bars should sit in the dead zone, so bounce's F score usually carries no slope term at all — sweep, by contrast, has no equivalent gate on its own HTF ±15/−5.
+
+**Production readout so far** (small n, reported honestly, not as a result): 7 bars logged, 2 printed, both `liquidity_sweep` EQH shorts in `sideways` regime, `structure_bounce` silent both times, `blocked_cluster_sibling` still `false` throughout (mutex idle — nothing to arbitrate). Consistent with "980:19 is occupancy, not F-theft," but nowhere near enough bars to call it. **Not touching** `0.25×ATR` (sweep tolerance), the `55%` body gate, or the `1.0 ATR` slope threshold on this sample — the log is doing its job; watching for: time-to-first-both-printed (same side vs. opposite side), the distribution of `ema21_slope_adj` on bounce-printed rows (expecting mostly `0`s), and whether `sweep_source` stays EQH-dominated the way the ETH loss and these two production prints already are.

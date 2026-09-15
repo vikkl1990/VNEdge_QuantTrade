@@ -230,7 +230,7 @@
         <section>
           <h2>Market treemap</h2>
           <p class="section-note">Box size = relative trading activity (summed volume over the live window, not a dollar figure &mdash; see footnote). Colour = price change over that same window. No market-cap feed exists for these pairs, so size is activity, not valuation.</p>
-          <div id="treemapBox" style="height:360px;position:relative"></div>
+          <div id="treemapBox" style="height:360px;position:relative;overflow-y:auto"></div>
           <p class="section-note" style="margin-top:10px">Footnote: an earlier version multiplied volume by price and got an implausible ~$800B/24h figure for BTC alone &mdash; the exchange's volume units for these contracts aren't confirmed to be base-asset-denominated, so this stays an unlabelled relative-size metric rather than a wrong dollar claim.</p>
         </section>
       </div>
@@ -708,16 +708,35 @@ function renderTreemap(){
     box.innerHTML = `<div class="rtext" style="padding:12px">Not enough live volume data yet to size a treemap.</div>`;
     return;
   }
-  const total = items.reduce((s,it) => s + it.size, 0);
-  const H = box.clientHeight || 360;
-  // Single-column layout, row height proportional to share of total
-  // activity — a 1D treemap. Reads cleanly at 13 items; a full 2D
-  // squarified layout isn't worth the complexity at this scale.
+  // (2026-09-15 fix) Real trading activity across these 13 pairs spans
+  // multiple orders of magnitude (BTC's volume vs. a thin alt's can be
+  // 100x+ apart). The original version sized tiles by raw linear share of
+  // a fixed-height box with a 26px floor per tile — with 13 items, the
+  // floors alone could exceed the box height once the 2-3 biggest pairs
+  // took their linear share, so most tiles collapsed to the floor AND
+  // still overflowed past the container, overlapping the next section.
+  // Two changes fix this at the root instead of patching the symptom:
+  //  1. Size by log10(activity), which compresses that multi-order spread
+  //     into a fair, still-ordered visual range instead of a cliff.
+  //  2. Reserve each tile's minimum height FIRST, then distribute only
+  //     the space actually left over by log-weighted share — the total
+  //     height is now an invariant (always exactly fills the box), not a
+  //     hope. overflow-y:auto stays on the container as a last-resort net.
+  // Target height is fixed by design (not read back from the box's own
+  // current height) — reading it back would make the box settle at
+  // exactly the floor-only total on the very next render and never show
+  // any size differentiation again, since there'd be no "extra" left.
+  const MIN_H = 34;
+  const reserved = MIN_H * items.length;
+  const H = Math.max(560, reserved + 40);
+  const weights = items.map(it => Math.log10(it.size + 1));
+  const totalWeight = weights.reduce((a,b) => a+b, 0) || 1;
+  const extra = Math.max(H - reserved, 0);
+
   let acc = 0;
   const maxAbs = Math.max(...items.map(it => Math.abs(it.chg||0)), 1);
-  box.innerHTML = items.map((it) => {
-    const hFrac = it.size / total;
-    const h = Math.round(H * hFrac);
+  box.innerHTML = items.map((it, i) => {
+    const h = Math.round(MIN_H + extra * (weights[i] / totalWeight));
     const top = acc;
     acc += h;
     const chg = it.chg || 0;
@@ -725,11 +744,12 @@ function renderTreemap(){
     const bg = chg >= 0
       ? `rgba(0,255,157,${0.15 + t*0.55})`
       : `rgba(255,59,92,${0.15 + t*0.55})`;
-    return `<div class="treemaptile" style="left:0;top:${top}px;width:100%;height:${Math.max(h,26)}px;background:${bg}">
+    return `<div class="treemaptile" style="left:0;top:${top}px;width:100%;height:${h}px;background:${bg}">
       <div class="tsym">${it.symbol.split('/')[0]}</div>
       <div class="tchg">${chg>0?'+':''}${chg}%</div>
     </div>`;
   }).join('');
+  box.style.height = H + 'px';
 }
 
 // ---- Custom scan builder ----

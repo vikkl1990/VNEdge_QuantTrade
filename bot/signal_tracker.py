@@ -323,6 +323,15 @@ class TrackedSignal:
     # Slippage tracking
     signal_price: float = 0.0         # price at signal generation (before execution)
     fill_price: float = 0.0           # actual fill price from exchange
+    # (2026-09-15) Explicit flag for "has the one-time estimated-slippage
+    # capture in _update_prices_inner already run for this trade". Used to
+    # be inferred from fill_price == signal_price, which is genuinely
+    # ambiguous: that's also exactly the state right after a real capture
+    # with zero slippage, so a trade whose first observed tick happened to
+    # match signal_price re-triggered the capture on a LATER, unrelated
+    # price move — retroactively shifting entry_price/fill_price mid-trade
+    # using that later move as if it were entry slippage.
+    fill_price_captured: bool = False
     slippage_ticks: float = 0.0       # (fill - signal) / tick_size
     slippage_bps: float = 0.0         # slippage in basis points
     slippage_impact_r: float = 0.0    # slippage in R units
@@ -365,6 +374,17 @@ class TrackedSignal:
         # Only pass known fields
         known = {f.name for f in cls.__dataclass_fields__.values()}
         ts = cls(**{k: v for k, v in d.items() if k in known})
+        # Backfill fill_price_captured for signals persisted before this
+        # field existed (2026-09-15). Any trade reloaded from a warm-restart
+        # cache has already been through at least one full price-update
+        # cycle in its prior lifetime, so "field absent" -> assume already
+        # captured. The alternative (default False) would let the one-time
+        # estimated-slippage capture re-fire on the next tick using the
+        # CURRENT market price against the trade's original signal_price,
+        # spuriously shifting entry_price/TP levels for an already-open
+        # trade right after every restart.
+        if "fill_price_captured" not in d:
+            ts.fill_price_captured = True
         # Backfill contract sizing for signals created before this feature
         if ts.contracts == 0 and ts.entry_price > 0 and ts.position_size_usd > 0:
             sym = ts.symbol.upper()
@@ -1054,7 +1074,12 @@ class SignalTracker:
             # "estimated fill" to simulate what slippage would have been.
             # If slippage exceeds max_entry_slip_bps, cap it (maker mode:
             # the order would have rested at signal_price, not filled worse).
-            if ts.fill_price == ts.signal_price and ts.signal_price > 0 and ts.slippage_bps == 0:
+            # Gated on fill_price_captured (2026-09-15), not fill_price ==
+            # signal_price — that equality is also true right after a real
+            # zero-slippage capture, which used to let this block re-fire on
+            # a later, unrelated price move and misattribute it as entry
+            # slippage (see fill_price_captured's own field comment).
+            if not ts.fill_price_captured and ts.signal_price > 0 and ts.slippage_bps == 0:
                 est_slip = abs(price - ts.signal_price)
                 est_slip_bps = est_slip / ts.signal_price * 10000
 
@@ -1094,6 +1119,7 @@ class SignalTracker:
                     ts.fill_price = price
                     ts.slippage_bps = round(est_slip_bps, 2)
 
+                ts.fill_price_captured = True
                 ts.slippage_ticks = round(est_slip / (ts.signal_atr * 0.01) if ts.signal_atr > 0 else 0, 2)
                 if ts.initial_risk > 0:
                     actual_slip = abs(ts.fill_price - ts.signal_price)

@@ -2616,16 +2616,22 @@ function updateKanbanFunnel(funnelData) {
         wrap.innerHTML = '<div class="empty" style="grid-column:1/-1">No funnel data</div>';
         return;
     }
-    // Standard funnel stages
+    // Real funnel stages — these must match the actual keys /api/opportunity-funnel
+    // returns (scanned/valid/near_miss/rejected/blocked_*), not an aspirational
+    // "filtered → ML scored → tracked → executed" pipeline this bot doesn't have.
+    // The previous stage list (passed_filter/ml_scored/tracked/executed) never
+    // matched any real field, so every stage after "Scanned" silently read as 0
+    // once this function actually started being called.
     const stages = [
         { key: "scanned", label: "Scanned", color: "var(--text-muted)", icon: "&#x1F50D;" },
-        { key: "passed_filter", label: "Filtered", color: "var(--yellow)", icon: "&#x2705;" },
-        { key: "ml_scored", label: "ML Scored", color: "var(--purple)", icon: "&#x1F916;" },
-        { key: "tracked", label: "Tracked", color: "var(--cyan)", icon: "&#x1F4CA;" },
-        { key: "executed", label: "Executed", color: "var(--green)", icon: "&#x2B50;" },
+        { key: "valid", label: "Valid", color: "var(--yellow)", icon: "&#x2705;" },
+        { key: "near_miss", label: "Near Miss", color: "var(--purple)", icon: "&#x1F916;" },
+        { key: "blocked", label: "Blocked", color: "var(--cyan)", icon: "&#x1F4CA;",
+          compute: (ff) => (ff.blocked_regime||0) + (ff.blocked_cost||0) + (ff.blocked_htf||0) + (ff.blocked_ev||0) },
+        { key: "rejected", label: "Rejected", color: "var(--red)", icon: "&#x274C;" },
     ];
     wrap.innerHTML = stages.map(s => {
-        const count = f[s.key] || f[s.key + "_count"] || f[s.key + "s"] || 0;
+        const count = s.compute ? s.compute(f) : (f[s.key] || f[s.key + "_count"] || f[s.key + "s"] || 0);
         const nStr = typeof count === "number" ? count : (count.total || count.count || 0);
         return '<div style="background:rgba(255,255,255,.02);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center">' +
             '<div class="text-lg">' + s.icon + '</div>' +
@@ -3972,14 +3978,24 @@ async function dashUpdate() {
     } catch(e) {}
 
   
-    // 10. Trade Diagnostic — why no trades?
+    // 10. Trade Diagnostic — why no trades? + Opportunity Funnel kanban.
+    // (2026-09-14) This whole block used to be gated on #trade-diagnostic,
+    // an element a later redesign removed from index.html — so `diag` was
+    // always null, and the funnel fetch (and the kanban render it fed)
+    // never ran at all. That's why the Analytics tab's Opportunity Funnel
+    // panel was permanently stuck on its "Loading funnel data..." HTML
+    // placeholder. Fetch unconditionally now; the diagnostic-text update
+    // stays conditional since that element may genuinely not exist.
     try {
+      let fr = await fetch("/api/opportunity-funnel").then(function(r){return r.json()}).catch(function(){return {}});
+      let dec = await fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}});
+      let f = fr.funnel || {};
+      let vs = fr.veto_stats || {};
+
+      try { updateKanbanFunnel(fr); } catch(e) {}
+
       let diag = document.getElementById("trade-diagnostic");
       if (diag) {
-        let fr = await fetch("/api/opportunity-funnel").then(function(r){return r.json()}).catch(function(){return {}});
-        let dec = await fetch("/api/decision").then(function(r){return r.json()}).catch(function(){return {}});
-        let f = fr.funnel || {};
-        let vs = fr.veto_stats || {};
         let reasons = [];
 
         // Check paper trading status
@@ -4014,7 +4030,69 @@ async function dashUpdate() {
 
     } catch(err) { console.error("dashUpdate error:", err); }
 }
-document.addEventListener("DOMContentLoaded", function() { refreshPaperSummary(); setInterval(refreshPaperSummary, 5000); dashUpdate(); setInterval(() => { if(!window._refreshLiveActive) dashUpdate(); }, 3000); });
+// ══════════════════════════════════════════════════════════
+// TRADING PAUSE / RESUME — the real kill switch
+// (2026-09-14) The header's "Stop" button (data-action="emergencyStop")
+// pointed at a function that only ever existed in bundle.min.js, a stale
+// unused bundle — index.html loads app.js instead, so window.emergencyStop
+// was undefined and the button silently did nothing on click (core.js's
+// delegated handler no-ops when the target function isn't defined). It
+// also posted to /api/emergency-stop, a route that was never registered.
+// Meanwhile /api/control/pause and /api/control/resume were real, wired
+// endpoints — but bot/orchestrator.py never checked the flag they set, so
+// even calling them by hand changed nothing about actual trading. Fixed
+// both ends: the orchestrator now skips new signal generation while
+// paused (existing positions still get managed normally), and this button
+// is wired to the real endpoints instead of the dead ones.
+// ══════════════════════════════════════════════════════════
+function syncPauseButton(paused) {
+    const btn = document.getElementById("pause-btn");
+    if (!btn) return;
+    if (paused) {
+        btn.textContent = "Resume";
+        btn.className = "chip go";
+        btn.title = "Trading is paused — no new trades will open. Click to resume.";
+    } else {
+        btn.textContent = "Pause";
+        btn.className = "chip stop";
+        btn.title = "Stops the bot from opening any NEW trade. Positions already open keep being managed (trailing stops, TP/SL) — this does not close them.";
+    }
+}
+
+async function toggleTradingPause() {
+    const btn = document.getElementById("pause-btn");
+    const currentlyPaused = btn && btn.textContent.trim() === "Resume";
+    if (!currentlyPaused && !confirm("Pause trading? The bot will stop opening any new trade until you resume. Positions already open keep being managed normally.")) {
+        return;
+    }
+    const endpoint = currentlyPaused ? "/api/control/resume" : "/api/control/pause";
+    try {
+        const r = await fetch(endpoint, { method: "POST", credentials: "same-origin" });
+        if (r.status === 401) {
+            alert("Your dashboard session has expired — log in again, then retry.");
+            return;
+        }
+        if (!r.ok) {
+            alert("Request failed (HTTP " + r.status + ") — trading state was NOT changed. Try again.");
+            return;
+        }
+        const d = await r.json().catch(() => ({}));
+        syncPauseButton(d.status === "paused");
+    } catch (e) {
+        console.error("toggleTradingPause failed:", e);
+        alert("Could not reach the bot to " + (currentlyPaused ? "resume" : "pause") + " trading — check the connection and try again.");
+    }
+}
+window.toggleTradingPause = toggleTradingPause;
+
+async function pollPauseState() {
+    try {
+        const status = await fetch("/api/status", { credentials: "same-origin" }).then(r => r.json());
+        syncPauseButton(!!status.paused);
+    } catch (e) { /* leave button as-is on a transient fetch failure */ }
+}
+
+document.addEventListener("DOMContentLoaded", function() { refreshPaperSummary(); setInterval(refreshPaperSummary, 5000); dashUpdate(); setInterval(() => { if(!window._refreshLiveActive) dashUpdate(); }, 3000); pollPauseState(); setInterval(pollPauseState, 5000); });
 
 // ═══ BLOCK 4 (original lines 7827-9126) ═══
 async function showJourney(tradeId) {

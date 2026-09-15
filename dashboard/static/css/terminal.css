@@ -74,6 +74,7 @@ body::before, body::after { display: none !important; }
 .chip.mode { border-color: transparent; background: var(--warn-bg); color: var(--warn); font-family: var(--f-cond); letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
 .chip.link { cursor: pointer; text-decoration: none; } .chip.link:hover { border-color: var(--acc); color: var(--acc); }
 .chip.stop { border-color: var(--loss); color: var(--loss); cursor: pointer; font-family: var(--f-cond); letter-spacing: .08em; text-transform: uppercase; font-weight: 600; } .chip.stop:hover { background: var(--loss-bg); }
+.chip.go { border-color: var(--profit); color: var(--profit); cursor: pointer; font-family: var(--f-cond); letter-spacing: .08em; text-transform: uppercase; font-weight: 600; } .chip.go:hover { background: var(--profit-bg); }
 .chip.user { border-style: dashed; color: var(--muted); }
 
 /* legacy alert banner, kept for real alerts */

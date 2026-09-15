@@ -508,7 +508,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
   <div class="health" id="tb-health" aria-live="polite"></div>
   <div class="health" style="margin-left:0;flex:none">
     <a href="/ml-lab" target="_blank" class="chip link" title="Open the ML training lab">ML Lab</a>
-    <button data-action="emergencyStop" id="emergency-btn" aria-label="Emergency stop" type="button" class="chip stop">Stop</button>
+    <button data-action="toggleTradingPause" id="pause-btn" aria-label="Pause new trade entry" type="button" class="chip stop" title="Stops the bot from opening any NEW trade. Positions already open keep being managed (trailing stops, TP/SL) — this does not close them.">Pause</button>
     <span class="chip user" id="session-info" aria-live="polite"></span>
     <button class="chip link" id="logout-btn" data-action="handleLogout" style="display:none">Log out</button>
   </div>

@@ -1731,6 +1731,19 @@ class BotOrchestrator:
             except Exception as _sg_exc:
                 self._log.debug("stale-frame gate failed for %s: %s", symbol, _sg_exc)
 
+            # ── PAUSE GATE (2026-09-14) ──
+            # /api/pause and /api/resume (dashboard/server.py) already set
+            # self._dashboard._paused and exposed it via is_paused, but
+            # nothing in the orchestrator ever read it — the "kill switch"
+            # set a flag that changed what /api/status displayed and
+            # nothing else. New signal generation is skipped here while
+            # paused; _evaluate_position (existing open positions: trailing
+            # stops, TP/SL, exits) runs from a separate path and is
+            # deliberately NOT gated by this, so pausing stops the bot from
+            # opening anything new without abandoning what's already open.
+            if self._dashboard is not None and getattr(self._dashboard, "is_paused", False):
+                return
+
             # 3. Run strategy analysis (sync method)
             # Upgrade 2: feed candles to signal tracker for Chandelier Exit
             _df5m = candles_dict.get("5m")

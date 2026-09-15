@@ -283,6 +283,27 @@ def _bounce_level_type(confirmations: List[str]) -> Optional[str]:
     return None
 
 
+# EMA21-slope with-trend/counter-trend check inside _scan_structure_bounce
+# (line ~5481): (ema21[-1]-ema21[-21])/atr, dead zone |slope|<=1.0 (no score
+# change), else +10 counter-trend / -10 with-trend. Frame is whichever df
+# the scanner actually triggered on (15m confirm_df tried first, 5m primary
+# as fallback — not recorded in the string, so not logged here).
+_EMA21_SLOPE_RE = re.compile(r"(Counter-trend fade|With-trend bounce) \(EMA21 slope ([+-]?[\d.]+) ATR/20b")
+
+
+def _bounce_ema21_slope(confirmations: List[str]) -> Tuple[Optional[float], Optional[int]]:
+    """(slope_value, score_adj) if the with/counter-trend branch fired this
+    bar, else (None, None) — which also covers the dead zone (|slope|<=1.0),
+    where neither string is written and no score change happened."""
+    for c in confirmations or []:
+        m = _EMA21_SLOPE_RE.search(c)
+        if m:
+            kind, value = m.groups()
+            adj = 10 if kind == "Counter-trend fade" else -10
+            return float(value), adj
+    return None, None
+
+
 def _sweep_source(confirmations: List[str]) -> str:
     """eqh | eql | roll_high | roll_low | none — which branch of
     _scan_liquidity_sweep actually fired, read off its own confirmation
@@ -328,6 +349,9 @@ def _log_joint_bar(
 
         bounce_score = round(bounce.weighted_score, 1) if bounce_printed else None
         sweep_score = round(sweep.weighted_score, 1) if sweep_printed else None
+        _ema21_slope_value, _ema21_slope_adj = (
+            _bounce_ema21_slope(bounce.confirmations) if bounce_printed else (None, None)
+        )
 
         if bounce_printed and sweep_printed:
             winner_F = "bounce" if bounce_score >= sweep_score else "sweep"
@@ -347,6 +371,8 @@ def _log_joint_bar(
             "bounce_score": bounce_score,
             "bounce_side": bounce.setup_result.side.value if (bounce_printed and bounce.setup_result.side) else None,
             "bounce_level_type": _bounce_level_type(bounce.confirmations) if bounce_printed else None,
+            "ema21_slope_value": _ema21_slope_value,
+            "ema21_slope_adj": _ema21_slope_adj,
             "sweep_printed": sweep_printed,
             "sweep_score": sweep_score,
             "sweep_side": sweep.setup_result.side.value if (sweep_printed and sweep.setup_result.side) else None,

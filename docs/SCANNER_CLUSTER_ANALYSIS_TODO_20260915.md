@@ -109,16 +109,31 @@ Verified an external claim about the live regime detector against the actual cod
 
 **Fixed** (commit `8e36ff2`): remapped the fallback to the real 7-value vocabulary (`volatile`→`high_volatility`, `quiet`/`ranging`→`sideways`), confirmed non-regressive since the routing table's dead/duplicate keys had identical-or-superset scanner lists to their real counterparts. Also fixed `_REGIME_ADJ`'s `liquidity_sweep`/`rsi_divergence`/`cvd_divergence`/`vwap_mean_revert` discount, which was keyed on the same dead `ranging`/`quiet` strings and had therefore never actually applied — rekeyed to `sideways`.
 
-**Deliberately left open** — three more "quiet"-only checks are dead for the identical reason, but fixing them isn't a safe mechanical rename the way the above two were:
-- `_structural_prefilter`'s hard block: `if regime == "quiet" and atr_ratio < 0.4: return pass=False` (scalp_strategy.py:918)
-- The Indian-market-hours "quiet" scanner override (only fires `if regime in ("quiet",)`, scalp_strategy.py:~2068)
-- Veto 9's "REGIME MISMATCH... blocked in quiet market" — commented as an "absolute no-trade rule" for every non-`structure_bounce` scanner (scalp_strategy.py:~3011)
+**Resolved as (c)** (commit pending in this session): three more "quiet"-only checks were dead for the identical reason —
+- `_structural_prefilter`'s hard block: `if regime == "quiet" and atr_ratio < 0.4: return pass=False` (was scalp_strategy.py:919)
+- The Indian-market-hours "quiet" scanner override (only fired `if regime in ("quiet",)`, was scalp_strategy.py:~2068)
+- Veto 9's "REGIME MISMATCH... blocked in quiet market" — commented as an "absolute no-trade rule" for every non-`structure_bounce` scanner (was scalp_strategy.py:~3011)
 
-All three assume "quiet" is a *rare, more extreme* condition than ordinary chop. `sideways` is the detector's majority-of-bars default (per the same detector-audit: "on 5m crypto that is most bars"), so remapping these to `sideways` the way the routing tables were would turn a rule meant to fire occasionally into one that fires on most bars — effectively locking the live book down to `structure_bounce` during ordinary sideways markets, not just genuinely dead ones. That's a real product decision, not a bug fix:
-- (a) give the primary detector back a real, distinct `QUIET` classification (an 8th `MarketRegime` value) with its own holdout-validated threshold, or
-- (b) accept the larger behavior change and remap these three to `sideways` anyway, or
-- (c) leave them as documented-dead and remove the confusion from the comments instead
-
-Not decided here — needs explicit sign-off before either (a) or (b) touches live behavior, same reasoning as the position-sizing item above.
+All three assumed "quiet" is a *rare, more extreme* condition than ordinary chop. `sideways` is the detector's majority-of-bars default, so remapping these to `sideways` the way the routing tables were would have turned a rule meant to fire occasionally into one firing on most bars — effectively locking the live book down to `structure_bounce` during ordinary sideways markets, not just genuinely dead ones. Options were (a) give the primary detector back a real, distinct `QUIET` classification with a holdout-validated threshold, (b) accept the lockdown and remap anyway, or (c) delete the dead branches, since that's the only option that doesn't alter live occupancy. **Deleted all three** — each replaced with a comment pointing here, `regime_scanner_ok` (a variable only ever written, never read) removed along with its block, `low_liquidity`'s real hard-veto in `_structural_prefilter` left untouched and verified still present. Option (a) — a real QUIET classification — stays open for whoever wants to propose a holdout-validated threshold for it; this only closed off the dead, silently-never-firing version.
 
 Related, lower-priority cleanup noticed during the same string audit: most *other* regime-keyed dicts in the codebase (`bot/ev_engine.py`'s `REGIME_EV_ADJUSTMENTS`, several checks in `bot/signal_tracker.py` and `dashboard/server.py`) already OR "sideways"/"high_volatility" together with the dead "ranging"/"volatile"/"quiet" strings, so they were already safe by accident — no behavior fix needed there, just harmless dead dict keys. Not touched.
+
+## ADX thresholds inside `_classify` — verified reference, not touched
+
+An external review of the same `MarketRegimeDetector._classify` ladder (2026-09-15), checked line-by-line against the code and confirmed accurate in every claim. Captured here as reference for whoever next touches regime thresholds, since none of this is visible from the code's own comments in one place.
+
+The same 14-period Wilder ADX is tested against **three different, independently-hardcoded cutoffs**, not one canonical "trend threshold":
+
+| Constant | Value | Where it fires |
+|---|---:|---|
+| `ADX_STRONG_TREND` | 40 | Branch 1 (high-vol override): `atr_percentile >= 85` and `ADX >= 40` still gets labeled `TRENDING_UP/DOWN` instead of `HIGH_VOLATILITY` |
+| `ADX_TREND_THRESHOLD` | 30 | Branch 2 (squeeze-breakout): `bb_squeeze and ADX > 30` → `BREAKOUT` (0.70 conf). Also branch 4 (named trend): `ADX >= 30` AND `|EMA50 slope| >= 0.15%/3bars` AND DI agrees → `TRENDING_UP/DOWN` |
+| *(unnamed, hardcoded)* | **28** | Branch 3 (expansion-breakout): `bw_percentile >= 92 and ADX > 28` → `BREAKOUT` (0.60 conf) |
+
+The `28` is a bare literal in the code (`strategies/regime.py`, the `bw_percentile >= self.BB_EXPANSION_PERCENTILE and adx_val > 28` line) — not `self.ADX_TREND_THRESHOLD`, not its own named constant. Effect: a bar with ADX 29 and bandwidth at the 92nd percentile is called `BREAKOUT`; the same ADX 29 with ordinary bandwidth falls through to `SIDEWAYS`. If the intent is "one definition of directional," `28` and `30` should be the same constant — **not fixed here**: unifying them is a threshold change (it would reclassify some ADX 28-29 + wide-band bars from `BREAKOUT` to `SIDEWAYS`), and this session's whole pattern has been "no threshold change without a holdout" — matches the quiet-regime decision above, logged rather than guessed at.
+
+Other verified, code-confirmed properties of the ADX ladder worth knowing before touching it:
+- `_classify` never sees HTF slope — it's computed and stored on `RegimeContext.htf_trend_direction` but not passed into `_classify` at all (same finding as the earlier regime-vocabulary audit).
+- No hysteresis: one 5m close crossing 30 can flip the whole regime label (and therefore the entire scanner roster) bar-to-bar. Only the latest ADX value is compared to a constant — Wilder's own "rising vs falling ADX" distinction isn't used.
+- `+DI`/`−DI` set `trend_direction` for every regime, but only the high-vol-override branch and the named-trend branch actually consume it — `BREAKOUT` labels (branches 2 and 3) carry no side at all.
+- A confirmed, narrow quirk: branch 1's `trend_dir >= 0 ? TRENDING_UP : TRENDING_DOWN` maps an exact `+DI == -DI` tie (`trend_dir == 0`) to `TRENDING_UP`, not "neutral" — harmless in practice (exact DI ties are rare) but worth knowing if this branch is ever revisited.

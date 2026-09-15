@@ -916,13 +916,13 @@ class ScalpStrategy(BaseStrategy):
         # so we store the direction in context for downstream use.
 
         # ── (d) Regime Hard Blocks ──
-        if regime == "quiet" and atr_ratio < 0.4:
-            return {
-                "pass": False,
-                "confidence_adj": 0,
-                "reason": f"REGIME PREFILTER: quiet regime + ATR dead ({atr_ratio:.2f})",
-                "context": context,
-            }
+        # A "quiet regime + ATR dead" block used to sit here — removed
+        # (2026-09-15), dead code: "quiet" is not a string
+        # MarketRegimeDetector._classify can produce (7-value MarketRegime
+        # enum, config/constants.py; see the VETO 9 removal in analyze()
+        # and docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md). The
+        # low_liquidity block below is real — low_liquidity IS a live
+        # MarketRegime value — and is untouched.
         if regime == "low_liquidity":
             return {
                 "pass": False,
@@ -2059,28 +2059,12 @@ class ScalpStrategy(BaseStrategy):
         except Exception:
             pass  # Never fail the scan loop on variant-adapter error
 
-        # ── Indian Market Regime Override ──
-        # During Indian flow hours, if regime is "quiet", override to allow
-        # a limited set of ranging scanners. Indian retail flow creates setups
-        # the regime detector misses. NEVER override trending/breakout/volatile.
-        indian_ctx = getattr(self, '_indian_ctx', None)
-        if indian_ctx and indian_ctx.regime_override == "ranging_limited" and not allowed_scanners:
-            if regime in ("quiet",):
-                _scanner_map = {
-                    "liquidity_sweep": self._scan_liquidity_sweep,
-                    "vwap_mean_revert": self._scan_vwap_mean_revert,
-                    "structure_bounce": self._scan_structure_bounce,
-                    "rsi_divergence": self._scan_rsi_divergence,
-                }
-                _ranging_names = self._indian_engine.get_ranging_limited_scanners() if self._indian_engine else []
-                allowed_scanners = [_scanner_map[s] for s in _ranging_names if s in _scanner_map]
-                _im_ovr_key = f"_im_override_count_{symbol}"
-                _im_ovr_cnt = getattr(self, _im_ovr_key, 0) + 1
-                setattr(self, _im_ovr_key, _im_ovr_cnt)
-                if _im_ovr_cnt <= 3 or _im_ovr_cnt % 100 == 0:
-                    logger.info("FUNNEL %s | INDIAN MARKET OVERRIDE #%d | quiet→ranging_limited | %s | scanners=%s",
-                                symbol, _im_ovr_cnt, indian_ctx.session_label,
-                                [s for s in _ranging_names if s in _scanner_map])
+        # ── Indian Market Regime Override — REMOVED (2026-09-15) ──
+        # Dead code: only ever fired `if regime in ("quiet",)`, and "quiet"
+        # is not a string MarketRegimeDetector._classify can produce (see
+        # the VETO 9 removal above and
+        # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md for the full
+        # regime-vocabulary audit). This override had never actually run.
 
         # In paper_learning mode: STILL respect regime routing, but add
         # liquidity_sweep to all regimes for data collection.
@@ -2999,19 +2983,21 @@ class ScalpStrategy(BaseStrategy):
                 if dist_from_ema8 > _chase_atr * 0.7:
                     vetos.append(f"NO CHASE: stretched {dist_from_ema8:.2f} > 0.7×ATR from EMA8")
 
-        # VETO 9: Regime + Scanner mismatch
-        # REMOVED the hard whitelist — the REGIME_SCANNER_ROUTING already controls
-        # which scanners run per regime. If a scanner triggered, it was allowed to run.
-        # Only block quiet regime (absolute no-trade rule).
-        # Exception: during Indian flow hours, ranging_limited override already
-        # selected which scanners are allowed — don't re-block them here.
-        regime_scanner_ok = True
-        _v9_indian_ctx = getattr(self, '_indian_ctx', None)
-        _v9_indian_override = _v9_indian_ctx and _v9_indian_ctx.regime_override == "ranging_limited"
-        if regime in ("quiet",) and not _v9_indian_override:
-            if best_sr.scanner_name != "structure_bounce":
-                regime_scanner_ok = False
-                vetos.append(f"REGIME MISMATCH: {best_sr.scanner_name} blocked in quiet market")
+        # VETO 9: Regime + Scanner mismatch — REMOVED (2026-09-15)
+        # This was dead code: it only ever fired `if regime in ("quiet",)`,
+        # and "quiet" is not a string MarketRegimeDetector._classify (the
+        # live regime classifier) can produce — it has exactly 7 possible
+        # outputs (see config/constants.py's MarketRegime enum) and "quiet"
+        # isn't one of them. The veto, and the "REGIME MISMATCH: blocked in
+        # quiet market" reason string it produced, had never fired in
+        # current-era regime detection. Confirmed dead rather than
+        # remapped to "sideways" (the detector's actual chop/quiet
+        # catch-all) — "sideways" is the majority-of-bars default, so
+        # remapping would turn a rule meant for genuinely dead markets into
+        # one gating most bars down to structure_bounce, a real product
+        # decision (bring back a distinct QUIET classification vs. accept
+        # that lockdown) rather than a bug fix. See
+        # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md.
 
         # VETO 10: Regime-Side conflict — block counter-trend for momentum scanners
         # Exception: mean-reversion scanners (rsi_divergence, cvd_divergence, vwap_mean_revert)

@@ -384,6 +384,16 @@ def _log_joint_bar(
             "R": None,
             "fees": None,
         }
+        # Canary: if either scanner's confirmation-string format ever drifts,
+        # the regex extraction below goes silently null instead of erroring —
+        # this is the one place that would actually notice.
+        if bounce_printed and row["bounce_level_type"] is None:
+            logger.warning("JOINT BAR LOG: bounce printed but level_type regex found nothing — "
+                           "confirmations format may have drifted: %r", bounce.confirmations)
+        if sweep_printed and row["sweep_source"] == "none":
+            logger.warning("JOINT BAR LOG: sweep printed but sweep_source regex found nothing — "
+                           "confirmations format may have drifted: %r", sweep.confirmations)
+
         # Only bounce/sweep were eligible to run at all this bar? The row is
         # still written even when neither printed (matches the spec: the
         # denominator for print rate needs the "eligible but silent" bars

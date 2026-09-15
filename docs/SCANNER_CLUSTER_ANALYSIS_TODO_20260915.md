@@ -99,3 +99,26 @@ Also shipped in the same commit: `blocked_vwap_noise` was wired only to the dead
 Investigated before attempting. `bot/ev_engine.py`'s `EVEngine.compute_ev()` requires `MIN_SAMPLES = 20` historical trades per (scanner, regime) before it computes a real EV — below that it returns `verdict="INSUFFICIENT_DATA"` with **`ev=0.0` as a placeholder**, not a real estimate. Per the cluster performance data above, every live scanner except `structure_bounce` has near-zero published fills, so naively swapping the step-F ranking key from `weighted_score` to `ev` today would make nearly every candidate tie at a meaningless 0.0 and rank arbitrarily — actively worse for exactly the under-observed scanners the cluster mutex was just built to give a fair shot at being measured.
 
 This needs a cold-start fix before it's safe to wire in — most directly, the shrinkage-prior idea already proposed alongside the calibration critique itself (blend a scanner's raw EV toward its cluster's mean EV, weighted by sample count, so a low-n scanner isn't stuck at a flat placeholder but also isn't trusted on 3 trades). That's a real modeling task, not a same-session patch — logged here rather than attempted blind.
+
+## Regime-string vocabulary mismatch — partially fixed, one piece deliberately left open
+
+Verified an external claim about the live regime detector against the actual code (`strategies/regime.py`, `config/constants.py`). Confirmed: this codebase has **two** regime classifiers with different vocabularies.
+
+- **Primary** — `MarketRegimeDetector._classify()` — a 7-branch priority ladder, always returns one of exactly 7 `MarketRegime` enum values: `trending_up`, `trending_down`, `sideways`, `breakout`, `mean_reversion`, `high_volatility`, `low_liquidity`. HTF EMA(50) slope is computed and stored on `RegimeContext` but never passed into `_classify` — confirmed genuinely unused in the label, not just under-weighted.
+- **Fallback** — `RegimeFilter.detect_regime()`'s own simple EMA+BB heuristic, used only when the primary detector throws (missing data, exceptions). Its own vocabulary had `volatile`/`quiet`/`ranging` — 3 of 5 possible outputs that don't exist in the primary detector's enum at all.
+
+**Fixed** (commit `8e36ff2`): remapped the fallback to the real 7-value vocabulary (`volatile`→`high_volatility`, `quiet`/`ranging`→`sideways`), confirmed non-regressive since the routing table's dead/duplicate keys had identical-or-superset scanner lists to their real counterparts. Also fixed `_REGIME_ADJ`'s `liquidity_sweep`/`rsi_divergence`/`cvd_divergence`/`vwap_mean_revert` discount, which was keyed on the same dead `ranging`/`quiet` strings and had therefore never actually applied — rekeyed to `sideways`.
+
+**Deliberately left open** — three more "quiet"-only checks are dead for the identical reason, but fixing them isn't a safe mechanical rename the way the above two were:
+- `_structural_prefilter`'s hard block: `if regime == "quiet" and atr_ratio < 0.4: return pass=False` (scalp_strategy.py:918)
+- The Indian-market-hours "quiet" scanner override (only fires `if regime in ("quiet",)`, scalp_strategy.py:~2068)
+- Veto 9's "REGIME MISMATCH... blocked in quiet market" — commented as an "absolute no-trade rule" for every non-`structure_bounce` scanner (scalp_strategy.py:~3011)
+
+All three assume "quiet" is a *rare, more extreme* condition than ordinary chop. `sideways` is the detector's majority-of-bars default (per the same detector-audit: "on 5m crypto that is most bars"), so remapping these to `sideways` the way the routing tables were would turn a rule meant to fire occasionally into one that fires on most bars — effectively locking the live book down to `structure_bounce` during ordinary sideways markets, not just genuinely dead ones. That's a real product decision, not a bug fix:
+- (a) give the primary detector back a real, distinct `QUIET` classification (an 8th `MarketRegime` value) with its own holdout-validated threshold, or
+- (b) accept the larger behavior change and remap these three to `sideways` anyway, or
+- (c) leave them as documented-dead and remove the confusion from the comments instead
+
+Not decided here — needs explicit sign-off before either (a) or (b) touches live behavior, same reasoning as the position-sizing item above.
+
+Related, lower-priority cleanup noticed during the same string audit: most *other* regime-keyed dicts in the codebase (`bot/ev_engine.py`'s `REGIME_EV_ADJUSTMENTS`, several checks in `bot/signal_tracker.py` and `dashboard/server.py`) already OR "sideways"/"high_volatility" together with the dead "ranging"/"volatile"/"quiet" strings, so they were already safe by accident — no behavior fix needed there, just harmless dead dict keys. Not touched.

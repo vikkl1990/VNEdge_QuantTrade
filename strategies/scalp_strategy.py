@@ -29,7 +29,9 @@ Risk Profile (per trade)
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -254,6 +256,120 @@ def _funnel_bucket_for_veto(reason: str) -> str:
         if reason.startswith(prefix):
             return bucket
     return "blocked_regime"
+
+
+# ---------------------------------------------------------------------------
+# Joint bar log: structure_bounce vs liquidity_sweep (2026-09-15)
+# ---------------------------------------------------------------------------
+# The shared unmeasured quantity behind steal rate, print rate, level-type
+# select rate, and "does blocked_cluster_sibling actually fire" is the same
+# one: what did each of these two scanners score on a bar where either was
+# eligible to run, regardless of who won step F. This is a read-only
+# instrument — it persists whatever the scan loop already computed, it does
+# not recompute or influence any score, threshold, or routing decision.
+_LEVEL_TYPE_RE = re.compile(r"S/R (?:support|resistance) rejection \(([a-z_]+)\)")
+_SWEEP_SOURCE_RE = re.compile(r"Sweep (above|below) (EQH|EQL|rolling high|rolling low)")
+
+
+def _bounce_level_type(confirmations: List[str]) -> Optional[str]:
+    """Pull structure_bounce's target_level.level_type out of its own
+    confirmation string — the field isn't on _SetupResult, but the scanner
+    already writes it into the string it returns, so this is read-only
+    extraction, not a new computation."""
+    for c in confirmations or []:
+        m = _LEVEL_TYPE_RE.search(c)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _sweep_source(confirmations: List[str]) -> str:
+    """eqh | eql | roll_high | roll_low | none — which branch of
+    _scan_liquidity_sweep actually fired, read off its own confirmation
+    string the same way."""
+    for c in confirmations or []:
+        m = _SWEEP_SOURCE_RE.search(c)
+        if m:
+            direction, kind = m.groups()
+            if kind == "EQH":
+                return "eqh"
+            if kind == "EQL":
+                return "eql"
+            return "roll_high" if kind == "rolling high" else "roll_low"
+    return "none"
+
+
+_JOINT_BAR_LOG_PATH = Path(__file__).resolve().parent.parent / "storage" / "joint_bar_log.jsonl"
+
+
+def _log_joint_bar(
+    *, symbol: str, regime: str, scan_results: List["ScanResult"],
+    sibling_blocked_this_bar: bool,
+) -> None:
+    """Append one record for this symbol-bar's structure_bounce vs
+    liquidity_sweep comparison. Written once scan_results is final and
+    before the confluence bonus can mutate either candidate's
+    weighted_score, so bounce_score/sweep_score are each scanner's own
+    checklist output — exactly what step F compared them on, unmutated by
+    cluster-mutex or same-side confluence.
+
+    filled_name/R/fees are intentionally left null: whether this bar's
+    winner actually became a filled, closed trade is only known much later
+    (bot/signal_tracker.py, on trade close) and isn't computed here — see
+    docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md for the backfill this
+    still needs. Never raises — a logging failure must not affect trading.
+    """
+    try:
+        by_name = {sr.scanner_name: sr for sr in scan_results}
+        bounce = by_name.get("structure_bounce")
+        sweep = by_name.get("liquidity_sweep")
+        bounce_printed = bool(bounce and bounce.setup_result is not None)
+        sweep_printed = bool(sweep and sweep.setup_result is not None)
+
+        bounce_score = round(bounce.weighted_score, 1) if bounce_printed else None
+        sweep_score = round(sweep.weighted_score, 1) if sweep_printed else None
+
+        if bounce_printed and sweep_printed:
+            winner_F = "bounce" if bounce_score >= sweep_score else "sweep"
+            score_gap = round(abs(bounce_score - sweep_score), 1)
+        elif bounce_printed:
+            winner_F, score_gap = "bounce", None
+        elif sweep_printed:
+            winner_F, score_gap = "sweep", None
+        else:
+            winner_F, score_gap = "neither_printed", None
+
+        row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "symbol": symbol,
+            "regime": regime,
+            "bounce_printed": bounce_printed,
+            "bounce_score": bounce_score,
+            "bounce_side": bounce.setup_result.side.value if (bounce_printed and bounce.setup_result.side) else None,
+            "bounce_level_type": _bounce_level_type(bounce.confirmations) if bounce_printed else None,
+            "sweep_printed": sweep_printed,
+            "sweep_score": sweep_score,
+            "sweep_side": sweep.setup_result.side.value if (sweep_printed and sweep.setup_result.side) else None,
+            "sweep_source": _sweep_source(sweep.confirmations) if sweep_printed else "none",
+            "winner_F": winner_F,
+            "score_gap": score_gap,
+            "blocked_cluster_sibling": sibling_blocked_this_bar,
+            "filled_name": None,
+            "R": None,
+            "fees": None,
+        }
+        # Only bounce/sweep were eligible to run at all this bar? The row is
+        # still written even when neither printed (matches the spec: the
+        # denominator for print rate needs the "eligible but silent" bars
+        # too), but skip entirely if neither scanner was even routed for
+        # this regime (e.g. low_liquidity) — no eligibility, no row.
+        if bounce is None and sweep is None:
+            return
+        _JOINT_BAR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_JOINT_BAR_LOG_PATH, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        logger.debug("joint bar log write failed", exc_info=True)
 
 # ---------------------------------------------------------------------------
 # Setup result containers
@@ -2409,7 +2525,17 @@ class ScalpStrategy(BaseStrategy):
         # themselves), which is exactly how one flagship scanner ends up
         # owning nearly every fill. After this, "multiple scanners agree"
         # can only mean multiple independent clusters agreeing.
+        _sibling_before = self._funnel.get("blocked_cluster_sibling", 0)
         tradeable = _apply_cluster_mutex(tradeable, self._funnel, is_learning=self._is_learning)
+        # ── Joint bar log: structure_bounce vs liquidity_sweep (2026-09-15) ──
+        # Read-only instrument, logged from scan_results (every routed
+        # scanner, triggered or not) so it reflects both candidates exactly
+        # as F saw them — before the confluence bonus below can still mutate
+        # weighted_score for whichever one survived the mutex.
+        _log_joint_bar(
+            symbol=symbol, regime=regime, scan_results=scan_results,
+            sibling_blocked_this_bar=self._funnel.get("blocked_cluster_sibling", 0) > _sibling_before,
+        )
         if not tradeable:
             self.last_scan_status[symbol] = {
                 "time": now_iso, "signal": False,

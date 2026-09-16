@@ -3393,92 +3393,68 @@ class ScalpStrategy(BaseStrategy):
             and getattr(best, 'confidence', 100) < 75
         )
 
-        # ── P3.11 CHOP REGIME LONG GATE ──
-        # Data: 5 of 5 formal real trades today were LONG SCALP structure_bounce
-        # in high_volatility/mean_reversion regimes, all failed (mfe_3min_dead,
-        # early_kill, sl_hit). Paper historical showed 97% of losses in chop.
-        # Today's formal real trades had 0% WR in chop longs.
+        # ── P3.11 CHOP LONG / HTF GATE (renamed 2026-09-16, was "P3.11 CHOP
+        # REGIME LONG GATE") ──
+        # Confirmed 2026-09-16: this has never been an ML gate in practice.
+        # _SetupResult carries no ml_probability at this point in the
+        # pipeline (ML is scored further down), so the old ml_prob<0.55
+        # term was always comparing against a hardcoded 0.0 literal — always
+        # true, no real ML content. Renamed and the dead ml_prob term
+        # dropped rather than wired to a real value: doing that now would
+        # tighten or loosen this regime-side gate based on the live model's
+        # probability distribution with no reliability table to justify a
+        # cutoff — that's a holdout decision, not a bugfix, and is
+        # deliberately not made here. See
+        # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md.
         #
-        # Rule: block LONG SCALPs in chop regimes when BOTH:
-        #   1. regime in (high_volatility, mean_reversion, sideways) — chop
-        #   2. ml_probability < 0.55 (ML doesn't strongly believe)
-        #   3. htf_bias <= 0 (no bullish tailwind)
+        # The live rule (unchanged): block LONG in a chop regime
+        # (high_volatility, mean_reversion, sideways) when HTF isn't
+        # bullish and the setup isn't structure_bounce. Same family as
+        # Veto 10 (regime-vs-side), not an ML check.
         #
-        # ML-bless escape: if ml_prob >= 0.55 AND htf_bias > 0, trade passes.
-        # A+ grade escape: grade=A+ overrides everything (high conviction preserved).
+        # The header used to also claim an "A+ grade escape" — that was
+        # tested on a two-fold 158k-candidate population (2026-09-14) and
+        # found to be the single worst-performing subgroup, then removed;
+        # the boolean below has never had a grade term. Grade is still
+        # computed for the log line (informational only, real value from
+        # confidence — not misleading the way the dead ml_prob was).
         if not hasattr(self, '_p3_11_chop_long_gate'):
             self._p3_11_chop_long_gate = True  # default ON
         _chop_regimes_p311 = ("high_volatility", "mean_reversion", "sideways")
         _side_str_p311 = best.side.value if best.side else ""
         _regime_lower_p311 = str(regime).lower() if regime else ""
-        # (2026-09-11 audit) _SetupResult has neither ml_probability nor grade,
-        # and ML is scored further down the pipeline, so both escapes were
-        # inert: ml_prob was always 0.0 and grade always ''. Grade is derived
-        # from confidence exactly as _build_signal will (A+ = conf >= 90).
-        # The ML-bless escape cannot exist at this point in the pipeline.
-        _ml_prob_p311 = 0.0
         try:
             from config.constants import confidence_to_grade as _c2g
             _g = _c2g(int(getattr(best, 'confidence', 0) or 0))
             _grade_p311 = str(getattr(_g, "value", _g))
         except Exception:
             _grade_p311 = "A+" if int(getattr(best, 'confidence', 0) or 0) >= 90 else ""
-        # (2026-09-12) structure_bounce is exempt from the chop-long traps.
+        # (2026-09-12) structure_bounce is exempt from the chop-long trap.
         # 47k historical setups: its LONGS are the only half with a positive
         # forward move (+0.35 ATR at 4h) and its SHORTS lose (-0.51 ATR).
-        # These gates made the live bot short-only in sideways markets
+        # This gate made the live bot short-only in sideways markets
         # (26 of 28 archived trades, 11 of 11 last night) — the worse half.
         _is_sb_setup = (getattr(best, "name", "") == "structure_bounce")
-        # (2026-09-14) Two-fold gate (158k candidates, 6 symbols, full cached
-        # history, old/new fold split) on the exact P3.11 population:
-        # non-SB LONG in a chop regime with htf_bias<=0, sliced by grade.
-        # A+ was the ONLY grade to clear +/-0.15 ATR at 48 bars in BOTH folds
-        # — ret48 -0.598 (new) / -0.196 (old), both negative, both well past
-        # the bar. A/B/C/REJECT did not clear it in both folds (sign or
-        # magnitude disagreed) so they're left as-is. The A+ override was
-        # meant to preserve high-conviction trades; on this exact slice it's
-        # instead the single worst-performing subgroup in the whole gate —
-        # removed. See scratchpad note from tonight's veto/P3.11 gate run.
         _chop_long_trap = (
             self._p3_11_chop_long_gate
             and not _is_sb_setup
             and _side_str_p311 == "long"
             and _regime_lower_p311 in _chop_regimes_p311
             and htf_bias <= 0  # no bullish HTF support
-            and _ml_prob_p311 < 0.55  # ML not strongly bullish (currently always true; see audit above)
         )
 
-        # ── P3.7 SIDEWAYS SCANNER-SPECIFIC GATE (DATA-DRIVEN 2026-04-10) ──
-        # Source: Phase 3.18 loss taxonomy — 47 of 68 losses (70% of $ loss)
-        # came from structure_bounce:sideways:long specifically.
-        #
-        # P3.11 only blocks chop longs when htf_bias <= 0. This misses sideways
-        # trades where HTF is neutral/bullish but price action is still chop.
-        # The data shows THOSE trades are equally deadly.
-        #
-        # Rule: block structure_bounce LONG in SIDEWAYS regime when:
-        #   1. is_sb (structure_bounce only)
-        #   2. regime exactly == sideways (not high_volatility, not ranging)
-        #   3. side = long
-        #   4. confidence < 75 (high-conf preserved)
-        #   5. ml_prob < 0.60 (ML escape hatch)
-        #   6. grade != A+ (A+ override preserved)
-        #
-        # This is SURGICAL: doesn't touch short trades, doesn't touch non-SB,
-        # doesn't touch high-vol/mean-rev (those are covered by P3.11 when
-        # htf aligned against). ONLY targets the exact 47-loss combo.
-        if not hasattr(self, '_p3_7_sideways_sb_long_gate'):
-            self._p3_7_sideways_sb_long_gate = True  # default ON
-        _conf_p37 = getattr(best, 'confidence', 100)
-        _p37_sideways_trap = (
-            self._p3_7_sideways_sb_long_gate
-            and is_sb
-            and _regime_lower_p311 == "sideways"
-            and _side_str_p311 == "long"
-            and _conf_p37 < 75
-            and _ml_prob_p311 < 0.60
-            and _grade_p311 != "A+"
-        )
+        # ── P3.7 SIDEWAYS SB LONG GATE — deleted 2026-09-16 ──
+        # Confirmed permanently dead by a self-contradiction, not by
+        # accident: it required is_sb (structure_bounce) to set the trap,
+        # then only fired the veto `if _p37_sideways_trap and not
+        # _is_sb_setup` — the same fact checked twice with opposite
+        # polarity, so it could never be true. Its own comment already said
+        # "the gate was built on the phantom-fill ledger. Disabled." Left
+        # in place it was a landmine: fixing either half of that
+        # contradiction independently (e.g. "is_sb should be is_sb_setup
+        # for consistency") would have silently re-armed a gate that was
+        # deliberately neutered. Deleted rather than left inert. See
+        # docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md.
 
         hard_vetos = []
         # (2026-09-11 audit) this used to re-initialise soft_vetos, silently
@@ -3487,35 +3463,17 @@ class ScalpStrategy(BaseStrategy):
         soft_vetos = soft_vetos if isinstance(soft_vetos, list) else []
         conf_penalty = 0
 
-        # ── P3.11: fire chop-long gate BEFORE veto loop (synthetic hard veto) ──
+        # ── P3.11: fire chop-long/HTF gate BEFORE veto loop (synthetic hard veto) ──
         if _chop_long_trap:
             hard_vetos.append(
-                f"P3.11 CHOP LONG TRAP: regime={_regime_lower_p311} "
-                f"htf={htf_bias} ml={_ml_prob_p311:.2f} grade={_grade_p311} [P3_11_CHOP_LONG_HARD]"
+                f"P3.11 CHOP LONG HTF: regime={_regime_lower_p311} "
+                f"htf={htf_bias} grade={_grade_p311} [P3_11_CHOP_LONG_HTF]"
             )
             try:
                 from bot import pipeline_metrics as _pm
                 _pm.record_hotfix_veto(
-                    "p3_11_chop_long_block",
-                    f"{symbol}_{_regime_lower_p311}_ml{_ml_prob_p311:.2f}_htf{htf_bias}"
-                )
-            except Exception:
-                pass
-
-        # ── P3.7: fire sideways scanner-specific gate ──
-        # (2026-09-12) P3.7 only ever targeted structure_bounce longs in
-        # sideways regimes. History says those are the scanner's best side;
-        # the gate was built on the phantom-fill ledger. Disabled.
-        if _p37_sideways_trap and not _is_sb_setup:
-            hard_vetos.append(
-                f"P3.7 SIDEWAYS SB LONG: regime=sideways "
-                f"conf={_conf_p37} ml={_ml_prob_p311:.2f} grade={_grade_p311} [P3_7_SIDEWAYS_SB_HARD]"
-            )
-            try:
-                from bot import pipeline_metrics as _pm
-                _pm.record_hotfix_veto(
-                    "p3_7_sideways_sb_long",
-                    f"{symbol}_conf{_conf_p37}_ml{_ml_prob_p311:.2f}_grade{_grade_p311}"
+                    "p3_11_chop_long_htf",
+                    f"{symbol}_{_regime_lower_p311}_htf{htf_bias}"
                 )
             except Exception:
                 pass
@@ -7557,13 +7515,15 @@ class ScalpStrategy(BaseStrategy):
                 pass
 
         # ══════════════════════════════════════════════════════
-        # STEP 3: FINAL SL = max(structure, volatility), clamped 0.4-1.2%
+        # STEP 3: FINAL SL = max(structure, volatility), clamped to
+        # [self.min_sl_pct, self.max_sl_pct] (0.55%-0.95% as configured
+        # 2026-09-16 — corrected from a stale "0.4-1.2%" comment)
         # ══════════════════════════════════════════════════════
         sl_dist = max(struct_sl_dist, vol_sl_dist)
 
-        # Clamp to [0.4%, 1.2%] of entry price
-        min_sl_dist = entry * self.min_sl_pct / 100   # 0.4%
-        max_sl_dist = entry * self.max_sl_pct / 100   # 1.2%
+        # Clamp to [self.min_sl_pct, self.max_sl_pct] of entry price
+        min_sl_dist = entry * self.min_sl_pct / 100
+        max_sl_dist = entry * self.max_sl_pct / 100
         sl_dist = max(min_sl_dist, min(sl_dist, max_sl_dist))
 
         # Add 0.1% execution buffer for slippage

@@ -280,3 +280,41 @@ Suite after this batch: 325 passed / 11 failed, unchanged from before (no regres
 - **Fixed, occupancy-neutral (shipped in `9ea0c8d`)**: the `scanner_funnel.jsonl` "reason" text comes from a separate, single-bar shadow-diagnostic block (~lines 1940-2075) that had drifted from the real per-scanner code in two confirmed cases — `trend_continuation`'s diagnostic asserted an RSI 40-58/42-60 gate that **does not exist anywhere in the real scanner** (verified full read: the real gate is EMA8/21 direction + 0.01% gap, then an 8-bar impulse→pullback→trigger sequence with no RSI check at all), and `rsi_divergence`'s diagnostic quoted `<40`/`>60` cutoffs against a real gate of `rsi_now<52`/`>48` with the swing's own RSI past `42`/`55` and a 4+pt gap. Both corrected to match the real code. `vwap_mean_revert` had no diagnostic entry at all (logged `""` for every non-trigger, including its silent stochastic/OBV veto) — added one. Verified this whole diagnostic dict only feeds near-miss dashboard tiles and funnel bookkeeping, never `scan_results.setup_result` — none of this touched step F, cluster mutex, or trade selection.
 
 **Two decisions still open, need explicit sign-off before either is touched**: (1) `bos_choch`'s second 55%-body confirmation gate — keep or drop; (2) `ema_momentum`'s zero-print status — quarantine or accept. `vwap_band` exclusion from `structure_bounce` (carried over from the prior section) remains blocked on sample size — still only 54 joint-bar-log rows as of last check.
+
+## Full forming→entry→exit walkthrough, all 14 scanners (2026-09-16)
+
+Companion to the print-rate table above: for each routed scanner, what has to build up before it prints ("forming"), the exact trigger/entry-price/stop-loss formula ("entry"), and how it exits. The exit mechanism turned out to be **identical for 13 of 14 scanners** and is documented once rather than per-scanner:
+
+- `entry_price`/`stop_loss` in the *raw* `_SetupResult` a scanner returns are **not** what ends up on the trade — see the `_scanner_sl_tp` correction below. The scanner's own SL is only the "structure" candidate fed into `_build_signal`.
+- `_build_signal` (lines ~7470-7620) computes `sl_dist = max(structure_component, ATR × per-scanner sl_atr × self._sl_adjust)`, then **clamps to [`self.min_sl_pct`, `self.max_sl_pct`] = [0.55%, 0.95%] of entry price**, plus a 0.1% slippage buffer. Every scanner's real stop distance lands in that band regardless of how tight or wide its own raw formula looked.
+- `trade_type = classify_trade(sig)` (ML-probability tiers + context upgrades) decides TP1/TP2/TP3 as `entry ± risk_dist × TRADE_TYPE_CONFIG[trade_type]["tpN_rr"]` — **unless** `SCANNER_TRADE_TYPE` overrides it. Today that override list has exactly one entry: `structure_bounce → RUNNER`, unconditional.
+- Partial exits (35%/35%/30% at TP1/TP2/trail), the chandelier trail (active once MFE≥0.3R), and the 8h max-age ladder are shared infrastructure, not per-scanner.
+
+**Correction — `_scanner_sl_tp` is not unused, contrary to the premise raised for it.** It has two live, real consumers: (1) the fee-viability pre-gate (~line 3823) that hard-blocks trade *creation* if the scanner's calibrated `tp1_rr` implies too small an expected move relative to fees, and (2) the ATR-volatility-floor term inside `_build_signal`'s SL clamp described above. Deleting it, as originally proposed, would have silently changed every scanner's real stop-loss distance and removed a live risk gate — not done. What *was* confirmed dead and removed: 4 `signal.metadata` fields (`scanner_sl_atr`/`tp1_rr`/`tp2_rr`/`tp3_rr`) that displayed these calibrated values as if they were the trade's real exit levels — repo-wide grep confirmed nothing ever read them back, `TrackedSignal.from_signal()` always recomputes TP1/TP2/TP3 from `TRADE_TYPE_CONFIG` instead.
+
+**Per-scanner forming→entry, condensed** (full prose version was posted to chat 2026-09-16, not duplicated here in full):
+
+- **structure_bounce** (forced RUNNER): 07:00-15:00 UTC hard window → rejection wick at nearest S/R (excludes `order_block`, still allows `vwap_band` — unresolved) → confirmation candle → silent stoch/OBV veto (now has a diagnostic string, see below). SHORT disabled by default. `entry=close`.
+- **liquidity_sweep**: equal-high/low or rolling-fallback sweep+reclaim → hard gate `body_ratio≥0.55`. `entry=close`, `SL=wick∓0.15×ATR` (tightest raw SL of any scanner, though still clamped to 0.55%-0.95% downstream).
+- **bos_choch**: 18-bar range break, displacement>0.6×ATR, **two separate consecutive candles** each needing body≥55% in-direction (confirm bar at `[-2]`, a second "MSS" check at `[-1]` — confirmed genuinely two different bars, not a duplicate).
+- **order_block_entry**: unbounded-lifetime OB zone (1.5×ATR impulse to form, any later wick mitigates forever) → **`entry_price = zone midpoint`, the only scanner that isn't a market/close entry.**
+- **rsi_divergence** / **cvd_divergence**: swing-extreme + RSI or CVD-proxy divergence, standard routing.
+- **vwap_mean_revert** / **rsi_extreme**: band/RSI extreme + reversal candle; `rsi_extreme`'s docstring said `<30`/`>70`, code gates at `<35`/`>65` — fixed.
+- **ema_momentum** (0% print): EMA cross → pullback → RSI turn → volume, **but bearish crosses are hard-blocked outright**, halving eligible events before the rest of the 5-condition chain even runs.
+- **trend_continuation** / **bb_squeeze** / **volume_surge** / **post_impulse**: impulse/squeeze/breakout + volume gates, standard routing; `post_impulse` LONG-only, `trending_up`-only.
+- **candlestick_reversal**: 4 exclusive patterns at a 10-bar swing extreme, standard routing.
+
+## Mechanical fixes shipped (`b9a6847`, 2026-09-16)
+
+- `rsi_extreme` docstring corrected (`<30`/`>70` → `<35`/`>65`, matching code).
+- `_build_signal`'s docstring corrected (stale "0.4-1.2%" SL clamp comment → real `0.55%/0.95%`).
+- `structure_bounce` given a real shadow-diagnostic entry (previously logged `""` for every non-trigger) — reports outside-session-window status and the stoch/OBV veto, same pattern as `vwap_mean_revert`'s fix in `9ea0c8d`.
+- `liquidity_sweep`: deleted a confirmed-unreachable dead branch (`sweep_depth<0.35 and body_ratio<0.55` — the hard gate above it already returns `None` whenever `body_ratio<0.55`, so this could never be true).
+- `liquidity_sweep`: removed **double-counted** `rel_vol` scoring — the eq-high/eq-low branch scored it once, an unconditional Step 5 scored the same value again for every path (including the rolling-fallback branch, which never got the first score at all). Left Step 5 as the single, uniform scoring point. **Flagged explicitly**: this is a real, if modest, confidence reduction for eq-based sweep signals specifically — not dead code, a scoring change, done on explicit instruction.
+- Removed the 4 write-only `signal.metadata` fields described in the correction above.
+
+Suite: 325 passed / 11 failed, unchanged. Bot restarted clean.
+
+## Still open (unchanged, no new decisions made)
+
+`bos_choch`'s second confirmation gate (keep/drop), `ema_momentum`'s zero-print status (quarantine/accept), `vwap_band` exclusion from `structure_bounce` (blocked on sample size), `SCANNER_TRADE_TYPE["structure_bounce"]=RUNNER` (keep forced vs. let `classify_trade()` decide — raised 2026-09-16, needs its own holdout on bounce's mean R and `fee_drag_r` specifically), and the three-tuple reversion-scanner membership question for `rsi_extreme` in Veto 10/P0.8 (unresolved: does `rsi_extreme` get to fade `trending_up`?).

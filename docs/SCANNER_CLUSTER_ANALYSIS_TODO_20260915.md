@@ -315,6 +315,28 @@ Companion to the print-rate table above: for each routed scanner, what has to bu
 
 Suite: 325 passed / 11 failed, unchanged. Bot restarted clean.
 
+## `classify_trade()` exit tiers, the 4-layer fee gate, and the P3.11/P3.7 correction (2026-09-16)
+
+**Correction to a prior turn's claim: `_scanner_sl_tp` is confirmed correctly held, not deleted** — reaffirmed by a second, independent pass. The 0.55%-0.95% clamp in `_build_signal` is the real risk band; raw scanner SL formulas (sweep's 0.15×ATR, bounce's `min(2×ATR, 0.5%)`) are only inputs to `max(structure, volatility)` before that clamp applies. "Tiny SL" concerns need post-clamp `sl_pct` logged per ticket before they're a real finding, not the raw formula read in isolation.
+
+**The fee gate is 4 layers deep, not 2** (all inside `TrackedSignal.from_signal`, `bot/signal_tracker.py`) — the earlier writeup only had the first two:
+1. `fee_drag_r > 0.8` → hard block, `confidence=0` (line ~602).
+2. `fee_drag_r >= 0.6` (`not fee_check["viable"]`) → soft block, `confidence=0` (line ~613).
+3. **P4 hotfix** (line ~626): `fee_drag_r > 0.30` AND `trade_type in (SCALP, INTRADAY)` AND `regime in (high_volatility, sideways, ranging, quiet)` → block. This is the one firing live in the current bot log ("FEE BLOCK P4... fee_drag=0.49R (>0.30)").
+4. **FIX B universal cap** (line ~661): `fee_drag_r > 0.50`, any trade_type, any regime → block. Added after RUNNER trades were found bypassing layer 3 entirely (P4 only covers SCALP/INTRADAY).
+
+Given `liquidity_sweep`'s tight raw SL (0.15×ATR, though clamped same as everyone else), layers 3/4 are a real candidate for why its 13.8% print rate doesn't translate to a proportional fill rate — flagged as a slice to check in the print→F→fee_drag→fill join, not yet measured.
+
+**`classify_trade()` base tiers** (`bot/signal_tracker.py:127-132`, confirmed): `ml_prob≥0.65`→RUNNER (1.5/3.0/5.0R), `≥0.50`→INTRADAY (1.2/2.0/3.0R), else SCALP (0.8/1.2R, no TP3). Default on a missing `ml_probability` key is `0.5` → lands in INTRADAY, indistinguishable from a real mid-confidence model output. `SCANNER_TRADE_TYPE["structure_bounce"]=RUNNER` overrides this unconditionally for bounce only, bypassing both the 0.65 cut and the ranging-regime RUNNER→INTRADAY chop downgrade that applies to every other scanner.
+
+**P3.11 / P3.7 — confirmed not ML gates, matching a self-documented in-code audit** (`strategies/scalp_strategy.py:3396-3521`), same treatment as the `_scanner_sl_tp` correction:
+- `_ml_prob_p311 = 0.0` (line 3419) is a bare literal — never read from `best`, `indicators`, or anywhere. The code's own 2026-09-11 comment already says why: *"_SetupResult has neither ml_probability nor grade, and ML is scored further down the pipeline... both escapes were inert."* Confirmed, not newly discovered.
+- **P3.11** therefore always evaluates its `ml_prob<0.55` term as true — it's really `chop-regime(high_vol/mean_rev/sideways) + LONG + htf_bias≤0 + not structure_bounce`, no ML content despite the name. Its own header comment claims an "A+ grade escape" that a later audit note *in the same comment block* says was tested and removed for being the worst-performing subgroup — the header is stale, the code (no grade term in the boolean) matches the removal.
+- **P3.7** is confirmed permanently dead by a self-contradiction, not an accident: `_p37_sideways_trap` requires `is_sb` (line 3475), but the firing condition at line 3509 is `if _p37_sideways_trap and not _is_sb_setup:` — the same fact checked twice with opposite polarity, so it can never fire. Matches its own comment: "Disabled."
+- **Open decision, not implemented**: stamp `ml_probability` before this point in the pipeline so the term means something, or delete the dead clause and rename P3.11 for what it actually gates. Not a threshold question — a stamp-or-don't-read question. Holding per explicit instruction.
+
+**Next real deliverable, not computed yet**: a reliability table (Brier score, ECE via equal-mass bins, mean-`p`-vs-WR-vs-mean-R per bin) on closed bounce fills, using the `p` actually stamped at signal time, with `ABSTAIN`/missing/injected-0.5 rows dropped. `y` defined as net-R-after-fees, not TP1-hit. Needs ~200 scored fills per slice (scanner×regime×side) to be meaningful — bounce is the only scanner with a plausible shot at that count soon; sweep's ~19 fills is not a curve. Until this exists, 0.50/0.65 are uncalibrated policy, not probabilities, and are not being retuned.
+
 ## Still open (unchanged, no new decisions made)
 
-`bos_choch`'s second confirmation gate (keep/drop), `ema_momentum`'s zero-print status (quarantine/accept), `vwap_band` exclusion from `structure_bounce` (blocked on sample size), `SCANNER_TRADE_TYPE["structure_bounce"]=RUNNER` (keep forced vs. let `classify_trade()` decide — raised 2026-09-16, needs its own holdout on bounce's mean R and `fee_drag_r` specifically), and the three-tuple reversion-scanner membership question for `rsi_extreme` in Veto 10/P0.8 (unresolved: does `rsi_extreme` get to fade `trending_up`?).
+`bos_choch`'s second confirmation gate (keep/drop), `ema_momentum`'s zero-print status (quarantine/accept), `vwap_band` exclusion from `structure_bounce` (blocked on sample size), `SCANNER_TRADE_TYPE["structure_bounce"]=RUNNER` (keep forced vs. let `classify_trade()` decide — needs its own holdout on bounce's mean R and `fee_drag_r` specifically), the three-tuple reversion-scanner membership question for `rsi_extreme` in Veto 10/P0.8, and P3.11/P3.7's stamp-vs-rename decision above. All explicitly on hold pending the reliability-table read.

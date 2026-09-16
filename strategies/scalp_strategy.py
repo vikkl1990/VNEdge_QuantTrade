@@ -2052,6 +2052,31 @@ class ScalpStrategy(BaseStrategy):
         # Liquidity Sweep: needs stop hunt at equal highs/lows with reclaim
         scanner_diagnostics["Liquidity Sweep"] = "Scanning for stop hunt at equal highs/lows with reclaim"
 
+        # Structure Bounce: hard-gated to 07:00-15:00 UTC (2026-09-12, see the
+        # real scanner), then a rejection-wick+confirmation sequence at
+        # nearest_support/resistance, then the same silent stoch/OBV filter
+        # as VWAP Mean Revert. Previously had no diagnostic entry at all
+        # (funnel logged "" for every non-trigger) — added 2026-09-16 so
+        # "outside session" bars don't read as "scanner broken."
+        try:
+            _sb_win = getattr(self, "structure_bounce_hours_utc", (7, 15))
+            _sb_t = last_row_diag.get("timestamp") if "timestamp" in df.columns else df.index[-1]
+            _sb_hour = pd.to_datetime(_sb_t, utc=True).hour
+        except Exception:
+            _sb_hour = None
+        if _sb_hour is not None and not (_sb_win[0] <= _sb_hour < _sb_win[1]):
+            scanner_diagnostics["Structure Bounce"] = f"Outside session window (UTC hour {_sb_hour}, needs {_sb_win[0]:02d}:00-{_sb_win[1]:02d}:00) — scanner does not run"
+        else:
+            _sb_sm = self._structure_map
+            _sb_sup = getattr(_sb_sm, "nearest_support", None) if _sb_sm else None
+            _sb_res = getattr(_sb_sm, "nearest_resistance", None) if _sb_sm else None
+            _sb_stk = float(last_row_diag.get("stoch_k", 50))
+            _sb_obv = float(last_row_diag.get("obv_slope", 0))
+            if _sb_sup is not None and getattr(_sb_sup, "level_type", "") != "order_block" and (_sb_stk > 80 or _sb_obv < -1.5):
+                scanner_diagnostics["Structure Bounce"] = f"In session, support at ${_sb_sup.price:.0f} but stoch/OBV filter would block LONG (stoch_k={_sb_stk:.0f}>80 or obv_slope={_sb_obv:.1f}<-1.5)"
+            else:
+                scanner_diagnostics["Structure Bounce"] = "In session — checking S/R rejection-wick + confirmation sequence"
+
         # VWAP Mean Revert: needs price beyond a VWAP band + reversal wick, then a
         # silent stochastic/OBV filter that used to return None with no reason
         # logged anywhere (2026-09-15 audit) — added here so scanner_funnel.jsonl
@@ -4322,12 +4347,18 @@ class ScalpStrategy(BaseStrategy):
         except Exception:
             signal.metadata["in_kill_zone"] = True  # default allow
 
-        # ── Per-scanner SL/TP config ──
-        if scanner_exits:
-            signal.metadata["scanner_sl_atr"] = scanner_exits.get("sl_atr", self.sl_atr_mult)
-            signal.metadata["scanner_tp1_rr"] = scanner_exits.get("tp1_rr", self.tp1_rr)
-            signal.metadata["scanner_tp2_rr"] = scanner_exits.get("tp2_rr", self.tp2_rr)
-            signal.metadata["scanner_tp3_rr"] = scanner_exits.get("tp3_rr", self.tp3_rr)
+        # ── Per-scanner SL/TP config metadata — removed (2026-09-16) ──
+        # signal.metadata["scanner_sl_atr"/"scanner_tp1_rr"/"tp2_rr"/"tp3_rr"]
+        # used to be written here from `scanner_exits` (= self._calibrated_sl_tp
+        # for this scanner). Confirmed write-only: grepped the whole repo
+        # (Python/JS/HTML), nothing ever reads these 4 metadata keys back —
+        # they implied these RR values determined the trade's real TP/SL,
+        # when TrackedSignal.from_signal() actually recomputes TP1/TP2/TP3
+        # from TRADE_TYPE_CONFIG[trade_type] unconditionally. Removed the
+        # misleading display fields; `_scanner_sl_tp`/`_calibrated_sl_tp`
+        # themselves are NOT touched — they still gate the fee-viability
+        # pre-check (~line 3823) and the real ATR-based SL floor in
+        # _build_signal (~line 7491), both live and unaffected by this.
 
         # ── Scalper window: attach to signal for tracker to enforce ──
         coin_base = symbol.split("/")[0] if "/" in symbol else symbol[:3]
@@ -5734,13 +5765,12 @@ class ScalpStrategy(BaseStrategy):
             elif sweep_size > 0.15:
                 score += 10
 
-            # Volume on reclaim candle (key confirmation)
-            rel_vol = float(last.get("rel_vol", 1.0))
-            if not np.isnan(rel_vol) and rel_vol > 1.3:
-                score += 10
-                confs.append(f"Volume reclaim {rel_vol:.1f}x")
-            elif not np.isnan(rel_vol) and rel_vol > 1.0:
-                score += 5
+            # (2026-09-16) Volume-on-reclaim scoring removed here — Step 5
+            # below scores the same rel_vol unconditionally for every path
+            # (eq-based and rolling-fallback alike), so this double-counted
+            # it for eq-based sweeps specifically (up to +10 twice) while
+            # the fallback path below got it only once. Single scoring
+            # point now, applied uniformly regardless of detection path.
 
         # SHORT: Price raids above equal highs, closes back below
         if side is None and eq_high_level > 0 and high > eq_high_level and close < eq_high_level:
@@ -5756,13 +5786,9 @@ class ScalpStrategy(BaseStrategy):
             elif sweep_size > 0.15:
                 score += 10
 
-            # Volume on reclaim candle
-            rel_vol = float(last.get("rel_vol", 1.0))
-            if not np.isnan(rel_vol) and rel_vol > 1.3:
-                score += 10
-                confs.append(f"Volume reclaim {rel_vol:.1f}x")
-            elif not np.isnan(rel_vol) and rel_vol > 1.0:
-                score += 5
+            # (2026-09-16) Volume-on-reclaim scoring removed here too — see
+            # the matching note in the LONG branch above; Step 5 below is
+            # now the single scoring point for rel_vol.
 
         # Fallback: rolling min/max sweep (simpler, more reliable)
         if side is None:
@@ -5814,10 +5840,12 @@ class ScalpStrategy(BaseStrategy):
             sweep_depth = (sweep_level - low) / atr if atr > 0 else 0
         else:
             sweep_depth = (high - sweep_level) / atr if atr > 0 else 0
-        if sweep_depth < 0.35 and body_ratio < 0.55:
-            score -= 8  # shallow sweep + weak reclaim = noise
-            confs.append(f"Shallow sweep ({sweep_depth:.2f} ATR)")
-        elif sweep_depth > 0.5:
+        # (2026-09-16) Deleted a dead "shallow sweep + weak reclaim" penalty
+        # branch here (`sweep_depth < 0.35 and body_ratio < 0.55`) — the
+        # hard gate at line ~5797 already returns None whenever
+        # body_ratio < 0.55, so that AND-clause could never be true.
+        # Confirmed occupancy/score-neutral: the branch never fired.
+        if sweep_depth > 0.5:
             score += 5
             confs.append(f"Deep sweep ({sweep_depth:.2f} ATR)")
 
@@ -6599,11 +6627,13 @@ class ScalpStrategy(BaseStrategy):
     ) -> Optional[_SetupResult]:
         """Catch reversals from extreme oversold/overbought conditions.
 
-        LONG:  RSI < 30 (oversold) + bullish reversal candle + RSI turning up
-        SHORT: RSI > 70 (overbought) + bearish reversal candle + RSI turning down
+        LONG:  RSI < 35 (oversold) + bullish reversal candle + RSI turning up
+        SHORT: RSI > 65 (overbought) + bearish reversal candle + RSI turning down
 
         This fills the gap when all other scanners fail during extreme moves.
         """
+        # Docstring corrected 2026-09-16: previously said <30/>70, actual
+        # gate below is <35/>65 (has been since at least this audit).
         if len(df) < 5:
             return None
 
@@ -7476,7 +7506,10 @@ class ScalpStrategy(BaseStrategy):
 
         Risk framework priorities:
         1. LIQUIDATION SAFETY — SL must be well inside liquidation buffer
-        2. STRUCTURE + VOLATILITY SL — max(swing SL, ATR SL), clamped 0.4-1.2%
+        2. STRUCTURE + VOLATILITY SL — max(swing SL, ATR SL), clamped to
+           [self.min_sl_pct, self.max_sl_pct] of entry price (0.55%-0.95%
+           as configured 2026-09-16 — corrected from a stale "0.4-1.2%"
+           comment here that no longer matched self.min_sl_pct/max_sl_pct)
         3. TP LEVELS — TP1≥1:1, TP2≥1.5:1, TP3≥2:1, all > 2× fees
         4. REGIME ADAPTATION — wider TPs in trends, tighter in ranges
         """

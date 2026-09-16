@@ -173,8 +173,24 @@ def classify_trade(signal_dict: dict) -> str:
                     signal_dict.get("symbol", ""), signal_dict.get("side", ""), _forced, _setup)
         return _forced
 
+    # ── ML abstain/stale handling (2026-09-16) ──
+    # ml_probability is now a real None on ABSTAIN/STALE_MODEL/UNREACHABLE/
+    # API_ERROR (stamped once in strategies/scalp_strategy.py, no longer
+    # silently coerced to 0.5 there). A missing model score is not a real
+    # mid-tier signal -- fall back to the most conservative tier instead of
+    # letting a fake 0.5 pick INTRADAY. Confirmed via explicit sign-off:
+    # this is a real occupancy change (STALE_MODEL alone was ~1/3 of
+    # closed structure_bounce trades at the time of this fix), not a
+    # cosmetic one.
+    _ml_prob_raw = meta.get("ml_probability")
+    if _ml_prob_raw is None:
+        meta["ml_tier_reason"] = "ml_abstain"
+        logger.info("TRADE TYPE: %s %s → SCALP (ml_probability abstain/stale, no real model score)",
+                    signal_dict.get("symbol", ""), signal_dict.get("side", ""))
+        return TRADE_TYPE_SCALP
+
     # Primary: ML probability
-    ml_prob = float(meta.get("ml_probability", 0.5))
+    ml_prob = float(_ml_prob_raw)
 
     # Context factors
     regime = str(meta.get("regime", "")).lower()

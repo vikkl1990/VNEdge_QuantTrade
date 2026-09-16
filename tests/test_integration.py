@@ -415,6 +415,18 @@ class TestTradeClassification:
         sig = _make_signal(ml_probability=0.55, regime="ranging", htf_bias=0, vwap_zone="noise")
         assert classify_trade(sig) == TRADE_TYPE_SCALP
 
+    def test_classify_ml_abstain_falls_back_to_scalp(self):
+        # (2026-09-16) ml_probability is now a real None when the ML scorer
+        # abstains/is stale (strategies/scalp_strategy.py stamps this once,
+        # no longer silently coercing to a fake 0.5). A missing model score
+        # is not a real mid-tier signal, so classify_trade must fall back to
+        # the most conservative tier (SCALP) rather than landing on
+        # INTRADAY via an old default of 0.5 -- and must not crash on the
+        # trend/HTF context that would otherwise upgrade a real 0.55.
+        sig = _make_signal(ml_probability=None, regime="trending_up", htf_bias=1, vwap_zone="clear")
+        assert classify_trade(sig) == TRADE_TYPE_SCALP
+        assert sig["metadata"]["ml_tier_reason"] == "ml_abstain"
+
 
 # ═══════════════════════════════════════════════════════════════
 # TEST 7: Fee Calculation

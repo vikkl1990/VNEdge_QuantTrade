@@ -3872,6 +3872,19 @@ class ScalpStrategy(BaseStrategy):
             ml_verdict = ml_result.get("verdict", "?")
             ml_latency = ml_result.get("latency_ms", 0)
             ml_is_abstain = str(ml_verdict).startswith("ABSTAIN")
+            # ── Single stamp point (2026-09-16) ──
+            # ml_prob (above) stays a coerced-to-0.5 *local* working number —
+            # every in-function threshold comparison below already gates on
+            # ml_is_abstain separately before acting on it, so it's safe to
+            # leave as a placeholder float. stamped_ml_probability is the one
+            # value that leaves this function (into signal.metadata below):
+            # a real None on abstain/stale/unreachable/API-error, never a
+            # fake 0.5. This replaces a second, independent re-derivation
+            # that used to live at the metadata-write site further down —
+            # same failure class as the old P3.11 hardcoded-0.0 bug, just
+            # for the real probability instead of a dead literal.
+            _ml_no_real_score = ml_is_abstain or str(ml_verdict) in ("STALE_MODEL", "UNREACHABLE", "API_ERROR")
+            stamped_ml_probability = None if _ml_no_real_score else ml_prob
 
             # ── Phase 4.8: SELECTIVE ML GATING by edge_verdict ──
             # Walk-forward OOS evaluation (Phase 4.3) classifies each trained
@@ -4171,14 +4184,16 @@ class ScalpStrategy(BaseStrategy):
         signal.metadata["p_win"] = round(ev_result.p_win, 4)
 
         # ── ML scoring metadata ──
-        # probability is None when the ML server is unreachable/abstains
-        # (Phase 4.2) — round(None) raised TypeError and killed the whole
-        # scalp analysis for the symbol. Store None as-is.
-        # Downstream consumers (signal_tracker, logging) do float()/%.3f on
-        # this field, so fall back to neutral 0.5; ml_verdict still carries
-        # UNREACHABLE/ABSTAIN so the outage is visible.
-        _ml_prob = ml_result.get("probability")
-        signal.metadata["ml_probability"] = round(_ml_prob, 4) if isinstance(_ml_prob, (int, float)) else 0.5
+        # (2026-09-16) ml_probability now carries the single stamped value
+        # computed right after the ML scorer call (stamped_ml_probability,
+        # ~line 3875) instead of an independent second re-derivation here.
+        # A real None on ABSTAIN/STALE_MODEL/UNREACHABLE/API_ERROR — no
+        # longer coerced to a fake 0.5. classify_trade() (bot/signal_tracker.py)
+        # now explicitly falls back to SCALP on a null value instead of
+        # silently landing at INTRADAY via a fabricated mid-tier score.
+        # ml_verdict still carries the specific reason (ABSTAIN_*/
+        # STALE_MODEL/UNREACHABLE/API_ERROR) for anyone reading the record.
+        signal.metadata["ml_probability"] = round(stamped_ml_probability, 4) if stamped_ml_probability is not None else None
         signal.metadata["ml_verdict"] = ml_result.get("verdict", "?")
         signal.metadata["ml_latency_ms"] = ml_result.get("latency_ms", 0)
         signal.metadata["ml_shadow_mode"] = self._ml_shadow_mode
@@ -4369,7 +4384,10 @@ class ScalpStrategy(BaseStrategy):
             "SCALP %s [%s]: %s %s | conf=%d w=%.1fx grade=%s | ML=%.3f/%s | %s",
             best.name, best_sr.tier.upper(), best.side.value.upper(), symbol,
             signal.confidence, best_sr.scanner_weight, signal.grade.value,
-            signal.metadata["ml_probability"], ml_result.get("verdict", "?"),
+            # (2026-09-16) log the local placeholder `ml_prob`, not
+            # signal.metadata["ml_probability"] -- that's now a real None on
+            # abstain/stale and %.3f on None raises TypeError.
+            ml_prob, ml_result.get("verdict", "?"),
             ", ".join(best.confirmations),
         )
 

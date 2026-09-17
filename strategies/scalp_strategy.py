@@ -114,6 +114,7 @@ SCANNER_CLUSTER = {
     "liquidity_sweep": "structure",
     "bos_choch": "structure",
     "order_block_entry": "structure",
+    "fvg_fill": "structure",
     "rsi_divergence": "reversion",
     "cvd_divergence": "reversion",
     "vwap_mean_revert": "reversion",
@@ -140,7 +141,7 @@ _CLUSTER_ALIAS = {"pattern": "structure"}
 # routing comments. A paper-unvalidated scanner can win its own cluster (and
 # the bar) only when no live-validated peer triggered on the same close —
 # it must never out-rank one on raw score alone.
-_PAPER_UNVALIDATED_SCANNERS = frozenset({"volume_surge", "candlestick_reversal"})
+_PAPER_UNVALIDATED_SCANNERS = frozenset({"volume_surge", "candlestick_reversal", "fvg_fill"})
 
 # Scanners designed to trade counter-trend (mean reversion), exempted from
 # the momentum-scanner counter-trend rules below. Unified 2026-09-15 from
@@ -1914,6 +1915,7 @@ class ScalpStrategy(BaseStrategy):
             "_scan_structure_bounce": "Structure Bounce",
             "_scan_liquidity_sweep": "Liquidity Sweep",
             "_scan_order_block_entry": "Order Block",
+            "_scan_fvg_fill": "FVG Fill",
             "_scan_bos_choch": "BOS/CHOCH",
             "_scan_vwap_mean_revert": "VWAP Mean Revert",
             "_scan_simple_bias": "Simple Bias (ML)",
@@ -2077,6 +2079,24 @@ class ScalpStrategy(BaseStrategy):
             else:
                 scanner_diagnostics["Structure Bounce"] = "In session — checking S/R rejection-wick + confirmation sequence"
 
+        # FVG Fill (2026-09-17, new scanner): needs price back inside an
+        # unmitigated fair value gap + directional confirmation candle.
+        # Given a real diagnostic from day one rather than falling through
+        # to "" like volume_surge/candlestick_reversal did when they were
+        # added — that omission was a recurring gap this session kept
+        # having to fix after the fact.
+        _fvg_sm = self._structure_map
+        _fvg_levels = [l for l in _fvg_sm.levels if l.level_type == "fvg"] if _fvg_sm else []
+        if not _fvg_levels:
+            scanner_diagnostics["FVG Fill"] = "No unmitigated fair value gap on the map"
+        else:
+            _fvg_nearest = min(_fvg_levels, key=lambda l: abs(l.price - _close))
+            _fvg_dist_pct = abs(_close - _fvg_nearest.price) / _close * 100 if _close > 0 else 999
+            if _fvg_dist_pct > 0.5:
+                scanner_diagnostics["FVG Fill"] = f"Nearest FVG at ${_fvg_nearest.price:.0f} ({_fvg_dist_pct:.2f}% away, need <0.5%)"
+            else:
+                scanner_diagnostics["FVG Fill"] = f"Inside FVG zone (${_fvg_nearest.zone_low:.0f}-${_fvg_nearest.zone_high:.0f}) — checking directional confirmation candle"
+
         # VWAP Mean Revert: needs price beyond a VWAP band + reversal wick, then a
         # silent stochastic/OBV filter that used to return None with no reason
         # logged anywhere (2026-09-15 audit) — added here so scanner_funnel.jsonl
@@ -2156,6 +2176,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_bb_squeeze,               # P5: squeeze = breakout signal
                 self._scan_trend_continuation,       # P1: trend starts from breakout
                 self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
+                self._scan_fvg_fill,                 # 2026-09-17: new, unvalidated — paper only
             ],
             # --- RANGING: P1 expanded from 4 → 9 scanners ---
             "ranging": [
@@ -2169,6 +2190,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_rsi_extreme,              # P5: extreme RSI reversal at range edges
                 self._scan_bb_squeeze,               # P5: squeeze breakout = range exit
                 self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
+                self._scan_fvg_fill,                 # 2026-09-17: new, unvalidated — paper only
             ],
             # --- SIDEWAYS: same as ranging ---
             "sideways": [
@@ -2182,6 +2204,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_rsi_extreme,
                 self._scan_bb_squeeze,
                 self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
+                self._scan_fvg_fill,                 # 2026-09-17: new, unvalidated — paper only
             ],
             # --- VOLATILE: P5 expanded ---
             "volatile": [
@@ -2193,6 +2216,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_rsi_divergence,           # P5: divergence in volatile
                 self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
                 self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
+                self._scan_fvg_fill,                 # 2026-09-17: new, unvalidated — paper only
             ],
             "high_volatility": [
                 self._scan_structure_bounce,
@@ -2203,6 +2227,7 @@ class ScalpStrategy(BaseStrategy):
                 self._scan_rsi_divergence,
                 self._scan_volume_surge,             # 2026-09-14: new, unvalidated — paper only
                 self._scan_candlestick_reversal,     # 2026-09-14: new, unvalidated — paper only
+                self._scan_fvg_fill,                 # 2026-09-17: new, unvalidated — paper only
             ],
             # --- MEAN_REVERSION: very limited — data: 7.7% WR with full set ---
             # Deliberately NOT adding the new scanners here — this regime is
@@ -2262,6 +2287,7 @@ class ScalpStrategy(BaseStrategy):
                     "cvd_divergence": self._scan_cvd_divergence,
                     "simple_bias": self._scan_simple_bias,
                     "order_block_entry": self._scan_order_block_entry,
+                    "fvg_fill": self._scan_fvg_fill,
                     "vwap_mean_revert": self._scan_vwap_mean_revert,
                     "rsi_extreme": self._scan_rsi_extreme,
                     "momentum_ride": self._scan_momentum_ride,
@@ -6420,6 +6446,99 @@ class ScalpStrategy(BaseStrategy):
             confidence=confidence,
             confirmations=confs,
             entry_price=target_ob.price,  # limit at OB midpoint
+            stop_loss=sl,
+            atr=atr,
+        )
+
+    # ==================================================================
+    # STRUCTURE SCANNER: FVG Fill (2026-09-17, new, unvalidated — paper only)
+    # ==================================================================
+
+    def _scan_fvg_fill(
+        self, symbol: str, df: pd.DataFrame, htf_bias: int, confirm_bias: int,
+    ) -> Optional[_SetupResult]:
+        """Price returns to an unmitigated fair value gap (3-candle imbalance).
+
+        Same shape as _scan_order_block_entry above (the closest existing
+        precedent — a return-to-unmitigated-zone entry) since the two are
+        conceptually the same mechanic applied to a different zone type.
+        _PAPER_UNVALIDATED_SCANNERS gates this until live data justifies
+        promoting it.
+        """
+        sm = self._structure_map
+        if sm is None:
+            return None
+
+        last = df.iloc[-1]
+        close = float(last["close"])
+        open_ = float(last["open"])
+        atr = float(last.get("atr", 0))
+        if atr <= 0 or np.isnan(atr):
+            return None
+
+        side = None
+        confs = []
+        score = 0
+        target_fvg = None
+
+        fvg_levels = [l for l in sm.levels if l.level_type == "fvg"]
+
+        for fvg in fvg_levels:
+            dist_pct = abs(close - fvg.price) / close * 100
+            if dist_pct > 0.5:
+                continue  # too far
+
+            if fvg.side == "support" and fvg.zone_low <= close <= fvg.zone_high:
+                if close > open_:  # bullish candle confirmation
+                    side = OrderSide.LONG
+                    target_fvg = fvg
+                    confs.append(f"Bullish FVG fill (gap={fvg.extra.get('gap_size_atr', 0):.2f}x ATR)")
+                    score += 30
+                    break
+
+            elif fvg.side == "resistance" and fvg.zone_low <= close <= fvg.zone_high:
+                if close < open_:  # bearish candle confirmation
+                    side = OrderSide.SHORT
+                    target_fvg = fvg
+                    confs.append(f"Bearish FVG fill (gap={fvg.extra.get('gap_size_atr', 0):.2f}x ATR)")
+                    score += 30
+                    break
+
+        if side is None or target_fvg is None:
+            return None
+
+        # Gap strength
+        score += min(target_fvg.strength // 4, 20)
+
+        # Volume
+        rel_vol = float(last.get("rel_vol", 1.0))
+        if not np.isnan(rel_vol) and rel_vol > 1.0:
+            confs.append(f"Volume {rel_vol:.1f}x")
+            score += 10
+
+        # HTF alignment
+        if htf_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("HTF aligned")
+            score += 15
+
+        # 5m confirmation
+        if confirm_bias == (1 if side == OrderSide.LONG else -1):
+            confs.append("5m aligned")
+            score += 10
+
+        confidence = min(score, 100)
+
+        if side == OrderSide.LONG:
+            sl = target_fvg.zone_low - close * 0.001
+        else:
+            sl = target_fvg.zone_high + close * 0.001
+
+        return _SetupResult(
+            name="fvg_fill",
+            side=side,
+            confidence=confidence,
+            confirmations=confs,
+            entry_price=target_fvg.price,  # limit at gap midpoint
             stop_loss=sl,
             atr=atr,
         )

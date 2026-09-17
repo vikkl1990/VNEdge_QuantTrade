@@ -24,7 +24,7 @@ from data.indicators import calc_vwap
 @dataclass
 class StructureLevel:
     price: float                # center of the zone
-    level_type: str             # "sr", "order_block", "liquidity", "vwap_band"
+    level_type: str             # "sr", "order_block", "liquidity", "vwap_band", "fvg"
     side: str                   # "support" or "resistance"
     strength: int               # 0-100
     zone_high: float            # upper edge of zone
@@ -261,6 +261,105 @@ def detect_order_blocks(
 
 
 # ──────────────────────────────────────────────────────────────
+# 2b. Fair Value Gaps / Imbalances (ICT/SMC concept)
+# ──────────────────────────────────────────────────────────────
+
+def find_fair_value_gaps(
+    df: pd.DataFrame,
+    lookback: int = 50,
+    min_gap_atr: float = 0.15,
+) -> List[StructureLevel]:
+    """Find 3-candle imbalances (gaps between candle[i-2] and candle[i] that
+    candle[i-1] displaced through) and filter to unmitigated ones.
+
+    Standard 3-candle definition: a bullish FVG exists when candle i's low
+    is above candle (i-2)'s high (price never traded that range); bearish
+    is the mirror. Same shape as detect_order_blocks() above -- a
+    structural event tracked as a zone, dropped once price trades back
+    into it. Mitigation policy is deliberately identical to
+    detect_order_blocks() (unbounded forward scan, any wick touching the
+    zone invalidates it) rather than a new, untested rule -- see
+    docs/SCANNER_CLUSTER_ANALYSIS_TODO_20260915.md for why order block
+    mitigation is a "zone lifetime policy" question left alone this pass;
+    FVGs inherit the same policy for consistency, not because it was
+    re-derived independently.
+
+    The 0.15x-ATR floor here (vs. detect_order_blocks' 1.5x-ATR impulse
+    requirement) reflects that FVGs are inherently smaller structural
+    events than a full displacement candle -- it filters sub-noise gaps,
+    not genuine ones.
+    """
+    if len(df) < 10:
+        return []
+
+    atr_vals = df.get("atr")
+    if atr_vals is None:
+        return []
+    current_price = float(df["close"].iloc[-1])
+    total_bars = len(df)
+
+    levels = []
+    n = min(lookback, len(df) - 3)
+    start = len(df) - n
+
+    highs = df["high"].values
+    lows = df["low"].values
+    atrs = atr_vals.values
+
+    for i in range(max(start, 2), len(df)):
+        atr = atrs[i]
+        if atr <= 0 or np.isnan(atr):
+            continue
+        min_gap = atr * min_gap_atr
+
+        # Bullish FVG: candle i's low above candle (i-2)'s high
+        gap_low = highs[i - 2]
+        gap_high = lows[i]
+        if gap_high - gap_low >= min_gap:
+            mitigated = False
+            for j in range(i + 1, len(df)):
+                if lows[j] <= gap_high:
+                    mitigated = True
+                    break
+            if not mitigated:
+                bars_ago = total_bars - 1 - i
+                levels.append(StructureLevel(
+                    price=round((gap_low + gap_high) / 2, 2),
+                    level_type="fvg",
+                    side="support",
+                    strength=min(int((gap_high - gap_low) / atr * 40), 80),
+                    zone_high=round(gap_high, 2),
+                    zone_low=round(gap_low, 2),
+                    last_touch_bars_ago=bars_ago,
+                    extra={"fvg_type": "bullish", "gap_size_atr": round((gap_high - gap_low) / atr, 2)},
+                ))
+
+        # Bearish FVG: candle i's high below candle (i-2)'s low
+        gap_high_b = lows[i - 2]
+        gap_low_b = highs[i]
+        if gap_high_b - gap_low_b >= min_gap:
+            mitigated = False
+            for j in range(i + 1, len(df)):
+                if highs[j] >= gap_low_b:
+                    mitigated = True
+                    break
+            if not mitigated:
+                bars_ago = total_bars - 1 - i
+                levels.append(StructureLevel(
+                    price=round((gap_low_b + gap_high_b) / 2, 2),
+                    level_type="fvg",
+                    side="resistance",
+                    strength=min(int((gap_high_b - gap_low_b) / atr * 40), 80),
+                    zone_high=round(gap_high_b, 2),
+                    zone_low=round(gap_low_b, 2),
+                    last_touch_bars_ago=bars_ago,
+                    extra={"fvg_type": "bearish", "gap_size_atr": round((gap_high_b - gap_low_b) / atr, 2)},
+                ))
+
+    return levels
+
+
+# ──────────────────────────────────────────────────────────────
 # 3. Liquidity Zones (stop-loss clusters)
 # ──────────────────────────────────────────────────────────────
 
@@ -420,6 +519,10 @@ def build_structure_map(
     # 3. Liquidity zones
     liq_levels = find_liquidity_zones(df, lookback=100)
     all_levels.extend(liq_levels)
+
+    # 3b. Fair value gaps / imbalances (2026-09-17, feeds _scan_fvg_fill)
+    fvg_levels = find_fair_value_gaps(df, lookback=50)
+    all_levels.extend(fvg_levels)
 
     # 4. VWAP bands
     vwap, vwap_u1, vwap_l1, vwap_u2, vwap_l2 = calc_vwap_bands(df)

@@ -503,3 +503,11 @@ Tests: tests/test_live_view.py (15) + tests/test_market_structure.py (7); suite 
 Bot restarted 2026-09-20 with the new server code. Visual check pending dashboard login.
 Known: `get_fee_model()` still runs with the Scalper Offer OFF in the live bot (Config drops `fees:`), so the position
 row's "free exit" flag is False until that sign-off item lands; the ledger and the row use the same model, so they agree.
+
+### 2026-09-20 — multi-timeframe plan + 1m execution (`docs/research/MTF_PREREG_20260920.md`)
+
+`scripts/mtf_lab.py` + tests/test_mtf_lab.py. 4h/1h agreement filter: right direction on both
+symbols, not a candidate (BTC outlier-carried, ETH judge surplus = August). 1m execution: maker
+limit 0.25 ATR5m inside the zone beats market-at-close on both symbols, every tf, 3/3 folds
+(+$9…+$20 per $30k signal) — improvement, not an edge; close-through stops worse; pullback trigger
+weaker. Sign-off items added: (a) 1m limit-in-zone execution layer, (b) no-counter-structure veto.

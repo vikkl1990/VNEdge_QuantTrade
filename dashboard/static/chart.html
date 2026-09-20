@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/css/terminal.css">
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   body{background:var(--bg-base);color:var(--text-primary);font-family:var(--font-sans);margin:0;-webkit-font-smoothing:antialiased}
   .mono{font-family:var(--font-mono)}
@@ -78,6 +78,8 @@
         <button class="togglebtn active" data-ov="ema">EMA 20/50</button>
         <button class="togglebtn active" data-ov="bb">Bollinger</button>
         <button class="togglebtn active" data-ov="vol">Volume</button>
+        <button class="togglebtn active" data-ov="trades" title="Entry, stop/trail, TP and liquidation lines of the open position; fills and exits of closed trades">Trades</button>
+        <button class="togglebtn active" data-ov="structure" title="Naked market structure: ATR zigzag swings, untested swing levels, BOS/CHoCH">Structure</button>
       </div>
       <div id="mainChart"></div>
       <div class="panelabel">RSI (14)</div>
@@ -97,7 +99,7 @@ const SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","LTC/USDT","ADA/USD
 const urlParams = new URLSearchParams(location.search);
 let curSymbol = urlParams.get('symbol') || "BTC/USDT";
 let curInterval = urlParams.get('interval') || "5m";
-let overlays = {ema: true, bb: true, vol: true};
+let overlays = {ema: true, bb: true, vol: true, trades: true, structure: true};
 
 const symbolSel = document.getElementById('symbolSel');
 symbolSel.innerHTML = SYMBOLS.map(s => `<option value="${s}" ${s===curSymbol?'selected':''}>${s}</option>`).join('');
@@ -162,6 +164,49 @@ function toLineData(times, values) {
   return out;
 }
 
+/* ── trade + structure overlay (2026-09-20): /api/chart/overlay ── */
+const tok = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ovColor = c => ({profit: tok('--profit') || '#3FC48F', loss: tok('--loss') || '#EE5F73', warn: tok('--warn') || '#E1AC45'}[c] || tok('--acc') || '#7AA6FF');
+let priceLines = [];
+const zigSeries = mainChart.addLineSeries({ color: tok('--acc') || '#7AA6FF', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+function clearOverlay() {
+  priceLines.forEach(pl => { try { candleSeries.removePriceLine(pl); } catch (e) {} });
+  priceLines = [];
+  candleSeries.setMarkers([]);
+  zigSeries.setData([]);
+}
+async function loadOverlay() {
+  clearOverlay();
+  if (!overlays.trades && !overlays.structure) return;
+  try {
+    const r = await fetch(`/api/chart/overlay?symbol=${encodeURIComponent(curSymbol)}&interval=${curInterval}&limit=300`, { credentials: 'same-origin', cache: 'no-store' });
+    if (!r.ok) return;
+    const o = await r.json();
+    if (o.error) return;
+    if (overlays.trades) {
+      (o.lines || []).forEach(l => {
+        if (!(l.price > 0)) return;
+        const solid = l.kind === 'entry' || l.kind === 'stop';
+        priceLines.push(candleSeries.createPriceLine({ price: l.price, color: ovColor(l.color), lineWidth: solid ? 2 : 1,
+          lineStyle: l.kind === 'liq' ? LightweightCharts.LineStyle.Dotted : solid ? LightweightCharts.LineStyle.Solid : LightweightCharts.LineStyle.Dashed,
+          axisLabelVisible: true, title: l.label }));
+      });
+      candleSeries.setMarkers((o.markers || []).map(m => ({ time: m.time, position: m.position, shape: m.shape, color: ovColor(m.color), text: m.text, size: 1 })));
+    }
+    const st = o.structure || {};
+    if (overlays.structure && st.zigzag) {
+      zigSeries.setData(st.zigzag);
+      (st.naked_levels || []).forEach(n => {
+        priceLines.push(candleSeries.createPriceLine({ price: n.price, color: tok('--muted') || '#77839A', lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.SparseDotted, axisLabelVisible: false, title: `${n.kind === 'high' ? 'naked H' : 'naked L'} ${n.label || ''} ${n.age_bars}b` }));
+      });
+      const ev = (st.events || []).slice(-3).map(e => e.event.replace(/_/g, ' ')).join(', ');
+      const meta = document.getElementById('pxMeta');
+      meta.textContent += ` · structure ${st.state}${st.range && st.range.hi ? ` (range ${st.range.lo.toLocaleString()}–${st.range.hi.toLocaleString()})` : ''}${ev ? ' · ' + ev : ''} · ${(st.naked_levels || []).length} naked levels`;
+    }
+  } catch (e) { console.warn('overlay failed', e); }
+}
+
 async function loadChart() {
   document.getElementById('loadingNote').style.display = 'flex';
   try {
@@ -197,6 +242,7 @@ async function loadChart() {
     chgEl.className = 'chg ' + (chg >= 0 ? 'up' : 'down');
     document.getElementById('pxMeta').textContent = `${curSymbol} · ${curInterval} · ${d.n} bars`;
     document.getElementById('lastUpdate').textContent = 'updated ' + new Date().toLocaleTimeString();
+    await loadOverlay();
   } catch (e) {
     console.error('chart load failed', e);
   } finally {

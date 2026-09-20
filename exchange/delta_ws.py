@@ -121,6 +121,9 @@ class DeltaWebSocket:
         self.bids: Dict[str, float] = {}
         self.asks: Dict[str, float] = {}
         self.marks: Dict[str, float] = {}
+        # Market context from the same v2/ticker payload (2026-09-20): funding, OI, index,
+        # 24h stats. Delta sends these on every ticker frame; nothing captured them before.
+        self.ticker_meta: Dict[str, dict] = {}
 
         # Stats
         self.msg_count: int = 0
@@ -382,6 +385,7 @@ class DeltaWebSocket:
         self.asks[symbol] = ask
         self.marks[symbol] = mark
         self.msg_count += 1
+        self._store_ticker_meta(symbol, data, last, mark)
 
         # Track latency
         ts = data.get("timestamp")
@@ -477,6 +481,42 @@ class DeltaWebSocket:
                 )
             except Exception as exc:
                 logger.error("DeltaWS position update callback error: %s", exc)
+
+    @staticmethod
+    def _f(v) -> Optional[float]:
+        try:
+            return float(v) if v is not None and v != "" else None
+        except (TypeError, ValueError):
+            return None
+
+    def _store_ticker_meta(self, symbol: str, data: dict, last: float, mark: float) -> None:
+        f = self._f
+        meta = {
+            "last": last,
+            "mark": mark,
+            "index": f(data.get("spot_price")),
+            "funding_rate": f(data.get("funding_rate")),            # % per 8h as Delta reports it
+            "open_interest": f(data.get("oi") if data.get("oi") is not None else data.get("open_interest")),
+            "oi_value_usd": f(data.get("oi_value_usd")),
+            "turnover_24h": f(data.get("turnover_24h")),
+            "volume_24h": f(data.get("volume")),
+            "change_24h_pct": f(data.get("mark_change_24h")),
+            "high_24h": f(data.get("high")),
+            "low_24h": f(data.get("low")),
+            "size": f(data.get("size")),
+            "ts": time.time(),
+        }
+        meta["basis_pct"] = (
+            round((mark - meta["index"]) / meta["index"] * 100, 5)
+            if meta["index"] and mark else None
+        )
+        self.ticker_meta[symbol] = meta
+
+    def get_ticker_meta(self, symbol: Optional[str] = None):
+        """Latest market context per symbol (funding, OI, index, 24h stats)."""
+        if symbol is not None:
+            return self.ticker_meta.get(symbol)
+        return dict(self.ticker_meta)
 
     def get_status(self) -> Dict:
         """Return WebSocket status for dashboard."""

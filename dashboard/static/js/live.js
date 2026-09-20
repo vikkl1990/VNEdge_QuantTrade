@@ -29,11 +29,11 @@
 
   async function refresh() {
     if (!$("lv-kpis")) return;
-    const [summary, active, closed, signals, status, funnel, taxonomy, scanners, infra, ml, sup, fresh] = await Promise.all([
+    const [summary, active, closed, signals, status, funnel, taxonomy, scanners, infra, ml, sup, fresh, live, ctx] = await Promise.all([
       get("/api/paper/summary"), get("/api/tracker/active"), get("/api/tracker/closed"), get("/api/signals"),
       get("/api/status"), get("/api/pipeline/overview"), get("/api/pipeline/loss_taxonomy?hours=24"),
       get("/api/scanner-health"), get("/api/infra/health"), get("/api/ml/health"), get("/api/supervisor/status"),
-      get("/api/feed/freshness"),
+      get("/api/feed/freshness"), get("/api/live/position"), get("/api/live/context"),
     ]);
     const D = {
       summary: summary && summary.available !== false ? summary : lastGood.summary,
@@ -44,11 +44,15 @@
       taxonomy: taxonomy || lastGood.taxonomy || {}, scanners: Array.isArray(scanners) ? scanners : lastGood.scanners || [],
       infra: infra || lastGood.infra || {}, ml: ml || lastGood.ml || {}, sup: sup || lastGood.sup || {},
       fresh: fresh || lastGood.fresh || null,
+      live: (live && Array.isArray(live.trades)) ? live : lastGood.live || {trades: [], max_open: 3},
+      ctx: ctx || lastGood.ctx || null,
     };
+    if (D.live && D.live.max_open) window.LIVE_MAX_OPEN = D.live.max_open;
     lastGood = D;
     if (!D.summary) return;
     try { paintHealth(D); } catch (e) { console.warn("live: health", e); }
     try { paintKpis(D); } catch (e) { console.warn("live: kpis", e); }
+    try { paintContext(D); } catch (e) { console.warn("live: context", e); }
     try { paintPosition(D); } catch (e) { console.warn("live: position", e); }
     try { paintSignals(D); } catch (e) { console.warn("live: signals", e); }
     try { paintClosed(D); } catch (e) { console.warn("live: closed", e); }
@@ -141,29 +145,118 @@
     ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x(eq.length - 1), y(eq[eq.length - 1]), 2.5, 0, Math.PI * 2); ctx.fill();
   }
 
-  /* ── tier 2: position ladder ── */
+  /* ── tier 2: position row (perp-terminal layout, 2026-09-20) ── */
+  const fmtDur = sec => { sec = Math.max(0, Math.round(Number(sec || 0))); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = sec % 60; return h ? `${h}h ${m}m` : m ? `${m}m ${s2}s` : `${s2}s`; };
+  const fmtBig = v => { v = Number(v || 0); return v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : v >= 1e3 ? (v / 1e3).toFixed(0) + "K" : v.toFixed(0); };
+  const pctS = (v, d) => v == null ? "--" : (v >= 0 ? "+" : "") + Number(v).toFixed(d == null ? 2 : d) + "%";
+
+  function paintContext(D) {
+    const el = $("lv-context"); if (!el) return;
+    const C = D.ctx; if (!C) { el.innerHTML = ""; return; }
+    const open = new Set((D.live.trades || []).map(t => t.symbol));
+    const rows = (C.symbols || []).filter(r => open.has(r.symbol) || r.symbol === "BTC/USDT" || r.symbol === "ETH/USDT").slice(0, 6);
+    const fund = `<span class="c fund"><span class="sym">Funding</span> next in <b>${fmtDur(C.next_funding_sec)}</b><span class="sub">00 / 08 / 16 UTC</span></span>`;
+    el.innerHTML = fund + rows.map(r => {
+      const fr = r.funding_rate_8h_pct;
+      return `<span class="c${open.has(r.symbol) ? " open" : ""}" title="${esc(r.symbol)}: mark ${px(r.mark)} · index ${px(r.index)} · 24h high ${px(r.high_24h)} low ${px(r.low_24h)}">
+        <span class="sym">${esc(base(r.symbol))}</span><b>${px(r.mark || r.last)}</b>
+        <span class="${cls(r.change_24h_pct)}">${pctS(r.change_24h_pct)}</span>
+        <span>fund <b class="${fr > 0 ? "down" : fr < 0 ? "up" : ""}">${fr == null ? "--" : Number(fr).toFixed(4) + "%"}</b></span>
+        <span>OI <b>${r.oi_value_usd != null ? "$" + fmtBig(r.oi_value_usd) : r.open_interest == null ? "--" : fmtBig(r.open_interest)}</b></span>
+        <span>basis <b>${r.basis_pct == null ? "--" : pctS(r.basis_pct, 3)}</b></span></span>`;
+    }).join("") + `<span class="push ${wsLive ? "on" : ""}" id="lv-push" title="Price and position frames pushed over the dashboard websocket; polling continues as the fallback">${wsLive ? "push live" : "polling"}</span>`;
+  }
+
   function paintPosition(D) {
     const wrap = $("lv-position"), cnt = $("lv-pos-count"); if (!wrap) return;
-    const prices = D.status.prices || {};
-    cnt.textContent = D.active.length + " of " + (window.LIVE_MAX_OPEN || 3) + " slots";
-    if (!D.active.length) { wrap.innerHTML = '<div class="empty">No open position. Next 5m close at ' + nextClose() + '.</div>'; return; }
-    wrap.innerHTML = D.active.map(t => {
-      const price = prices[t.symbol] || t.entry_price, short = t.side === "short", dir = short ? -1 : 1;
-      const pnl = (price - t.entry_price) / t.entry_price * dir * (t.position_size_usd || 0);
-      const stop = t.chandelier_stop && t.atr_trail_active ? t.chandelier_stop : t.stop_loss;
-      const levels = [t.stop_loss, t.entry_price, t.tp1, t.tp2, price, stop].filter(v => v > 0);
+    const rows = (D.live && D.live.trades && D.live.trades.length) ? D.live.trades : null;
+    const maxOpen = window.LIVE_MAX_OPEN || 3;
+    const n = rows ? rows.length : D.active.length;
+    cnt.textContent = n + " of " + maxOpen + " slots";
+    if (!n) { wrap.innerHTML = '<div class="empty">No open position. Next 5m close at ' + nextClose() + '.</div>'; return; }
+    const byId = {}; D.active.forEach(t => { byId[t.trade_id] = t; });
+    wrap.innerHTML = (rows || D.active.map(t => ({trade_id: t.trade_id, symbol: t.symbol, side: t.side, entry: t.entry_price, stop: t.stop_loss, tp1: t.tp1, tp2: t.tp2, mark: (D.status.prices || {})[t.symbol] || t.entry_price, leverage: t.leverage, margin_usd: t.paper_stake, notional_usd: t.position_size_usd, remaining_pct: 1, setup_type: t.setup_type, trade_type: t.trade_type, entry_time: t.entry_time, mfe_r: t.mfe_r}))).map(e => {
+      const t = byId[e.trade_id] || {}, short = e.side === "short", dir = short ? -1 : 1, price = Number(e.mark || 0);
+      const stop = e.effective_stop || e.stop;
+      const levels = [e.stop, e.entry, e.tp1, e.tp2, price, stop, e.liq_price].filter(v => v > 0);
       const lo = Math.min(...levels), hi = Math.max(...levels), span = hi - lo || 1;
       const pos = v => ((v - lo) / span * 100).toFixed(1);
       const rung = (lab, p, extra) => p > 0 ? `<div class="rung"><span class="lab">${lab}</span><span class="bar"><i style="left:${pos(p)}%" class="${extra || ""}"></i><i style="left:${pos(price)}%" class="here"></i></span><span class="px">${px(p)}</span><span class="d">${r2((p - price) / price * 100 * dir)}%</span></div>` : "";
-      const risk = Math.abs(t.entry_price - t.stop_loss) / t.entry_price * (t.position_size_usd || 0);
-      return `<div class="pos" data-trade='${esc(JSON.stringify(t))}' title="Click for detail">
-        <div class="pos-head"><span class="side ${esc(t.side)}">${esc(t.side)}</span><span class="sym">${esc(base(t.symbol))}</span><span class="meta">${esc(t.trade_type || "")} &middot; ${esc(String(t.setup_type || "").replace(/_/g, " "))} &middot; ${t.leverage || "--"}x</span><span class="pnl ${cls(pnl)}">${money(pnl, true)}</span></div>
-        <div class="ladder">${rung(stop !== t.stop_loss ? "Trail" : "Stop", stop)}${rung("Entry", t.entry_price)}${rung("TP1", t.tp1)}${rung("TP2", t.tp2)}</div>
-        <div class="pos-foot"><span>Opened <b>${ist(t.entry_time)}</b></span><span>Stake <b>$${Number(t.paper_stake || 0).toFixed(0)}</b></span><span>Lots <b>${Number(t.contracts || 0).toLocaleString("en-US")}</b><span class="sub"> (${Number(t.quantity || 0).toFixed(6).replace(/\.?0+$/, "")} ${esc(base(t.symbol))})</span></span><span>Risk <b>$${risk.toFixed(2)}</b></span><span>MFE <b>${Number(t.mfe_r || 0).toFixed(2)}R</b></span><span>Slip <b>${Number(t.slippage_bps || 0).toFixed(0)} bp</b></span>${t.tp1_hit ? '<span class="tag fill">TP1 hit</span>' : ""}${t.breakeven_set ? '<span class="tag">breakeven</span>' : ""}</div>
+      const net = e.net_usd, roe = e.roe_pct, liqWarn = e.liq_dist_pct != null && e.liq_dist_pct < 1.0;
+      const feeNote = e.exit_free_now ? `free exit for <b>${fmtDur(e.scalper_remaining_sec)}</b>` : (e.scalper_window_sec ? `exit taker &middot; window ${e.scalper_remaining_sec > 0 ? "open " + fmtDur(e.scalper_remaining_sec) : "closed"}` : "exit taker");
+      const grid = e.net_usd == null ? "" : `
+        <div class="posgrid">
+          <div class="cell"><span class="eyebrow">Mark / index</span><span class="v">${px(e.mark)}</span><span class="s">idx ${e.index ? px(e.index) : "--"} &middot; basis ${e.basis_pct == null ? "--" : pctS(e.basis_pct, 3)}</span></div>
+          <div class="cell ${liqWarn ? "bad" : "warn"}"><span class="eyebrow">Liquidation</span><span class="v">${px(e.liq_price)}</span><span class="s">${e.liq_dist_pct == null ? "--" : Math.abs(e.liq_dist_pct).toFixed(2) + "% away"}${e.liq_dist_atr != null ? " &middot; " + e.liq_dist_atr + " ATR" : ""} &middot; ${e.leverage}x isolated</span></div>
+          <div class="cell"><span class="eyebrow">${e.trail ? "Trail" : "Stop"} distance</span><span class="v">${e.stop_dist_pct == null ? "--" : Math.abs(e.stop_dist_pct).toFixed(2) + "%"}</span><span class="s">${e.stop_dist_atr != null ? e.stop_dist_atr + " ATR &middot; " : ""}${e.breakeven_set ? "breakeven locked" : "initial risk"}</span></div>
+          <div class="cell ${cls(e.r_now)}"><span class="eyebrow">R now</span><span class="v">${e.r_now == null ? "--" : r2(e.r_now) + "R"}</span><span class="s">MFE ${Number(e.mfe_r || 0).toFixed(2)}R &middot; MAE ${Number(e.mae_r || 0).toFixed(2)}R</span></div>
+          <div class="cell"><span class="eyebrow">Margin / notional</span><span class="v">$${Number(e.margin_usd || 0).toFixed(0)} / $${Number(e.notional_usd || 0).toFixed(0)}</span><span class="s">${Math.round((e.remaining_pct || 1) * 100)}% open${e.tp1_hit ? " &middot; TP1 booked" : ""}</span></div>
+          <div class="cell"><span class="eyebrow">Fees so far</span><span class="v">$${(Number(e.entry_fee_usd || 0) + Number(e.exit_fee_usd || 0)).toFixed(2)}</span><span class="s">entry ${esc(e.entry_liquidity || "")} $${Number(e.entry_fee_usd || 0).toFixed(2)} &middot; ${feeNote}</span></div>
+          <div class="cell"><span class="eyebrow">Funding</span><span class="v">${e.funding_rate_8h_pct == null ? "--" : Number(e.funding_rate_8h_pct).toFixed(4) + "% / 8h"}</span><span class="s">est ${e.funding_est_usd == null ? "--" : money(e.funding_est_usd, true)} (not debited) &middot; next ${fmtDur(e.next_funding_sec)}</span></div>
+          <div class="cell"><span class="eyebrow">Hold</span><span class="v">${fmtDur(e.hold_sec)}</span><span class="s">opened ${ist(e.entry_time)} IST &middot; ${esc(e.grade || "")} ${e.confidence != null ? Number(e.confidence).toFixed(0) : ""}</span></div>
+        </div>
+        <div class="pos-actions" data-tid="${esc(e.trade_id)}">
+          <button class="rowbtn danger" data-act="close" title="Close the whole position at the current price">Close</button>
+          <button class="rowbtn" data-act="half" title="Book half of what is still open at the current price; the rest keeps running" ${(e.remaining_pct || 1) <= 0.26 ? "disabled" : ""}>Close 50%</button>
+          <button class="rowbtn" data-act="be" title="Move the stop to entry plus the taker round trip (only once price is beyond it)" ${e.breakeven_set ? "disabled" : ""}>Stop &rarr; BE</button>
+          <span class="msg"></span>
+        </div>`;
+      return `<div class="pos">
+        <div class="pos-head" data-trade='${esc(JSON.stringify(t))}' title="Click for detail"><span class="side ${esc(e.side)}">${esc(e.side)}</span><span class="sym">${esc(base(e.symbol))}</span><span class="meta">${esc(e.trade_type || "")} &middot; ${esc(String(e.setup_type || "").replace(/_/g, " "))} &middot; ${e.leverage || "--"}x</span><span class="pnl ${cls(net)}">${net == null ? "--" : money(net, true)}<span class="roe">${roe == null ? "" : "ROE " + pctS(roe, 1)}</span></span></div>
+        <div class="ladder">${rung("Liq", e.liq_price, "liq")}${rung(e.trail ? "Trail" : "Stop", stop)}${rung("Entry", e.entry)}${rung("TP1", e.tp1)}${rung("TP2", e.tp2)}</div>
+        ${grid}
       </div>`;
     }).join("");
-    wrap.querySelectorAll(".pos").forEach(p => p.addEventListener("click", () => { try { openTradeDetail(JSON.parse(p.dataset.trade)); } catch (e) {} }));
+    wrap.querySelectorAll(".pos-head").forEach(p => p.addEventListener("click", () => { try { openTradeDetail(JSON.parse(p.dataset.trade)); } catch (e) {} }));
+    wrap.querySelectorAll(".pos-actions button").forEach(b => b.addEventListener("click", onAction));
   }
+
+  async function onAction(ev) {
+    const btn = ev.currentTarget, box = btn.closest(".pos-actions"), tid = box.dataset.tid, act = btn.dataset.act, msg = box.querySelector(".msg");
+    const label = {close: "Close the whole position at the current price?", half: "Book 50% of the open position at the current price?", be: "Move the stop to breakeven (entry + fees)?"}[act];
+    if (!confirm(label)) return;
+    const url = act === "close" ? `/api/trade/${encodeURIComponent(tid)}/close` : act === "half" ? `/api/trade/${encodeURIComponent(tid)}/close-partial` : `/api/trade/${encodeURIComponent(tid)}/stop`;
+    const body = act === "half" ? {fraction: 0.5} : act === "be" ? {breakeven: true} : {reason: "manual_close"};
+    box.querySelectorAll("button").forEach(b => b.disabled = true); msg.textContent = "working…";
+    try {
+      const r = await fetch(url, {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 401) { alert("Session expired — log in again."); return; }
+      msg.textContent = d.ok ? (act === "close" ? "closed" : act === "half" ? `booked, ${Math.round((d.remaining_pct || 0) * 100)}% left` : `stop ${px(d.new_sl)}`) : ("refused: " + (d.error || r.status));
+      if (typeof showToast === "function") showToast((d.ok ? "OK: " : "Refused: ") + (d.error || act), d.ok ? "success" : "danger");
+    } catch (e) { msg.textContent = "request failed"; }
+    finally { setTimeout(refresh, 400); }
+  }
+
+  /* ── websocket push (2026-09-20): /api/ws, cookie-authenticated; polling stays as fallback ── */
+  let wsLive = false, wsSock = null, wsRetry = 1000, tickTimer = null;
+  function connectWS() {
+    if (wsSock || !("WebSocket" in window)) return;
+    try {
+      wsSock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/ws");
+    } catch (e) { wsSock = null; return; }
+    wsSock.onopen = () => { wsLive = true; wsRetry = 1000; const p = $("lv-push"); if (p) { p.className = "push on"; p.textContent = "push live"; } };
+    wsSock.onclose = () => { wsLive = false; wsSock = null; const p = $("lv-push"); if (p) { p.className = "push"; p.textContent = "polling"; } setTimeout(connectWS, wsRetry); wsRetry = Math.min(wsRetry * 2, 30000); };
+    wsSock.onerror = () => { try { wsSock.close(); } catch (e) {} };
+    wsSock.onmessage = m => {
+      let f; try { f = JSON.parse(m.data); } catch (e) { return; }
+      if (!f || !f.channel) return;
+      if (f.channel === "tick") {
+        const D = lastGood; if (!D.status) return;
+        D.status.prices = Object.assign(D.status.prices || {}, f.data.prices || {});
+        if (D.live && D.live.trades) D.live.trades.forEach(t => { const mk = (f.data.marks || {})[t.symbol] || (f.data.prices || {})[t.symbol]; if (mk) t.mark = mk; });
+        if (!tickTimer) tickTimer = setTimeout(() => { tickTimer = null; try { paintContext(D); if (D.live && D.live.trades.length && D.live.trades[0].net_usd == null) paintPosition(D); } catch (e) {} }, 500);
+      } else if (f.channel === "position") {
+        if (lastGood.live) { lastGood.live.trades = f.data.trades || []; try { paintPosition(lastGood); } catch (e) {} }
+      } else if (f.channel === "event") {
+        const d = f.data || {};
+        if (typeof showToast === "function" && d.message) showToast(d.message, /close|hit|kill|expired|flatten/i.test(d.type || "") ? "warning" : "success");
+        setTimeout(refresh, 300);
+      }
+    };
+  }
+  connectWS();
+
   function nextClose() { const d = new Date(); const m = d.getMinutes(); const n = new Date(d); n.setMinutes(m - m % 5 + 5, 0, 0); return ist(n.toISOString()); }
 
   /* ── tier 2: signal queue ── */

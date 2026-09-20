@@ -1233,6 +1233,7 @@ function updateAlerts(alerts) {
 async function refreshAnalytics() {
     // Portfolio overview cards — single writer
     try { await refreshPaperSummary(); } catch(e) {}
+    try { loadFeeLedger(); } catch(e) {}
     try {
         const sh = (rs && rs.shadow_stats_24h) || {};
         const shN   = Number(sh.n || 0);
@@ -4084,6 +4085,52 @@ async function toggleTradingPause() {
     }
 }
 window.toggleTradingPause = toggleTradingPause;
+
+/* ── Flatten: close every open paper position at the fresh price and pause new entries (2026-09-20) ── */
+async function flattenAll() {
+    let n = 0;
+    try { const a = await fetch("/api/tracker/active", { credentials: "same-origin" }).then(r => r.json()); n = Array.isArray(a) ? a.length : 0; } catch (e) {}
+    if (!n) { alert("Nothing to flatten — no open position."); return; }
+    if (!confirm(`FLATTEN: close ${n} open position${n > 1 ? "s" : ""} at the current price and pause new entries?`)) return;
+    if (!confirm("Second confirmation — this books the exits now and cannot be undone. Proceed?")) return;
+    try {
+        const r = await fetch("/api/control/close-all", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "flatten", pause: true }) });
+        if (r.status === 401) { alert("Your dashboard session has expired — log in again, then retry."); return; }
+        const d = await r.json().catch(() => ({}));
+        const failed = (d.results || []).filter(x => !x.ok);
+        alert(`Flatten: closed ${d.closed || 0} of ${d.n || 0}.` + (failed.length ? "\nNot closed: " + failed.map(x => `${x.symbol} (${x.error})`).join(", ") : "") + (d.paused ? "\nNew entries are paused." : ""));
+        syncPauseButton(!!d.paused);
+        if (window.LiveTab) window.LiveTab.refresh();
+    } catch (e) {
+        console.error("flattenAll failed:", e);
+        alert("Could not reach the bot to flatten — check the connection and try again.");
+    }
+}
+window.flattenAll = flattenAll;
+
+/* ── Fee & funding ledger (Analytics) ── */
+async function loadFeeLedger() {
+    const tiles = document.getElementById("fl-tiles"), table = document.getElementById("fl-table"), sub = document.getElementById("fl-sub");
+    if (!tiles || !table) return;
+    let d = null;
+    try { d = await fetch("/api/ledger/fees?limit=150", { credentials: "same-origin", cache: "no-store" }).then(r => r.ok ? r.json() : null); } catch (e) {}
+    if (!d || !d.summary) { tiles.innerHTML = '<div class="empty">Ledger unavailable</div>'; return; }
+    const S = d.summary, usd = v => (v < 0 ? "-" : "") + "$" + Math.abs(Number(v || 0)).toFixed(2);
+    const c = v => v > 0 ? "up" : v < 0 ? "down" : "";
+    tiles.innerHTML = `
+      <div class="kpi"><span class="eyebrow">Gross</span><span class="v ${c(S.gross_usd)}">${usd(S.gross_usd)}</span><span class="sub">${S.n} trades &middot; ${S.gross_win_rate_pct}% won gross</span></div>
+      <div class="kpi"><span class="eyebrow">Fees</span><span class="v down">${usd(-S.fees_usd)}</span><span class="sub">${usd(S.fee_per_trade_usd)} per trade${S.fee_share_of_gross_abs_pct != null ? " &middot; " + S.fee_share_of_gross_abs_pct + "% of |gross|" : ""}</span></div>
+      <div class="kpi"><span class="eyebrow">Funding</span><span class="v">${usd(S.funding_usd)}</span><span class="sub">not debited on paper</span></div>
+      <div class="kpi"><span class="eyebrow">Net</span><span class="v ${c(S.net_usd)}">${usd(S.net_usd)}</span><span class="sub">${S.net_win_rate_pct}% won net</span></div>
+      <div class="kpi"><span class="eyebrow">Flipped by fees</span><span class="v ${S.trades_flipped_by_fees ? "down" : ""}">${S.trades_flipped_by_fees}</span><span class="sub">gross winner, net loser</span></div>
+      <div class="kpi"><span class="eyebrow">Cost mix</span><span class="v">${S.maker_entries}/${S.n}</span><span class="sub">maker entries &middot; ${S.free_exits} free exits (offer)</span></div>`;
+    sub.textContent = `last ${d.rows.length} trades`;
+    const dur = s => { s = Number(s || 0); return s >= 3600 ? (s / 3600).toFixed(1) + "h" : (s / 60).toFixed(0) + "m"; };
+    const t = v => { try { return new Date(v).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" }); } catch (e) { return "--"; } };
+    table.innerHTML = `<thead><tr><th class="l">Closed</th><th class="l">Symbol</th><th class="l">Scanner</th><th>Hold</th><th>Notional</th><th>Gross</th><th>Entry fee</th><th>Exit fee</th><th>Fee R</th><th>Net</th><th class="l">Exit</th></tr></thead><tbody>` +
+      d.rows.map(r => `<tr><td class="l">${t(r.closed)}</td><td class="l">${String(r.symbol || "").replace("/USDT", "")} ${r.side}</td><td class="l">${String(r.scanner || "").replace(/_/g, " ")}</td><td>${dur(r.duration_sec)}</td><td>$${Number(r.notional_usd || 0).toFixed(0)}</td><td class="${c(r.gross_usd)}">${usd(r.gross_usd)}</td><td>${usd(r.entry_fee_usd)} <span class="sub">${r.entry_liquidity === "maker" ? "M" : "T"}</span></td><td>${usd(r.exit_fee_usd)}${r.within_scalper ? ' <span class="sub">free</span>' : ""}</td><td>${r.fee_r == null ? "--" : r.fee_r.toFixed(2)}</td><td class="${c(r.net_usd)}${r.gross_usd > 0 && r.net_usd <= 0 ? " flip" : ""}">${usd(r.net_usd)}</td><td class="l">${String(r.exit_reason || "").replace(/_/g, " ")}</td></tr>`).join("") + "</tbody>";
+}
+window.loadFeeLedger = loadFeeLedger;
 
 async function pollPauseState() {
     try {

@@ -502,12 +502,14 @@ textarea.contact-input{min-height:100px;resize:vertical}
     <button class="tab-btn" data-tab="agents" role="tab" aria-controls="tab-agents" aria-selected="false" data-action="switchTab" data-arg="agents">Agents</button>
     <button class="tab-btn" data-tab="brain" role="tab" aria-controls="tab-brain" aria-selected="false" data-action="switchTab" data-arg="brain">Brain</button>
     <a class="tab-btn" href="/static/scanner.html">Scanner</a>
+    <a class="tab-btn" href="/static/scanner_lab.html">Scanner Lab</a>
     <a class="tab-btn" href="/static/chart.html">Chart</a>
     <a class="tab-btn" href="/static/ai_chat.html">Ask AI</a>
   </nav>
   <div class="health" id="tb-health" aria-live="polite"></div>
   <div class="health" style="margin-left:0;flex:none">
     <a href="/ml-lab" target="_blank" class="chip link" title="Open the ML training lab">ML Lab</a>
+    <button data-action="flattenAll" id="flatten-btn" aria-label="Close every open position now" type="button" class="chip stop" title="Closes EVERY open paper position at the current price and pauses new entries. Asks for confirmation.">Flatten</button>
     <button data-action="toggleTradingPause" id="pause-btn" aria-label="Pause new trade entry" type="button" class="chip stop" title="Stops the bot from opening any NEW trade. Positions already open keep being managed (trailing stops, TP/SL) — this does not close them.">Pause</button>
     <span class="chip user" id="session-info" aria-live="polite"></span>
     <button class="chip link" id="logout-btn" data-action="handleLogout" style="display:none">Log out</button>
@@ -535,6 +537,7 @@ textarea.contact-input{min-height:100px;resize:vertical}
 <div class="tab-content active" id="tab-live" role="main">
   <div class="term">
     <section class="kpis" id="lv-kpis" aria-label="Key figures"><div class="kpi"><span class="eyebrow">Loading</span><span class="v sm">&nbsp;</span></div></section>
+    <section class="ctx" id="lv-context" aria-label="Market context"></section>
     <section class="now">
       <div class="col">
         <div class="sec-h"><h2>Open position</h2><span class="eyebrow" id="lv-pos-count"></span></div>
@@ -726,6 +729,14 @@ textarea.contact-input{min-height:100px;resize:vertical}
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ═══ Fee & funding ledger (2026-09-20) ═══ -->
+  <div class="glass-card ledger" id="fee-ledger-card">
+    <div class="panel-title" style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">Fee &amp; funding ledger <span class="eyebrow" id="fl-sub"></span></div>
+    <div class="ledger-tiles" id="fl-tiles"></div>
+    <div class="tblwrap" style="max-height:420px;overflow:auto"><table id="fl-table"></table></div>
+    <div class="note" style="margin-top:6px">Entry fee from the recorded entry liquidity, exit fee = booked total &minus; entry. Funding is not debited on the paper account (fees.funding.apply is off); the live position row shows the estimate instead.</div>
   </div>
 
   <!-- ═══ SECTION 6: Paper vs Real + Execution Quality ═══ -->

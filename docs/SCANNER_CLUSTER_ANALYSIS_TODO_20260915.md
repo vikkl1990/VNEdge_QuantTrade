@@ -355,6 +355,151 @@ New scanner, requested after reviewing an "institutional price action" reference
 
 Suite: 332 passed / 11 failed (6 new tests, same 11 pre-existing unrelated failures). Bot restarted; live verification of `fvg_fill` appearing in the funnel `allowed` list in progress as of this entry.
 
+## Scanner Lab (2026-09-17): per-pair scanner × timeframe replay with $ P&L
+
+Requested as "pair-wise scanner … test BTC with all scanners and timeframes … UI per pair … margin 1000 – 30x". A read-only research tool, not a live-path change.
+
+- **`scripts/scanner_lab.py`** — for one symbol, replays every `_scan_*` on 5m/15m/1h (confirm frame 15m/1h/4h, the live chain shape) over Delta candles, reusing the live code for everything that matters: `_compute_indicators`, `build_structure_map` from the confirm frame (rebuilt when the confirm bar advances, as `analyze()` does), `_get_htf_bias`, `MarketRegimeDetector`, `REGIME_SCANNER_ROUTING` read out of `analyze()`'s source by AST (so it can't drift), `_build_signal` for the exact live SL/TP1, `execution/fees.FeeModel` (Scalper Offer per leg), and `_calc_pnl`'s $ formulas. Exit model: entry at next bar open, first touch of SL or TP1 (stop wins ties), else close at 48 bars; one open trade per scanner; scanners independent. Reports raw fires vs routing-allowed fires, build rejects, the live fee gate's would-block count, top-5 share of R (outlier flag), monthly R/$, long/short split. Output `storage/research/scanner_lab/{SYM}.json`; candles cached under `storage/research/scanner_lab/candles/` (lab-owned, the bot's `storage/candle_cache/` is untouched). `simple_bias`/`cvd_divergence` run but are flagged learning-only.
+- **Dashboard**: `GET /api/research/scanner-lab?symbol=` + `/symbols` (read-only file handlers, same shape as `_handle_validated_edge`), page `dashboard/static/scanner_lab.html` (nav link "Scanner Lab") — sortable scanner × TF table, margin/leverage inputs that rescale $ client-side (P&L is linear in notional), row drawer with monthly bars, sides, exit reasons, trade list.
+- **Tests**: `tests/test_scanner_lab.py` (12) on the pure pieces — exit resolution, fee/P&L arithmetic vs `FeeModel`, routing read, symbol mapping.
+- Caveat that applies to every number it prints: same as this session's other replays — raw scanner-level fires with a mechanical exit, not the live funnel (no cluster mutex, cooldown, confidence tier, ML gate, no partial TPs / chandelier trail). It answers "does this scanner's setup have an edge on this pair/TF at this size after fees", not "what would the bot have booked".
+- **First run, BTC/USDT, 200d (2026-03-01 → 09-17), $1000 × 30x = $30k notional**: every live scanner is net negative on every timeframe except `momentum_ride` on 1h (+$2.2k over 15 trades, top-5 share 0.97 — one outlier). On 5m the fee bill is the whole story: several scanners are flat-to-positive *before* fees (e.g. `rsi_extreme` +$5.9k gross, `structure_bounce` ≈ $0 gross) and the ~$35/trade round trip (taker in/out at $30k, Scalper Offer only credits holds ≤30 min) turns all of them negative. Also caught by this run: the lab must hand scanners a datetime `timestamp` column as live does (`data/manager.py:66`) — `structure_bounce`'s UTC session gate silently reads ms integers as 1970 and never fires otherwise.
+
+### Diagnosis pass (2026-09-17, "fix the logics"): what the lab says the fault is
+
+Extended `scripts/scanner_lab.py` with per-trade MFE/MAE, six exit models on the same entries (`tp1`, fixed 1R/2R/3R, a live-style 35/35/30 ladder with chandelier, trail-only, hold), maker-vs-taker fee per trade, a full trade dump (`{SYM}_trades.csv`), a `--sl-mode atr` research stop, and a walk-forward what-if (fit Mar–Jun, judge Jul–Sep) over filters by regime / UTC hour / side / live-routing. BTC/USDT, $30k notional:
+
+- **No rule survives walk-forward.** Across every filter × exit × fee × stop-scale combination, no scanner is positive in both windows except `hold`-exit rows (no stop — not a real exit) or rows carried by one trade (`top5_oos` ≥ 1). Pooled OOS avg R with the live stop: tp1 −0.16, trail −0.12; best single levers are maker entry (+0.05R), long-only (+0.05R), 00–12 UTC (+0.03R), non-`sideways` (+0.02R) — additive but nowhere near the ~0.18R/trade fee.
+- **The 5m fault is cost vs. travel, not a threshold.** Median MFE 0.57–0.81R (P(MFE ≥ 1.5R) 14–28%), so a 1.5R TP1 is structurally rare; gross edge of the best entries (`rsi_extreme`, `rsi_divergence`, `post_impulse`) ≈ +0.05R/trade, fees ≈ 0.18R/trade. Losses concentrate in bars labelled `sideways` (60–75% of trades) and 12–18 UTC.
+- **The stop scale is not the lever.** 1.5×ATR of the traded TF is *tighter* than the live band on 5m (0.20% vs 0.65% risk → fee_r 0.40, stop-first 50%) and ≈ equal on 1h (0.8%); pooled OOS avg R fell to −0.56. The live 0.55–0.95% clamp was not what was killing 1h.
+- **The lab agrees with the live book where one exists**: `structure_bounce` live expectancy −0.08R (24 trades) vs lab −0.11…−0.20R; `rsi_divergence` live −0.56R (1 trade).
+- Conclusion for the rebuild: re-tuning these 21 definitions cannot produce an edge this data doesn't contain. The path is the one already written up in `docs/PIPELINE_ARCHITECTURE_TARGET_20260916.md` — collapse to a few named setup families with geometry-first entries and a stop/invalidation defined by the pattern, each pre-registered and validated walk-forward in the lab *before* it gets a routing entry. The lab is now that harness (`--tag` variants under `storage/research/scanner_lab/variants/`).
+
+### First family rebuild attempt: `trend_pb` — pre-registered, run, FAILED (2026-09-17)
+
+`docs/research/TREND_PB_PREREG_20260917.md` (definition, kill rules, protocol, results),
+`strategies/families/trend_pb.py` (detector, two-sided by mirroring, not routed),
+`scripts/family_lab.py` (walk-forward harness: entry variants, pattern stop, EMA21
+invalidation, 6-bar expiry, 1R/1.5R/chandelier exits, old-family bag comparison).
+BTC and ETH 15m/1h: fires 0.5–0.7% of bars; v1 regime gate leaves ≤7 trades; gate-off
+diagnostic shows no edge in either window at impulse 0.6/0.7/0.8; ETH's existing
+momentum scanners under live routing are +0.49R OOS (15m, n=51) and beat it. No routing
+change. Next family attempt needs a regime-labeller pre-registration first.
+
+### Duration cuts + per-TF exit card (2026-09-17) — measured, not shipped
+
+`scripts/duration_lab.py` (T_MAE/T_MFE/T_1R/T_stop/T_exit per trade, percentiles by tf/scanner/side/regime/hour/reason)
+and `scripts/exit_card_lab.py` (re-exit the same entries under `docs/research/EXIT_CARD_PREREG_20260917.md`).
+Clocks: 5m never reaches 1R or the stop on two-thirds of trades (live R ≈ 5× a 5m ATR — carry, not a
+short-clock stop-out); 15m T_1R ≈ T_stop ≈ 15 bars (coin flip); 1h p50 MFE 1.6–2.2R with the stop clock
+one bar ahead of the 1R clock — stop placement is the 1h lever. The exit card beats the fixed 1.5R target
+everywhere but not the plain CE trail on 15m / ETH 1h; 5m stays red. Nothing routed; live `max_age`/48-bar
+behaviour unchanged. Next pre-reg if pursued: 15m progress kill aligned to the 15m clock (bar ~8, not 4).
+
+### The 1h/15m brew (2026-09-17) — `docs/research/BREW_1H_PREREG_20260917.md`
+
+Pre-registered grid: pattern stops on the 21 scanners (`scanner_lab --sl-mode pattern`), `trend_pb`
+impulse-stop and EMA-slope-labeller variants, then a 500-day 1h sample with 6 rolling folds
+(`scripts/fold_lab.py`). Result: no scanner × exit × stop cell meets the candidate bar on either
+symbol. `structure_bounce` 1h's 200-day OOS edge was the last two folds only. Pattern stops are
+worse than the live clamp; `trend_pb` is closed. Robust findings: 1h ≫ 15m ≫ 5m; the clamp is the
+right 1h stop scale; trail + progress kills beat fixed targets on 1h by ~0.1R; fees 0.11–0.18R.
+Nothing routed.
+
+### Real-account pattern lab: `breakout_scalp` — FAILED (2026-09-17)
+
+`docs/research/BREAKOUT_SCALP_PREREG_20260917.md`, `scripts/breakout_scalp_lab.py`. The mechanical
+version of the real Delta account's pattern (fresh-4h-high breakout, EMA8>EMA21, +0.35% take via
+stop-above-entry, −1.1% stop, free exits ≤30 min) reproduces its hit-rate shape (70%) but loses
+−$27…−$55/trade in every fold on BTC and ETH, 200d/5m and 500d/15m, all pre-registered variants
+and a post-hoc −0.45% stop. The account's 92% on 13 trades is discretion, not geometry. Closed.
+
+### Edge map, cross-venue lag, funding (2026-09-17) — `docs/research/BREW_1H_PREREG_20260917.md` §G5
+
+`scripts/edge_map_lab.py`: on 500 days of 1h, no structural OHLCV feature (hour, weekday, funding
+window, range position, momentum, volatility, volume, RSI, BTC lead) conditions forward returns
+beyond noise and fees on both symbols — stable cells are fewer than chance. Asia-range breakout
+loses. Binance↔Delta 1m: corr 0.996, no lag. Delta funding is capped at 0.01% and uninformative.
+Architect's conclusion: for candle-derived signals at $30k taker on Delta ETH/BTC, the last
+500 days contain no exploitable edge at any horizon from 1m to 24h; remaining levers are cost
+(maker entry + ≤30-min exits cut the round trip from 0.118% to 0.024–0.059%) and information not in
+candles (order flow / L2, liquidations, OI) — see the architect report.
+
+### Order flow from Delta trade archives (2026-09-18) — `docs/research/ORDERFLOW_PREREG_20260918.md`
+
+110M trades (ETH 45M, BTC 65M, Jan–Sep 2026) aggregated to 1-minute flow bars
+(`scripts/orderflow_aggregate.py` → `storage/research/orderflow/`), screened by
+`scripts/orderflow_lab.py`: aggressor imbalance, real CVD divergence, large-trade imbalance,
+intensity, absorption, VWAP deviation on 15m/1h, 5 judge folds. Stable cells at or below
+chance on both symbols; no candidate under the both-symbols rule. One BTC-only lead
+(1h: price up 12h against net selling → +0.30/+0.44% next 12/24h, 4–5/5 folds, ≈22–45
+independent events) that does not replicate on ETH — needs 2025 BTC trade archives for a
+trade-level test before it means anything. Nothing routed.
+
+### Scalper and swing angles (2026-09-18) — `docs/research/BREW_1H_PREREG_20260917.md` §G6
+
+Scalper: existing 5m entries with a free exit (flat inside the 30-min offer window), +0.35%/−0.6%:
+72–78% of entries go nowhere in 30 minutes; all scanners negative with a taker entry, ≈ $0 at best
+with maker. Swing: 4h primary with daily confirm, 500 days, 5-day trail — BTC negative, ETH +0.07R
+pooled with 2/4 folds and top-5 share 0.61 (drift + one fold). No scalper or swing edge in these
+entries. `exit_card_lab` now has `--mode scalper|swing`; `scanner_lab` supports a 4h primary.
+
+### Gross view, fee model removed (2026-09-19) — `docs/research/BREW_1H_PREREG_20260917.md` §G7
+
+Fees off: pooled gross avg R is −0.06…+0.02 (tp1) / 0.00…+0.10 (trail) — the book is breakeven
+before costs and fees (0.11–0.16 R/trade) are the entire net loss. A few single-symbol gross cells
+clear fees (ETH 1h `volume_surge` trail net +0.16 R, 4/6 folds; ETH 1h `bb_band_walk` trail +0.09;
+BTC 1h `momentum_surge` ≈ 0, unrouted live); none on both symbols. Table in
+`storage/research/scanner_lab/duration/gross_view.csv`.
+
+### Found by the lab, NOT fixed — needs sign-off: the `fees:` config block never reaches the bot
+
+`config/__init__.py`'s `Config` dataclass has no `fees` field, so `get_config()` drops `settings.yaml`'s entire `fees:` block. `execution/fees.get_fee_model()` then does `Config.get("fees", {})` → `{}` → `FeeModel` defaults, i.e. **Scalper Offer OFF** even though the yaml says `scalper_offer.enabled: true` (confirmed 2026-09-17: `getattr(get_config(), "fees", None)` is `None`, `get_fee_model().scalper_offer` is `False`). Every consumer inherits it: `bot/signal_tracker._calc_pnl` (paper P&L charges exit fees the opted-in account doesn't pay on ≤30-min closes), `get_min_viable_move` (fee gate assumes no free exit), `execution/paper_engine`, the dashboard fee display. Rates themselves happen to match the defaults, so only the offer (and any future per-product/funding settings) is lost. Fixing it changes booked paper P&L and the fee gate's pass/fail — a live-accounting change, so it stays here until signed off. The earlier "0.62–0.73 ATR round-trip cost" figures this session were computed under the same OFF assumption.
+
 ## Still open (unchanged, no new decisions made)
 
 `bos_choch`'s second confirmation gate (keep/drop), `ema_momentum`'s zero-print status (quarantine/accept), `vwap_band` exclusion from `structure_bounce` (blocked on sample size), `SCANNER_TRADE_TYPE["structure_bounce"]=RUNNER` (keep forced vs. let `classify_trade()` decide — needs its own holdout on bounce's mean R and `fee_drag_r` specifically), the three-tuple reversion-scanner membership question for `rsi_extreme` in Veto 10/P0.8, and a possible future `p<X` gate for P3.11 once a reliability table exists (separate flag, default off, per explicit instruction). All on hold. Re-run `scripts/reliability_table.py` periodically as the archive grows — it's the gate on ever trusting a 0.50/0.65 cut.
+
+### 2026-09-19 — gross view, all scanners (G7b)
+
+Per-scanner fee-free table added to `docs/research/BREW_1H_PREREG_20260917.md` §G7b and
+`storage/research/scanner_lab/duration/gross_view_all_scanners.csv`. 5m gross ≈ 0 for every
+scanner; 15m/1h gross clears the fee on one symbol only (ETH 1h under trail for 12/14 scanners,
+BTC 1h ≈ 0); 4h `bb_band_walk` / `bb_squeeze` / `post_impulse` gross-positive on both symbols
+under trail but n 57–83, 2–3/4 folds, top-5 share ≥ 1.0 — not candidates. Nothing routed.
+
+### 2026-09-19 — naked market structure (pre-registered, `docs/research/NAKED_STRUCTURE_PREREG_20260919.md`)
+
+New research module `data/market_structure.py` (ATR ZigZag with confirmation times, HH/HL/LH/LL,
+state machine, BOS/CHoCH/range-break, naked levels, range position; no look-ahead, 7 unit tests) and
+`scripts/structure_lab.py`. 500 d 1h + 4h, BTC/ETH, 8 hypotheses × 3 horizons: 10/78 stable cells
+(chance ≈ 22 %), 0 candidates on both symbols. Only cross-symbol consistent direction is inverse to
+the hypothesis: 4h naked levels are run through (touch-reject −0.1…−0.9 %/12–24h on both) and 4h
+CHoCH is faded. Lead only; not routed; not re-parameterised.
+
+### 2026-09-20 — perp-terminal dashboard build (all six items)
+
+Gap analysis vs Hyperliquid / Binance Futures / Bybit / dYdX / Lighter / Drift → built:
+1. **Position row with exchange truth** — `GET /api/live/position` (`bot/live_view.enrich_position`): mark/index/basis,
+   liquidation price + distance (% and ATR, isolated, `bot/trade_calculator.calc_liquidation_price`), stop/trail distance,
+   R now / MFE / MAE, margin / notional / % open, fees so far (entry from recorded liquidity, projected exit taker or free
+   inside the Scalper window), funding rate + estimate (not debited on paper) + countdown, hold time. Controls on the card:
+   Close, Close 50%, Stop → BE → `POST /api/trade/{id}/close | close-partial | stop` → new tracker helpers
+   `close_trade / close_partial / set_stop / move_stop_to_breakeven / close_all` (bot/signal_tracker.py). Manual closes go
+   through the normal tick finalizer via a `_manual_close` queue (integrity clamp, fee legs, ML feedback, persistence).
+2. **Chart with the trade on it** — `GET /api/chart/overlay` (`live_view.chart_overlay`): entry/stop/trail/TP/liq price
+   lines, fill + exit markers, naked-structure zigzag, untested swing levels, state/range/last events
+   (`data/market_structure`). chart.html now loads lightweight-charts from cdn.jsdelivr (unpkg was blocked by the CSP).
+3. **Websocket push** — `dashboard/websocket_handler.py` rewritten: route moved to `/api/ws` (cookie auth; `/ws` was open),
+   channels tick (≤2/s, coalesced) / position (≤1/s) / event (immediate), `ts` on every frame. Orchestrator pushes from
+   `_on_ws_price`, `_update_dashboard` and on `track_signal`. live.js client with backoff; polling kept as fallback.
+4. **Fee & funding ledger** — `GET /api/ledger/fees` (`live_view.fee_ledger`) + Analytics card: per-trade gross / entry fee /
+   exit fee / fee R / net / free-exit flag, summary tiles incl. "flipped by fees".
+5. **Flatten** — `POST /api/control/close-all` (closes every active paper trade at the fresh price, pauses entries),
+   header button with double confirm.
+6. **Context strip** — `GET /api/live/context`: funding rate + next-funding countdown, OI (USD), 24h change, basis, per
+   symbol, from the Delta `v2/ticker` frame (`DeltaWebSocket.ticker_meta`, new; nothing captured these before).
+Tests: tests/test_live_view.py (15) + tests/test_market_structure.py (7); suite 389 pass / 11 pre-existing / 11 skip.
+Bot restarted 2026-09-20 with the new server code. Visual check pending dashboard login.
+Known: `get_fee_model()` still runs with the Scalper Offer OFF in the live bot (Config drops `fees:`), so the position
+row's "free exit" flag is False until that sign-off item lands; the ledger and the row use the same model, so they agree.

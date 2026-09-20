@@ -744,9 +744,21 @@ class BotOrchestrator:
         self._ws_prices[symbol] = last
         self._price_ts[symbol] = time.time()
 
+        # Dashboard websocket push (2026-09-20): hub coalesces to <= 2 frames/s.
+        if self._dashboard is not None and hasattr(self._dashboard, "push_tick"):
+            try:
+                await self._dashboard.push_tick({symbol: last})
+            except Exception:
+                pass
+
         # If we have active trades, update them immediately (real-time!)
         if self._signal_tracker.active_count > 0:
             events = self._signal_tracker.update_prices({symbol: last})
+            if events and self._dashboard is not None and hasattr(self._dashboard, "push_events"):
+                try:
+                    await self._dashboard.push_events(events)
+                except Exception:
+                    pass
             for ev in events:
                 msg = ev.get("message", "")
                 ev_type = ev.get("type", "")
@@ -1427,11 +1439,21 @@ class BotOrchestrator:
 
         if prices:
             await self._dashboard.update_prices(prices)
+            if hasattr(self._dashboard, "push_tick"):
+                try:
+                    await self._dashboard.push_tick(prices)
+                except Exception:
+                    pass
 
         # -- Check tracked signals for TP/SL hits --
         if prices and self._signal_tracker.active_count > 0:
             try:
                 events = self._signal_tracker.update_prices(prices)
+                if events and hasattr(self._dashboard, "push_events"):
+                    try:
+                        await self._dashboard.push_events(events)
+                    except Exception:
+                        pass
                 for ev in events:
                     msg = ev.get("message", "")
                     ev_type = ev.get("type", "")
@@ -2095,6 +2117,12 @@ class BotOrchestrator:
             # Pass order_type so from_signal can compute fees correctly
             sig_dict["_order_type"] = getattr(self._signal_tracker, "_order_type", "maker")
             self._signal_tracker.track_signal(sig_dict)
+            if self._dashboard is not None and hasattr(self._dashboard, "push_events"):
+                try:
+                    await self._dashboard.push_events([{"type": "opened", "signal": sig_dict,
+                                                        "message": f"OPEN {sig_dict.get('symbol')} {sig_dict.get('side')}"}])
+                except Exception:
+                    pass
 
             # RL Shadow Agent — log sizing/trail suggestion
             if hasattr(self, '_rl_agent') and self._rl_agent:

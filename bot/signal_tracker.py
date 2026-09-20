@@ -792,7 +792,8 @@ class SignalTracker:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         _STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-        self._active: Dict[str, TrackedSignal] = {}  # trade_id -> TrackedSignal
+        self._active: Dict[str, TrackedSignal] = {}
+        self._manual_close: Dict[str, Dict[str, Any]] = {}   # trade_id -> {reason, detail, by}; see close_trade()  # trade_id -> TrackedSignal
         self._closed: List[Dict[str, Any]] = []
         self._stats: Dict[str, Any] = {}
         self._lock = asyncio.Lock()  # protects _active/_closed state mutations
@@ -1013,33 +1014,15 @@ class SignalTracker:
         if candles is not None and len(candles) > 0:
             self._recent_candles[symbol] = candles.tail(20).copy()
 
-    def _chandelier_stop(self, symbol: str, side: str, regime: str, mult_override: float = 0):
-        """Compute Chandelier Exit stop level."""
-        import pandas as _pd
-        candles = self._recent_candles.get(symbol)
-        if candles is None or len(candles) < 14:
-            return None
-        recent = candles.tail(14)
-        hh = float(recent["high"].max())
-        ll = float(recent["low"].min())
-        tr = _pd.concat([
-            recent["high"] - recent["low"],
-            (recent["high"] - recent["close"].shift(1)).abs(),
-            (recent["low"] - recent["close"].shift(1)).abs(),
-        ], axis=1).max(axis=1)
-        atr_val = float(tr.mean())
-        if atr_val <= 0:
-            return None
-        r = (regime or "").lower()
-        mult = {"trending_up":2.5,"trending_down":2.5,"breakout":2.5,
-                "ranging":1.5,"sideways":1.5,"volatile":1.8,
-                "high_volatility":1.8,"quiet":1.3}.get(r, 2.0)
-        if mult_override > 0:
-            mult = mult_override
-        if side == "long":
-            return hh - atr_val * mult
-        else:
-            return ll + atr_val * mult
+    # (2026-09-17) Deleted _chandelier_stop (rolling-14-bar HH/LL + a live
+    # mean-based ATR). Confirmed via git blame: it was authored in the same
+    # commit (68096fc5, "Unified exit system... replaces 13 conflicting exit
+    # paths with one ATR-based, regime-adaptive trailing stop (initial_risk x
+    # mult)") that wrapped its only call site in `if False:` and wired
+    # _update_chandelier below as the one active trail. It never ran live --
+    # not an A/B that lost, a prototype shelved in the same pass that chose
+    # the since-entry/initial_risk design as the deliberate replacement for
+    # the prior 13 conflicting paths. One trail, not two.
 
     def update_prices(self, prices: Dict[str, float]) -> List[Dict[str, Any]]:
         """Check all active signals against current prices.
@@ -1084,6 +1067,27 @@ class SignalTracker:
                         ts.symbol, ts.side, ts.entry_price, price, deviation * 100,
                     )
                     continue
+
+            # ── Operator actions (2026-09-20): manual close requested from the dashboard ──
+            # Consumed here so the exit goes through the same finalizer as every
+            # other close (integrity clamp, fee legs, ML feedback, persistence).
+            _manual = self._manual_close.pop(tid, None) if getattr(self, "_manual_close", None) else None
+            if _manual is not None:
+                ts.exit_price = price
+                ts.exit_time = _utcnow().isoformat()
+                ts.pnl_pct = self._calc_pnl(ts, price, self._order_type)
+                ts.exit_reason = _manual.get("reason", "manual_close")
+                ts.exit_reason_detailed = _manual.get("detail", ts.exit_reason)
+                ts.status = "manual_close"
+                ts.metadata = dict(ts.metadata or {})
+                ts.metadata["manual_close"] = {"by": _manual.get("by", "dashboard"), "at": ts.exit_time}
+                to_close.append(tid)
+                events.append({
+                    "type": "manual_close",
+                    "signal": ts.to_dict(),
+                    "message": f"MANUAL CLOSE {ts.symbol} {ts.side} @ {price:.4f} ({ts.pnl_pct:+.2f}%) — {ts.exit_reason}",
+                })
+                continue
 
             # ── Estimated Slippage (paper mode) ──
             # On first price update after entry, capture the market price as
@@ -1930,35 +1934,11 @@ class SignalTracker:
                                         dead_trade = True
                                         kill_reason = "exhaustion_wick"
 
-                    # ── TIME DECAY URGENCY (tighten trail as trade ages) ──
-                    if not dead_trade and hasattr(self, '_chandelier_stop'):
-                        _urgency = 1.0 + (age_sec / 900) * 0.5
-                        # Adjust chandelier multiplier by urgency
-                        # This makes the trail tighter as trade ages
-
-                    # ── CHANDELIER TRAIL (between momentum check and max_age) ──
-                    # Ratchet SL using ATR-based chandelier — adapts to volatility
-                    if False:  # DISABLED duplicate chandelier (line 1093 handles)
-                        _regime_ch = ts.metadata.get("regime", "") if isinstance(ts.metadata, dict) else ""
-                        # Use config-based chandelier multiplier
-                        if _regime_ch in ("trending_up", "trending_down", "breakout"):
-                            _ch_mult = tt_cfg.get("chandelier_mult_trending", 2.0)
-                        else:
-                            _ch_mult = tt_cfg.get("chandelier_mult_ranging", 1.5)
-                        _ch_stop = self._chandelier_stop(ts.symbol, ts.side, _regime_ch, _ch_mult)
-                        if _ch_stop is not None:
-                            _ch_tighter = (ts.side == "long" and _ch_stop > ts.stop_loss) or                                          (ts.side == "short" and _ch_stop < ts.stop_loss)
-                            if _ch_tighter:
-                                old_sl = ts.stop_loss
-                                ts.stop_loss = _ch_stop
-                                if not ts.breakeven_set:
-                                    ts.breakeven_set = True
-                                logger.info("CHANDELIER: %s %s | SL %.4f -> %.4f | regime=%s",
-                                           ts.symbol, ts.side, old_sl, _ch_stop, _regime_ch)
-                                events.append({"type": "sl_updated", "trade_id": ts.trade_id,
-                                    "symbol": ts.symbol, "side": ts.side,
-                                    "new_sl": ts.stop_loss, "old_sl": old_sl,
-                                    "peak_mfe_r": ts.peak_mfe_r})
+                    # (2026-09-17) Deleted the dead _urgency computation and the
+                    # `if False:`-guarded duplicate chandelier block that used to
+                    # live here — both were the call site for the now-deleted
+                    # _chandelier_stop, never reachable. _update_chandelier
+                    # (called earlier in this loop) is the one active trail.
 
                     # ── UNIFIED TIME DECAY (dynamic max_age with MFE-based extensions) ──
                     if not dead_trade:
@@ -2120,6 +2100,122 @@ class SignalTracker:
     def get_active_signals(self) -> List[Dict[str, Any]]:
         """Return list of currently active signals."""
         return [ts.to_dict() for ts in self._active.values()]
+
+    # ------------------------------------------------------------------
+    # Operator actions (2026-09-20) — dashboard position controls.
+    # All of them book at the price the caller passes (the latest fresh
+    # tick), never at a level, and go through the normal tick finalizer.
+    # ------------------------------------------------------------------
+    def close_trade(self, trade_id: str, price: float, reason: str = "manual_close",
+                    by: str = "dashboard") -> Dict[str, Any]:
+        """Close one active trade at `price`. Returns {ok, trade_id, closed:dict|None, error}."""
+        ts = self._active.get(trade_id)
+        if ts is None:
+            return {"ok": False, "trade_id": trade_id, "error": "not active"}
+        if not price or price <= 0:
+            return {"ok": False, "trade_id": trade_id, "error": "no fresh price"}
+        if getattr(self, "_manual_close", None) is None:
+            self._manual_close = {}
+        self._manual_close[trade_id] = {"reason": reason, "detail": f"{reason}_by_{by}", "by": by}
+        events = self.update_prices({ts.symbol: float(price)})
+        closed = next((e["signal"] for e in events if e.get("type") == "manual_close"
+                       and e["signal"].get("trade_id") == trade_id), None)
+        if closed is None:
+            self._manual_close.pop(trade_id, None)
+            # the tick may have closed it on its own rules (stop/TP) in the same call
+            still_open = trade_id in self._active
+            return {"ok": not still_open, "trade_id": trade_id, "closed": None,
+                    "error": "price rejected by sanity check" if still_open else None}
+        return {"ok": True, "trade_id": trade_id, "closed": closed, "error": None}
+
+    def close_partial(self, trade_id: str, fraction: float, price: float,
+                      by: str = "dashboard") -> Dict[str, Any]:
+        """Book `fraction` of the remaining position at `price` and keep the rest running.
+
+        Mirrors the 0.3R scale-out accounting (pnl locked into tp1_pnl_locked,
+        position_remaining_pct reduced) so _calc_pnl and the fee legs stay consistent.
+        """
+        ts = self._active.get(trade_id)
+        if ts is None:
+            return {"ok": False, "trade_id": trade_id, "error": "not active"}
+        if not price or price <= 0:
+            return {"ok": False, "trade_id": trade_id, "error": "no fresh price"}
+        fraction = float(fraction)
+        if not (0.0 < fraction < 1.0):
+            return {"ok": False, "trade_id": trade_id, "error": "fraction must be in (0, 1)"}
+        if fraction >= ts.position_remaining_pct - 0.01:      # no 1% dust positions
+            return self.close_trade(trade_id, price, reason="manual_close", by=by)
+        is_long = ts.side == "long"
+        leg_pnl = ((price - ts.entry_price) if is_long else (ts.entry_price - price)) / ts.entry_price * 100
+        now_iso = _utcnow().isoformat()
+        ts.tp1_pnl_locked = round(ts.tp1_pnl_locked + fraction * leg_pnl, 4)
+        ts.position_remaining_pct = round(ts.position_remaining_pct - fraction, 4)
+        ts.partial_exit_done = True
+        if not ts.tp1_time:
+            ts.tp1_time = now_iso      # elapsed-time anchor for the fee leg
+        ts.metadata = dict(ts.metadata or {})
+        parts = list(ts.metadata.get("manual_partials", []))
+        parts.append({"fraction": fraction, "price": price, "pnl_pct": round(leg_pnl, 4), "at": now_iso, "by": by})
+        ts.metadata["manual_partials"] = parts
+        self._save_active()
+        return {"ok": True, "trade_id": trade_id, "remaining_pct": ts.position_remaining_pct,
+                "locked_pnl_pct": ts.tp1_pnl_locked, "error": None}
+
+    def set_stop(self, trade_id: str, new_sl: float, price: float, by: str = "dashboard") -> Dict[str, Any]:
+        """Move the stop. Must stay on the market side of the current price."""
+        ts = self._active.get(trade_id)
+        if ts is None:
+            return {"ok": False, "trade_id": trade_id, "error": "not active"}
+        new_sl = float(new_sl)
+        if new_sl <= 0 or not price or price <= 0:
+            return {"ok": False, "trade_id": trade_id, "error": "bad price"}
+        is_long = ts.side == "long"
+        if (is_long and new_sl >= price) or (not is_long and new_sl <= price):
+            return {"ok": False, "trade_id": trade_id, "error": "stop must be on the market side of price"}
+        old_sl = ts.stop_loss
+        ts.stop_loss = new_sl
+        if (is_long and new_sl >= ts.entry_price) or (not is_long and new_sl <= ts.entry_price):
+            ts.breakeven_set = True
+        ts.metadata = dict(ts.metadata or {})
+        moves = list(ts.metadata.get("manual_stop_moves", []))
+        moves.append({"old": old_sl, "new": new_sl, "at": _utcnow().isoformat(), "by": by})
+        ts.metadata["manual_stop_moves"] = moves
+        self._save_active()
+        return {"ok": True, "trade_id": trade_id, "old_sl": old_sl, "new_sl": new_sl, "error": None}
+
+    def move_stop_to_breakeven(self, trade_id: str, price: float, by: str = "dashboard") -> Dict[str, Any]:
+        """Stop to entry plus the taker round trip, clamped to the market side of price."""
+        ts = self._active.get(trade_id)
+        if ts is None:
+            return {"ok": False, "trade_id": trade_id, "error": "not active"}
+        try:
+            from execution.fees import get_fee_model
+            buf = ts.entry_price * get_fee_model().round_trip_pct("taker", "taker", ts.symbol) / 100.0
+        except Exception:
+            buf = ts.entry_price * 0.0012
+        if ts.side == "long":
+            target = ts.entry_price + buf
+            if target >= price:
+                return {"ok": False, "trade_id": trade_id, "error": "price is not above breakeven yet"}
+        else:
+            target = ts.entry_price - buf
+            if target <= price:
+                return {"ok": False, "trade_id": trade_id, "error": "price is not below breakeven yet"}
+        return self.set_stop(trade_id, target, price, by=by)
+
+    def close_all(self, prices: Dict[str, float], reason: str = "flatten", by: str = "dashboard") -> Dict[str, Any]:
+        """Close every active trade that has a fresh price. Returns per-trade results."""
+        results = []
+        for tid, ts in list(self._active.items()):
+            px = prices.get(ts.symbol)
+            if not px:
+                results.append({"ok": False, "trade_id": tid, "symbol": ts.symbol, "error": "no fresh price"})
+                continue
+            r = self.close_trade(tid, px, reason=reason, by=by)
+            r["symbol"] = ts.symbol
+            results.append(r)
+        return {"ok": all(r["ok"] for r in results) if results else True, "n": len(results),
+                "closed": sum(1 for r in results if r["ok"]), "results": results}
 
     def get_closed_signals(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Recent closed signals from the ONE paper ledger (in-memory `_closed`,

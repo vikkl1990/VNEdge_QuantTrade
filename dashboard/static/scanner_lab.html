@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VN Edge · Scanner Lab</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/layout.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/css/terminal.css">
+<style>
+  body{background:var(--bg-base);color:var(--text-primary);font-family:var(--font-sans);margin:0;-webkit-font-smoothing:antialiased}
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  .wrap{max-width:1400px;margin:0 auto;padding:28px 24px 64px}
+  a.backlink{color:var(--text-secondary);text-decoration:none;font-size:var(--text-sm);display:inline-flex;align-items:center;gap:6px}
+  a.backlink:hover{color:var(--text-primary)}
+  header{margin:14px 0 18px}
+  .eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.12em;text-transform:uppercase;color:var(--info);margin:0 0 8px}
+  h1{font-size:1.55rem;margin:0 0 6px;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+  .sub{color:var(--text-secondary);font-size:var(--text-sm);max-width:82ch;line-height:1.55;margin:0}
+
+  .controls{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:18px}
+  .ctl{display:flex;flex-direction:column;gap:4px}
+  .ctl label{font-family:var(--font-mono);font-size:var(--text-2xs);letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim)}
+  .ctl select,.ctl input{background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 10px;font-family:var(--font-mono);font-size:var(--text-sm);min-width:120px}
+  .ctl input:focus,.ctl select:focus{outline:2px solid var(--info-border);outline-offset:1px}
+  .notional{font-family:var(--font-mono);font-size:var(--text-lg);font-weight:600;color:var(--info);padding-bottom:6px}
+  .notional small{display:block;font-size:var(--text-2xs);color:var(--text-dim);font-weight:400;letter-spacing:.06em;text-transform:uppercase}
+
+  .meta{margin-top:12px;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--text-dim);line-height:1.7}
+  .meta b{color:var(--text-secondary);font-weight:500}
+
+  .ticker{display:flex;margin-top:16px;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;background:var(--bg-card);flex-wrap:wrap}
+  .tick{padding:10px 15px;border-right:1px solid var(--border);flex:1;min-width:140px}
+  .tick:last-child{border-right:none}
+  .tick .l{font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+  .tick .v{font-family:var(--font-mono);font-size:var(--text-lg);font-weight:600;font-variant-numeric:tabular-nums}
+  .tick .v.up{color:var(--success)} .tick .v.down{color:var(--danger)}
+  .tick .v small{font-size:var(--text-2xs);color:var(--text-dim);font-weight:400;margin-left:6px}
+
+  section{margin-top:26px}
+  h2{font-size:var(--text-sm);text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin:0 0 4px;font-weight:600}
+  .section-note{color:var(--text-dim);font-size:var(--text-xs);margin:0 0 12px;line-height:1.5;max-width:90ch}
+
+  .tablewrap{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;overflow-x:auto}
+  table.lab{width:100%;border-collapse:collapse;font-size:var(--text-sm);min-width:1180px}
+  table.lab tbody td{white-space:nowrap}
+  table.lab thead th{text-align:right;font-family:var(--font-mono);font-size:var(--text-2xs);text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);padding:8px 10px;background:var(--bg-card-alt);border-bottom:1px solid var(--border);white-space:nowrap}
+  table.lab thead th.sortable{cursor:pointer;user-select:none}
+  table.lab thead th.sortable:hover{color:var(--text-primary)}
+  table.lab thead th.sorted{color:var(--info)}
+  table.lab thead tr.groups th{text-align:center;color:var(--text-secondary);border-left:1px solid var(--border);font-size:var(--text-xs);letter-spacing:.1em}
+  table.lab thead tr.groups th:first-child{border-left:none;text-align:left}
+  table.lab th.gstart,table.lab td.gstart{border-left:1px solid var(--border)}
+  table.lab tbody td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  table.lab tbody td.name{text-align:left;font-family:var(--font-sans);font-weight:600;white-space:nowrap}
+  table.lab tbody td.name .sub2{display:block;font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-dim);font-weight:400;margin-top:2px}
+  table.lab tbody tr{cursor:pointer}
+  table.lab tbody tr:hover{background:var(--bg-hover)}
+  table.lab tbody tr.selected{background:var(--info-dim)}
+  table.lab tbody tr.learning td{color:var(--text-dim)}
+  table.lab tbody tr.learning td.name{color:var(--text-secondary)}
+  table.lab tbody tr:last-child td{border-bottom:none}
+  .pos{color:var(--success)} .neg{color:var(--danger)} .flat{color:var(--text-dim)}
+  .fires{display:block;font-size:var(--text-2xs);color:var(--text-dim);white-space:nowrap}
+  .warn{color:var(--warning);font-size:var(--text-2xs);margin-left:4px;cursor:help}
+  .badge{font-family:var(--font-mono);font-size:var(--text-2xs);letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:var(--radius-full);border:1px solid var(--border);color:var(--text-dim);margin-left:8px;vertical-align:middle}
+  .empty{padding:28px 18px;color:var(--text-secondary);font-size:var(--text-sm);line-height:1.6}
+  .empty code{font-family:var(--font-mono);background:var(--bg-card-alt);padding:2px 6px;border-radius:var(--radius-xs)}
+
+  .drawer{display:none;margin-top:18px;background:var(--bg-card);border:1px solid var(--info-border);border-radius:var(--radius-md);padding:16px 18px}
+  .drawer.open{display:block}
+  .drawer h3{margin:0;font-size:var(--text-base);font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .drawer .close{margin-left:auto;background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:var(--radius-sm);padding:4px 10px;cursor:pointer;font-family:var(--font-mono);font-size:var(--text-xs)}
+  .tftabs{display:flex;gap:6px;margin:12px 0}
+  .tftab{font-family:var(--font-mono);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.06em;padding:5px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card-alt);color:var(--text-secondary);cursor:pointer}
+  .tftab.active{background:var(--info-dim);color:var(--info);border-color:var(--info-border)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:6px}
+  .card{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px}
+  .card .l{font-family:var(--font-mono);font-size:var(--text-2xs);color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+  .kv{display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:var(--text-xs);padding:3px 0;border-bottom:1px dashed var(--border)}
+  .kv:last-child{border-bottom:none}
+  .kv span:last-child{font-variant-numeric:tabular-nums}
+  .bars{display:flex;align-items:flex-end;gap:4px;height:70px;margin-top:6px}
+  .bar{flex:1;position:relative;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+  .bar i{display:block;width:100%;background:var(--success);border-radius:2px 2px 0 0;min-height:1px}
+  .bar.neg i{background:var(--danger)}
+  .bar b{position:absolute;bottom:-14px;left:0;right:0;text-align:center;font-family:var(--font-mono);font-size:8px;color:var(--text-dim);font-weight:400}
+  .bars-wrap{padding-bottom:16px}
+  table.trades{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:var(--text-xs);margin-top:14px;min-width:640px}
+  table.trades th{text-align:right;color:var(--text-dim);font-weight:500;text-transform:uppercase;letter-spacing:.05em;font-size:var(--text-2xs);padding:6px 8px;border-bottom:1px solid var(--border)}
+  table.trades td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
+  table.trades th:first-child,table.trades td:first-child{text-align:left}
+  .tradewrap{overflow-x:auto}
+  @media (max-width:640px){.wrap{padding:18px 16px 48px}.notional{font-size:var(--text-base)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="backlink" href="/">&larr; Dashboard</a>
+  <header>
+    <p class="eyebrow">VN Edge &middot; Scanner Lab</p>
+    <h1>Every scanner, every timeframe, one pair</h1>
+    <p class="sub">Offline replay of the live scanner code on real Delta candles. Each fire becomes a simulated trade at your margin &times; leverage, exits on the live stop or TP1, net of Delta fees (Scalper Offer honoured). Not a portfolio sim &mdash; each scanner is measured on its own.</p>
+    <div class="controls">
+      <div class="ctl"><label for="symbolSel">Pair</label><select id="symbolSel"></select></div>
+      <div class="ctl"><label for="marginIn">Margin $</label><input id="marginIn" type="number" min="1" step="50" value="1000"></div>
+      <div class="ctl"><label for="levIn">Leverage &times;</label><input id="levIn" type="number" min="1" max="100" step="1" value="30"></div>
+      <div class="notional"><small>Notional per trade</small><span id="notional">$30,000</span></div>
+    </div>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <div class="ticker" id="ticker" hidden></div>
+
+  <section>
+    <h2>Scanner &times; timeframe</h2>
+    <p class="section-note">Trades = fires that passed the live SL/TP build and filled at the next open (one open trade per scanner at a time; the small line under it is raw fires &middot; fires the live regime routing would have allowed). Click a column to sort within that timeframe; click a row for the breakdown. &#9888; marks results where the best 5 trades carry &ge; 60% of total R &mdash; outlier-driven, not a repeatable edge.</p>
+    <div class="tablewrap" id="tablewrap"></div>
+  </section>
+
+  <div class="drawer" id="drawer" aria-live="polite"></div>
+</div>
+
+<script>
+const FALLBACK_SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","XRP/USDT","LTC/USDT","ADA/USDT","DOT/USDT","DOGE/USDT","LINK/USDT","AVAX/USDT","SUI/USDT","NEAR/USDT","TRUMP/USDT"];
+const SCANNER_COLORS = {
+  structure_bounce:"#00ff9d", bos_choch:"#00d4ff", liquidity_sweep:"#ffd700", order_block_entry:"#a78bfa",
+  fvg_fill:"#c4b5fd", ema_momentum:"#f97316", trend_continuation:"#fb923c", momentum_ride:"#fdba74",
+  post_impulse:"#fed7aa", vwap_mean_revert:"#34d399", vwap_bounce:"#6ee7b7", rsi_extreme:"#f472b6",
+  rsi_divergence:"#f9a8d4", cvd_divergence:"#94a3b8", supertrend_flip:"#60a5fa", bb_squeeze:"#38bdf8",
+  bb_band_walk:"#7dd3fc", momentum_surge:"#facc15", volume_surge:"#fde047", candlestick_reversal:"#e879f9",
+  simple_bias:"#64748b",
+};
+const urlParams = new URLSearchParams(location.search);
+let curSymbol = urlParams.get("symbol") || "BTC/USDT";
+let data = null;
+let scale = 1;              // notional_now / notional_at_run
+let sortKey = {tf:null, k:"pnl_usd", dir:-1};
+let selected = null;        // scanner name
+let drawerTf = null;
+
+const $ = id => document.getElementById(id);
+function esc(s){ const d=document.createElement("span"); d.textContent = s==null? "": String(s); return d.innerHTML; }
+function fmtUsd(v){ if(v==null||isNaN(v)) return "—"; const s=(v<0?"-":"")+"$"+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:0}); return s; }
+function fmtNum(v,d){ return (v==null||isNaN(v)) ? "—" : Number(v).toFixed(d); }
+function cls(v){ return v>0 ? "pos" : v<0 ? "neg" : "flat"; }
+function notionalNow(){ const m=parseFloat($("marginIn").value)||0, l=parseFloat($("levIn").value)||0; return m*l; }
+
+let authed = true;
+async function loadSymbols(){
+  let list = [];
+  try {
+    const r = await fetch("/api/research/scanner-lab/symbols");
+    authed = r.status !== 401;
+    const j = await r.json();
+    list = Array.isArray(j) ? j : [];   // a 401 comes back as {error:...}, not a list
+  } catch(e){}
+  const have = new Set(list.map(x=>x.symbol));
+  const all = Array.from(new Set([...list.map(x=>x.symbol), ...FALLBACK_SYMBOLS]));
+  $("symbolSel").innerHTML = all.map(s => `<option value="${esc(s)}" ${s===curSymbol?"selected":""}>${esc(s)}${(!authed || have.has(s))?"":" (no run)"}</option>`).join("");
+}
+
+async function loadLab(){
+  data = null; selected = null; $("drawer").className = "drawer"; $("drawer").innerHTML = "";
+  const r = await fetch("/api/research/scanner-lab?symbol="+encodeURIComponent(curSymbol)).catch(()=>null);
+  if(!r || !r.ok){
+    $("meta").innerHTML = ""; $("ticker").hidden = true;
+    if(r && r.status === 401){
+      $("tablewrap").innerHTML = `<div class="empty">The lab data sits behind the dashboard login. <a href="/" style="color:var(--info)">Sign in on the dashboard</a>, then come back to this page.</div>`;
+    } else {
+      $("tablewrap").innerHTML = `<div class="empty">No lab run for <b>${esc(curSymbol)}</b> yet. Generate one with<br><code>python scripts/scanner_lab.py --symbol ${esc(curSymbol)}</code></div>`;
+    }
+    return;
+  }
+  data = await r.json();
+  const m = data.meta;
+  if(!urlParams.has("margin")) $("marginIn").value = m.margin;
+  if(!urlParams.has("leverage")) $("levIn").value = m.leverage;
+  render();
+}
+
+function render(){
+  if(!data) return;
+  const m = data.meta;
+  const nNow = notionalNow();
+  scale = m.notional > 0 ? nNow / m.notional : 1;
+  $("notional").textContent = fmtUsd(nNow);
+  const dr = Object.entries(m.date_range||{}).map(([tf,d]) => `<b>${esc(tf)}</b> ${esc(d.from)} &rarr; ${esc(d.to)} (${d.bars} bars, confirm ${esc(d.confirm_tf)})`).join(" &nbsp;&middot;&nbsp; ");
+  $("meta").innerHTML = `${dr}<br><b>fees</b> ${esc(m.fee_model.description)}<br><b>exit</b> ${esc(m.exit_model)}<br><b>run</b> ${esc(m.generated_at)} &middot; ${m.days}d &middot; run at $${m.notional.toLocaleString()} notional, rescaled &times;${scale.toFixed(2)} to your inputs`;
+  renderTicker();
+  renderTable();
+  if(selected) renderDrawer();
+}
+
+function tfs(){ return data.meta.timeframes; }
+function res(tf, name){ return (data.results[tf]||{})[name]; }
+function scannerNames(){
+  const s = new Set(); tfs().forEach(tf => Object.keys(data.results[tf]||{}).forEach(n=>s.add(n)));
+  return Array.from(s);
+}
+
+function renderTicker(){
+  let best=null, totalTrades=0, totalPnl=0, totalFees=0;
+  tfs().forEach(tf => Object.entries(data.results[tf]||{}).forEach(([n,r]) => {
+    if(r.learning_only) return;
+    totalTrades += r.trades; totalPnl += r.pnl_usd*scale; totalFees += r.fees_usd*scale;
+    if(!best || r.pnl_usd > best.r.pnl_usd) best = {tf, n, r};
+  }));
+  const t = $("ticker"); t.hidden = false;
+  t.innerHTML = [
+    ["Best scanner · TF", best ? `${esc(best.n)} <small>${esc(best.tf)}</small>` : "—", best && best.r.pnl_usd>0 ? "up" : ""],
+    ["Its net P&L", best ? fmtUsd(best.r.pnl_usd*scale) : "—", best ? cls(best.r.pnl_usd)==="pos"?"up":"down" : ""],
+    ["All live scanners · trades", String(totalTrades), ""],
+    ["All live scanners · net P&L", fmtUsd(totalPnl), totalPnl>=0?"up":"down"],
+    ["Fees paid", fmtUsd(totalFees), "down"],
+  ].map(([l,v,c]) => `<div class="tick"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join("");
+}
+
+const COLS = [["trades","Trades",0],["win_rate","Win %",1],["avg_r","Avg R",3],["pnl_usd","$ P&L",0]];
+
+function renderTable(){
+  const names = scannerNames();
+  const T = tfs();
+  const sk = sortKey.tf && T.includes(sortKey.tf) ? sortKey : {tf:T[0], k:"pnl_usd", dir:-1};
+  sortKey = sk;
+  names.sort((a,b) => {
+    const ra = res(sk.tf,a), rb = res(sk.tf,b);
+    const va = ra ? (ra[sk.k] ?? -Infinity) : -Infinity, vb = rb ? (rb[sk.k] ?? -Infinity) : -Infinity;
+    const la = ra && ra.learning_only ? 1 : 0, lb = rb && rb.learning_only ? 1 : 0;
+    if(la!==lb) return la-lb;                 // learning-only rows sink
+    return (va===vb ? a.localeCompare(b) : (va<vb?1:-1)) * (sk.dir<0?1:-1);
+  });
+  let h = `<table class="lab"><thead><tr class="groups"><th>Scanner</th>${T.map(tf=>`<th colspan="${COLS.length}">${esc(tf)}</th>`).join("")}</tr><tr><th style="text-align:left">&nbsp;</th>`;
+  T.forEach(tf => COLS.forEach(([k,label],i) => {
+    const on = sk.tf===tf && sk.k===k;
+    h += `<th class="sortable ${on?"sorted":""} ${i===0?"gstart":""}" data-tf="${esc(tf)}" data-k="${k}">${label}${on?(sk.dir<0?" &#9660;":" &#9650;"):""}</th>`;
+  }));
+  h += `</tr></thead><tbody>`;
+  names.forEach(n => {
+    const anyR = T.map(tf=>res(tf,n)).find(Boolean) || {};
+    const color = SCANNER_COLORS[n] || "var(--text)";
+    h += `<tr data-name="${esc(n)}" class="${anyR.learning_only?"learning":""} ${selected===n?"selected":""}"><td class="name"><span style="color:${color}">${esc(n)}</span>${anyR.learning_only?'<span class="badge">learning only</span>':""}</td>`;
+    T.forEach(tf => {
+      const r = res(tf,n);
+      if(!r){ h += `<td class="gstart flat">—</td><td class="flat">—</td><td class="flat">—</td><td class="flat">—</td>`; return; }
+      const pnl = r.pnl_usd*scale;
+      const outl = r.top5_share!=null && r.top5_share>=0.6 && r.total_r>0;
+      h += `<td class="gstart">${r.trades}<span class="fires">${r.fires} fires &middot; ${r.routed_fires} routed${r.build_rejected?` &middot; ${r.build_rejected} rej`:""}</span></td>`;
+      h += `<td>${fmtNum(r.win_rate,1)}</td>`;
+      h += `<td class="${cls(r.avg_r)}">${fmtNum(r.avg_r,3)}</td>`;
+      h += `<td class="${cls(pnl)}">${fmtUsd(pnl)}${outl?`<span class="warn" title="top 5 trades = ${(r.top5_share*100).toFixed(0)}% of total R — outlier-driven">&#9888;</span>`:""}</td>`;
+    });
+    h += `</tr>`;
+  });
+  h += `</tbody></table>`;
+  $("tablewrap").innerHTML = h;
+  $("tablewrap").querySelectorAll("th.sortable").forEach(th => th.addEventListener("click", () => {
+    const tf = th.dataset.tf, k = th.dataset.k;
+    if(sortKey.tf===tf && sortKey.k===k) sortKey.dir *= -1; else sortKey = {tf, k, dir:-1};
+    renderTable();
+  }));
+  $("tablewrap").querySelectorAll("tbody tr").forEach(tr => tr.addEventListener("click", () => {
+    selected = tr.dataset.name; drawerTf = drawerTf || sortKey.tf; renderTable(); renderDrawer();
+    $("drawer").scrollIntoView({behavior:"smooth", block:"nearest"});
+  }));
+}
+
+function renderDrawer(){
+  const d = $("drawer");
+  if(!selected || !data){ d.className="drawer"; d.innerHTML=""; return; }
+  const T = tfs();
+  if(!T.includes(drawerTf)) drawerTf = T[0];
+  const r = res(drawerTf, selected);
+  const trades = ((data.trades[drawerTf]||{})[selected]||[]).slice().reverse();
+  const color = SCANNER_COLORS[selected] || "var(--text)";
+  let h = `<h3><span style="color:${color}">${esc(selected)}</span><span class="badge">${esc(drawerTf)}</span>${r&&r.learning_only?'<span class="badge">learning only — never trades live</span>':""}<button class="close" id="drawerClose">close</button></h3>`;
+  h += `<div class="tftabs">${T.map(tf=>`<button class="tftab ${tf===drawerTf?"active":""}" data-tf="${esc(tf)}">${esc(tf)}</button>`).join("")}</div>`;
+  if(!r){ h += `<div class="empty">No result for this timeframe.</div>`; d.innerHTML=h; d.className="drawer open"; wireDrawer(); return; }
+  const months = r.monthly||[];
+  const maxAbs = Math.max(1, ...months.map(x=>Math.abs(x.pnl_usd*scale)));
+  h += `<div class="grid">`;
+  h += `<div class="card"><div class="l">Outcome</div>
+    <div class="kv"><span>Trades</span><span>${r.trades}</span></div>
+    <div class="kv"><span>Win rate</span><span>${fmtNum(r.win_rate,1)}%</span></div>
+    <div class="kv"><span>Avg R / median R</span><span class="${cls(r.avg_r)}">${fmtNum(r.avg_r,3)} / ${fmtNum(r.median_r,3)}</span></div>
+    <div class="kv"><span>Total R</span><span class="${cls(r.total_r)}">${fmtNum(r.total_r,2)}</span></div>
+    <div class="kv"><span>Net P&amp;L</span><span class="${cls(r.pnl_usd)}">${fmtUsd(r.pnl_usd*scale)}</span></div>
+    <div class="kv"><span>Fees paid</span><span class="neg">${fmtUsd(r.fees_usd*scale)}</span></div>
+    <div class="kv"><span>Top-5 share of R</span><span class="${r.top5_share>=0.6?"neg":""}">${r.top5_share==null?"—":(r.top5_share*100).toFixed(0)+"%"}</span></div>
+  </div>`;
+  h += `<div class="card"><div class="l">Funnel</div>
+    <div class="kv"><span>Raw fires</span><span>${r.fires}</span></div>
+    <div class="kv"><span>Allowed by live routing</span><span>${r.routed_fires}</span></div>
+    <div class="kv"><span>Rejected at SL/TP build</span><span>${r.build_rejected}</span></div>
+    <div class="kv"><span>Would hit live fee gate (&gt;0.8R)</span><span>${r.fee_blocked}</span></div>
+    <div class="kv"><span>Scanner errors</span><span>${r.errors}</span></div>
+    <div class="kv"><span>Avg hold (bars)</span><span>${fmtNum(r.avg_hold_bars,1)}</span></div>
+  </div>`;
+  h += `<div class="card"><div class="l">Sides &amp; exits</div>
+    <div class="kv"><span>Long</span><span class="${cls(r.long.pnl_usd)}">${r.long.n} tr · ${fmtNum(r.long.r,2)}R · ${fmtUsd(r.long.pnl_usd*scale)}</span></div>
+    <div class="kv"><span>Short</span><span class="${cls(r.short.pnl_usd)}">${r.short.n} tr · ${fmtNum(r.short.r,2)}R · ${fmtUsd(r.short.pnl_usd*scale)}</span></div>
+    ${Object.entries(r.exit_reasons||{}).map(([k,v])=>`<div class="kv"><span>exit: ${esc(k)}</span><span>${v}</span></div>`).join("")}
+    <div class="kv"><span>Fwd ATR @12b / @48b</span><span>${fmtNum(r.fwd_atr["1h"],3)} / ${fmtNum(r.fwd_atr["4h"],3)}</span></div>
+  </div>`;
+  h += `<div class="card bars-wrap"><div class="l">Net P&amp;L by month</div>
+    <div class="bars">${months.map(x=>{const v=x.pnl_usd*scale; return `<div class="bar ${v<0?"neg":""}" title="${esc(x.month)}: ${fmtUsd(v)} · ${x.n} trades · ${fmtNum(x.r,2)}R"><i style="height:${Math.max(2,Math.abs(v)/maxAbs*100)}%"></i><b>${esc(x.month.slice(5))}</b></div>`;}).join("")||'<span class="flat">no trades</span>'}</div>
+  </div>`;
+  h += `</div>`;
+  h += `<div class="tradewrap"><table class="trades"><thead><tr><th>Entry (UTC)</th><th>Side</th><th>Entry</th><th>Exit</th><th>Reason</th><th>Hold</th><th>R</th><th>$ net</th><th>Regime</th><th>Routed</th></tr></thead><tbody>`;
+  h += trades.slice(0,60).map(t => `<tr><td>${esc(t.entry_time)}</td><td>${esc(t.side)}</td><td>${fmtNum(t.entry,2)}</td><td>${fmtNum(t.exit,2)}</td><td>${esc(t.reason)}</td><td>${t.hold_bars}</td><td class="${cls(t.r)}">${fmtNum(t.r,2)}</td><td class="${cls(t.pnl_usd)}">${fmtUsd(t.pnl_usd*scale)}</td><td>${esc(t.regime)}</td><td>${t.routed?"yes":"no"}</td></tr>`).join("");
+  h += `</tbody></table>${trades.length>60?`<p class="section-note">showing the latest 60 of ${trades.length} kept trades</p>`:""}</div>`;
+  d.innerHTML = h; d.className = "drawer open"; wireDrawer();
+}
+function wireDrawer(){
+  const c = $("drawerClose"); if(c) c.addEventListener("click", () => { selected=null; renderTable(); renderDrawer(); });
+  $("drawer").querySelectorAll(".tftab").forEach(b => b.addEventListener("click", () => { drawerTf = b.dataset.tf; renderDrawer(); }));
+}
+
+$("symbolSel").addEventListener("change", () => { curSymbol = $("symbolSel").value; history.replaceState(null,"","?symbol="+encodeURIComponent(curSymbol)); loadLab(); });
+$("marginIn").addEventListener("input", render);
+$("levIn").addEventListener("input", render);
+if(urlParams.has("margin")) $("marginIn").value = urlParams.get("margin");
+if(urlParams.has("leverage")) $("levIn").value = urlParams.get("leverage");
+loadSymbols().then(loadLab);
+</script>
+</body>
+</html>

@@ -152,6 +152,23 @@ _PAPER_UNVALIDATED_SCANNERS = frozenset({"volume_surge", "candlestick_reversal",
 # HTF-hard-veto into line with that.
 _REVERSION_SCANNERS = ("rsi_divergence", "cvd_divergence", "vwap_mean_revert", "rsi_extreme")
 
+# Per-symbol short-side policy (2026-09-17). Symbol, not scanner: this
+# session measured a long/short asymmetry on ETHUSD three independent ways
+# (RSI+EMA, swing-structure, and 4h-breakout backtests on real 200-day
+# data) that did NOT replicate on BTCUSD over the same window -- a symbol
+# property, not a property of any one scanner's math. Scanners stay
+# two-sided; this is the single place a side gets suppressed, and only for
+# the symbol the evidence actually covers. Missing symbols default to
+# allowed (True) -- add an entry only where measured, don't extend by
+# assumption.
+ALLOW_SHORT: Dict[str, bool] = {
+    "ETH/USDT": False,
+}
+
+
+def _short_allowed(symbol: str) -> bool:
+    return ALLOW_SHORT.get(symbol, True)
+
 
 def _cluster_of(scanner_name: str) -> str:
     raw = SCANNER_CLUSTER.get(scanner_name, "unscored")
@@ -255,6 +272,7 @@ _VETO_BUCKET_PREFIXES = (
     ("REGIME MISMATCH:", "blocked_regime"),
     ("REGIME SIDE:", "blocked_regime"),
     ("VWAP HARD VETO:", "blocked_vwap_noise"),
+    ("SYMBOL SHORT POLICY:", "blocked_short_policy"),
 )
 
 
@@ -2971,17 +2989,14 @@ class ScalpStrategy(BaseStrategy):
             self._flush_pending_joint_bar_row()
             return []
 
-        # Block ema_momentum SHORTS entirely (33% WR historically)
-        if best_sr.scanner_name == "ema_momentum" and best.side == OrderSide.SHORT:
-            if not self._is_learning:
-                self.last_scan_status[symbol] = {
-                    "time": now_iso, "signal": False,
-                    "reason": "SCANNER VETO: ema_momentum SHORT blocked (33% WR)",
-                    "indicators": indicators, "setups_checked": setups_checked,
-                    "funnel": dict(self._funnel),
-                }
-                self._flush_pending_joint_bar_row()
-                return []
+        # (2026-09-17) Deleted the scanner-name-keyed "block ema_momentum
+        # SHORTS entirely" veto that used to sit here. Same historical
+        # number as the in-scanner block this paired with (both cited "33%/
+        # 0% WR" with no symbol breakdown) — replaced by the symbol-level
+        # ALLOW_SHORT policy earlier in analyze(), which suppresses SHORT
+        # for the symbol the evidence actually covers (ETHUSD) regardless
+        # of which scanner produced the setup, rather than a block keyed to
+        # one scanner's name.
 
         # ══════════════════════════════════════════════════════
         # HARD VETO LAYER — ANY veto = NO TRADE
@@ -3562,6 +3577,16 @@ class ScalpStrategy(BaseStrategy):
         for v in vetos:
             veto_type = v.split(":")[0].strip()
             self._veto_stats[veto_type] = self._veto_stats.get(veto_type, 0) + 1
+
+        # Symbol short-side policy (2026-09-17) — see ALLOW_SHORT above.
+        # Unconditional: appended straight to hard_vetos rather than through
+        # the vetos/soft_vetos classification loop above, since that loop
+        # carves out soft treatment for structure_bounce specifically and
+        # this is a symbol policy, not a per-scanner quality signal — it
+        # applies the same way regardless of which scanner produced the
+        # setup.
+        if best.side == OrderSide.SHORT and not _short_allowed(symbol):
+            hard_vetos.append(f"SYMBOL SHORT POLICY: SHORT blocked for {symbol} (dated 2026-09-17)")
 
         # Apply hard vetos — ALWAYS enforced, even in learning mode
         # These exist for a reason: HTF mismatch, dead session, regime conflict, CHOCH conflict
@@ -4633,10 +4658,14 @@ class ScalpStrategy(BaseStrategy):
         if cross_idx is None:
             return None
 
-        # DATA: ema_momentum SHORT = 0% WR — block bearish entirely
-        if cross_type == "bearish":
-            return None
-
+        # (2026-09-17) Deleted the "bearish -> return None" block that used to
+        # sit here ("ema_momentum SHORT = 0% WR — block bearish entirely").
+        # The SHORT path below is the same, already-mirrored logic (Steps
+        # 2-4 already branch on `side` for both directions) — it was never
+        # actually broken, just gated off scanner-wide on one historical
+        # number. Symbol-specific short suppression, where the evidence
+        # supports it, now lives in ALLOW_SHORT / _short_allowed() above —
+        # one policy, not a block baked into each scanner.
         side = OrderSide.LONG if cross_type == "bullish" else OrderSide.SHORT
 
         # --- STEP 2: Price pulled back to EMA cross area ---
@@ -5792,27 +5821,13 @@ class ScalpStrategy(BaseStrategy):
             # the matching note in the LONG branch above; Step 5 below is
             # now the single scoring point for rel_vol.
 
-        # Fallback: rolling min/max sweep (simpler, more reliable)
-        if side is None:
-            # Use rolling 15-bar high/low as structure
-            recent_window = df.iloc[-18:-3]
-            if len(recent_window) >= 8:
-                rolling_high = float(recent_window["high"].max())
-                rolling_low = float(recent_window["low"].min())
-
-                # Sweep below rolling low + reclaim
-                if low < rolling_low and close > rolling_low:
-                    side = OrderSide.LONG
-                    sweep_level = rolling_low
-                    confs.append(f"Sweep below rolling low {rolling_low:.2f}")
-                    score += 35  # boosted from 28 — rolling sweep still valid
-                # Sweep above rolling high + reclaim
-                elif high > rolling_high and close < rolling_high:
-                    side = OrderSide.SHORT
-                    sweep_level = rolling_high
-                    confs.append(f"Sweep above rolling high {rolling_high:.2f}")
-                    score += 35  # boosted from 28
-
+        # (2026-09-17) Deleted the rolling-15-bar-high/low fallback that used
+        # to run here when no equal-high/low cluster was found. It shared
+        # none of the sweep thesis above (no cluster, no trapped breakout
+        # traders to reclaim from) — it was a plain range-fade on a rolling
+        # extreme, mislabeled as a liquidity sweep. No cluster, no sweep:
+        # return None rather than substitute a different setup under this
+        # scanner's name.
         if side is None:
             return None
 
@@ -5897,25 +5912,14 @@ class ScalpStrategy(BaseStrategy):
         else:
             sl = high + atr * 0.15
 
-        # ── Opposite liquidity pool as TP target ──
-        # After sweeping lows, target the equal highs (and vice versa).
-        # Clamp to 1R–4R range; fall back to default RR-based TPs if no pool
-        # or if pool is outside the clamp range.
-        risk = abs(close - sl)
-        opp_pool_tp = 0.0
-        if risk > 0:
-            if side == OrderSide.LONG and eq_high_level > close:
-                opp_dist_r = (eq_high_level - close) / risk
-                if 1.0 <= opp_dist_r <= 4.0:
-                    opp_pool_tp = eq_high_level
-                    confs.append(f"TP→ EQH pool ${eq_high_level:.0f} ({opp_dist_r:.1f}R)")
-            elif side == OrderSide.SHORT and eq_low_level > 0 and eq_low_level < close:
-                opp_dist_r = (close - eq_low_level) / risk
-                if 1.0 <= opp_dist_r <= 4.0:
-                    opp_pool_tp = eq_low_level
-                    confs.append(f"TP→ EQL pool ${eq_low_level:.0f} ({opp_dist_r:.1f}R)")
-
-        result = _SetupResult(
+        # (2026-09-17) Deleted the opposite-liquidity-pool TP override that
+        # used to live here (target the equal-high/low pool on the far side,
+        # clamped to 1R-4R). That clamp band was never measured against
+        # actual fill-to-pool distance — an invented target, not a validated
+        # one. This scanner now falls through to the same RR-based TP ladder
+        # every other scanner uses (its own sl_atr/tp*_rr entry in
+        # _scanner_sl_tp), same as before this override was added.
+        return _SetupResult(
             name="liquidity_sweep",
             side=side,
             confidence=confidence,
@@ -5924,9 +5928,6 @@ class ScalpStrategy(BaseStrategy):
             stop_loss=sl,
             atr=atr,
         )
-        # Attach opposite pool TP for downstream TP override
-        result._opp_pool_tp = opp_pool_tp  # type: ignore[attr-defined]
-        return result
 
     # ==================================================================
     # BOS / CHOCH + Displacement Scanner
@@ -6142,6 +6143,16 @@ class ScalpStrategy(BaseStrategy):
         This captures the "smart money" divergence that MACD/RSI miss.
         Uses volume × direction as proxy for CVD when real delta unavailable.
         """
+        # (2026-09-17) Quarantined: this is not CVD and not a swing
+        # divergence. "cvd" here is cumsum(volume * sign(close-open)),
+        # compared as a first-half-vs-second-half mean close over one
+        # 15-bar window -- a signed-volume toy, not order-flow delta (no
+        # aggressor/tick data backs it), and too noisy a "trend" definition
+        # to trust on its own. Never emits outside paper_learning mode
+        # until it's rebuilt on a real definition and re-validated.
+        if not getattr(self, '_is_learning', False):
+            return None
+
         if len(df) < 15:
             return None
 
@@ -7755,11 +7766,10 @@ class ScalpStrategy(BaseStrategy):
             tp2_rr *= 1.2
             tp3_rr *= 1.3
 
-        # Liquidity sweep: use opposite pool as TP1 if available and within range
-        opp_pool_tp = getattr(setup, "_opp_pool_tp", 0.0)
-        if setup.name == "liquidity_sweep" and opp_pool_tp > 0 and risk > 0:
-            tp1_rr = abs(opp_pool_tp - entry) / risk
-            tp1_rr = max(1.0, min(tp1_rr, 4.0))  # clamp 1R–4R
+        # (2026-09-17) Deleted the opposite-liquidity-pool TP1 override that
+        # used to read setup._opp_pool_tp here — the scanner no longer sets
+        # it (see _scan_liquidity_sweep). liquidity_sweep now uses the same
+        # tp1_rr from _scanner_sl_tp as every other scanner.
 
         # Calculate final TP levels
         if setup.side == OrderSide.LONG:
